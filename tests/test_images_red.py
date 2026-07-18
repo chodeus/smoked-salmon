@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import anyio
+import msgspec
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from salmon.images import HOSTS, red
@@ -22,8 +23,8 @@ class _Response:
     def raise_for_status(self) -> None:
         pass
 
-    async def json(self, *, loads):
-        return self.payload
+    async def text(self) -> str:
+        return msgspec.json.encode(self.payload).decode()
 
 
 class _Session:

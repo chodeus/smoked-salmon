@@ -108,8 +108,8 @@ class ImageUploader(BaseImageUploader):
 async def _decode_response(response: aiohttp.ClientResponse) -> dict[str, Any]:
     """Decode and validate a standard RED AJAX response without logging secrets."""
     try:
-        payload = await response.json(loads=msgspec.json.decode)
-    except (aiohttp.ContentTypeError, msgspec.DecodeError, ValueError) as error:
+        payload = msgspec.json.decode(await response.text())
+    except (msgspec.DecodeError, ValueError) as error:
         raise ImageUploadFailed("RED returned an invalid response") from error
 
     if not isinstance(payload, dict) or payload.get("status") != "success":
