@@ -45,6 +45,8 @@ class _Session:
 
     def get(self, url: str, *, params: dict):
         self.calls.append(("get", url, params))
+        if params["action"] == "index":
+            return _Response({"status": "success", "response": {"authkey": "account-authkey"}})
         return _Response(
             {
                 "status": "success",
@@ -70,6 +72,8 @@ def test_red_reuses_image_auth_until_expired(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(red.ImageUploader, "_image_auth", None)
     monkeypatch.setattr(red.ImageUploader, "_image_auth_expires_at", 0.0)
     monkeypatch.setattr(red.ImageUploader, "_image_auth_session", None)
+    monkeypatch.setattr(red.ImageUploader, "_authkey", None)
+    monkeypatch.setattr(red.ImageUploader, "_authkey_session", None)
     current_time = 100.0
     monkeypatch.setattr(red.time, "time", lambda: current_time)
     monkeypatch.setattr(
@@ -97,10 +101,11 @@ def test_red_reuses_image_auth_until_expired(monkeypatch, tmp_path) -> None:
     assert second == ("https://redacted.sh/i/image-2.png?h=key-1&e=123457&u=1", None)
     assert third == ("https://redacted.sh/i/image-3.png?h=key-3&e=123459&u=3", None)
     expected_calls = [
+        ("get", red.AJAX_URL, {"action": "index"}),
         ("post", red.AJAX_URL, {"action": "upload_image"}),
         ("get", red.AJAX_URL, {"action": "imgauth"}),
     ]
     assert sessions[0].calls == expected_calls
-    assert sessions[1].calls == expected_calls[:1]
-    assert sessions[2].calls == expected_calls
+    assert sessions[1].calls == expected_calls[1:2]
+    assert sessions[2].calls == expected_calls[1:]
     assert all(session.kwargs["cookies"] == {"session": "red-session"} for session in sessions)
