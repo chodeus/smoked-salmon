@@ -477,7 +477,7 @@ async def upload(
                     await download_cover_if_nonexistent(path, metadata["cover"])
                 # Don't need cover URL for existing groups
                 cover_url = None
-            else:
+            else:\
                 # For new groups, we need a cover URL
                 # If we already uploaded it for a previous tracker, reuse that URL
                 if not stored_cover_url:
@@ -487,6 +487,22 @@ async def upload(
                         click.secho("Removing downloaded Cover Image File", fg="yellow")
                         os.remove(cover_path)
                 cover_url = stored_cover_url
+
+                if not cover_url:
+                    click.secho("\nNo cover image is available for this new group upload.", fg="yellow", bold=True)
+                    if cfg.upload.yes_all:
+                        click.secho(
+                            "Aborting upload because --yes-all is enabled and cannot confirm uploading without cover.",
+                            fg="red",
+                            bold=True,
+                        )
+                        return
+                    if not click.confirm(
+                        click.style("Continue upload without a cover image?", fg="magenta"),
+                        default=False,
+                    ):
+                        click.secho("Aborting upload due to missing cover image.", fg="red", bold=True)
+                        return
 
             if not scene and cfg.image.auto_compress_cover:
                 compress_pictures(path)
