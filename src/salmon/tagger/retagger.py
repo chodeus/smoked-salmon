@@ -265,6 +265,7 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
     multi_disc = len(metadata["tracks"]) > 1
     md_word = {"CD": "CD", "Vinyl": "LP"}.get(source or "", "Part")
     # "Part" is default if not CD or Vinyl
+    split_multi_disc_into_folders = cfg.upload.formatting.split_multi_disc_into_folders
 
     track_list = list(chain.from_iterable([d.values() for d in metadata["tracks"].values()]))
     multiple_artists = any(
@@ -275,16 +276,17 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
     for filename, tracktags in tags.items():
         ext = os.path.splitext(filename)[1].lower()
         new_name = generate_file_name(tracktags, ext, multiple_artists)
-        disc_number = 1  # Default value
+        disc_number = 1
         if multi_disc:
-            if isinstance(tracktags, dict):
-                disc_number = int(tracktags["discnumber"][0].split("/")[0]) if "discnumber" in tracktags else 1
+            disc_number = _get_tag_number(tracktags, "discnumber")
+            if split_multi_disc_into_folders:
+                new_name = os.path.join(f"{md_word}{disc_number:02d}", new_name)
             else:
-                disc_number = int(tracktags.discnumber.split("/")[0]) or 1
-            new_name = os.path.join(f"{md_word}{disc_number:02d}", new_name)
+                track_number = _get_tag_number(tracktags, "tracknumber")
+                new_name = generate_file_name(tracktags, ext, multiple_artists, trackno_or=f"{disc_number}.{track_number}")
         if filename != new_name:
             to_rename.append((filename, new_name))
-            if multi_disc:
+            if multi_disc and split_multi_disc_into_folders:
                 folders_to_create.add(os.path.join(path, f"{md_word}{disc_number:02d}"))
 
     if to_rename:
@@ -376,6 +378,26 @@ def _parse_integer(value):
     if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
         return f"{int(value):02d}"
     return value
+
+
+def _get_tag_number(tracktags, field):
+    if isinstance(tracktags, dict):
+        value = tracktags.get(field)
+        if isinstance(value, list) and value:
+            value = value[0]
+    else:
+        value = getattr(tracktags, field, None)
+
+    if value is None:
+        return 1
+    if isinstance(value, list) and value:
+        value = value[0]
+    if isinstance(value, str):
+        value = value.split("/")[0]
+        return int(value) if value.isdigit() else 1
+    if isinstance(value, int):
+        return value
+    return 1
 
 
 def move_non_audio_files(directory_move_pairs):
