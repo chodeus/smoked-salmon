@@ -477,7 +477,7 @@ async def upload(
                     await download_cover_if_nonexistent(path, metadata["cover"])
                 # Don't need cover URL for existing groups
                 cover_url = None
-            else:\
+            else:
                 # For new groups, we need a cover URL
                 # If we already uploaded it for a previous tracker, reuse that URL
                 if not stored_cover_url:
@@ -497,12 +497,42 @@ async def upload(
                             bold=True,
                         )
                         return
-                    if not click.confirm(
-                        click.style("Continue upload without a cover image?", fg="magenta"),
-                        default=False,
-                    ):
-                        click.secho("Aborting upload due to missing cover image.", fg="red", bold=True)
-                        return
+
+                    while True:
+                        raw_choice = await click.prompt(
+                            click.style(
+                                "Continue upload without a cover image? [y/N/reload]",
+                                fg="magenta",
+                            ),
+                            default="n",
+                            show_default=False,
+                        )
+                        choice = raw_choice.strip().lower()
+
+                        if choice in ("r", "reload"):
+                            click.secho("Checking for cover image again...", fg="cyan")
+                            cover_path, is_downloaded = await download_cover_if_nonexistent(path, metadata["cover"])
+                            if cover_path:
+                                stored_cover_url = await upload_cover(cover_path)
+                                if is_downloaded and remove_downloaded_cover_image and cover_path:
+                                    click.secho("Removing downloaded Cover Image File", fg="yellow")
+                                    os.remove(cover_path)
+                                cover_url = stored_cover_url
+
+                            if cover_url:
+                                click.secho("Cover image found and uploaded.", fg="green")
+                                break
+                            else:
+                                click.secho(
+                                    "Still no cover image found. Add a cover.jpg to the release folder and try again.",
+                                    fg="yellow",
+                                )
+                                continue
+                        elif choice in ("y", "yes"):
+                            break
+                        else:
+                            click.secho("Aborting upload due to missing cover image.", fg="red", bold=True)
+                            return
 
             if not scene and cfg.image.auto_compress_cover:
                 compress_pictures(path)
