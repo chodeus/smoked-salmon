@@ -14,6 +14,7 @@ from salmon.checks.mqa import check_mqa
 from salmon.checks.upconverts import check_upconvert
 from salmon.common.files import get_audio_files
 from salmon.webui.jobs import Job, manager
+from salmon.webui.validation import validate_album_dir
 
 router = APIRouter(tags=["checks"])
 
@@ -72,9 +73,7 @@ async def _check_upconverts(path: str) -> dict:
 
 @router.post("/checks/run")
 async def run_checks(req: ChecksRequest) -> dict:
-    path = os.path.abspath(os.path.expanduser(req.path))
-    if not os.path.isdir(path):
-        raise HTTPException(status_code=404, detail=f"Not a directory: {path}")
+    path = validate_album_dir(req.path)
     invalid = [c for c in req.checks if c not in CHECK_TYPES]
     if invalid or not req.checks:
         raise HTTPException(status_code=422, detail=f"Invalid checks: {invalid or 'none selected'}")
