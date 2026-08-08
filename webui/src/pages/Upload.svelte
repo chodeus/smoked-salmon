@@ -1,0 +1,179 @@
+<script lang="ts">
+  import { apiGet, apiPost } from '../lib/api'
+  import FolderPicker from '../lib/FolderPicker.svelte'
+  import JobActivity from '../lib/JobActivity.svelte'
+  import JobStatus from '../lib/JobStatus.svelte'
+  import QuestionPanel from '../lib/QuestionPanel.svelte'
+  import { jobStore, type Job } from '../lib/jobs.svelte'
+
+  let trackers = $state<string[]>([])
+  let sources = $state<string[]>([])
+
+  let path = $state('')
+  let tracker = $state('')
+  let source = $state('')
+  let groupId = $state('')
+  let request = $state('')
+  let sourceUrl = $state('')
+  let lossy = $state<'auto' | 'yes' | 'no'>('auto')
+  let spectralsAfter = $state(false)
+  let autoRename = $state(true)
+  let compress = $state(false)
+  let scene = $state(false)
+  let skipUp = $state(false)
+  let skipMqa = $state(false)
+  let skipLogCheck = $state(false)
+  let skipIntegrityCheck = $state(false)
+
+  let activeJobId = $state<string | null>(null)
+  let error = $state('')
+
+  const activeJob = $derived(activeJobId ? jobStore.get(activeJobId) : undefined)
+
+  function parseGroupId(value: string): number | null | undefined {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    const fromUrl = trimmed.match(/torrents\.php\?id=(\d+)/)
+    const digits = fromUrl ? fromUrl[1] : trimmed
+    if (!/^\d+$/.test(digits)) return undefined
+    return Number(digits)
+  }
+
+  $effect(() => {
+    apiGet<{ trackers: string[]; sources: string[] }>('/upload/options').then((o) => {
+      trackers = o.trackers
+      sources = o.sources
+      if (!tracker && o.trackers.length) tracker = o.trackers[0]
+    })
+  })
+
+  async function start() {
+    error = ''
+    const parsedGroupId = parseGroupId(groupId)
+    if (parsedGroupId === undefined) {
+      error = 'Ungültige Group-ID — Zahl oder torrents.php-Permalink angeben.'
+      return
+    }
+    try {
+      const job = await apiPost<Job>('/upload', {
+        path,
+        tracker,
+        source: source || null,
+        group_id: parsedGroupId,
+        request: request || null,
+        source_url: sourceUrl || null,
+        lossy: lossy === 'auto' ? null : lossy === 'yes',
+        spectrals_after: spectralsAfter,
+        auto_rename: autoRename,
+        compress,
+        scene,
+        skip_up: skipUp,
+        skip_mqa: skipMqa,
+        skip_log_check: skipLogCheck,
+        skip_integrity_check: skipIntegrityCheck,
+      })
+      jobStore.add(job)
+      activeJobId = job.id
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
+  async function cancel() {
+    if (activeJobId) await apiPost(`/jobs/${activeJobId}/cancel`).catch(() => {})
+  }
+</script>
+
+<h1>Upload</h1>
+
+{#if !activeJob || activeJob.status !== 'running'}
+  <div class="card">
+    <FolderPicker bind:value={path} />
+    <div class="grid">
+      <label>
+        Tracker
+        <select bind:value={tracker}>
+          {#each trackers as t}<option value={t}>{t}</option>{/each}
+        </select>
+      </label>
+      <label>
+        Source
+        <select bind:value={source}>
+          <option value="">— fragen —</option>
+          {#each sources as s}<option value={s}>{s}</option>{/each}
+        </select>
+      </label>
+      <label>
+        Lossy Master
+        <select bind:value={lossy}>
+          <option value="auto">automatisch prüfen</option>
+          <option value="yes">ja</option>
+          <option value="no">nein</option>
+        </select>
+      </label>
+      <label>
+        Group-ID (optional)
+        <input type="text" bind:value={groupId} placeholder="bestehende Gruppe" />
+      </label>
+      <label>
+        Request (optional)
+        <input type="text" bind:value={request} placeholder="Request-URL oder ID" />
+      </label>
+      <label>
+        Source-URL (optional, WEB)
+        <input type="text" bind:value={sourceUrl} placeholder="https://…" />
+      </label>
+    </div>
+    <div class="row" style="flex-wrap: wrap; margin-top: 0.6rem">
+      <label class="check"><input type="checkbox" bind:checked={autoRename} /> Auto-Rename</label>
+      <label class="check"><input type="checkbox" bind:checked={spectralsAfter} /> Spectrals nach Upload</label>
+      <label class="check"><input type="checkbox" bind:checked={compress} /> FLACs rekomprimieren</label>
+      <label class="check"><input type="checkbox" bind:checked={scene} /> Scene-Release</label>
+      <label class="check"><input type="checkbox" bind:checked={skipUp} /> Upconvert-Check überspringen</label>
+      <label class="check"><input type="checkbox" bind:checked={skipMqa} /> MQA-Check überspringen</label>
+      <label class="check"><input type="checkbox" bind:checked={skipLogCheck} /> Log-Check überspringen</label>
+      <label class="check"><input type="checkbox" bind:checked={skipIntegrityCheck} /> Integritäts-Check überspringen</label>
+    </div>
+    <div style="margin-top: 0.8rem">
+      <button class="btn" onclick={start} disabled={!path || !tracker}>Upload starten</button>
+    </div>
+    {#if error}<p class="muted">{error}</p>{/if}
+  </div>
+{/if}
+
+{#if activeJob}
+  <div class="card">
+    <div class="row">
+      <h2 class="grow" style="margin: 0">{activeJob.title}</h2>
+      {#if activeJob.status === 'running'}
+        <button class="btn small secondary" onclick={cancel}>Abbrechen</button>
+      {/if}
+    </div>
+    <JobStatus job={activeJob} />
+
+    <QuestionPanel job={activeJob} />
+    <JobActivity job={activeJob} />
+  </div>
+{/if}
+
+<style>
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.6rem 1rem;
+    margin-top: 0.7rem;
+  }
+  label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+  }
+  label.check {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--text);
+  }
+        </style>

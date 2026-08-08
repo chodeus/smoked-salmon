@@ -7,7 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from salmon.webui.routers import browse, checks, convert, jobs, search, spectrals, system
+from salmon.webui.interaction import install_interaction_patches
+from salmon.webui.routers import browse, checks, convert, jobs, search, spectrals, system, upload
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -15,6 +16,7 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 def create_app(dev: bool = False, host: str = "127.0.0.1") -> FastAPI:
+    install_interaction_patches()
     app = FastAPI(title="salmon web", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
     if host in LOOPBACK_HOSTS:
@@ -29,7 +31,7 @@ def create_app(dev: bool = False, host: str = "127.0.0.1") -> FastAPI:
             allow_headers=["*"],
         )
 
-    for router in (system, search, browse, spectrals, convert, checks, jobs):
+    for router in (system, search, browse, spectrals, convert, checks, jobs, upload):
         app.include_router(router.router, prefix="/api")
 
     if (STATIC_DIR / "index.html").exists():

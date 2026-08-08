@@ -1,15 +1,24 @@
 """In-memory job manager for the web interface.
 
-Long-running operations (spectral generation, transcoding, checks, ...) run as
-asyncio tasks tracked here. Each job exposes status, progress and a result;
+Two kinds of jobs:
+- loop jobs (`create`): coroutines on the server's event loop — used for
+  bounded operations like spectral generation or transcoding.
+- thread jobs (`create_threaded`): run in a worker thread with their own event
+  loop — used for the interactive upload pipeline, whose synchronous prompts
+  and filesystem work may block that private loop while the server loop keeps
+  serving (and delivers browser answers to pending questions).
+
+Each job exposes status, progress, log tail, pending question and a result;
 subscribers (websocket connections) receive every state change as an event.
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import itertools
+import threading
 import traceback
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -17,6 +26,8 @@ from typing import TYPE_CHECKING, Any
 import asyncclick as click
 
 from salmon.common.progress import reset_progress_callback, set_progress_callback
+from salmon.errors import AbortAndDeleteFolder
+from salmon.webui.interaction import WebInteraction, set_interaction
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -25,6 +36,7 @@ _id_counter = itertools.count(1)
 
 MAX_FINISHED_JOBS = 200
 SUBSCRIBER_QUEUE_SIZE = 500
+MAX_LOG_LINES = 1000
 
 
 class JobConflictError(Exception):
@@ -59,6 +71,12 @@ class Job:
         self.error: str | None = None
         self.task: asyncio.Task | None = None
         self.lock_key: str | None = None
+        self.question: dict[str, Any] | None = None
+        self.log_lines: list[str] = []
+        self.interaction: WebInteraction | None = None
+        self.thread: threading.Thread | None = None
+        self._thread_loop: asyncio.AbstractEventLoop | None = None
+        self._thread_task: asyncio.Task | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +90,9 @@ class Job:
             "progress": self.progress,
             "result": self.result,
             "error": self.error,
+            "question": self.question,
+            "log": self.log_lines[-MAX_LOG_LINES:],
+            "spectrals": (self.interaction.spectrals or {}).get("files") if self.interaction else None,
         }
 
 
@@ -80,6 +101,23 @@ class JobManager:
         self.jobs: dict[str, Job] = {}
         self._subscribers: set[asyncio.Queue] = set()
         self._active_lock_keys: set[str] = set()
+        self._server_loop: asyncio.AbstractEventLoop | None = None
+
+    # ------------------------------------------------------------------
+    # Job creation
+    # ------------------------------------------------------------------
+
+    def _register(self, job_type: str, title: str, params: dict[str, Any] | None, lock_key: str | None) -> Job:
+        if lock_key is not None:
+            if lock_key in self._active_lock_keys:
+                raise JobConflictError(f"A job is already running on: {lock_key}")
+            self._active_lock_keys.add(lock_key)
+        job = Job(job_type, title, params or {})
+        job.lock_key = lock_key
+        self.jobs[job.id] = job
+        self._prune_finished()
+        self._server_loop = asyncio.get_running_loop()
+        return job
 
     def create(
         self,
@@ -89,74 +127,187 @@ class JobManager:
         params: dict[str, Any] | None = None,
         lock_key: str | None = None,
     ) -> Job:
-        """Create a job and start running it immediately.
-
-        Raises:
-            JobConflictError: If lock_key is given and a queued/running job
-                holds the same key (same filesystem path).
-        """
-        if lock_key is not None:
-            if lock_key in self._active_lock_keys:
-                raise JobConflictError(f"A job is already running on: {lock_key}")
-            self._active_lock_keys.add(lock_key)
-        job = Job(job_type, title, params or {})
-        job.lock_key = lock_key
-        self.jobs[job.id] = job
-        self._prune_finished()
+        """Create a loop job on the server's event loop and start it."""
+        job = self._register(job_type, title, params, lock_key)
         job.task = asyncio.create_task(self._run(job, factory))
-        # If the task is cancelled before its coroutine ever runs, _run's
-        # finally never executes — finalize from the done callback instead.
         job.task.add_done_callback(lambda _t: self._finalize_unstarted(job))
         self._broadcast({"event": "created", "job": job.to_dict()})
         return job
 
-    def _finalize_unstarted(self, job: Job) -> None:
-        if job.finished_at is not None:
-            return
-        job.status = "cancelled"
-        if job.lock_key is not None:
-            self._active_lock_keys.discard(job.lock_key)
-        job.finished_at = _now()
-        self._broadcast({"event": "finished", "job": job.to_dict()})
+    def create_threaded(
+        self,
+        job_type: str,
+        title: str,
+        factory: Callable[[Job], Awaitable[Any]],
+        params: dict[str, Any] | None = None,
+        lock_key: str | None = None,
+    ) -> Job:
+        """Create a job that runs in a worker thread with its own event loop."""
+        job = self._register(job_type, title, params, lock_key)
+        job.interaction = WebInteraction(
+            emit=lambda event: self._emit_for(job, event),
+            set_question=lambda question: self._set_question(job, question),
+        )
+        job.thread = threading.Thread(target=self._thread_main, args=(job, factory), daemon=True)
+        self._broadcast({"event": "created", "job": job.to_dict()})
+        try:
+            job.thread.start()
+        except BaseException:
+            job.status = "error"
+            job.error = "Failed to start the worker thread."
+            self._finish(job)
+            self._broadcast({"event": "finished", "job": job.to_dict()})
+            raise
+        return job
+
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
+
+    def _set_status(self, job: Job, status: str, threadsafe: bool = False) -> None:
+        job.status = status
+        event = {"event": "status", "job_id": job.id, "status": status}
+        if threadsafe:
+            self._emit(event)
+        else:
+            self._broadcast(event)
 
     async def _run(self, job: Job, factory: Callable[[Job], Awaitable[Any]]) -> None:
         def on_progress(done: int, total: int, desc: str) -> None:
             job.progress = {"done": done, "total": total, "desc": desc}
             self._broadcast({"event": "progress", "job_id": job.id, "progress": job.progress})
 
-        job.status = "running"
-        self._broadcast({"event": "status", "job_id": job.id, "status": job.status})
+        self._set_status(job, "running")
         token = set_progress_callback(on_progress)
         try:
             job.result = await factory(job)
             job.status = "done"
         except asyncio.CancelledError:
             job.status = "cancelled"
-        except BaseExceptionGroup as e:
-            leaves = _flatten_exception(e)
-            job.status = "error"
-            if any(isinstance(leaf, click.Abort) for leaf in leaves):
-                job.error = "Operation aborted by the underlying tool."
-            else:
-                job.error = "; ".join(f"{type(leaf).__name__}: {leaf}" for leaf in leaves)
-            traceback.print_exc()
-        except click.Abort:
-            job.status = "error"
-            job.error = "Operation aborted by the underlying tool."
-        except Exception as e:
-            job.status = "error"
-            job.error = f"{type(e).__name__}: {e}"
-            traceback.print_exc()
+        except BaseException as e:  # noqa: BLE001 - single funnel for job errors
+            self._record_failure(job, e)
         finally:
             reset_progress_callback(token)
-            if job.lock_key is not None:
-                self._active_lock_keys.discard(job.lock_key)
-            job.finished_at = _now()
+            self._finish(job)
             self._broadcast({"event": "finished", "job": job.to_dict()})
+
+    def _thread_main(self, job: Job, factory: Callable[[Job], Awaitable[Any]]) -> None:
+        def on_progress(done: int, total: int, desc: str) -> None:
+            job.progress = {"done": done, "total": total, "desc": desc}
+            self._emit({"event": "progress", "job_id": job.id, "progress": job.progress})
+
+        interaction_token = set_interaction(job.interaction)
+        progress_token = set_progress_callback(on_progress)
+        loop = asyncio.new_event_loop()
+        job._thread_loop = loop
+        try:
+            self._set_status(job, "running", threadsafe=True)
+            if job.interaction is not None and job.interaction.cancel_requested.is_set():
+                raise asyncio.CancelledError()
+            task = loop.create_task(factory(job))
+            job._thread_task = task
+            job.result = loop.run_until_complete(task)
+            job.status = "done"
+        except (asyncio.CancelledError, concurrent.futures.CancelledError):
+            job.status = "cancelled"
+        except BaseException as e:  # noqa: BLE001 - single funnel for job errors
+            if job.interaction is not None and job.interaction.cancel_requested.is_set():
+                job.status = "cancelled"
+            else:
+                self._record_failure(job, e)
+        finally:
+            reset_progress_callback(progress_token)
+            set_interaction(None)
+            del interaction_token
+            with contextlib.suppress(Exception):
+                loop.close()
+            job._thread_loop = None
+            job.question = None
+            self._finish(job)
+            self._emit({"event": "finished", "job": job.to_dict()})
+            if job.interaction is not None:
+                # From here on, leaked to_thread workers must neither emit
+                # events nor block on unanswerable questions.
+                job.interaction.close()
+
+    def _record_failure(self, job: Job, e: BaseException) -> None:
+        job.status = "error"
+        leaves = _flatten_exception(e)
+        if any(isinstance(leaf, AbortAndDeleteFolder) for leaf in leaves):
+            job.error = "Aborted — the album folder was deleted as requested."
+        elif any(isinstance(leaf, click.Abort) for leaf in leaves):
+            job.error = "Aborted."
+        elif len(leaves) > 1 or isinstance(e, BaseExceptionGroup):
+            job.error = "; ".join(f"{type(leaf).__name__}: {leaf}" for leaf in leaves)
+        else:
+            job.error = f"{type(e).__name__}: {e}"
+        traceback.print_exc()
+
+    def _finish(self, job: Job) -> None:
+        if job.lock_key is not None:
+            self._active_lock_keys.discard(job.lock_key)
+        job.finished_at = _now()
+
+    def _finalize_unstarted(self, job: Job) -> None:
+        if job.finished_at is not None:
+            return
+        job.status = "cancelled"
+        self._finish(job)
+        self._broadcast({"event": "finished", "job": job.to_dict()})
+
+    # ------------------------------------------------------------------
+    # Interaction plumbing (called from job threads)
+    # ------------------------------------------------------------------
+
+    def _emit_for(self, job: Job, event: dict[str, Any]) -> None:
+        event = {**event, "job_id": job.id}
+        if event.get("event") == "log":
+            job.log_lines.append(event["line"])
+            if len(job.log_lines) > MAX_LOG_LINES:
+                del job.log_lines[: len(job.log_lines) - MAX_LOG_LINES // 2]
+        self._emit(event)
+
+    def _set_question(self, job: Job, question: dict[str, Any] | None) -> None:
+        job.question = question
+
+    def _emit(self, event: dict[str, Any]) -> None:
+        """Thread-safe broadcast: hop onto the server loop when needed."""
+        loop = self._server_loop
+        if loop is None:
+            return
+        try:
+            if asyncio.get_running_loop() is loop:
+                self._broadcast(event)
+                return
+        except RuntimeError:
+            pass
+        # RuntimeError: the server loop already closed; the consumer is gone.
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(self._broadcast, event)
+
+    def answer(self, job_id: str, question_id: str, value: Any) -> bool:
+        job = self.jobs.get(job_id)
+        if job is None or job.interaction is None:
+            return False
+        return job.interaction.answer(question_id, value)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def cancel(self, job_id: str) -> bool:
         job = self.jobs.get(job_id)
-        if job is None or job.task is None or job.task.done():
+        if job is None or job.status not in {"queued", "running"}:
+            return False
+        if job.thread is not None:
+            if job.interaction is not None:
+                job.interaction.cancel_pending()
+            loop, task = job._thread_loop, job._thread_task
+            if loop is not None and task is not None:
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(task.cancel)
+            return True
+        if job.task is None or job.task.done():
             return False
         job.task.cancel()
         return True
