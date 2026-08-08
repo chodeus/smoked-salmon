@@ -164,7 +164,8 @@ def _compare_tag(tagfield, metafield, tagset, trackmeta):
     Compare a tag to the equivalent metadata field. If the metadata field
     does not equal the existing tag, return a ``Change``.
     """
-    if trackmeta[metafield]:
+    # .get: optional fields (e.g. isrc) may be absent from hand-edited metadata
+    if trackmeta.get(metafield):
         if not getattr(tagset, tagfield, False):
             return Change(tagfield, None, trackmeta[metafield])
         if str(getattr(tagset, tagfield, "")) != str(trackmeta[metafield]):
