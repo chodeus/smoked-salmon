@@ -11,6 +11,7 @@ import salmon.trackers
 from salmon.uploader import upload as run_upload
 from salmon.uploader.preassumptions import confirm_group_upload, print_preassumptions
 from salmon.webui.jobs import Job, JobConflictError, manager
+from salmon.webui.validation import validate_album_dir
 
 router = APIRouter(tags=["upload"])
 
@@ -42,9 +43,7 @@ async def options() -> dict:
 
 @router.post("/upload")
 async def start(req: UploadStartRequest) -> dict:
-    path = os.path.abspath(os.path.expanduser(req.path))
-    if not os.path.isdir(path):
-        raise HTTPException(status_code=404, detail=f"Not a directory: {path}")
+    path = validate_album_dir(req.path)
     if req.tracker not in salmon.trackers.tracker_list:
         raise HTTPException(status_code=422, detail=f"Unknown tracker: {req.tracker}")
     if req.source is not None and req.source not in SOURCES:

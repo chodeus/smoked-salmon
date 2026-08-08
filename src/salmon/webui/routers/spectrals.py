@@ -12,6 +12,7 @@ from salmon.images import HOSTS, upload_images
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.uploader.spectrals import create_specs_folder, generate_spectrals_all
 from salmon.webui.jobs import Job, JobConflictError, manager
+from salmon.webui.validation import validate_album_dir
 
 router = APIRouter(tags=["spectrals"])
 
@@ -27,9 +28,7 @@ class UploadRequest(BaseModel):
 
 @router.post("/spectrals/generate")
 async def generate(req: GenerateRequest) -> dict:
-    path = os.path.abspath(os.path.expanduser(req.path))
-    if not os.path.isdir(path):
-        raise HTTPException(status_code=404, detail=f"Not a directory: {path}")
+    path = validate_album_dir(req.path)
 
     async def run(job: Job) -> dict:
         audio_info = await asyncio.to_thread(gather_audio_info, path, True)

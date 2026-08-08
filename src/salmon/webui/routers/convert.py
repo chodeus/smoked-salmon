@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from salmon.converter.downconverting import convert_folder
 from salmon.converter.transcoding import transcode_folder
 from salmon.webui.jobs import Job, JobConflictError, manager
+from salmon.webui.validation import validate_album_dir
 
 router = APIRouter(tags=["convert"])
 
@@ -23,10 +24,7 @@ class DownconvertRequest(BaseModel):
 
 
 def _validate_dir(path: str) -> str:
-    path = os.path.abspath(os.path.expanduser(path))
-    if not os.path.isdir(path):
-        raise HTTPException(status_code=404, detail=f"Not a directory: {path}")
-    return path
+    return validate_album_dir(path)
 
 
 @router.post("/convert/transcode")

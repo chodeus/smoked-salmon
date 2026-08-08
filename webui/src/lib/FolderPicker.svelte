@@ -25,9 +25,13 @@
     }
   }
 
-  function select() {
-    if (listing) value = listing.path
+  function select(path?: string) {
+    value = path ?? listing?.path ?? value
     browsing = false
+  }
+
+  function shortName(p: string): string {
+    return p.split('/').filter(Boolean).pop() ?? p
   }
 </script>
 
@@ -42,15 +46,18 @@
       <div class="row">
         <span class="mono grow">{listing.path}</span>
         <span class="muted">{listing.audio_files.length} Audio-Dateien</span>
-        <button class="btn small" onclick={select}>Auswählen</button>
+        <button class="btn small" onclick={() => select()}>„{shortName(listing.path)}" auswählen</button>
         <button class="btn small secondary" onclick={() => (browsing = false)}>Schließen</button>
       </div>
       <ul>
         {#if listing.parent}
-          <li><button onclick={() => open(listing!.parent!)}>..</button></li>
+          <li><button class="nav" onclick={() => open(listing!.parent!)}>..</button></li>
         {/if}
         {#each listing.dirs as dir}
-          <li><button onclick={() => open(dir.path)}>{dir.name}/</button></li>
+          <li>
+            <button class="nav" onclick={() => open(dir.path)}>{dir.name}/</button>
+            <button class="pick" title="Diesen Ordner auswählen" onclick={() => select(dir.path)}>wählen</button>
+          </li>
         {/each}
       </ul>
     </div>
@@ -71,7 +78,12 @@
     padding: 0;
     margin: 0.5rem 0 0;
   }
-  li button {
+  li {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  li button.nav {
     background: none;
     border: none;
     color: var(--text);
@@ -79,12 +91,29 @@
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.85rem;
     padding: 0.15rem 0.3rem;
-    width: 100%;
+    flex: 1;
     text-align: left;
     border-radius: 5px;
   }
-  li button:hover {
+  li button.nav:hover {
     background: var(--bg-hover);
     color: var(--accent);
+  }
+  li button.pick {
+    background: var(--bg-hover);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 0.7rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: 5px;
+    visibility: hidden;
+  }
+  li:hover button.pick {
+    visibility: visible;
+  }
+  li button.pick:hover {
+    color: var(--accent);
+    border-color: var(--accent-dim);
   }
 </style>
