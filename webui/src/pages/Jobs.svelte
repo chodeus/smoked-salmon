@@ -1,6 +1,8 @@
 <script lang="ts">
   import { apiPost } from '../lib/api'
+  import JobActivity from '../lib/JobActivity.svelte'
   import JobStatus from '../lib/JobStatus.svelte'
+  import QuestionPanel from '../lib/QuestionPanel.svelte'
   import { jobStore } from '../lib/jobs.svelte'
 
   let cancelError = $state('')
@@ -41,5 +43,10 @@
       {/if}
     </div>
     <JobStatus {job} />
+    <QuestionPanel {job} />
+    {#if job.question}
+      <!-- Context for answering: spectral gallery and the recent log tail. -->
+      <JobActivity {job} logTail={15} />
+    {/if}
   </div>
 {/each}

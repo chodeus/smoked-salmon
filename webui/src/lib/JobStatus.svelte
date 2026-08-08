@@ -14,6 +14,9 @@
 
 <div class="row">
   <span class="chip {chipClass[job.status]}">{job.status}</span>
+  {#if job.question}
+    <span class="chip warn">wartet auf Antwort</span>
+  {/if}
   {#if job.status === 'running' && job.progress}
     <div class="progress grow">
       <div style="width: {job.progress.total ? (100 * job.progress.done) / job.progress.total : 0}%"></div>

@@ -154,11 +154,12 @@ class BaseGazelleApi:
     site_string: str
     api_key: str = ""  # Optional, only for API key upload
 
-    # Rate limiter: 5 requests per 10 seconds (shared across all instances)
-    _rate_limiter = AsyncLimiter(5, 10)
-
     def __init__(self) -> None:
         """Initialize the API client. Subclasses should call this after setting cookie/base_url."""
+        # Rate limiter: 5 requests per 10 seconds. Per instance, because an
+        # AsyncLimiter binds to the first event loop that uses it and the web
+        # interface runs upload jobs on their own loops.
+        self._rate_limiter = AsyncLimiter(5, 10)
         self.headers = {
             "Connection": "keep-alive",
             "Cache-Control": "max-age=0",

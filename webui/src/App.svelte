@@ -1,5 +1,6 @@
 <script lang="ts">
   import Dashboard from './pages/Dashboard.svelte'
+  import Upload from './pages/Upload.svelte'
   import Search from './pages/Search.svelte'
   import Spectrals from './pages/Spectrals.svelte'
   import Convert from './pages/Convert.svelte'
@@ -9,6 +10,7 @@
 
   const routes: Record<string, { component: any; label: string }> = {
     '': { component: Dashboard, label: 'Dashboard' },
+    upload: { component: Upload, label: 'Upload' },
     search: { component: Search, label: 'Suche' },
     spectrals: { component: Spectrals, label: 'Spectrals' },
     convert: { component: Convert, label: 'Convert' },

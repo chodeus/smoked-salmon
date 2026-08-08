@@ -1,0 +1,93 @@
+"""The interactive upload wizard: runs the unmodified upload pipeline as a
+thread job; terminal prompts surface as browser questions via the jobs API."""
+
+import os
+
+import asyncclick as click
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+import salmon.trackers
+from salmon.uploader import upload as run_upload
+from salmon.uploader.preassumptions import confirm_group_upload, print_preassumptions
+from salmon.webui.jobs import Job, JobConflictError, manager
+
+router = APIRouter(tags=["upload"])
+
+SOURCES = ["CD", "WEB", "Vinyl", "Soundboard", "SACD", "DAT", "Cassette", "Blu-Ray", "DVD"]
+
+
+class UploadStartRequest(BaseModel):
+    path: str
+    tracker: str
+    source: str | None = None
+    group_id: int | None = None
+    request: str | None = None
+    source_url: str | None = None
+    lossy: bool | None = None
+    spectrals_after: bool = False
+    auto_rename: bool = False
+    compress: bool = False
+    scene: bool = False
+    skip_up: bool = False
+    skip_mqa: bool = False
+    skip_log_check: bool = False
+    skip_integrity_check: bool = False
+
+
+@router.get("/upload/options")
+async def options() -> dict:
+    return {"trackers": salmon.trackers.tracker_list, "sources": SOURCES}
+
+
+@router.post("/upload")
+async def start(req: UploadStartRequest) -> dict:
+    path = os.path.abspath(os.path.expanduser(req.path))
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=404, detail=f"Not a directory: {path}")
+    if req.tracker not in salmon.trackers.tracker_list:
+        raise HTTPException(status_code=422, detail=f"Unknown tracker: {req.tracker}")
+    if req.source is not None and req.source not in SOURCES:
+        raise HTTPException(status_code=422, detail=f"Unknown source: {req.source}")
+
+    request_id = req.request
+    if request_id:
+        try:
+            request_id = salmon.trackers.validate_request(salmon.trackers.get_class(req.tracker)(), request_id)
+        except click.ClickException as e:
+            raise HTTPException(status_code=422, detail=e.message) from e
+
+    async def run(job: Job) -> dict:
+        gazelle_site = salmon.trackers.get_class(req.tracker)()
+        print_preassumptions(
+            gazelle_site, path, req.group_id, req.source, req.lossy, (), None, req.spectrals_after
+        )
+        if req.group_id:
+            await confirm_group_upload(gazelle_site, req.group_id, req.source)
+        await run_upload(
+            gazelle_site,
+            path,
+            req.group_id,
+            req.source,
+            req.lossy,
+            (),
+            None,
+            scene=req.scene,
+            recompress=req.compress,
+            source_url=req.source_url.strip() if req.source_url else None,
+            request_id=request_id,
+            spectrals_after=req.spectrals_after,
+            auto_rename=req.auto_rename,
+            skip_up=req.skip_up,
+            skip_mqa=req.skip_mqa,
+            skip_log_check=req.skip_log_check,
+            skip_integrity_check=req.skip_integrity_check,
+        )
+        return {"album_path": path, "tracker": req.tracker}
+
+    title = f"Upload zu {req.tracker}: {os.path.basename(path)}"
+    try:
+        job = manager.create_threaded("upload", title, run, req.model_dump() | {"path": path}, lock_key=path)
+    except JobConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return job.to_dict()

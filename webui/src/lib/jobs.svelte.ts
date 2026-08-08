@@ -6,6 +6,15 @@ export interface JobProgress {
   desc: string
 }
 
+export interface Question {
+  id: string
+  kind: 'confirm' | 'prompt' | 'edit'
+  text: string
+  default: unknown
+  choices: string[] | null
+  initial: string | null
+}
+
 export interface Job {
   id: string
   type: string
@@ -17,7 +26,12 @@ export interface Job {
   progress: JobProgress | null
   result: any
   error: string | null
+  question: Question | null
+  log: string[]
+  spectrals: string[] | null
 }
+
+const LOG_CAP = 1000
 
 class JobStore {
   jobs = $state<Job[]>([])
@@ -25,6 +39,7 @@ class JobStore {
   loadError = $state('')
   private ws: WebSocket | null = null
   private started = false
+  private resyncBuffer: any[] | null = null
 
   init() {
     if (this.started) return
@@ -36,17 +51,25 @@ class JobStore {
     return this.jobs.find((j) => j.id === id)
   }
 
-  /** Insert a job received outside the websocket (e.g. a POST response). */
+  /** Insert a job received outside the websocket (e.g. a POST response).
+   *  Insert-only: once the ws delivered 'created', its stream is authoritative. */
   add(job: Job) {
-    this.upsert(job)
+    if (!this.get(job.id)) this.upsert(job)
   }
 
-  /** Replace the store with a fresh snapshot; called on every (re)connect. */
+  /** Replace the store with a fresh snapshot; called on every (re)connect.
+   *  Events arriving during the fetch are buffered and replayed on top. */
   private async resync() {
+    this.resyncBuffer = []
     try {
-      this.jobs = await apiGet<Job[]>('/jobs')
+      const snapshot = await apiGet<Job[]>('/jobs')
+      const buffered = this.resyncBuffer
+      this.resyncBuffer = null
+      this.jobs = snapshot.map((j) => ({ ...j, log: j.log ?? [] }))
+      for (const event of buffered) this.apply(event)
       this.loadError = ''
     } catch (e) {
+      this.resyncBuffer = null
       this.loadError = `Jobliste konnte nicht geladen werden: ${e}`
     }
   }
@@ -66,22 +89,56 @@ class JobStore {
     }
     ws.onmessage = (msg) => {
       const event = JSON.parse(msg.data)
-      if (event.event === 'created' || event.event === 'finished') {
-        this.upsert(event.job)
-      } else if (event.event === 'progress') {
-        const job = this.get(event.job_id)
-        if (job) job.progress = event.progress
-      } else if (event.event === 'status') {
-        const job = this.get(event.job_id)
-        if (job) job.status = event.status
+      if (this.resyncBuffer !== null) {
+        this.resyncBuffer.push(event)
+        return
       }
+      this.apply(event)
+    }
+  }
+
+  private apply(event: any) {
+    const job = event.job_id ? this.get(event.job_id) : undefined
+    switch (event.event) {
+        case 'created':
+        case 'finished':
+          this.upsert(event.job)
+          break
+        case 'progress':
+          if (job) job.progress = event.progress
+          break
+        case 'status':
+          if (job) job.status = event.status
+          break
+        case 'question':
+          if (job) job.question = event.question
+          break
+        case 'question_answered':
+          if (job) job.question = null
+          break
+        case 'log':
+          if (job) {
+            job.log.push(event.line)
+            if (job.log.length > LOG_CAP) job.log.splice(0, job.log.length - LOG_CAP / 2)
+          }
+          break
+        case 'spectrals_ready':
+          if (job) job.spectrals = event.files
+          break
     }
   }
 
   private upsert(job: Job) {
+    job.log = job.log ?? []
     const idx = this.jobs.findIndex((j) => j.id === job.id)
-    if (idx >= 0) this.jobs[idx] = job
-    else this.jobs.unshift(job)
+    if (idx >= 0) {
+      // Never let a snapshot shrink the live-streamed log.
+      const existing = this.jobs[idx]
+      if (existing.log.length > job.log.length) job.log = existing.log
+      this.jobs[idx] = job
+    } else {
+      this.jobs.unshift(job)
+    }
   }
 }
 

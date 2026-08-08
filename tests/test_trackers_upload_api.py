@@ -41,9 +41,9 @@ class DummyGazelleApi(BaseGazelleApi):
 
 @pytest.fixture(autouse=True)
 def _deterministic_cfg(monkeypatch):
-    """Keep debug output off and neutralize the shared rate limiter."""
+    """Keep debug output off and neutralize the per-instance rate limiter."""
     monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
-    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", AsyncLimiter(100_000, 1))
+    monkeypatch.setattr("salmon.trackers.base.AsyncLimiter", lambda *_a, **_k: AsyncLimiter(100_000, 1))
 
 
 @pytest.fixture

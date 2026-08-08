@@ -186,7 +186,7 @@ async def test_factory_click_abort_sets_friendly_error():
     job = m.create("demo", "Demo", factory)
     await job.task
     assert job.status == "error"
-    assert job.error == "Operation aborted by the underlying tool."
+    assert job.error == "Aborted."
 
 
 async def test_factory_exception_group_single_leaf_is_unwrapped():
@@ -223,7 +223,7 @@ async def test_factory_nested_exception_group_with_abort_prefers_abort_message()
     job = m.create("demo", "Demo", factory)
     await job.task
     assert job.status == "error"
-    assert job.error == "Operation aborted by the underlying tool."
+    assert job.error == "Aborted."
 
 
 async def test_cancel_running_job_sets_cancelled_and_releases_lock():
