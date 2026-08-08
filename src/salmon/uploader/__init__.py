@@ -1058,7 +1058,7 @@ async def upload_and_report(
         "lossy_comment": lossy_comment,
         "request_id": request_id,
         "source_url": source_url,
-        **({"override_description": override_description} if override_description else {}),
+        **({"override_description": override_description} if override_description is not None else {}),
     }
 
     # Execute upload
@@ -1119,6 +1119,6 @@ async def _prompt_source():
         try:
             return SOURCES[sauce.lower()]
         except KeyError:
-            if sauce.lower().startswith("a"):
+            if sauce.strip().lower() in ("a", "abort"):
                 raise click.Abort from None
             click.secho(f"{sauce} is not a valid source.", fg="red")

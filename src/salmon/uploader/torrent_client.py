@@ -53,10 +53,13 @@ class QBittorrentClient(TorrentClient):
         except qbittorrentapi.APIConnectionError:
             click.secho("APIConnectionError: Incorrect host or port", fg="red", bold=True)
             return None
+        except Exception as e:
+            click.secho(f"Connect to qBittorrent failed: {e}", fg="red", bold=True)
+            return None
 
     def add_to_downloader(self, remote_folder, torrent, is_paused, label):
         if not self.client:
-            return None
+            return False
 
         try:
             click.secho("Adding torrent to qBittorrent...", fg="yellow")
@@ -64,9 +67,10 @@ class QBittorrentClient(TorrentClient):
                 torrent_files=torrent, save_path=remote_folder, is_paused=is_paused, category=label
             )
             click.secho("Torrent added successfully", fg="green")
+            return True
         except Exception as e:
             click.secho(f"Failed to add torrent: {e}", fg="red", bold=True)
-            return
+            return False
 
 
 class TransmissionClient(TorrentClient):
@@ -93,21 +97,21 @@ class TransmissionClient(TorrentClient):
 
     def add_to_downloader(self, remote_folder, torrent, is_paused, label):
         if not self.client:
-            return None
+            return False
 
         try:
             click.secho("Adding torrent to Transmission...", fg="yellow")
-            result = self.client.add_torrent(
+            self.client.add_torrent(
                 torrent=torrent,
                 download_dir=remote_folder,
                 paused=is_paused,
                 labels=([label] if label else None),
             )
             click.secho("Torrent added successfully", fg="green")
-            return result
+            return True
         except Exception as e:
             click.secho(f"Failed to add torrent: {e}", fg="red", bold=True)
-            return None
+            return False
 
 
 class DelugeClient(TorrentClient):
@@ -131,7 +135,7 @@ class DelugeClient(TorrentClient):
 
     def add_to_downloader(self, remote_folder, torrent, is_paused, label):
         if not self.client:
-            return None
+            return False
 
         try:
             click.secho("Adding torrent to Deluge...", fg="yellow")
@@ -165,10 +169,10 @@ class DelugeClient(TorrentClient):
                     click.secho(f"Label '{label}' set successfully", fg="green")
 
             click.secho("Torrent added successfully", fg="green")
-            return result
+            return True
         except Exception as e:
             click.secho(f"Failed to add torrent: {e}", fg="red", bold=True)
-            return None
+            return False
 
 
 class RuTorrentClient(TorrentClient):
@@ -185,7 +189,7 @@ class RuTorrentClient(TorrentClient):
 
     def add_to_downloader(self, remote_folder, torrent, is_paused, label):
         if not self.client:
-            return None
+            return False
 
         try:
             click.secho("Adding torrent to ruTorrent...", fg="yellow")
@@ -202,8 +206,10 @@ class RuTorrentClient(TorrentClient):
                 self.client.load.raw_start_verbose("", torrent_bin, *commands)
 
             click.secho("Torrent added successfully", fg="green")
+            return True
         except Exception as e:
             click.secho(f"Failed to add torrent: {e}", fg="red", bold=True)
+            return False
 
 
 TORRENT_CLIENT_MAPPING = {
