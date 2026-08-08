@@ -1,6 +1,9 @@
-"""System endpoints: health, binaries, configuration overview."""
+"""System endpoints: health, binaries, configuration overview, debugging."""
 
 import shutil
+import sys
+import threading
+import traceback
 from importlib.metadata import PackageNotFoundError, version
 
 from fastapi import APIRouter
@@ -9,6 +12,16 @@ from salmon import cfg
 from salmon.config import find_config_path
 
 router = APIRouter(tags=["system"])
+
+
+@router.get("/debug/threads")
+def debug_threads() -> dict:
+    """Stack traces of all threads — for diagnosing hung jobs."""
+    names = {t.ident: t.name for t in threading.enumerate()}
+    return {
+        str(names.get(ident, ident)): traceback.format_stack(frame)
+        for ident, frame in sys._current_frames().items()
+    }
 
 REQUIRED_BINARIES = ["sox", "flac", "lame", "mp3val", "curl"]
 OPTIONAL_BINARIES = ["rclone", "feh", "puddletag"]

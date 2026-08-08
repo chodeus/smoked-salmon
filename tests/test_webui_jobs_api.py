@@ -55,16 +55,20 @@ def client():
 
 
 def join_job(client: TestClient, job_id: str) -> dict:
-    """Wait for a job's asyncio task to finish, then return its final dict."""
+    """Wait for a job (loop task or worker thread) to finish; return its dict."""
+    job = manager.jobs[job_id]
+    if job.thread is not None:
+        job.thread.join(timeout=15)
+        assert not job.thread.is_alive(), f"job {job_id} thread did not finish"
+    else:
 
-    async def _wait() -> None:
-        task = manager.jobs[job_id].task
-        assert task is not None
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        async def _wait() -> None:
+            assert job.task is not None
+            with contextlib.suppress(asyncio.CancelledError):
+                await job.task
 
-    assert client.portal is not None
-    client.portal.call(_wait)
+        assert client.portal is not None
+        client.portal.call(_wait)
     resp = client.get(f"/api/jobs/{job_id}")
     assert resp.status_code == 200
     return resp.json()

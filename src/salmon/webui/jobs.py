@@ -19,6 +19,7 @@ import concurrent.futures
 import contextlib
 import itertools
 import threading
+import time
 import traceback
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -37,6 +38,23 @@ _id_counter = itertools.count(1)
 MAX_FINISHED_JOBS = 200
 SUBSCRIBER_QUEUE_SIZE = 500
 MAX_LOG_LINES = 1000
+PROGRESS_BROADCAST_INTERVAL = 0.2  # seconds; job.progress itself always updates
+
+
+def _make_progress_callback(job: Job, emit: Callable[[dict[str, Any]], None]) -> Callable[[int, int, str], None]:
+    """Update job.progress on every call, but throttle the broadcast: huge
+    jobs (thousands of files) must not flood every websocket subscriber."""
+    last_broadcast = 0.0
+
+    def on_progress(done: int, total: int, desc: str) -> None:
+        nonlocal last_broadcast
+        job.progress = {"done": done, "total": total, "desc": desc}
+        now = time.monotonic()
+        if done >= total or now - last_broadcast >= PROGRESS_BROADCAST_INTERVAL:
+            last_broadcast = now
+            emit({"event": "progress", "job_id": job.id, "progress": job.progress})
+
+    return on_progress
 
 
 class JobConflictError(Exception):
@@ -173,12 +191,8 @@ class JobManager:
             self._broadcast(event)
 
     async def _run(self, job: Job, factory: Callable[[Job], Awaitable[Any]]) -> None:
-        def on_progress(done: int, total: int, desc: str) -> None:
-            job.progress = {"done": done, "total": total, "desc": desc}
-            self._broadcast({"event": "progress", "job_id": job.id, "progress": job.progress})
-
         self._set_status(job, "running")
-        token = set_progress_callback(on_progress)
+        token = set_progress_callback(_make_progress_callback(job, self._broadcast))
         try:
             job.result = await factory(job)
             job.status = "done"
@@ -192,12 +206,8 @@ class JobManager:
             self._broadcast({"event": "finished", "job": job.to_dict()})
 
     def _thread_main(self, job: Job, factory: Callable[[Job], Awaitable[Any]]) -> None:
-        def on_progress(done: int, total: int, desc: str) -> None:
-            job.progress = {"done": done, "total": total, "desc": desc}
-            self._emit({"event": "progress", "job_id": job.id, "progress": job.progress})
-
         interaction_token = set_interaction(job.interaction)
-        progress_token = set_progress_callback(on_progress)
+        progress_token = set_progress_callback(_make_progress_callback(job, self._emit))
         loop = asyncio.new_event_loop()
         job._thread_loop = loop
         try:

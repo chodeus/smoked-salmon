@@ -43,8 +43,9 @@ async def generate(req: GenerateRequest) -> dict:
             "files": files,
         }
 
+    title = f"Spectrals: {os.path.basename(path)}"
     try:
-        job = manager.create("spectrals", f"Spectrals: {os.path.basename(path)}", run, {"path": path}, lock_key=path)
+        job = manager.create_threaded("spectrals", title, run, {"path": path}, lock_key=path)
     except JobConflictError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     return job.to_dict()
@@ -78,5 +79,5 @@ async def upload(req: UploadRequest) -> dict:
         return {"host": host_name, "urls": urls}
 
     title = f"Upload spectrals: {os.path.basename(source_job.result['album_path'])}"
-    job = manager.create("spectrals-upload", title, run, {"job_id": req.job_id, "host": host_name})
+    job = manager.create_threaded("spectrals-upload", title, run, {"job_id": req.job_id, "host": host_name})
     return job.to_dict()

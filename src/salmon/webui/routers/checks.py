@@ -93,5 +93,5 @@ async def run_checks(req: ChecksRequest) -> dict:
         return results
 
     title = f"Checks ({', '.join(req.checks)}): {os.path.basename(path)}"
-    job = manager.create("checks", title, run, {"path": path, "checks": req.checks})
+    job = manager.create_threaded("checks", title, run, {"path": path, "checks": req.checks})
     return job.to_dict()
