@@ -39,7 +39,7 @@ async def transcode(req: TranscodeRequest) -> dict:
 
     title = f"Transcode {req.bitrate}: {os.path.basename(path)}"
     try:
-        job = manager.create("transcode", title, run, {"path": path, "bitrate": req.bitrate}, lock_key=path)
+        job = manager.create_threaded("transcode", title, run, {"path": path, "bitrate": req.bitrate}, lock_key=path)
     except JobConflictError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     return job.to_dict()
@@ -55,7 +55,7 @@ async def downconvert(req: DownconvertRequest) -> dict:
 
     title = f"Downconvert: {os.path.basename(path)}"
     try:
-        job = manager.create("downconvert", title, run, {"path": path}, lock_key=path)
+        job = manager.create_threaded("downconvert", title, run, {"path": path}, lock_key=path)
     except JobConflictError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     return job.to_dict()
