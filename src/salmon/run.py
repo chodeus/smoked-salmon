@@ -9,6 +9,7 @@ import salmon.images
 import salmon.search
 import salmon.tagger
 import salmon.uploader
+import salmon.webui
 from salmon import cfg
 from salmon.common import commandgroup
 from salmon.errors import FilterError, LoginError, UploadError
