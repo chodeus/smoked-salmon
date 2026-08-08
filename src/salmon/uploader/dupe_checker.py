@@ -24,7 +24,6 @@ async def dupe_check_recent_torrents(gazelle_site: "BaseGazelleApi", searchstrs:
     Returns:
         List of matching upload tuples (id, artist, title).
     """
-    searchstr = searchstrs[0]
     recent_uploads = await gazelle_site.get_uploads_from_log()
     # Each upload in this list is best guess at (id,artist,title) from log
     hits = []
@@ -40,9 +39,10 @@ async def dupe_check_recent_torrents(gazelle_site: "BaseGazelleApi", searchstrs:
         artist = [[artist, "main"]]
         possible_comparisons = generate_dupe_check_searchstrs(artist, title)
         ratio = 0
-        for comparison_string in possible_comparisons:
-            new_ratio = SequenceMatcher(None, searchstr, comparison_string).ratio()
-            ratio = max(ratio, new_ratio)
+        for searchstr in searchstrs:
+            for comparison_string in possible_comparisons:
+                new_ratio = SequenceMatcher(None, searchstr, comparison_string).ratio()
+                ratio = max(ratio, new_ratio)
         # Default tolerance is 0.5
         if ratio > cfg.upload.log_dupe_tolerance:
             hits.append(upload)
@@ -116,6 +116,8 @@ async def _prompt_for_recent_upload_results(
             group_id_num = int(group_id)
 
             if group_id_num == 0:
+                if not recent_uploads:
+                    continue
                 group_id_num = 1  # If the user types 0 give them the first choice.
 
             # If user picks from recent uploads list
@@ -187,7 +189,7 @@ async def check_existing_group(
     else:
         print_search_results(gazelle_site, results, " / ".join(searchstrs))
         group_id = await _prompt_for_group_id(gazelle_site, results, offer_deletion)
-    if group_id:
+    if group_id is not None:
         confirmation = await _confirm_group_id(gazelle_site, group_id, results)
         if confirmation is True:
             return group_id
@@ -235,7 +237,7 @@ def _sanitize_album_for_dupe_check(album):
         return ""
     album = RE_FEAT.sub("", album)
     album = re.sub(
-        r"[\(\[][^\)\]]*(Edition|Version|Deluxe|Original|Reissue|Remaster|Vol|Mix|Edit)"
+        r"[\(\[][^\)\]]*\b(Edition|Version|Deluxe|Original|Reissue|Remaster|Vol|Mix|Edit)"
         r"[^\)\]]*[\)\]]",
         "",
         album,
@@ -314,6 +316,8 @@ async def _prompt_for_group_id(
         )
         if group_id.strip().isdigit():
             raw_input = int(group_id)
+            if raw_input == 0 and not results:
+                continue
             list_index = max(0, raw_input - 1)  # 1-based → 0-based, clamp to 0
             if list_index < len(results):
                 return int(results[list_index]["groupId"])

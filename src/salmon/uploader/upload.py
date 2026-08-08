@@ -58,7 +58,8 @@ async def prepare_and_upload(
         Tuple of (torrent_id, group_id, torrent_path, torrent_content).
 
     Raises:
-        SystemExit: If upload fails.
+        UploadError: If the site rejects the upload.
+        RequestError: If the upload request fails.
     """
     if not group_id:
         data = compile_data_new_group(
@@ -277,7 +278,7 @@ def generate_catno(metadata: dict[str, Any]) -> str:
     if metadata.get("catno"):
         return metadata["catno"]
     elif cfg.upload.compression.use_upc_as_catno:
-        return metadata.get("upc", "")
+        return metadata.get("upc") or ""
     return ""
 
 
