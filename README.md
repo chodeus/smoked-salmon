@@ -341,6 +341,12 @@ To rehearse an upload without posting anything — everything is gathered, check
 salmon up /data/path/to/album -s WEB --dry-run
 ```
 
+If the FLAC torrent is already in an existing group, skip re-uploading it and
+select the lower formats to transcode and upload:
+```bash
+salmon up /data/path/to/album -s WEB -g GROUP_ID --skip-flac-upload
+```
+
 To vet an album before deciding whether to upload it at all — every check in one pass, with a single verdict and a non-zero exit when the release is unfit:
 ```bash
 salmon check all /data/path/to/album
