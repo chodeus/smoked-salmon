@@ -60,6 +60,55 @@ def test_rename_files_swap_preserves_content(tmp_path, monkeypatch) -> None:
     assert not list(tmp_path.glob(".salmon-rename-*"))  # no temp files left behind
 
 
+def test_rename_files_does_not_clobber_stale_staging_file(tmp_path, monkeypatch) -> None:
+    # Staging uses a freshly reserved directory, so a leftover ".salmon-rename-*"
+    # file from a crashed run can never be overwritten by a staging move.
+    monkeypatch.setattr(cfg.upload.formatting, "file_template", "{tracknumber}")
+    monkeypatch.setattr(cfg.upload.formatting, "split_multi_disc_into_folders", False)
+
+    (tmp_path / "01.flac").write_text("A")  # tagged track 2 -> target 02.flac
+    (tmp_path / ".salmon-rename-stale").write_text("S")
+
+    tags = {"01.flac": SimpleNamespace(tracknumber="02", discnumber="1")}
+    metadata = {"tracks": {"1": {"1": {"artists": [("Artist", "main")], "title": "Track 1"}}}}
+
+    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert (tmp_path / "02.flac").read_text() == "A"
+    assert (tmp_path / ".salmon-rename-stale").read_text() == "S"
+
+
+def test_rename_files_uppercase_ext_audio_not_moved_as_non_audio(tmp_path, monkeypatch) -> None:
+    # move_non_audio_files compares file.lower().endswith(ext): the stored ext must be
+    # lowercased too, or leftover .FLAC audio in a disc folder is "non-audio" and moved.
+    monkeypatch.setattr(cfg.upload.formatting, "file_template", "{tracknumber}")
+    monkeypatch.setattr(cfg.upload.formatting, "split_multi_disc_into_folders", False)
+
+    for disc in ("CD1", "CD2"):
+        (tmp_path / disc).mkdir()
+        (tmp_path / disc / "01.FLAC").write_text(disc)
+    (tmp_path / "CD1" / "bonus.FLAC").write_text("bonus")  # untracked audio stays put
+
+    tags = {
+        "CD1/01.FLAC": SimpleNamespace(tracknumber="01", discnumber="1"),
+        "CD2/01.FLAC": SimpleNamespace(tracknumber="01", discnumber="2"),
+    }
+    metadata = {
+        "tracks": {
+            "1": {"1": {"artists": [("Artist", "main")], "title": "Track 1"}},
+            "2": {"1": {"artists": [("Artist", "main")], "title": "Track 2"}},
+        }
+    }
+
+    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert (tmp_path / "1.01.flac").read_text() == "CD1"
+    assert (tmp_path / "2.01.flac").read_text() == "CD2"
+    assert (tmp_path / "CD1" / "bonus.FLAC").read_text() == "bonus"
+    assert not (tmp_path / "bonus.FLAC").exists()
+    assert not list(tmp_path.glob("bonus.*.FLAC"))  # not disc-suffixed into the root
+
+
 def test_remap_spectral_ids_does_not_chain():
     # to_rename forms a chain a->b, b->c. Track a's spectral must land on b (its
     # direct target), not be dragged through to c by sequential application.
