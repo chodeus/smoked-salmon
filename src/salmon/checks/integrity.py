@@ -219,7 +219,6 @@ async def _sanitize_flac(path: str) -> bool:
             stderr_text = result.stderr.decode() if result.stderr else ""
             stdout_text = result.stdout.decode() if result.stdout else ""
             raise Exception(f"FLAC encoding failed:\n{stdout_text}\n{stderr_text}")
-        os.remove(backup_path)
         result = await anyio.run_process(
             ["metaflac", "--dont-use-padding", "--remove", "--block-type=PADDING,PICTURE", path],
             check=False,
@@ -232,6 +231,7 @@ async def _sanitize_flac(path: str) -> bool:
         )
         if result.returncode != 0:
             raise Exception("Failed to add FLAC padding")
+        os.remove(backup_path)  # only drop the backup once every step has succeeded
         return True
     except Exception as e:
         click.secho(f"Failed to sanitize {path}, {e}", fg="red", bold=True)
