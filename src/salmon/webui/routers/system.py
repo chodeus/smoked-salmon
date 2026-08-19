@@ -6,7 +6,7 @@ import threading
 import traceback
 from importlib.metadata import PackageNotFoundError, version
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
 
 from salmon import cfg
 from salmon.config import find_config_path
@@ -15,8 +15,10 @@ router = APIRouter(tags=["system"])
 
 
 @router.get("/debug/threads")
-def debug_threads() -> dict:
-    """Stack traces of all threads — for diagnosing hung jobs."""
+def debug_threads(request: Request) -> dict:
+    """Stack traces of all threads — for diagnosing hung jobs. Dev-only."""
+    if not getattr(request.app.state, "dev", False):
+        raise HTTPException(status_code=404, detail="Not found.")
     names = {t.ident: t.name for t in threading.enumerate()}
     return {
         str(names.get(ident, ident)): traceback.format_stack(frame)

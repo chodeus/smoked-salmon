@@ -221,6 +221,14 @@ session = 'get-from-site-cookie'
 
 # static_root_url = "/static"
 
+# REQUIRED to serve on any non-loopback host: a shared password/token. Every
+# request and the websocket must present it (a login screen sets a cookie).
+# Prefer the SALMON_WEB_TOKEN env var (e.g. in Docker) over storing it here.
+# auth_token = "change-me-to-a-long-random-string"
+
+# Optional: lock a LAN bind to specific hostnames/IPs (Host-header allowlist).
+# allowed_hosts = ["10.0.20.11", "salmon.local"]
+
 # [upload.requests]
 # # request handling
 # always_ask_for_request_fill = false

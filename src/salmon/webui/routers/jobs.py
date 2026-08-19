@@ -12,14 +12,29 @@ from salmon.webui.jobs import manager
 
 router = APIRouter(tags=["jobs"])
 
-ALLOWED_WS_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+
+def _host_only(host_header: str) -> str:
+    """Hostname from a Host header, dropping the port and IPv6 brackets."""
+    value = host_header.strip().lower()
+    if value.startswith("["):  # [::1] or [::1]:port
+        return value[1:].split("]", 1)[0]
+    return value.rsplit(":", 1)[0] if ":" in value else value
 
 
-def _origin_allowed(origin: str | None) -> bool:
-    """Reject cross-site websocket connections (any non-localhost Origin)."""
+def _origin_allowed(origin: str | None, host_header: str | None) -> bool:
+    """Allow same-host (any port) browser connections; reject cross-site Origins.
+
+    Comparing the Origin's host to our own Host header keeps the check working
+    at any bind address (localhost, LAN IP) while still blocking a page on
+    another site — without a hardcoded loopback allowlist that broke LAN use.
+    The port is ignored so the Vite dev server (:5173) is accepted locally.
+    """
     if not origin:
         return True  # non-browser clients (curl, scripts) send no Origin
-    return urlparse(origin).hostname in ALLOWED_WS_HOSTS
+    origin_host = urlparse(origin).hostname
+    if origin_host is None or not host_header:
+        return False
+    return origin_host.lower() == _host_only(host_header)
 
 
 @router.get("/jobs")
@@ -69,7 +84,7 @@ async def cancel_job(job_id: str) -> dict:
 
 @router.websocket("/ws")
 async def events(websocket: WebSocket) -> None:
-    if not _origin_allowed(websocket.headers.get("origin")):
+    if not _origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host")):
         await websocket.close(code=1008)
         return
     await websocket.accept()
