@@ -50,10 +50,14 @@ class ImageUploader(BaseStruct):
             raise ValueError("oeimage key not specified")
         if "imgbb" in uploader_selections and self.imgbb_key is None:
             raise ValueError("imgbb key not specified")
+        # RED's rules forbid uploading spectrals to its image host.
+        if self.specs_uploader == "red":
+            raise ValueError("RED's image host does not allow spectral uploads")
 
 
 class TidalSettings(BaseStruct):
-    token: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
     regions: list[str] = msgspec.field(default_factory=lambda: ["de", "nz", "us", "gb"])
 
 
