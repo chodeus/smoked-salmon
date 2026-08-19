@@ -150,7 +150,7 @@ async def _select_choice(
                 for name, source in METASOURCES.items():
                     if source.Scraper.regex.match(stripped):
                         sources.append(name)
-                        tasks.append(source.Scraper().scrape_release(stripped))
+                        tasks.append(handle_scrape_errors(source.Scraper().scrape_release(stripped)))
                         break
             # Handle numeric choices
             elif stripped.strip().isdigit() and int(stripped.strip()) in choices:
