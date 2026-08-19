@@ -666,6 +666,17 @@ def test_print_search_results_skips_malformed_results(fake_tracker, capsys):
     assert " 01 >> 1 | " not in out  # malformed entry produces no partial row
 
 
+def test_print_search_results_skips_result_with_unjoinable_tags(fake_tracker, capsys):
+    # All keys present but tags is None -> ', '.join raises TypeError. The whole row
+    # must be skipped inside the try, not printed partially before the join blows up.
+    bad = make_result(1)
+    bad["tags"] = None
+    print_search_results(fake_tracker, [bad, make_result(100)], "artist album")
+    out = capsys.readouterr().out
+    assert " 02 >> 100 | " in out
+    assert " 01 >> 1 | " not in out
+
+
 def test_print_recent_upload_results_limits_to_five(fake_tracker, capsys):
     uploads = [(i, f"Artist{i}", f"Album{i}") for i in range(1, 8)]
     print_recent_upload_results(fake_tracker, uploads, "artist album")

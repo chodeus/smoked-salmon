@@ -197,15 +197,19 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
             last_copy_hash[(disc_id, track.num)] = track.test_and_copy.copy_hash
     copy_crc_set = set(last_copy_hash.values())
 
-    # Get list of files to check
-    files_to_check: list[str] = []
-    # Walk the log's own directory: for a multi-disc release with a log per disc, the
+    # Prefer the log's own directory: for a multi-disc release with a log per disc, the
     # release root (basepath) would mix other discs' audio and break range-CRC track counts.
-    log_dir = os.path.dirname(logpath)
-    for root, _folders, files_ in os.walk(log_dir):
-        for f in files_:
-            if os.path.splitext(f.lower())[1] in {".flac", ".mp3", ".m4a"}:
-                files_to_check.append(os.path.join(root, f))
+    # But when the log lives in a nested dir (e.g. Album/logs/) it holds no audio, so fall
+    # back to basepath — a combined multi-disc log then hits the >1-TOC skip below anyway.
+    def _find_audio(root_dir: str) -> list[str]:
+        found: list[str] = []
+        for root, _folders, files_ in os.walk(root_dir):
+            for f in files_:
+                if os.path.splitext(f.lower())[1] in {".flac", ".mp3", ".m4a"}:
+                    found.append(os.path.join(root, f))
+        return found
+
+    files_to_check = _find_audio(os.path.dirname(logpath)) or _find_audio(basepath)
 
     if not files_to_check:
         raise ValueError("No audio files found!")

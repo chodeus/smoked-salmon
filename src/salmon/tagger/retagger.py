@@ -370,15 +370,21 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
                 raise UploadError(f"Rename would overwrite existing files: {', '.join(collisions)}")
 
             directory_move_pairs = set()
-            for filename, new_name in to_rename:
+            # Two-phase: stage every source to a unique temp path first, then move each
+            # temp to its final name. A swap (a->b, b->a) or chain (a->b, b->c) passes the
+            # collision check above, and a single-phase os.rename would clobber a source
+            # before its own content moved — losing audio.
+            staged: list[tuple[str, str]] = []
+            for index, (filename, new_name) in enumerate(to_rename):
                 old_dir = os.path.dirname(os.path.join(path, filename))
                 new_dir = os.path.dirname(os.path.join(path, new_name))
-
                 if old_dir != path:
                     directory_move_pairs.add((os.path.splitext(filename)[1], old_dir, new_dir))
-                new_path, new_path_ext = os.path.splitext(os.path.join(path, new_name))
-                new_path = new_path + new_path_ext
-                os.rename(os.path.join(path, filename), new_path)
+                temp_path = os.path.join(path, f".salmon-rename-{os.getpid()}-{index}")
+                os.rename(os.path.join(path, filename), temp_path)
+                staged.append((temp_path, os.path.join(path, new_name)))
+            for temp_path, final_path in staged:
+                os.rename(temp_path, final_path)
 
             if spectral_ids:
                 _remap_spectral_ids(spectral_ids, to_rename)
