@@ -80,7 +80,7 @@ def test_red_reuses_image_auth_until_expired(monkeypatch, tmp_path) -> None:
         red,
         "cfg",
         SimpleNamespace(
-            tracker=SimpleNamespace(red=SimpleNamespace(session="red-session")),
+            tracker=SimpleNamespace(red=SimpleNamespace(session="red-session", keeplogged=None)),
             upload=SimpleNamespace(user_agent="salmon-test"),
         ),
     )
