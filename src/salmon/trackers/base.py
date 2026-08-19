@@ -32,6 +32,7 @@ ARTIST_TYPES = [
     "conductor",
     "djcompiler",
     "producer",
+    "arranger",
 ]
 
 INVERTED_RELEASE_TYPES = {
@@ -286,7 +287,7 @@ class BaseGazelleApi:
             async with (
                 self._rate_limiter,
                 aiohttp.ClientSession(timeout=timeout, cookies=cookies, headers=headers) as session,
-                session.request(method, url, params=params, data=data, max_redirects=2) as resp,
+                session.request(method, url, params=params, data=data, max_redirects=3) as resp,
             ):
                 text = await resp.text()
 
@@ -337,7 +338,8 @@ class BaseGazelleApi:
                 )
         except aiohttp.TooManyRedirects as err:
             click.secho(
-                "Too many redirects. Your cookies may be invalid or expired.",
+                "Too many redirects — check the tracker base_url (e.g. https://redacted.sh, no "
+                "trailing slash) and that your session cookie is still valid.",
                 fg="red",
                 bold=True,
             )
@@ -556,8 +558,10 @@ class BaseGazelleApi:
             return []
         recent_uploads = self.parse_uploads_from_log_html(first_page)
         tasks = [self.fetch_log(i) for i in range(2, max_pages)]
-        for page_text in await asyncio.gather(*tasks):
-            recent_uploads += self.parse_uploads_from_log_html(page_text)
+        # gather does not cancel siblings on error; tolerate a mid-crawl failure (#432)
+        for page_text in await asyncio.gather(*tasks, return_exceptions=True):
+            if isinstance(page_text, str):
+                recent_uploads += self.parse_uploads_from_log_html(page_text)
         return recent_uploads
 
     async def api_key_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:

@@ -43,7 +43,7 @@ class ImageUploader(BaseImageUploader):
                     raise ImageUploadFailed(f"ptscreens returned {resp.status}: {body[:200]}")
                 r = msgspec.json.decode(body)
                 return r["image"]["url"], None
-        except (msgspec.DecodeError, ValueError, KeyError) as e:
+        except (msgspec.DecodeError, ValueError, KeyError, TypeError) as e:
             raise ImageUploadFailed(f"Failed decoding body: {e}") from e
         except aiohttp.ClientError as e:
             raise ImageUploadFailed(f"Network error: {e}") from e
