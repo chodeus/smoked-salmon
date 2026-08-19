@@ -31,10 +31,13 @@ dottorrents_dir = '.torrents'
 # Image hosters: ptpimg, ptscreens, oeimg, imgbb, catbox, imgbox, red
 # Note: red (RED's own image host) authenticates with tracker.red.api_key and
 # cannot be used as specs_uploader, as RED's rules forbid spectrals there.
+# catbox and imgbox need no API key. ptpimg.me is dead — do not use it.
+# In a RED+OPS workflow keep cover_uploader on a neutral host: RED-hosted images
+# only render for logged-in RED users, so they must never land in OPS uploads.
 [image]
-image_uploader = "ptpimg"
-cover_uploader = "ptpimg"
-specs_uploader = "ptpimg"
+image_uploader = "catbox"
+cover_uploader = "catbox"
+specs_uploader = "catbox"
 
 # Default selection for "What spectral IDs would you like to upload?" prompt.
 # "*" = all, "+" = randomized selection, "0" = none. Leave unset to use context-based default.
@@ -221,7 +224,8 @@ session = 'get-from-site-cookie'
 # [upload.requests]
 # # request handling
 # always_ask_for_request_fill = false
-# check_recent_uploads = true
+# # Crawls the site log with your session cookie; leave off unless you need it (#432)
+# check_recent_uploads = false
 # check_requests = true
 # last_minute_dupe_check = false
 
