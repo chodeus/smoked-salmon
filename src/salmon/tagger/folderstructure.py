@@ -140,9 +140,21 @@ def _check_path_lengths(path: str, scene: bool) -> None:
         return click.secho("No paths exceed 180 characters in length.", fg="green")
 
     click.secho("The following exceed 180 characters in length, truncating...", fg="red")
+    renames = []
     for filepath in sorted(offending_files):
         filename, ext = os.path.splitext(filepath)
         newpath = filepath[: 178 - len(filename) - len(ext) * 2 + root_len] + ".." + ext
+        renames.append((filepath, newpath))
+    # os.rename silently overwrites: two names truncating to the same target (or onto
+    # an existing file) would destroy audio — refuse instead.
+    targets = [n for _, n in renames]
+    collisions = sorted({n for n in targets if targets.count(n) > 1 or os.path.exists(n)})
+    if collisions:
+        click.secho("Truncating would overwrite these files; rename them manually:", fg="red", bold=True)
+        for n in collisions:
+            click.echo(f" >> {n}")
+        raise NoncompliantFolderStructure
+    for filepath, newpath in renames:
         os.rename(filepath, newpath)
         click.echo(f" >> {newpath}")
 

@@ -199,6 +199,16 @@ async def sanitize_integrity(path: str, _: int | None = None) -> bool:
     raise click.Abort
 
 
+def _reserve_backup_path(path: str) -> str:
+    """Backup name that won't clobber a stale .corrupted left by a crashed run."""
+    backup_path = path + ".corrupted"
+    counter = 1
+    while os.path.exists(backup_path):
+        backup_path = f"{path}.corrupted.{counter}"
+        counter += 1
+    return backup_path
+
+
 async def _sanitize_flac(path: str) -> bool:
     """Sanitize a FLAC file by re-encoding and cleaning metadata.
 
@@ -208,7 +218,7 @@ async def _sanitize_flac(path: str) -> bool:
     Returns:
         True if sanitization succeeded, False otherwise.
     """
-    backup_path = path + ".corrupted"
+    backup_path = _reserve_backup_path(path)
     try:
         os.rename(path, backup_path)
         result = await anyio.run_process(
@@ -252,7 +262,7 @@ async def _sanitize_mp3(path: str) -> bool:
     Returns:
         True if sanitization succeeded, False otherwise.
     """
-    backup_path = path + ".corrupted"
+    backup_path = _reserve_backup_path(path)
     try:
         os.rename(path, backup_path)
 
