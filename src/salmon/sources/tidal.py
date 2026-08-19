@@ -211,7 +211,7 @@ class TidalBase(BaseScraper):
             doc = await self._get_album_resources(album_id, cc)
             # JSON:API omits `links` on a single page and may omit an empty relationship;
             # index with .get so a one-page album doesn't KeyError into a scrape failure.
-            items_rel = doc["data"]["relationships"].get("items", {})
+            items_rel = doc["data"].get("relationships", {}).get("items", {})
             items = items_rel.get("data", [])
             tracks = {obj["id"]: obj for obj in doc.get("included", []) if obj["type"] == "tracks"}
             album_artists = self._parse_resource_artists(doc["data"], doc.get("included", []))

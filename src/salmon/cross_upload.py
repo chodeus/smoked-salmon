@@ -440,7 +440,13 @@ async def _rehost_red_image(url: str, source_site: "BaseGazelleApi", image_host:
         ):
             if response.status >= 400 or not response.content_type.startswith("image/"):
                 raise click.ClickException(f"Could not download RED image {url} (HTTP {response.status}).")
-            content = await response.read()
+            # Cap the fetch so tracker-supplied metadata can't make us buffer a huge body.
+            max_bytes = 25 * 1024 * 1024  # RED accepts up to 20 MiB
+            if response.content_length is not None and response.content_length > max_bytes:
+                raise click.ClickException(f"RED image {url} is too large ({response.content_length} bytes).")
+            content = await response.content.read(max_bytes + 1)
+            if len(content) > max_bytes:
+                raise click.ClickException(f"RED image {url} exceeds the {max_bytes}-byte limit.")
     except (aiohttp.ClientError, TimeoutError) as error:
         raise click.ClickException(f"Could not download RED image {url}: {error}") from error
 
