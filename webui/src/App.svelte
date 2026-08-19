@@ -13,7 +13,7 @@
   const routes: Record<string, { component: any; label: string }> = {
     '': { component: Dashboard, label: 'Dashboard' },
     upload: { component: Upload, label: 'Upload' },
-    search: { component: Search, label: 'Suche' },
+    search: { component: Search, label: 'Search' },
     spectrals: { component: Spectrals, label: 'Spectrals' },
     convert: { component: Convert, label: 'Convert' },
     checks: { component: Checks, label: 'Checks' },
@@ -143,6 +143,9 @@
     }
     .brand {
       margin-bottom: 0;
+    }
+    main {
+      padding: 1rem;
     }
   }
 </style>

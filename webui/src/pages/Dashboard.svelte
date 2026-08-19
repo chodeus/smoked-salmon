@@ -26,9 +26,9 @@
 <h1>Dashboard</h1>
 
 {#if error}
-  <div class="card"><p class="muted">Backend nicht erreichbar: {error}</p></div>
+  <div class="card"><p class="muted">Backend unreachable: {error}</p></div>
 {:else if !health}
-  <p class="muted">Lade …</p>
+  <p class="muted">Loading …</p>
 {:else}
   <div class="card">
     <h2>smoked-salmon {health.version}</h2>

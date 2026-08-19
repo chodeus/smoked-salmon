@@ -15,7 +15,7 @@
 <div class="row">
   <span class="chip {chipClass[job.status]}">{job.status}</span>
   {#if job.question}
-    <span class="chip warn">wartet auf Antwort</span>
+    <span class="chip warn">waiting for answer</span>
   {/if}
   {#if job.status === 'running' && job.progress}
     <div class="progress grow">

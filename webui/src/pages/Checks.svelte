@@ -6,9 +6,9 @@
 
   const ALL_CHECKS = [
     { key: 'log', label: 'Rip-Log (Score & Checksum)' },
-    { key: 'integrity', label: 'Datei-Integrität' },
-    { key: 'mqa', label: 'MQA-Erkennung' },
-    { key: 'upconvert', label: 'Upconvert-Erkennung' },
+    { key: 'integrity', label: 'File integrity' },
+    { key: 'mqa', label: 'MQA detection' },
+    { key: 'upconvert', label: 'Upconvert detection' },
   ]
 
   let path = $state('')
@@ -61,7 +61,7 @@
       {#if job.result.log}
         <h3>Rip-Logs</h3>
         {#if job.result.log.logs.length === 0}
-          <p class="muted">Keine .log-Dateien gefunden.</p>
+          <p class="muted">No .log files found.</p>
         {:else}
           <table>
             <tbody>
@@ -69,7 +69,7 @@
                 <tr>
                   <td class="mono">{log.file}</td>
                   {#if log.error}
-                    <td><span class="chip err">Fehler</span> <span class="muted">{log.error}</span></td>
+                    <td><span class="chip err">Error</span> <span class="muted">{log.error}</span></td>
                   {:else}
                     <td>
                       <span class="chip {log.score === 100 ? 'ok' : 'warn'}">Score {log.score}</span>
@@ -116,7 +116,7 @@
       {#if job.result.upconvert}
         <h3>Upconvert</h3>
         {#if job.result.upconvert.files.length === 0}
-          <p class="muted">Keine 24bit-FLACs gefunden.</p>
+          <p class="muted">No 24-bit FLACs found.</p>
         {:else}
           <table>
             <tbody>

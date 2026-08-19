@@ -121,3 +121,12 @@ th { color: var(--text-dim); font-weight: 600; }
 .muted { color: var(--text-dim); }
 .row { display: flex; gap: 0.6rem; align-items: center; }
 .grow { flex: 1; }
+
+@media (max-width: 700px) {
+  /* Inputs under 16px make iOS Safari zoom the whole page on focus. */
+  input[type='text'], select { font-size: 16px; }
+  /* Scroll wide tables rather than squashing them; every table sits in a .card. */
+  .card table { display: block; overflow-x: auto; white-space: nowrap; }
+  .btn { padding: 0.6rem 1rem; }
+  .btn.small { padding: 0.45rem 0.8rem; }
+}
