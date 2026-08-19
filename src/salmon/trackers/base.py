@@ -13,6 +13,7 @@ from aiohttp import FormData
 from aiolimiter import AsyncLimiter
 from bs4 import BeautifulSoup
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
+from yarl import URL
 
 from salmon import cfg
 from salmon.common import UploadFiles
@@ -44,12 +45,13 @@ INVERTED_RELEASE_TYPES = {
 }
 
 _SENSITIVE_KEYS = re.compile(
-    r'"(authkey|passkey|auth|api_key|Authorization)"\s*:\s*"[^"]*"',
+    r'"(authkey|passkey|auth|api_key|Authorization|session|keeplogged)"\s*:\s*"[^"]*"',
     re.IGNORECASE,
 )
-# Same secrets as they appear in HTML/URLs (download links carry authkey/torrent_pass).
+# Same secrets as they appear in HTML/URLs/cookie headers (download links carry
+# authkey/torrent_pass; Cookie/Set-Cookie carry session/keeplogged).
 _SENSITIVE_URL_PARAMS = re.compile(
-    r"\b(authkey|passkey|torrent_pass|auth|api_key)=[^&\"'\s<>]+",
+    r"\b(authkey|passkey|torrent_pass|auth|api_key|session|keeplogged)=[^&\"'\s<>]+",
     re.IGNORECASE,
 )
 
@@ -292,58 +294,68 @@ class BaseGazelleApi:
 
         try:
             timeout = aiohttp.ClientTimeout(total=timeout_secs)
-            async with (
-                self._rate_limiter,
-                aiohttp.ClientSession(timeout=timeout, cookies=cookies, headers=headers) as session,
-                session.request(method, url, params=params, data=data, max_redirects=3) as resp,
-            ):
-                text = await resp.text()
+            async with self._rate_limiter, aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                # Jar-scope cookies to the tracker host so a cross-origin redirect can't
+                # carry them (aiohttp itself strips Authorization/Cookie headers there).
+                if cookies:
+                    session.cookie_jar.update_cookies(cookies, response_url=URL(self.base_url))
+                async with session.request(method, url, params=params, data=data, max_redirects=3) as resp:
+                    text = await resp.text()
 
-                if cfg.upload.debug_tracker_connection:
-                    click.secho(f"[DEBUG] status: {resp.status}", fg="cyan")
-                    click.secho(
-                        f"[DEBUG] response headers: {_redact(msgspec.json.encode(dict(resp.headers)).decode())}",
-                        fg="cyan",
-                    )
-                    click.secho(f"[DEBUG] response body: {_redact(text)}", fg="green")
+                    # An off-origin hop is hostile or badly broken — refuse the response.
+                    expected_origin = URL(url).origin()
+                    if resp.history and (
+                        any(h.url.origin() != expected_origin for h in resp.history)
+                        or resp.url.origin() != expected_origin
+                    ):
+                        raise RequestFailedError(f"{self.site_string} redirected off-origin; refusing response.")
 
-                if not resp.ok:
-                    error_msg = text
-                    with suppress(msgspec.DecodeError, ValueError):
-                        error_msg = msgspec.json.encode(msgspec.json.decode(text)["error"]).decode()
-
-                    if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
-                        retry_after = float(resp.headers.get("Retry-After", "20"))
-                        click.secho(f"Rate limit exceeded, waiting {retry_after} seconds...", fg="yellow")
-                        await asyncio.sleep(retry_after)
-                        raise RetryableError("Rate limit exceeded")
-
-                    if resp.status == HTTPStatus.UNAUTHORIZED:
+                    if cfg.upload.debug_tracker_connection:
+                        click.secho(f"[DEBUG] status: {resp.status}", fg="cyan")
                         click.secho(
-                            f"Authentication to {self.site_string} failed: {error_msg}.\nYour API key may be invalid.",
+                            f"[DEBUG] response headers: {_redact(msgspec.json.encode(dict(resp.headers)).decode())}",
+                            fg="cyan",
+                        )
+                        click.secho(f"[DEBUG] response body: {_redact(text)}", fg="green")
+
+                    if not resp.ok:
+                        error_msg = text
+                        with suppress(msgspec.DecodeError, ValueError):
+                            error_msg = msgspec.json.encode(msgspec.json.decode(text)["error"]).decode()
+
+                        if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
+                            retry_after = float(resp.headers.get("Retry-After", "20"))
+                            click.secho(f"Rate limit exceeded, waiting {retry_after} seconds...", fg="yellow")
+                            await asyncio.sleep(retry_after)
+                            raise RetryableError("Rate limit exceeded")
+
+                        if resp.status == HTTPStatus.UNAUTHORIZED:
+                            click.secho(
+                                f"Authentication to {self.site_string} failed: {error_msg}.\n"
+                                "Your API key may be invalid.",
+                                fg="red",
+                            )
+                            raise LoginError(error_msg)
+
+                        if resp.status in (
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                            HTTPStatus.BAD_GATEWAY,
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                            HTTPStatus.GATEWAY_TIMEOUT,
+                        ):
+                            raise RetryableError(f"Server error {resp.status}, retrying...")
+
+                        click.secho(
+                            f"Request to {self.site_string} failed ({resp.status}): {error_msg}",
                             fg="red",
                         )
-                        raise LoginError(error_msg)
+                        raise RequestFailedError(error_msg)
 
-                    if resp.status in (
-                        HTTPStatus.INTERNAL_SERVER_ERROR,
-                        HTTPStatus.BAD_GATEWAY,
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        HTTPStatus.GATEWAY_TIMEOUT,
-                    ):
-                        raise RetryableError(f"Server error {resp.status}, retrying...")
-
-                    click.secho(
-                        f"Request to {self.site_string} failed ({resp.status}): {error_msg}",
-                        fg="red",
+                    return HttpResponse(
+                        text=text,
+                        url=str(resp.url),
+                        status=resp.status,
                     )
-                    raise RequestFailedError(error_msg)
-
-                return HttpResponse(
-                    text=text,
-                    url=str(resp.url),
-                    status=resp.status,
-                )
         except aiohttp.TooManyRedirects as err:
             click.secho(
                 "Too many redirects — check the tracker base_url (e.g. https://redacted.sh, no "

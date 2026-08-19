@@ -87,11 +87,12 @@ def http(text="", url="https://dummy.example/x", status=200):
 
 
 class FakeAiohttpResponse:
-    def __init__(self, text="", status=200, url="https://dummy.example/x", headers=None):
+    def __init__(self, text="", status=200, url: Any = "https://dummy.example/x", headers=None, history=()):
         self._text = text
         self.status = status
         self.url = url
         self.headers = headers or {}
+        self.history = tuple(history)
 
     @property
     def ok(self):
@@ -119,13 +120,18 @@ def install_fake_aiohttp(monkeypatch, outcomes):
 
     Each outcome is a FakeAiohttpResponse to serve or an Exception to raise.
     The last outcome repeats. Returns a capture dict with the session
-    constructor kwargs and the individual request calls.
+    constructor kwargs, cookie-jar seedings, and the individual request calls.
     """
-    captured = {"sessions": [], "requests": []}
+    captured = {"sessions": [], "requests": [], "cookie_jars": []}
+
+    class FakeCookieJar:
+        def update_cookies(self, cookies, response_url=None):
+            captured["cookie_jars"].append({"cookies": dict(cookies), "response_url": str(response_url)})
 
     class FakeClientSession:
         def __init__(self, **kwargs):
             captured["sessions"].append(kwargs)
+            self.cookie_jar = FakeCookieJar()
 
         async def __aenter__(self):
             return self
@@ -314,10 +320,11 @@ async def test_request_with_api_key_uses_authorization_header_and_no_cookie(api,
 
     session_kwargs = captured["sessions"][0]
     assert session_kwargs["headers"]["Authorization"] == "secret-api-key"
-    assert session_kwargs["cookies"] == {}
+    assert "cookies" not in session_kwargs  # cookies go through the jar, scoped to the tracker
+    assert captured["cookie_jars"] == []  # api-key mode sends no cookie at all
 
 
-async def test_request_without_api_key_uses_session_cookie(api, monkeypatch):
+async def test_request_without_api_key_scopes_session_cookie_to_tracker(api, monkeypatch):
     captured = install_fake_aiohttp(monkeypatch, [FakeAiohttpResponse(text="ok")])
     api._authenticated = True
     api.api_key = ""
@@ -325,7 +332,11 @@ async def test_request_without_api_key_uses_session_cookie(api, monkeypatch):
     await api._request("GET", "https://dummy.example/ajax.php", prefer_api_key=True)
 
     session_kwargs = captured["sessions"][0]
-    assert session_kwargs["cookies"] == {"session": "test-cookie"}
+    # Jar-scoped to the tracker origin so a cross-origin redirect can't carry it.
+    assert "cookies" not in session_kwargs
+    assert captured["cookie_jars"] == [
+        {"cookies": {"session": "test-cookie"}, "response_url": "https://dummy.example"}
+    ]
     assert "Authorization" not in session_kwargs["headers"]
 
 
@@ -841,3 +852,37 @@ async def test_label_rls_fetches_every_page_exactly_once(api):
     # Every page exactly once: no last-page skip, no duplicate page-1 fetch.
     assert sorted(pages_called) == [1, 2, 3]
     assert [r.url for r in releases] == [f"{api.base_url}/torrents.php?id={n}" for n in (1, 2, 3)]
+
+
+async def test_request_refuses_off_origin_redirect(api, monkeypatch):
+    from yarl import URL
+
+    hop = FakeAiohttpResponse(url=URL("https://dummy.example/torrents.php"))
+    final = FakeAiohttpResponse(text="pwned", url=URL("https://evil.example/login"), history=(hop,))
+    install_fake_aiohttp(monkeypatch, [final])
+    api._authenticated = True
+
+    with pytest.raises(RequestFailedError, match="off-origin"):
+        await api._request("GET", "https://dummy.example/ajax.php")
+
+
+async def test_request_same_origin_redirect_is_allowed(api, monkeypatch):
+    from yarl import URL
+
+    hop = FakeAiohttpResponse(url=URL("https://dummy.example/torrents.php?torrentid=1"))
+    final = FakeAiohttpResponse(text="ok", url=URL("https://dummy.example/torrents.php?id=2"), history=(hop,))
+    install_fake_aiohttp(monkeypatch, [final])
+    api._authenticated = True
+
+    resp = await api._request("GET", "https://dummy.example/ajax.php")
+    assert resp.text == "ok"
+
+
+def test_redact_masks_cookie_credentials():
+    set_cookie = "Set-Cookie: session=abc123; Path=/; HttpOnly"
+    assert "abc123" not in _redact(set_cookie)
+
+    json_headers = '{"Set-Cookie": "keeplogged=deadbeef; expires=never", "session": "s3cr3t"}'
+    redacted = _redact(json_headers)
+    assert "deadbeef" not in redacted
+    assert "s3cr3t" not in redacted

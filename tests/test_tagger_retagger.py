@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
+import pytest
+
 from salmon import cfg
+from salmon.errors import UploadError
 from salmon.tagger.retagger import _remap_spectral_ids, move_non_audio_files, rename_files
 
 
@@ -58,6 +61,41 @@ def test_rename_files_swap_preserves_content(tmp_path, monkeypatch) -> None:
     assert (tmp_path / "01.flac").read_text() == "B"
     assert (tmp_path / "02.flac").read_text() == "A"
     assert not list(tmp_path.glob(".salmon-rename-*"))  # no temp files left behind
+
+
+def test_rename_files_refuses_target_onto_untracked_file(tmp_path, monkeypatch) -> None:
+    # A file on disk but absent from tags would be overwritten in phase 2 if a
+    # target lands on its name — the collision check must refuse up front.
+    monkeypatch.setattr(cfg.upload.formatting, "file_template", "{tracknumber}")
+    monkeypatch.setattr(cfg.upload.formatting, "split_multi_disc_into_folders", False)
+
+    (tmp_path / "01.flac").write_text("A")  # tagged track 2 -> target 02.flac
+    (tmp_path / "02.flac").write_text("UNTRACKED")  # exists on disk, not in tags
+
+    tags = {"01.flac": SimpleNamespace(tracknumber="02", discnumber="1")}
+    metadata = {"tracks": {"1": {"1": {"artists": [("Artist", "main")], "title": "Track 1"}}}}
+
+    with pytest.raises(UploadError):
+        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert (tmp_path / "01.flac").read_text() == "A"
+    assert (tmp_path / "02.flac").read_text() == "UNTRACKED"
+
+
+def test_rename_files_case_only_rename_is_not_a_collision(tmp_path, monkeypatch) -> None:
+    # On a case-insensitive fs the target "01.flac" resolves to the source
+    # "01.FLAC" itself; that file vacates in phase 1 and must not be refused.
+    monkeypatch.setattr(cfg.upload.formatting, "file_template", "{tracknumber}")
+    monkeypatch.setattr(cfg.upload.formatting, "split_multi_disc_into_folders", False)
+
+    (tmp_path / "01.FLAC").write_text("A")
+
+    tags = {"01.FLAC": SimpleNamespace(tracknumber="01", discnumber="1")}
+    metadata = {"tracks": {"1": {"1": {"artists": [("Artist", "main")], "title": "Track 1"}}}}
+
+    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert (tmp_path / "01.flac").read_text() == "A"
 
 
 def test_rename_files_does_not_clobber_stale_staging_file(tmp_path, monkeypatch) -> None:

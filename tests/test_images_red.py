@@ -27,10 +27,19 @@ class _Response:
         return msgspec.json.encode(self.payload).decode()
 
 
+class _CookieJar:
+    def __init__(self):
+        self.seeded: list[tuple[dict, str]] = []
+
+    def update_cookies(self, cookies, response_url=None):
+        self.seeded.append((dict(cookies), str(response_url)))
+
+
 class _Session:
     def __init__(self, number: int, **kwargs):
         self.number = number
         self.kwargs = kwargs
+        self.cookie_jar = _CookieJar()
         self.calls: list[tuple[str, str, dict]] = []
 
     async def __aenter__(self):
@@ -108,4 +117,8 @@ def test_red_reuses_image_auth_until_expired(monkeypatch, tmp_path) -> None:
     assert sessions[0].calls == expected_calls
     assert sessions[1].calls == expected_calls[1:2]
     assert sessions[2].calls == expected_calls[1:]
-    assert all(session.kwargs["cookies"] == {"session": "red-session"} for session in sessions)
+    # Cookies are jar-scoped to RED (not session-wide) so redirects can't leak them.
+    assert all("cookies" not in session.kwargs for session in sessions)
+    assert all(
+        session.cookie_jar.seeded == [({"session": "red-session"}, red.BASE_URL)] for session in sessions
+    )
