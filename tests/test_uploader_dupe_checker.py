@@ -662,8 +662,8 @@ def test_print_search_results_skips_malformed_results(fake_tracker, capsys):
     malformed = {"groupId": 1}  # missing artist/groupName/etc.
     print_search_results(fake_tracker, [malformed, make_result(100)], "artist album")
     out = capsys.readouterr().out
-    assert " 02 >> 100 | " in out  # index is preserved, bad entry silently skipped
-    assert " 01 >> 1 | " in out  # partial print of the malformed entry before the KeyError
+    assert " 02 >> 100 | " in out  # index preserved for the valid entry
+    assert " 01 >> 1 | " not in out  # malformed entry produces no partial row
 
 
 def test_print_recent_upload_results_limits_to_five(fake_tracker, capsys):
