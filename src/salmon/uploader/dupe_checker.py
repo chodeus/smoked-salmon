@@ -278,15 +278,18 @@ def print_search_results(gazelle_site: "BaseGazelleApi", results: list[dict], se
         )
         click.secho(f" (searchstrs: {searchstr})", bold=True)
         for r_index, r in enumerate(results):
+            # Read every field first so a malformed result is skipped whole, not printed
+            # as a partial row before a missing field raises.
             try:
-                url = f"{gazelle_site.base_url}/torrents.php?id={r['groupId']}"
-                # User doesn't get to pick a zero index
-                click.echo(f" {r_index + 1:02d} >> {r['groupId']} | ", nl=False)
-                click.secho(f"{r['artist']} - {r['groupName']} ", fg="cyan", nl=False)
-                click.secho(f"({r['groupYear']}) [{r['releaseType']}] ", fg="yellow", nl=False)
-                click.echo(f"[Tags: {', '.join(r['tags'])}] | {url}")
+                group_id, artist, name = r["groupId"], r["artist"], r["groupName"]
+                year, release_type, tags = r["groupYear"], r["releaseType"], r["tags"]
             except (KeyError, TypeError):
                 continue
+            url = f"{gazelle_site.base_url}/torrents.php?id={group_id}"
+            click.echo(f" {r_index + 1:02d} >> {group_id} | ", nl=False)  # 1-based; user can't pick 0
+            click.secho(f"{artist} - {name} ", fg="cyan", nl=False)
+            click.secho(f"({year}) [{release_type}] ", fg="yellow", nl=False)
+            click.echo(f"[Tags: {', '.join(tags)}] | {url}")
 
 
 async def _prompt_for_group_id(
