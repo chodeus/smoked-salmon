@@ -17,6 +17,7 @@ import msgspec
 from salmon import cfg
 from salmon.errors import ImageUploadFailed
 from salmon.images.base import BaseImageUploader
+from salmon.trackers.base import _build_tracker_cookies
 
 BASE_URL = "https://redacted.sh"
 AJAX_URL = f"{BASE_URL}/ajax.php"
@@ -49,7 +50,9 @@ class ImageUploader(BaseImageUploader):
             file_data = await file_handle.read()
 
         headers = {"User-Agent": cfg.upload.user_agent}
-        cookies = {"session": red_settings.session}
+        # Normalize like tracker requests: a raw cookie with / + : = gets quoted by
+        # aiohttp and RED rejects it. Also carries keeplogged when configured.
+        cookies = _build_tracker_cookies(red_settings.session, red_settings.keeplogged)
 
         try:
             async with aiohttp.ClientSession(headers=headers, cookies=cookies) as session:
