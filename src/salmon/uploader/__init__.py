@@ -30,7 +30,14 @@ from salmon.converter.transcoding import (
     generate_transcode_description,
     transcode_folder,
 )
-from salmon.errors import AbortAndDeleteFolder, CRCMismatchError, EditedLogError, InvalidMetadataError, RequestError
+from salmon.errors import (
+    AbortAndDeleteFolder,
+    CRCMismatchError,
+    DryRunComplete,
+    EditedLogError,
+    InvalidMetadataError,
+    RequestError,
+)
 from salmon.images import upload_cover
 from salmon.tagger import (
     metadata_validator_base,
@@ -165,6 +172,11 @@ if TYPE_CHECKING:
 )
 @click.option("-yyy", is_flag=True, help="Automatically pick the default answer for prompt")
 @click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Validate the upload without sending it (RED does a server-side dry run; OPS builds locally only).",
+)
+@click.option(
     "--skip-mqa",
     is_flag=True,
     help="Skip check for MQA marker (on first file only)",
@@ -204,6 +216,7 @@ async def up(
     skip_initial_review: bool,
     apply_ai_suggestions: bool,
     yyy: bool,
+    dry_run: bool,
     skip_mqa: bool,
     skip_log_check: bool,
     skip_integrity_check: bool,
@@ -215,6 +228,9 @@ async def up(
     if yyy:
         cfg.upload.yes_all = True
     gazelle_site = salmon.trackers.get_class(tracker)()
+    gazelle_site.dry_run = dry_run
+    if dry_run:
+        click.secho("\n=== DRY RUN — validating only, nothing will be uploaded ===", fg="cyan", bold=True)
     if request:
         request = salmon.trackers.validate_request(gazelle_site, request)
         # This is isn't handled by click because we need the tracker sorted first.
@@ -232,29 +248,32 @@ async def up(
         await confirm_group_upload(gazelle_site, group_id, source)
     if source_url:
         source_url = source_url.strip()
-    await upload(
-        gazelle_site,
-        path,
-        group_id,
-        source,
-        lossy,
-        spectrals,
-        encoding,
-        source_url=source_url,
-        scene=scene,
-        overwrite_meta=overwrite,
-        recompress=compress,
-        request_id=request,
-        spectrals_after=spectrals_after,
-        auto_rename=auto_rename,
-        skip_up=skip_up,
-        skip_mqa=skip_mqa,
-        skip_log_check=skip_log_check,
-        skip_integrity_check=skip_integrity_check,
-        essential_only=essential_only,
-        skip_initial_review=skip_initial_review,
-        apply_ai_suggestions=apply_ai_suggestions,
-    )
+    try:
+        await upload(
+            gazelle_site,
+            path,
+            group_id,
+            source,
+            lossy,
+            spectrals,
+            encoding,
+            source_url=source_url,
+            scene=scene,
+            overwrite_meta=overwrite,
+            recompress=compress,
+            request_id=request,
+            spectrals_after=spectrals_after,
+            auto_rename=auto_rename,
+            skip_up=skip_up,
+            skip_mqa=skip_mqa,
+            skip_log_check=skip_log_check,
+            skip_integrity_check=skip_integrity_check,
+            essential_only=essential_only,
+            skip_initial_review=skip_initial_review,
+            apply_ai_suggestions=apply_ai_suggestions,
+        )
+    except DryRunComplete as tracker_name:
+        click.secho(f"\nDry run complete ({tracker_name}). No torrents were uploaded.", fg="cyan", bold=True)
 
 
 async def upload(

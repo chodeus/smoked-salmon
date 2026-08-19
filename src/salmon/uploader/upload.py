@@ -9,6 +9,7 @@ from torf import Torrent
 from salmon import cfg
 from salmon.common import UploadFiles, str_to_int_if_int
 from salmon.constants import ARTIST_IMPORTANCES
+from salmon.errors import DryRunComplete
 from salmon.release_notification import get_version
 from salmon.sources import SOURCE_ICONS
 from salmon.tagger.sources import METASOURCES
@@ -93,6 +94,10 @@ async def prepare_and_upload(
     await gazelle_site.ensure_authenticated()
     torrent_path, torrent_content = generate_torrent(gazelle_site, path)
     files = await compile_files(path, torrent_content, metadata)
+
+    if getattr(gazelle_site, "dry_run", False):
+        await gazelle_site.dry_run_upload(data, files)
+        raise DryRunComplete(gazelle_site.site_string)
 
     click.secho("Uploading torrent...", fg="yellow")
     torrent_id, group_id = await gazelle_site.upload(data, files)
