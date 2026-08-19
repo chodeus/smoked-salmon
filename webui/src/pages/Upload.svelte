@@ -108,25 +108,25 @@
       <label>
         Source
         <select bind:value={source}>
-          <option value="">— fragen —</option>
+          <option value="">— ask —</option>
           {#each sources as s}<option value={s}>{s}</option>{/each}
         </select>
       </label>
       <label>
         Lossy Master
         <select bind:value={lossy}>
-          <option value="auto">automatisch prüfen</option>
-          <option value="yes">ja</option>
-          <option value="no">nein</option>
+          <option value="auto">check automatically</option>
+          <option value="yes">yes</option>
+          <option value="no">no</option>
         </select>
       </label>
       <label>
         Group-ID (optional)
-        <input type="text" bind:value={groupId} placeholder="bestehende Gruppe" />
+        <input type="text" bind:value={groupId} placeholder="existing group" />
       </label>
       <label>
         Request (optional)
-        <input type="text" bind:value={request} placeholder="Request-URL oder ID" />
+        <input type="text" bind:value={request} placeholder="Request URL or ID" />
       </label>
       <label>
         Source-URL (optional, WEB)
@@ -155,7 +155,7 @@
     <div class="row">
       <h2 class="grow" style="margin: 0">{activeJob.title}</h2>
       {#if activeJob.status === 'running'}
-        <button class="btn small secondary" onclick={cancel}>Abbrechen</button>
+        <button class="btn small secondary" onclick={cancel}>Cancel</button>
       {/if}
     </div>
     <JobStatus job={activeJob} />
@@ -168,7 +168,7 @@
 <style>
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
     gap: 0.6rem 1rem;
     margin-top: 0.7rem;
   }

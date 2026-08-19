@@ -69,7 +69,7 @@
   }
 </script>
 
-<h1>Metadaten-Suche</h1>
+<h1>Metadata search</h1>
 
 <div class="card">
   <form
@@ -80,7 +80,7 @@
     }}
   >
     <input type="text" class="grow" bind:value={query} placeholder="Artist Album …" />
-    <button class="btn" disabled={searching}>{searching ? 'Suche …' : 'Suchen'}</button>
+    <button class="btn" disabled={searching}>{searching ? 'Searching …' : 'Search'}</button>
   </form>
 </div>
 
@@ -91,7 +91,7 @@
 {#if results}
   {@const anyHits = Object.values(results.sources).some((s) => s.releases.length > 0)}
   {#if !anyHits}
-    <div class="card"><p class="muted">Keine Treffer für „{results.query}".</p></div>
+    <div class="card"><p class="muted">No matches for "{results.query}".</p></div>
   {/if}
   {#each Object.entries(results.sources) as [source, data]}
     {#if data.releases.length > 0}
@@ -106,7 +106,7 @@
                 <td class="muted">{rls.track_count ? `${rls.track_count} Tracks` : ''}</td>
                 <td>
                   <a href={rls.url} target="_blank" rel="noreferrer">Link</a>
-                  <button class="btn small secondary" onclick={() => loadMetadata(rls.url)}>Metadaten</button>
+                  <button class="btn small secondary" onclick={() => loadMetadata(rls.url)}>Metadata</button>
                 </td>
               </tr>
             {/each}
@@ -120,10 +120,10 @@
 {/if}
 
 {#if metaLoading}
-  <div class="card"><p class="muted">Lade Metadaten von {metaUrl} …</p></div>
+  <div class="card"><p class="muted">Loading metadata from {metaUrl} …</p></div>
 {:else if metaData}
   <div class="card">
-    <h2>Release-Metadaten</h2>
+    <h2>Release metadata</h2>
     {#if metaData.error}
       <p class="muted">{metaData.error}</p>
     {:else}

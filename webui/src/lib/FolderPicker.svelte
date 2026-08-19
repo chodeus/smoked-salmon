@@ -45,8 +45,8 @@
     <div class="listing card">
       <div class="row">
         <span class="mono grow">{listing.path}</span>
-        <span class="muted">{listing.audio_files.length} Audio-Dateien</span>
-        <button class="btn small" onclick={() => select()}>„{shortName(listing.path)}" auswählen</button>
+        <span class="muted">{listing.audio_files.length} audio files</span>
+        <button class="btn small" onclick={() => select()}>Select "{shortName(listing.path)}"</button>
         <button class="btn small secondary" onclick={() => (browsing = false)}>Schließen</button>
       </div>
       <ul>
@@ -56,7 +56,7 @@
         {#each listing.dirs as dir}
           <li>
             <button class="nav" onclick={() => open(dir.path)}>{dir.name}/</button>
-            <button class="pick" title="Diesen Ordner auswählen" onclick={() => select(dir.path)}>wählen</button>
+            <button class="pick" title="Select this folder" onclick={() => select(dir.path)}>select</button>
           </li>
         {/each}
       </ul>

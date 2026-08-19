@@ -50,7 +50,7 @@
     {:else if job.question.kind === 'edit'}
       <textarea bind:value={editText} rows={Math.min(20, Math.max(6, editText.split('\n').length + 1))}></textarea>
       <div class="row" style="margin-top: 0.5rem">
-        <button class="btn" disabled={sending} onclick={() => send(editText)}>Speichern</button>
+        <button class="btn" disabled={sending} onclick={() => send(editText)}>Save</button>
         <button class="btn secondary" disabled={sending} onclick={() => send(null)}>Unverändert lassen</button>
       </div>
     {:else}
@@ -68,7 +68,7 @@
           send(text)
         }}
       >
-        <input type="text" class="grow mono" bind:value={text} placeholder="Antwort …" />
+        <input type="text" class="grow mono" bind:value={text} placeholder="Answer …" />
         <button class="btn" disabled={sending}>Senden</button>
       </form>
     {/if}
