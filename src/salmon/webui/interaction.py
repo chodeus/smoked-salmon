@@ -33,6 +33,10 @@ if TYPE_CHECKING:
 
 _question_counter = itertools.count(1)
 
+# An unanswered browser question must not block its worker thread forever
+# (there is no TTY to fall back to). Long enough for a human to review spectrals.
+QUESTION_TIMEOUT_SECONDS = 30 * 60
+
 _current: contextvars.ContextVar[WebInteraction | None] = contextvars.ContextVar("web_interaction", default=None)
 
 
@@ -115,10 +119,13 @@ class WebInteraction:
         self.emit({"event": "question_answered", "question_id": question_id})
 
     def ask_sync(self, kind: str, text: str, **kw: Any) -> Any:
-        """Ask from synchronous code; blocks the job thread until answered."""
+        """Ask from synchronous code; blocks the job thread until answered or timeout."""
         question_id, future = self._begin(kind, text, **kw)
         try:
-            return future.result()
+            return future.result(timeout=QUESTION_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError as e:
+            self.log("No answer received in time; aborting this job.")
+            raise asyncclick.Abort() from e
         finally:
             self._finish(question_id)
 

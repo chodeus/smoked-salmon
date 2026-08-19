@@ -3,8 +3,8 @@
 import asyncio
 import os
 
+import asyncclick as click
 import cambia
-import click
 import msgspec
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -13,7 +13,7 @@ from salmon.checks.integrity import check_integrity
 from salmon.checks.mqa import check_mqa
 from salmon.checks.upconverts import check_upconvert
 from salmon.common.files import get_audio_files
-from salmon.webui.jobs import Job, manager
+from salmon.webui.jobs import Job, JobCapacityError, manager
 from salmon.webui.validation import validate_album_dir
 
 router = APIRouter(tags=["checks"])
@@ -92,5 +92,8 @@ async def run_checks(req: ChecksRequest) -> dict:
         return results
 
     title = f"Checks ({', '.join(req.checks)}): {os.path.basename(path)}"
-    job = manager.create_threaded("checks", title, run, {"path": path, "checks": req.checks})
+    try:
+        job = manager.create_threaded("checks", title, run, {"path": path, "checks": req.checks})
+    except JobCapacityError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
     return job.to_dict()
