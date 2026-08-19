@@ -168,21 +168,23 @@ async def _handle_failed_spectrals(spectrals, successful) -> dict:
     Returns:
         Dictionary of uploaded URLs.
     """
+    # RED's rules forbid spectrals on its image host, so it is never a spectral option.
+    spec_hosts = {k: v for k, v in HOSTS.items() if k != "red"}
     while True:
         host_input: str = await click.prompt(
             click.style(
                 "Some spectrals failed to upload. Which image host would you like to retry "
-                f"with? (Options: {', '.join(HOSTS.keys())})",
+                f"with? (Options: {', '.join(spec_hosts)})",
                 fg="magenta",
                 bold=True,
             ),
             default="catbox",
         )
         host = host_input.lower()
-        if host not in HOSTS:
+        if host not in spec_hosts:
             click.secho(f"{host} is an invalid image host. Please choose another one.", fg="red")
         else:
-            return await upload_spectrals(spectrals, uploader=HOSTS[host], successful=successful)
+            return await upload_spectrals(spectrals, uploader=spec_hosts[host], successful=successful)
 
 
 async def _spectrals_handler(spec_id, filename, spectral_paths, uploader_instance):
