@@ -498,6 +498,8 @@ async def upload(
                 if block_reason:
                     click.secho(f"\n⛔ Blocked — {block_reason}", fg="red", bold=True)
                     click.secho("Not uploading this release to RED.", fg="red", bold=True)
+                    if not remaining_gazelle_sites or not cfg.upload.multi_tracker_upload:
+                        break  # choose_tracker([]) would raise; nothing left to upload to
                     tracker = None
                     continue
 
