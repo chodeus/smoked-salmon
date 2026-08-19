@@ -283,13 +283,14 @@ def print_search_results(gazelle_site: "BaseGazelleApi", results: list[dict], se
             try:
                 group_id, artist, name = r["groupId"], r["artist"], r["groupName"]
                 year, release_type, tags = r["groupYear"], r["releaseType"], r["tags"]
+                tags_text = ", ".join(tags)  # inside the try: None/non-str tags skip the whole row
             except (KeyError, TypeError):
                 continue
             url = f"{gazelle_site.base_url}/torrents.php?id={group_id}"
             click.echo(f" {r_index + 1:02d} >> {group_id} | ", nl=False)  # 1-based; user can't pick 0
             click.secho(f"{artist} - {name} ", fg="cyan", nl=False)
             click.secho(f"({year}) [{release_type}] ", fg="yellow", nl=False)
-            click.echo(f"[Tags: {', '.join(tags)}] | {url}")
+            click.echo(f"[Tags: {tags_text}] | {url}")
 
 
 async def _prompt_for_group_id(
