@@ -4,8 +4,10 @@ from types import SimpleNamespace
 
 import anyio
 import msgspec
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from salmon.errors import ImageUploadFailed
 from salmon.images import HOSTS, red
 from salmon.images.base import BaseImageUploader
 
@@ -41,6 +43,7 @@ class _Session:
         self.kwargs = kwargs
         self.cookie_jar = _CookieJar()
         self.calls: list[tuple[str, str, dict]] = []
+        self.redirect_flags: list = []
 
     async def __aenter__(self):
         return self
@@ -48,12 +51,14 @@ class _Session:
     async def __aexit__(self, *_args):
         return None
 
-    def post(self, url: str, *, params: dict, data):
+    def post(self, url: str, *, params: dict, data, allow_redirects=True):
         self.calls.append(("post", url, params))
+        self.redirect_flags.append(allow_redirects)
         return _Response({"status": "success", "response": {"url": f"https://redacted.sh/i/image-{self.number}.png"}})
 
-    def get(self, url: str, *, params: dict):
+    def get(self, url: str, *, params: dict, allow_redirects=True):
         self.calls.append(("get", url, params))
+        self.redirect_flags.append(allow_redirects)
         if params["action"] == "index":
             return _Response({"status": "success", "response": {"authkey": "account-authkey"}})
         return _Response(
@@ -62,6 +67,23 @@ class _Session:
                 "response": {"h": f"key-{self.number}", "e": 123456 + self.number, "u": self.number},
             }
         )
+
+
+def _patch_red_env(monkeypatch):
+    """Reset RED uploader class caches and stub config/time for a test."""
+    monkeypatch.setattr(red.ImageUploader, "_image_auth", None)
+    monkeypatch.setattr(red.ImageUploader, "_image_auth_expires_at", 0.0)
+    monkeypatch.setattr(red.ImageUploader, "_image_auth_session", None)
+    monkeypatch.setattr(red.ImageUploader, "_authkey", None)
+    monkeypatch.setattr(red.ImageUploader, "_authkey_session", None)
+    monkeypatch.setattr(
+        red,
+        "cfg",
+        SimpleNamespace(
+            tracker=SimpleNamespace(red=SimpleNamespace(session="red-session", keeplogged=None)),
+            upload=SimpleNamespace(user_agent="salmon-test"),
+        ),
+    )
 
 
 def test_red_is_registered_as_an_image_uploader() -> None:
@@ -78,21 +100,9 @@ def test_red_reuses_image_auth_until_expired(monkeypatch, tmp_path) -> None:
         return session
 
     monkeypatch.setattr(red.aiohttp, "ClientSession", session_factory)
-    monkeypatch.setattr(red.ImageUploader, "_image_auth", None)
-    monkeypatch.setattr(red.ImageUploader, "_image_auth_expires_at", 0.0)
-    monkeypatch.setattr(red.ImageUploader, "_image_auth_session", None)
-    monkeypatch.setattr(red.ImageUploader, "_authkey", None)
-    monkeypatch.setattr(red.ImageUploader, "_authkey_session", None)
+    _patch_red_env(monkeypatch)
     current_time = 100.0
     monkeypatch.setattr(red.time, "time", lambda: current_time)
-    monkeypatch.setattr(
-        red,
-        "cfg",
-        SimpleNamespace(
-            tracker=SimpleNamespace(red=SimpleNamespace(session="red-session", keeplogged=None)),
-            upload=SimpleNamespace(user_agent="salmon-test"),
-        ),
-    )
     image = tmp_path / "image.png"
     image.write_bytes(b"png-data")
 
@@ -122,3 +132,21 @@ def test_red_reuses_image_auth_until_expired(monkeypatch, tmp_path) -> None:
     assert all(
         session.cookie_jar.seeded == [({"session": "red-session"}, red.BASE_URL)] for session in sessions
     )
+    # Nothing on the RED ajax endpoints legitimately redirects.
+    assert all(flag is False for session in sessions for flag in session.redirect_flags)
+
+
+def test_red_refuses_off_origin_image_url(monkeypatch, tmp_path) -> None:
+    # The image URL is server-controlled; h/e/u credentials must never be
+    # appended to a URL on any origin but RED's.
+    class _OffOriginSession(_Session):
+        def post(self, url: str, *, params: dict, data, allow_redirects=True):
+            return _Response({"status": "success", "response": {"url": "https://evil.example/i/x.png"}})
+
+    monkeypatch.setattr(red.aiohttp, "ClientSession", lambda **kwargs: _OffOriginSession(1, **kwargs))
+    _patch_red_env(monkeypatch)
+    image = tmp_path / "image.png"
+    image.write_bytes(b"png-data")
+
+    with pytest.raises(ImageUploadFailed, match="off-origin"):
+        anyio.run(red.ImageUploader().upload_file, str(image))

@@ -247,6 +247,16 @@ def test_print_request_results_lists_numbered_urls_and_requirements(fake_tracker
     assert "Requirements: Lossless / " in out
 
 
+def test_print_request_results_skips_row_with_empty_artists(fake_tracker, capsys):
+    # artists=[] makes r["artists"][0] raise IndexError; the row must be skipped,
+    # not abort the whole listing.
+    bad = make_search_result(101, artists=[])
+    print_request_results(fake_tracker, [bad, make_search_result(202)], "Testalbum")
+    out = capsys.readouterr().out
+    assert " 01 >> " not in out
+    assert f" 02 >> {fake_tracker.base_url}/requests.php?action=view&id=202 | " in out
+
+
 def test_print_request_results_skips_malformed_row_without_partial_output(fake_tracker, capsys):
     # bitrateList=None raises on join: the row must be skipped whole, not printed
     # partially with no trailing newline (which would garble the next row onto it).
