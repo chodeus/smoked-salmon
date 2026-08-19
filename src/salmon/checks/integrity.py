@@ -1,5 +1,6 @@
 import os
 import re
+from contextlib import suppress
 
 import anyio
 import asyncclick as click
@@ -200,13 +201,22 @@ async def sanitize_integrity(path: str, _: int | None = None) -> bool:
 
 
 def _reserve_backup_path(path: str) -> str:
-    """Backup name that won't clobber a stale .corrupted left by a crashed run."""
+    """Atomically claim a .corrupted backup name (creates a placeholder file).
+
+    O_EXCL makes the claim atomic, so a stale backup from a crashed run — or a
+    concurrent claimer — can never be clobbered. The caller renames the real
+    file over the placeholder, keeping the user-visible ``file.ext.corrupted``
+    convention.
+    """
     backup_path = path + ".corrupted"
     counter = 1
-    while os.path.exists(backup_path):
-        backup_path = f"{path}.corrupted.{counter}"
-        counter += 1
-    return backup_path
+    while True:
+        try:
+            os.close(os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            return backup_path
+        except FileExistsError:
+            backup_path = f"{path}.corrupted.{counter}"
+            counter += 1
 
 
 async def _sanitize_flac(path: str) -> bool:
@@ -219,8 +229,10 @@ async def _sanitize_flac(path: str) -> bool:
         True if sanitization succeeded, False otherwise.
     """
     backup_path = _reserve_backup_path(path)
+    moved = False
     try:
         os.rename(path, backup_path)
+        moved = True
         result = await anyio.run_process(
             ["flac", f"-{cfg.upload.compression.flac_compression_level}", backup_path, "-o", path],
             check=False,
@@ -245,11 +257,16 @@ async def _sanitize_flac(path: str) -> bool:
         return True
     except Exception as e:
         click.secho(f"Failed to sanitize {path}, {e}", fg="red", bold=True)
-        # Restore the original if the re-encode failed with it renamed aside (#12)
-        if os.path.exists(backup_path):
+        # Restore the original if the re-encode failed with it renamed aside (#12).
+        # If the rename never happened the backup is just our empty placeholder —
+        # "restoring" it would clobber the intact file.
+        if moved and os.path.exists(backup_path):
             if os.path.exists(path):
                 os.remove(path)
             os.rename(backup_path, path)
+        elif not moved:
+            with suppress(OSError):
+                os.remove(backup_path)
         return False
 
 
@@ -263,8 +280,10 @@ async def _sanitize_mp3(path: str) -> bool:
         True if sanitization succeeded, False otherwise.
     """
     backup_path = _reserve_backup_path(path)
+    moved = False
     try:
         os.rename(path, backup_path)
+        moved = True
 
         result = await anyio.run_process(
             ["mp3val", "-f", "-si", "-nb", "-t", backup_path],
@@ -286,7 +305,11 @@ async def _sanitize_mp3(path: str) -> bool:
 
     except Exception as e:
         click.secho(f"Failed to sanitize {path}, {e}", fg="red", bold=True)
-        # Ensure we restore the original file if something went wrong
-        if os.path.exists(backup_path) and not os.path.exists(path):
+        # Ensure we restore the original file if something went wrong; an unused
+        # placeholder (rename never happened) must be discarded, not "restored".
+        if moved and os.path.exists(backup_path) and not os.path.exists(path):
             os.rename(backup_path, path)
+        elif not moved:
+            with suppress(OSError):
+                os.remove(backup_path)
         return False

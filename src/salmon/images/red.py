@@ -65,6 +65,14 @@ class ImageUploader(BaseImageUploader):
                 form.add_field("auth", authkey)
                 form.add_field("file", file_data, filename=Path(filename).name)
                 image_url = await self._upload_image(session, form)
+                # The URL is server-controlled; never append the h/e/u image credentials
+                # to anything but RED itself.
+                try:
+                    image_origin = URL(image_url).origin()
+                except ValueError as error:
+                    raise ImageUploadFailed(f"RED returned an unusable image URL: {image_url!r}") from error
+                if image_origin != URL(BASE_URL).origin():
+                    raise ImageUploadFailed(f"RED returned an off-origin image URL; refusing: {image_url!r}")
                 image_auth = await self._get_valid_image_auth(session, red_settings.session)
         except (aiohttp.ClientError, TimeoutError) as error:
             raise ImageUploadFailed(f"Network error: {error}") from error
@@ -78,7 +86,7 @@ class ImageUploader(BaseImageUploader):
             if image_uploader_class._authkey is not None and image_uploader_class._authkey_session == session_cookie:
                 return image_uploader_class._authkey
 
-            async with session.get(AJAX_URL, params={"action": "index"}) as response:
+            async with session.get(AJAX_URL, params={"action": "index"}, allow_redirects=False) as response:
                 response.raise_for_status()
                 payload = await _decode_response(response)
 
@@ -113,7 +121,9 @@ class ImageUploader(BaseImageUploader):
     @staticmethod
     async def _upload_image(session: aiohttp.ClientSession, form: aiohttp.FormData) -> str:
         """Upload an image and return RED's unauthenticated image URL."""
-        async with session.post(AJAX_URL, params={"action": "upload_image"}, data=form) as response:
+        async with session.post(
+            AJAX_URL, params={"action": "upload_image"}, data=form, allow_redirects=False
+        ) as response:
             response.raise_for_status()
             payload = await _decode_response(response)
 
@@ -125,7 +135,7 @@ class ImageUploader(BaseImageUploader):
     @staticmethod
     async def _get_image_auth(session: aiohttp.ClientSession) -> dict[str, str]:
         """Return a newly issued set of RED image-access credentials."""
-        async with session.get(AJAX_URL, params={"action": "imgauth"}) as response:
+        async with session.get(AJAX_URL, params={"action": "imgauth"}, allow_redirects=False) as response:
             response.raise_for_status()
             payload = await _decode_response(response)
 

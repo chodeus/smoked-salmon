@@ -89,7 +89,7 @@ def print_request_results(gazelle_site: "BaseGazelleApi", results: list[dict[str
                 bitrates = " or ".join(r["bitrateList"])
                 formats = " or ".join(r["formatList"])
                 media = " or ".join(r["mediaList"])
-            except (KeyError, TypeError):
+            except (KeyError, TypeError, IndexError):  # IndexError: empty artists list
                 continue
             click.echo(f" {r_index + 1:02d} >> {url} | ", nl=False)  # 1-based; user can't pick 0
             click.secho(f"{r['artist']}", fg="cyan", nl=False)
