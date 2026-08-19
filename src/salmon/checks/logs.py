@@ -199,8 +199,8 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
 
     # Get list of files to check
     files_to_check: list[str] = []
-    log_dir = os.path.dirname(logpath)
-    for root, _folders, files_ in os.walk(log_dir):
+    # Walk the release directory (basepath): the log may sit in a nested subfolder.
+    for root, _folders, files_ in os.walk(basepath):
         for f in files_:
             if os.path.splitext(f.lower())[1] in {".flac", ".mp3", ".m4a"}:
                 files_to_check.append(os.path.join(root, f))

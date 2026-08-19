@@ -413,10 +413,11 @@ def generate_file_name(tags, ext, multiple_artists, trackno_or=None, track_digit
         template_keys: dict[str, str | int] = {}
         for k in keys:
             tag_val = tags.get(k)
-            if tag_val is not None and isinstance(tag_val, list) and tag_val:
-                template_keys[k] = _parse_integer(tag_val[0], _width_for(k))
-            else:
-                template_keys[k] = _parse_integer("", _width_for(k))
+            if isinstance(tag_val, list) and tag_val:
+                tag_val = tag_val[0]
+            template_keys[k] = _parse_integer(
+                tag_val if isinstance(tag_val, (str, int)) else "", _width_for(k)
+            )
     else:
         template_keys = {}
         for k in keys:

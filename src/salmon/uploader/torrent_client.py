@@ -168,6 +168,9 @@ class DelugeClient(TorrentClient):
                 else:
                     click.secho(f"Label '{label}' set successfully", fg="green")
 
+            if not result:
+                click.secho("Deluge did not add the torrent (rejected or already present)", fg="red", bold=True)
+                return False
             click.secho("Torrent added successfully", fg="green")
             return True
         except Exception as e:
