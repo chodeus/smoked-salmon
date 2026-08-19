@@ -11,8 +11,10 @@ from mutagen import flac, mp3
 from mutagen.flac import VCFLACDict
 from mutagen.id3 import APIC, TXXX, Frames
 
+from salmon import cfg
 from salmon.common.constants import IMAGE_EXTENSIONS, LOSSY_EXTENSIONS
 from salmon.common.files import process_files
+from salmon.errors import UploadError
 from salmon.release_notification import get_version
 
 Bitrate = Literal["V0", "320"]
@@ -416,13 +418,24 @@ async def transcode_folder(path: str, bitrate: Bitrate, essential_only: bool = F
     if os.path.isdir(new_path):
         expected_mp3s = {Path(item.dst).name for item in _collect_transcode_items(path, new_path)}
         existing_files = {f for f in os.listdir(new_path) if f.lower().endswith(".mp3")}
-        if expected_mp3s and expected_mp3s <= existing_files:
+        if not expected_mp3s:
+            # No expected output computed — never rmtree on an empty set (could be a seeding folder).
+            raise UploadError(f"Refusing to overwrite {new_path}: no expected MP3 output was computed.")
+        if expected_mp3s <= existing_files:
             click.secho(f"{new_path} already exists.", fg="yellow")
             return new_path
-        click.secho(
-            f"{new_path} exists but appears incomplete, re-transcoding...",
-            fg="yellow",
-        )
+        # Existing folder isn't our expected output (e.g. a prior upload with a different file
+        # template); you may be seeding it, so confirm before deleting.
+        if not cfg.upload.yes_all and not click.confirm(
+            click.style(
+                f"{new_path} exists but doesn't match the expected transcode. Delete it and re-transcode?",
+                fg="magenta",
+                bold=True,
+            ),
+            default=False,
+        ):
+            raise UploadError(f"Not overwriting existing folder {new_path}.")
+        click.secho(f"{new_path} exists but appears incomplete, re-transcoding...", fg="yellow")
         shutil.rmtree(new_path)
 
     items = _collect_transcode_items(path, new_path)

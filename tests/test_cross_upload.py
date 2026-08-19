@@ -280,3 +280,34 @@ def test_red_images_are_rehosted_to_configured_hosts(monkeypatch) -> None:
         (cross_upload_module.cfg.image.image_uploader, cover),
         (cross_upload_module.cfg.image.image_uploader, inline),
     }
+
+
+def test_verify_release_files_passes_on_exact_match(tmp_path: Path) -> None:
+    (tmp_path / "01.flac").write_bytes(b"x" * 100)
+    (tmp_path / "02.flac").write_bytes(b"y" * 200)
+    response = {"torrent": {"fileList": "01.flac{{{100}}}|||02.flac{{{200}}}"}}
+    cross_upload_module._verify_release_files(response, tmp_path)  # no raise
+
+
+def test_verify_release_files_rejects_size_mismatch(tmp_path: Path) -> None:
+    import asyncclick as click
+
+    (tmp_path / "01.flac").write_bytes(b"x" * 50)  # retagged: size changed
+    response = {"torrent": {"fileList": "01.flac{{{100}}}"}}
+    try:
+        cross_upload_module._verify_release_files(response, tmp_path)
+        raise AssertionError("expected ClickException")
+    except click.ClickException:
+        pass
+
+
+def test_verify_release_files_rejects_renamed_file(tmp_path: Path) -> None:
+    import asyncclick as click
+
+    (tmp_path / "renamed.flac").write_bytes(b"x" * 100)  # same bytes, different name
+    response = {"torrent": {"fileList": "01.flac{{{100}}}"}}
+    try:
+        cross_upload_module._verify_release_files(response, tmp_path)
+        raise AssertionError("expected ClickException")
+    except click.ClickException:
+        pass
