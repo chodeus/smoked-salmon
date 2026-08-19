@@ -89,6 +89,9 @@ async def events(websocket: WebSocket) -> None:
         return
     await websocket.accept()
     queue = manager.subscribe()
+    if queue is None:  # too many live connections
+        await websocket.close(code=1013)
+        return
     try:
         while True:
             event = await queue.get()

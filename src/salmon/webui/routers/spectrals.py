@@ -11,7 +11,7 @@ from salmon import cfg
 from salmon.images import HOSTS, upload_images
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.uploader.spectrals import create_specs_folder, generate_spectrals_all
-from salmon.webui.jobs import Job, JobConflictError, manager
+from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
 from salmon.webui.validation import validate_album_dir
 
 router = APIRouter(tags=["spectrals"])
@@ -47,6 +47,8 @@ async def generate(req: GenerateRequest) -> dict:
         job = manager.create_threaded("spectrals", title, run, {"path": path}, lock_key=path)
     except JobConflictError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    except JobCapacityError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
     return job.to_dict()
 
 
@@ -78,5 +80,13 @@ async def upload(req: UploadRequest) -> dict:
         return {"host": host_name, "urls": urls}
 
     title = f"Upload spectrals: {os.path.basename(source_job.result['album_path'])}"
-    job = manager.create_threaded("spectrals-upload", title, run, {"job_id": req.job_id, "host": host_name})
+    try:
+        job = manager.create_threaded(
+            "spectrals-upload", title, run, {"job_id": req.job_id, "host": host_name},
+            lock_key=f"spectrals-upload:{req.job_id}",
+        )
+    except JobConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except JobCapacityError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
     return job.to_dict()

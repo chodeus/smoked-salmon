@@ -38,6 +38,8 @@ _id_counter = itertools.count(1)
 MAX_FINISHED_JOBS = 200
 SUBSCRIBER_QUEUE_SIZE = 500
 MAX_LOG_LINES = 1000
+MAX_ACTIVE_THREAD_JOBS = 12  # each threaded job is an OS thread + private event loop
+MAX_SUBSCRIBERS = 64  # websocket connections
 PROGRESS_BROADCAST_INTERVAL = 0.2  # seconds; job.progress itself always updates
 
 
@@ -59,6 +61,10 @@ def _make_progress_callback(job: Job, emit: Callable[[dict[str, Any]], None]) ->
 
 class JobConflictError(Exception):
     """A queued/running job already works on the same path."""
+
+
+class JobCapacityError(Exception):
+    """Too many jobs are already running; the caller should retry later."""
 
 
 def _now() -> str:
@@ -161,6 +167,9 @@ class JobManager:
         lock_key: str | None = None,
     ) -> Job:
         """Create a job that runs in a worker thread with its own event loop."""
+        active = sum(1 for j in self.jobs.values() if j.thread is not None and j.status in ("queued", "running"))
+        if active >= MAX_ACTIVE_THREAD_JOBS:
+            raise JobCapacityError(f"Too many jobs running ({active}); please wait for some to finish.")
         job = self._register(job_type, title, params, lock_key)
         job.interaction = WebInteraction(
             emit=lambda event: self._emit_for(job, event),
@@ -322,7 +331,9 @@ class JobManager:
         job.task.cancel()
         return True
 
-    def subscribe(self) -> asyncio.Queue:
+    def subscribe(self) -> asyncio.Queue | None:
+        if len(self._subscribers) >= MAX_SUBSCRIBERS:
+            return None
         queue: asyncio.Queue = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_SIZE)
         self._subscribers.add(queue)
         return queue

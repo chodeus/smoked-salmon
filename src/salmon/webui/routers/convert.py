@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from salmon.converter.downconverting import convert_folder
 from salmon.converter.transcoding import transcode_folder
-from salmon.webui.jobs import Job, JobConflictError, manager
+from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
 from salmon.webui.validation import validate_album_dir
 
 router = APIRouter(tags=["convert"])
@@ -36,6 +36,8 @@ async def transcode(req: TranscodeRequest) -> dict:
         job = manager.create_threaded("transcode", title, run, {"path": path, "bitrate": req.bitrate}, lock_key=path)
     except JobConflictError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    except JobCapacityError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
     return job.to_dict()
 
 
@@ -52,4 +54,6 @@ async def downconvert(req: DownconvertRequest) -> dict:
         job = manager.create_threaded("downconvert", title, run, {"path": path}, lock_key=path)
     except JobConflictError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    except JobCapacityError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
     return job.to_dict()
