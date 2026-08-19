@@ -231,7 +231,9 @@ async def _sanitize_flac(path: str) -> bool:
     backup_path = _reserve_backup_path(path)
     moved = False
     try:
-        os.rename(path, backup_path)
+        # os.replace: on Windows os.rename raises FileExistsError over the claimed
+        # placeholder; replace overwrites on both platforms.
+        os.replace(path, backup_path)
         moved = True
         result = await anyio.run_process(
             ["flac", f"-{cfg.upload.compression.flac_compression_level}", backup_path, "-o", path],
@@ -282,7 +284,9 @@ async def _sanitize_mp3(path: str) -> bool:
     backup_path = _reserve_backup_path(path)
     moved = False
     try:
-        os.rename(path, backup_path)
+        # os.replace: on Windows os.rename raises FileExistsError over the claimed
+        # placeholder; replace overwrites on both platforms.
+        os.replace(path, backup_path)
         moved = True
 
         result = await anyio.run_process(

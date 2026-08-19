@@ -399,10 +399,12 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
                     # lowercase: move_non_audio_files compares against file.lower()
                     directory_move_pairs.add((os.path.splitext(filename)[1].lower(), old_dir, new_dir))
                 temp_path = os.path.join(staging_dir, str(index))
-                os.rename(os.path.join(path, filename), temp_path)
+                os.replace(os.path.join(path, filename), temp_path)
                 staged.append((temp_path, os.path.join(path, new_name)))
             for temp_path, final_path in staged:
-                os.rename(temp_path, final_path)
+                # os.replace for Windows parity: a samefile-exempt target entry may
+                # still exist, where os.rename would raise instead of overwriting.
+                os.replace(temp_path, final_path)
             os.rmdir(staging_dir)  # rmdir not rmtree: staged audio must survive a partial failure
 
             if spectral_ids:
