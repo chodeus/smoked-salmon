@@ -98,21 +98,15 @@ def chunker(seq, size=4):
         yield seq[pos : pos + size]
 
 
-async def upload_cover(cover_path: str | None) -> str | None:
-    """Upload cover image to the configured image host.
-
-    Args:
-        cover_path: Path to the cover image file.
-
-    Returns:
-        The uploaded image URL, or None if upload failed.
-    """
+async def upload_cover(cover_path: str | None, site_code: str | None = None) -> str | None:
+    """Upload cover image to the image host configured for this tracker (or the global one)."""
     if not cover_path:
         click.secho("\nNo Cover Image Path was provided to upload...", fg="red", nl=False)
         return None
-    click.secho(f"Uploading cover to {cfg.image.cover_uploader}...", fg="yellow", nl=False)
+    host = cfg.image.resolve(site_code, "cover_uploader")
+    click.secho(f"Uploading cover to {host}...", fg="yellow", nl=False)
     try:
-        uploader = HOSTS[cfg.image.cover_uploader].ImageUploader()
+        uploader = HOSTS[host].ImageUploader()
         url, _ = await uploader.upload_file(cover_path)
         click.secho(f" done! {url}", fg="yellow")
         return url

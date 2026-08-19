@@ -295,7 +295,7 @@ def upload_world(monkeypatch, tmp_path):
     async def fake_download_cover(path, cover_url):
         return os.path.join(path, "cover.jpg"), False
 
-    async def fake_upload_cover(cover_path):
+    async def fake_upload_cover(cover_path, site_code=None):
         return "https://img.example/cover"
 
     async def fake_generate_spectrals_all(path, spectrals_path, audio_info):
