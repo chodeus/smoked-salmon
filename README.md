@@ -4,6 +4,8 @@
 
 A simple tool to take the work out of uploading on Gazelle-based trackers. It generates spectrals, gathers metadata, allows re-tagging/renaming files, and automates the upload process.
 
+> **About this fork** — upstream's release pipeline stalled at 0.10.1 while fixes piled up unreleased. This fork is upstream master plus the outstanding community fix branches (RED image host, Apple Music/Tidal repairs, upload-path hardening and a new `salmon web` interface, cross-upload, multi-disc improvements) and fixes for upstream issues #353, #356, #358, #429, #430, #432, #433. Images: `ghcr.io/chodeus/smoked-salmon` (`:latest` = release, `:alpha` = master). The recent-uploads check now defaults **off** (#432: it could flood `login.php` and get an IP firewalled), and image hosts default to keyless catbox instead of the defunct ptpimg.
+
 ## 🌟 Features  
 
 - **Interactive Uploading** – Supports **multiple trackers** (RED / OPS / DIC).
