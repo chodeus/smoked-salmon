@@ -80,3 +80,13 @@ class CRCMismatchError(Exception):
     """Raised when CRC values don't match between log and audio files."""
 
     pass
+
+
+class DryRunComplete(BaseException):
+    """Raised after a --dry-run validation to stop cleanly before any real upload.
+
+    BaseException so ordinary ``except Exception`` handlers in the upload flow can't
+    swallow it; only the up() command catches it.
+    """
+
+    pass

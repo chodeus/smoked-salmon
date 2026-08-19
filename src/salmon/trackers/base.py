@@ -195,6 +195,7 @@ class BaseGazelleApi:
     api_key: str = ""  # Optional, only for API key upload
     api_key_prefix: str = ""  # OPS wants "token <key>"; RED wants the bare key
     keeplogged: str | None = None
+    dry_run: bool = False  # when True, validate the upload but never actually send it
 
     def __init__(self) -> None:
         """Initialize the API client. Subclasses should call this after setting cookie/base_url."""
@@ -691,6 +692,16 @@ class BaseGazelleApi:
             return await self.api_key_upload(data, files)
 
         return await self.site_page_upload(data, files)
+
+    async def dry_run_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
+        """Validate an upload without sending it. Base trackers have no server-side dryrun."""
+        click.secho(
+            f"\n[DRY RUN] {self.site_string}: prepared the torrent and upload form but did NOT upload "
+            f"({self.site_string} has no server-side dry run).",
+            fg="cyan",
+            bold=True,
+        )
+        return 0, 0
 
     async def report_lossy_master(self, torrent_id: int, comment: str, source: str) -> bool:
         """Report torrent for lossy master/web approval.
