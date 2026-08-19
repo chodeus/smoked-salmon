@@ -6,7 +6,9 @@
   import Convert from './pages/Convert.svelte'
   import Checks from './pages/Checks.svelte'
   import Jobs from './pages/Jobs.svelte'
+  import Login from './pages/Login.svelte'
   import { jobStore } from './lib/jobs.svelte'
+  import { checkAuth, onUnauthorized, type AuthState } from './lib/api'
 
   const routes: Record<string, { component: any; label: string }> = {
     '': { component: Dashboard, label: 'Dashboard' },
@@ -26,11 +28,31 @@
   const route = $derived(routes[current] ?? routes[''])
   const runningCount = $derived(jobStore.jobs.filter((j) => j.status === 'running').length)
 
+  let authState = $state<AuthState | null>(null)
+  const authed = $derived(!authState?.required || authState.authenticated)
+
+  async function refreshAuth() {
+    authState = await checkAuth()
+  }
+
+  onUnauthorized(() => {
+    if (authState?.required) authState = { required: true, authenticated: false }
+  })
+
   $effect(() => {
-    jobStore.init()
+    refreshAuth()
+  })
+
+  $effect(() => {
+    if (authed) jobStore.init()
   })
 </script>
 
+{#if authState === null}
+  <div class="booting">Loading…</div>
+{:else if !authed}
+  <Login onLoggedIn={refreshAuth} />
+{:else}
 <div class="layout">
   <nav>
     <div class="brand">
@@ -55,7 +77,13 @@
   </main>
 </div>
 
+{/if}
+
 <style>
+  .booting {
+    padding: 2rem;
+    color: var(--text-dim);
+  }
   .layout {
     display: flex;
     min-height: 100vh;

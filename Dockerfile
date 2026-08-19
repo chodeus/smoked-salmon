@@ -40,6 +40,8 @@ RUN --mount=type=cache,target=/opt/uv-cache \
 # Copy source code
 COPY . .
 COPY --from=webui-builder /build/src/salmon/webui/static src/salmon/webui/static
+# Fail the build if the web UI didn't compile, rather than shipping a UI-less image.
+RUN test -f src/salmon/webui/static/index.html
 
 # Install the project in non-editable mode for production
 RUN --mount=type=cache,target=/opt/uv-cache \
