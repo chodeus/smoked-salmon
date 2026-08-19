@@ -286,7 +286,7 @@ class BaseGazelleApi:
             async with (
                 self._rate_limiter,
                 aiohttp.ClientSession(timeout=timeout, cookies=cookies, headers=headers) as session,
-                session.request(method, url, params=params, data=data) as resp,
+                session.request(method, url, params=params, data=data, max_redirects=2) as resp,
             ):
                 text = await resp.text()
 
@@ -543,8 +543,19 @@ class BaseGazelleApi:
         Returns:
             List of (torrent_id, artist, title) tuples.
         """
-        recent_uploads = []
-        tasks = [self.fetch_log(i) for i in range(1, max_pages)]
+        # Probe page 1 alone: an invalid cookie must not fan out into N redirect chains (#432)
+        try:
+            first_page = await self.fetch_log(1)
+        except (LoginError, RequestError) as e:
+            click.secho(
+                f"Skipping the recent-uploads check: could not read the {self.site_string} site log ({e}). "
+                "This check requires a valid session cookie.",
+                fg="yellow",
+                bold=True,
+            )
+            return []
+        recent_uploads = self.parse_uploads_from_log_html(first_page)
+        tasks = [self.fetch_log(i) for i in range(2, max_pages)]
         for page_text in await asyncio.gather(*tasks):
             recent_uploads += self.parse_uploads_from_log_html(page_text)
         return recent_uploads
