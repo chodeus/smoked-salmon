@@ -24,7 +24,7 @@ def test_rename_files_can_flatten_multi_disc_tracks(tmp_path, monkeypatch) -> No
 
     rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
 
-    assert (tmp_path / "1.1.flac").exists()
-    assert (tmp_path / "2.1.flac").exists()
+    assert (tmp_path / "1.01.flac").exists()
+    assert (tmp_path / "2.01.flac").exists()
     assert not (tmp_path / "CD01").exists()
     assert not (tmp_path / "CD02").exists()

@@ -131,8 +131,10 @@ def install_fake_aiohttp(monkeypatch, outcomes):
         async def __aexit__(self, *args):
             return False
 
-        def request(self, method, url, params=None, data=None):
-            captured["requests"].append({"method": method, "url": url, "params": params, "data": data})
+        def request(self, method, url, params=None, data=None, max_redirects=None):
+            captured["requests"].append(
+                {"method": method, "url": url, "params": params, "data": data, "max_redirects": max_redirects}
+            )
             outcome = outcomes[min(len(captured["requests"]) - 1, len(outcomes) - 1)]
             return _FakeRequestCM(outcome)
 
