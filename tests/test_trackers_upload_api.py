@@ -9,6 +9,8 @@ Seams used:
   with an in-memory fake so no network is ever touched.
 """
 
+from typing import Any, cast
+
 import aiohttp
 import asyncclick as click
 import pytest
@@ -260,7 +262,7 @@ async def test_api_call_persistent_network_error_raises_retryable_error(api, mon
     # After 5 attempts the network failure surfaces as RetryableError, which
     # is part of the RequestError hierarchy so callers catching RequestError
     # handle it too.
-    monkeypatch.setattr(BaseGazelleApi._request.retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [aiohttp.ClientConnectionError("connection refused")])
     api._authenticated = True
 
@@ -310,7 +312,7 @@ async def test_request_without_api_key_uses_session_cookie(api, monkeypatch):
 
 
 async def test_request_rate_limited_retries_and_succeeds(api, monkeypatch):
-    monkeypatch.setattr(BaseGazelleApi._request.retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(
         monkeypatch,
         [
@@ -542,7 +544,7 @@ async def test_site_page_upload_request_fill_failure_extracts_error(api):
 async def test_site_page_upload_redirect_loop_raises_login_error(api, monkeypatch):
     # Expired/invalid cookies make the site redirect to login until aiohttp
     # gives up; that must surface as LoginError.
-    install_fake_aiohttp(monkeypatch, [aiohttp.TooManyRedirects(None, ())])
+    install_fake_aiohttp(monkeypatch, [aiohttp.TooManyRedirects(cast("Any", None), ())])
     api._authenticated = True
     api.passkey = "PK"
 

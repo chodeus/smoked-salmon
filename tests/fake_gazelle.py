@@ -15,7 +15,7 @@ Recorded uploads are available on the app under ``app[UPLOADS]``.
 
 from __future__ import annotations
 
-from aiohttp import web
+from aiohttp import BodyPartReader, web
 
 UPLOADS: web.AppKey[list] = web.AppKey("uploads", list)
 BROWSE_RESULTS: web.AppKey[list] = web.AppKey("browse_results", list)
@@ -79,11 +79,13 @@ def make_fake_gazelle(
         fields: dict[str, str] = {}
         files: list[str] = []
         async for part in reader:
+            if not isinstance(part, BodyPartReader):
+                continue
             if part.filename:
                 files.append(part.filename)
                 await part.read()  # drain
             else:
-                fields[part.name] = (await part.read()).decode("utf-8", "replace")
+                fields[part.name or ""] = (await part.read()).decode("utf-8", "replace")
         request.app[UPLOADS].append({"fields": fields, "files": files})
         return ok({"torrentid": request.app[TORRENT_ID], "groupid": request.app[GROUP_ID]})
 

@@ -2,7 +2,7 @@ import html
 import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, urlparse
 
 import aiohttp
@@ -15,7 +15,7 @@ from salmon import cfg
 from salmon.common import commandgroup
 from salmon.constants import ARTIST_IMPORTANCES
 from salmon.converter.downconverting import convert_folder, generate_conversion_description
-from salmon.converter.transcoding import generate_transcode_description, transcode_folder
+from salmon.converter.transcoding import Bitrate, generate_transcode_description, transcode_folder
 from salmon.images import HOSTS
 from salmon.uploader.upload import compile_files, generate_torrent
 
@@ -142,7 +142,8 @@ def _input_items(value: str, source_site: "BaseGazelleApi") -> list[int | Path]:
         torrents = sorted(path.glob("*.torrent"))
         if not torrents:
             raise click.UsageError(f"No .torrent files found in {path}.")
-        return torrents
+        items: list[int | Path] = list(torrents)
+        return items
     if path.is_file():
         return [path]
     return [_torrent_id(value, source_site)]
@@ -344,7 +345,7 @@ async def _upload_conversions(
             )
         )
     for bitrate in dict.fromkeys(transcodes):
-        transcoded_path = await transcode_folder(str(path), bitrate)
+        transcoded_path = await transcode_folder(str(path), cast("Bitrate", bitrate))
         variants.append(
             (
                 f"MP3 {bitrate}",
@@ -354,7 +355,7 @@ async def _upload_conversions(
                     "format": "MP3",
                     "bitrate": "V0 (VBR)" if bitrate == "V0" else "320",
                     "vbr": bitrate == "V0",
-                    "release_desc": generate_transcode_description(original_url, bitrate),
+                    "release_desc": generate_transcode_description(original_url, cast("Bitrate", bitrate)),
                 },
             )
         )
