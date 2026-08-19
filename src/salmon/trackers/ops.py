@@ -18,6 +18,7 @@ class OpsApi(BaseGazelleApi):
         self.base_url = "https://orpheus.network"
         self.tracker_url = "https://home.opsfet.ch"
         self.site_string = "OPS"
+        self.api_key_prefix = "token "  # OPS API: "Authorization: token <key>" (bare key is deprecated)
 
         self._split_prompted = False
         self._use_split = False
