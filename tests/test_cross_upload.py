@@ -272,6 +272,7 @@ def test_red_images_are_rehosted_to_configured_hosts(monkeypatch) -> None:
         cross_upload_module._rehost_red_images,
         data,
         cast("Any", SimpleNamespace(site_code="RED")),
+        cast("Any", SimpleNamespace(site_code="OPS")),
     )
 
     assert all("redacted.sh/t/" not in result[field] for field in ("image", "album_desc", "release_desc"))
@@ -280,6 +281,32 @@ def test_red_images_are_rehosted_to_configured_hosts(monkeypatch) -> None:
         (cross_upload_module.cfg.image.image_uploader, cover),
         (cross_upload_module.cfg.image.image_uploader, inline),
     }
+
+
+def test_red_image_host_falls_back_to_catbox_for_non_red_target(monkeypatch) -> None:
+    # cover/image uploader is 'red' but target is OPS: must rehost to catbox (a host
+    # OPS can display), not back to RED. Also exercises the /i/ URL form.
+    cover = "https://redacted.sh/i/cover.jpg"
+    calls = []
+
+    async def fake_rehost(url, _source_site, image_host):
+        calls.append((image_host, url))
+        return f"https://{image_host}.example/{Path(url).name}"
+
+    monkeypatch.setattr(cross_upload_module, "_rehost_red_image", fake_rehost)
+    monkeypatch.setattr(cross_upload_module.cfg.image, "cover_uploader", "red")
+    monkeypatch.setattr(cross_upload_module.cfg.image, "image_uploader", "red")
+    data = {"image": cover, "album_desc": "", "release_desc": ""}
+
+    result = anyio.run(
+        cross_upload_module._rehost_red_images,
+        data,
+        cast("Any", SimpleNamespace(site_code="RED")),
+        cast("Any", SimpleNamespace(site_code="OPS")),
+    )
+
+    assert calls == [("catbox", cover)]
+    assert "redacted.sh" not in result["image"]
 
 
 def test_verify_release_files_passes_on_exact_match(tmp_path: Path) -> None:
