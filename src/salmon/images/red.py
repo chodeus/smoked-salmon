@@ -62,7 +62,7 @@ class ImageUploader(BaseImageUploader):
                 form.add_field("file", file_data, filename=Path(filename).name)
                 image_url = await self._upload_image(session, form)
                 image_auth = await self._get_valid_image_auth(session, red_settings.session)
-        except aiohttp.ClientError as error:
+        except (aiohttp.ClientError, TimeoutError) as error:
             raise ImageUploadFailed(f"Network error: {error}") from error
 
         return f"{image_url}?{urlencode(image_auth)}", None
