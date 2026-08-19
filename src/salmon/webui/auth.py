@@ -45,8 +45,14 @@ def _token_from_scope(scope: Scope) -> str | None:
 
 
 def token_matches(supplied: str | None, expected: str | None) -> bool:
-    """Constant-time token comparison; False if either side is missing."""
-    return bool(supplied) and bool(expected) and hmac.compare_digest(supplied, expected)
+    """Constant-time token comparison; False if either side is missing.
+
+    Compare as bytes: a latin-1-decoded header can hold non-ASCII, which makes
+    hmac.compare_digest raise TypeError on str operands (an uncaught 500).
+    """
+    if not supplied or not expected:
+        return False
+    return hmac.compare_digest(supplied.encode("utf-8", "surrogatepass"), expected.encode("utf-8", "surrogatepass"))
 
 
 class AuthMiddleware:
