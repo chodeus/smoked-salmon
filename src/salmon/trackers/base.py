@@ -483,16 +483,12 @@ class BaseGazelleApi:
         else:
             return []
         all_results = first_request["results"]
-        # Three is an arbitrary (low) number.
         # Hits to the site are slow because of rate limiting.
-        # Should probably be spun out into its own pagnation function at some point.
-        for i in range(2, max(3, pages)):
+        # Should probably be spun out into its own pagination function at some point.
+        for i in range(2, pages + 1):
             browse_params["page"] = str(i)
             new_results = await self.api_call("browse", params=browse_params)
             all_results += new_results["results"]
-        browse_params["page"] = "1"
-        resp2 = await self.api_call("browse", params=browse_params)
-        all_results = all_results + resp2["results"]
         releases = []
         for group in all_results:
             if not group["artist"]:

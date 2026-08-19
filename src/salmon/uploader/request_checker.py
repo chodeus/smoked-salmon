@@ -75,25 +75,29 @@ def print_request_results(gazelle_site: "BaseGazelleApi", results: list[dict[str
         )
         click.secho(f" (searchstrs: {searchstr})", bold=True)
         for r_index, r in enumerate(results):
+            # Read and format every field first so a malformed result is skipped whole,
+            # not left as a partial row with no newline (mirrors print_search_results).
             try:
                 url = gazelle_site.request_url(r["requestId"])
-                # User doesn't get to pick a zero index
-                click.echo(f" {r_index + 1:02d} >> {url} | ", nl=False)
                 if len(r["artists"][0]) > 3:
                     r["artist"] = "Various Artists"
                 else:
                     r["artist"] = ""
                     for a in r["artists"][0]:
                         r["artist"] += a["name"] + " "
-                click.secho(f"{r['artist']}", fg="cyan", nl=False)
-                click.secho(f" - {r['title']} ", fg="cyan", nl=False)
-                click.secho(f"({r['year']}) [{r['releaseType']}] ", fg="yellow")
-                click.secho(f"Requirements: {' or '.join(r['bitrateList'])} / ", nl=False)
-                click.secho(f"{' or '.join(r['formatList'])} / ", nl=False)
-                click.secho(f"{' or '.join(r['mediaList'])} / ")
-
+                title, year, release_type = r["title"], r["year"], r["releaseType"]
+                bitrates = " or ".join(r["bitrateList"])
+                formats = " or ".join(r["formatList"])
+                media = " or ".join(r["mediaList"])
             except (KeyError, TypeError):
                 continue
+            click.echo(f" {r_index + 1:02d} >> {url} | ", nl=False)  # 1-based; user can't pick 0
+            click.secho(f"{r['artist']}", fg="cyan", nl=False)
+            click.secho(f" - {title} ", fg="cyan", nl=False)
+            click.secho(f"({year}) [{release_type}] ", fg="yellow")
+            click.secho(f"Requirements: {bitrates} / ", nl=False)
+            click.secho(f"{formats} / ", nl=False)
+            click.secho(f"{media} / ")
 
 
 def _print_request_details(gazelle_site: "BaseGazelleApi", req: dict[str, Any]) -> None:

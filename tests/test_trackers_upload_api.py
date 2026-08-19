@@ -814,3 +814,30 @@ async def test_get_redirect_torrentgroupid_timeout_raises_abort(api, capsys):
     with pytest.raises(click.Abort):
         await api.get_redirect_torrentgroupid(5)
     assert "timed out" in capsys.readouterr().out
+
+
+async def test_label_rls_fetches_every_page_exactly_once(api):
+    pages_called = []
+
+    def group(n):
+        return {
+            "artist": f"A{n}",
+            "groupYear": 2020,
+            "groupName": f"G{n}",
+            "releaseType": 1,
+            "groupId": n,
+            "torrents": [{"format": "FLAC", "media": "WEB"}],
+        }
+
+    async def fake_api_call(action, params=None):
+        assert action == "browse"
+        page = int((params or {}).get("page", 1))
+        pages_called.append(page)
+        return {"pages": 3, "results": [group(page)]}
+
+    api.api_call = fake_api_call
+    releases = await api.label_rls("Label")
+
+    # Every page exactly once: no last-page skip, no duplicate page-1 fetch.
+    assert sorted(pages_called) == [1, 2, 3]
+    assert [r.url for r in releases] == [f"{api.base_url}/torrents.php?id={n}" for n in (1, 2, 3)]

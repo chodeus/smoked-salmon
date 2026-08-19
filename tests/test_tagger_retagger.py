@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from salmon import cfg
-from salmon.tagger.retagger import _remap_spectral_ids, rename_files
+from salmon.tagger.retagger import _remap_spectral_ids, move_non_audio_files, rename_files
 
 
 def test_rename_files_can_flatten_multi_disc_tracks(tmp_path, monkeypatch) -> None:
@@ -107,6 +107,33 @@ def test_rename_files_uppercase_ext_audio_not_moved_as_non_audio(tmp_path, monke
     assert (tmp_path / "CD1" / "bonus.FLAC").read_text() == "bonus"
     assert not (tmp_path / "bonus.FLAC").exists()
     assert not list(tmp_path.glob("bonus.*.FLAC"))  # not disc-suffixed into the root
+
+
+def test_move_non_audio_files_does_not_overwrite_same_named_dest(tmp_path) -> None:
+    # shutil.move silently overwrites: a cover.jpg both in the disc folder and the
+    # destination must be suffixed, not clobbered.
+    cd1 = tmp_path / "CD1"
+    cd1.mkdir()
+    (cd1 / "cover.jpg").write_text("disc")
+    (tmp_path / "cover.jpg").write_text("root")
+
+    move_non_audio_files({(".flac", str(cd1), str(tmp_path))})
+
+    assert (tmp_path / "cover.jpg").read_text() == "root"
+    assert (tmp_path / "cover.1.jpg").read_text() == "disc"
+
+
+def test_move_non_audio_files_same_dir_is_a_noop(tmp_path) -> None:
+    # old_dir == new_dir (renames within one disc folder): files stay untouched,
+    # not spuriously suffixed by the overwrite guard.
+    cd1 = tmp_path / "CD1"
+    cd1.mkdir()
+    (cd1 / "cover.jpg").write_text("disc")
+
+    move_non_audio_files({(".flac", str(cd1), str(cd1))})
+
+    assert (cd1 / "cover.jpg").read_text() == "disc"
+    assert not (cd1 / "cover.1.jpg").exists()
 
 
 def test_remap_spectral_ids_does_not_chain():

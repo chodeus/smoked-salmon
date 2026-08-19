@@ -507,7 +507,15 @@ def move_non_audio_files(directory_move_pairs, directory_disc_map=None):
             if merging_multiple_folders and disc_number is not None:
                 base, file_ext = os.path.splitext(file)
                 dest_name = f"{base}.{disc_number}{file_ext}"
-            shutil.move(file_path, os.path.join(new_dir, dest_name))
+            dest_path = os.path.join(new_dir, dest_name)
+            if os.path.abspath(dest_path) == os.path.abspath(file_path):
+                continue  # already in place (old_dir == new_dir)
+            base, file_ext = os.path.splitext(dest_name)
+            counter = 1
+            while os.path.exists(dest_path):  # shutil.move overwrites; suffix instead
+                dest_path = os.path.join(new_dir, f"{base}.{counter}{file_ext}")
+                counter += 1
+            shutil.move(file_path, dest_path)
 
 
 def delete_empty_folders(path):
