@@ -416,8 +416,16 @@ async def transcode_folder(path: str, bitrate: Bitrate, essential_only: bool = F
     new_path = _build_output_path(path, bitrate)
 
     if os.path.isdir(new_path):
-        expected_mp3s = {Path(item.dst).name for item in _collect_transcode_items(path, new_path)}
-        existing_files = {f for f in os.listdir(new_path) if f.lower().endswith(".mp3")}
+        # Compare relative paths, not basenames — multi-disc output nests MP3s in disc
+        # subfolders, and basenames would both miss those and let a same-named top-level
+        # file mask a missing nested one.
+        expected_mp3s = {os.path.relpath(item.dst, new_path) for item in _collect_transcode_items(path, new_path)}
+        existing_files = {
+            os.path.relpath(os.path.join(root, f), new_path)
+            for root, _dirs, files in os.walk(new_path)
+            for f in files
+            if f.lower().endswith(".mp3")
+        }
         if not expected_mp3s:
             # No expected output computed — never rmtree on an empty set (could be a seeding folder).
             raise UploadError(f"Refusing to overwrite {new_path}: no expected MP3 output was computed.")

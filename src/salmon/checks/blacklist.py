@@ -33,9 +33,7 @@ def red_blacklist_reason(artists, album, label=None) -> str | None:
     Every word of an entry's artist (and album, if set) must appear in the
     release for it to match, so partial-word false positives don't fire.
     """
-    artist_tokens: set[str] = set()
-    for a in artists or []:
-        artist_tokens |= _tokens(a[0] if isinstance(a, list | tuple) else a)
+    artist_token_sets = [_tokens(a[0] if isinstance(a, list | tuple) else a) for a in artists or []]
     album_tokens = _tokens(album)
     label_tokens = _tokens(label)
 
@@ -44,7 +42,10 @@ def red_blacklist_reason(artists, album, label=None) -> str | None:
             if label_tokens and _tokens(entry["label"]) <= label_tokens:
                 return _describe(entry)
             continue
-        if not (_tokens(entry["artist"]) <= artist_tokens):
+        # Match the entry artist against each individual release artist by equality, so a
+        # blacklisted "Viper" doesn't also block "Viper UK" while still catching collaborations.
+        entry_artist = _tokens(entry["artist"])
+        if not any(entry_artist == artist for artist in artist_token_sets):
             continue
         if entry.get("album") and not (_tokens(entry["album"]) <= album_tokens):
             continue

@@ -34,9 +34,10 @@ _ARTIST_FIELDS = {
     "producer": "producer",
 }
 
-# RED serves hosted images under /i/ (per its API) and /t/; match both so none are missed.
+# RED serves hosted images under /i/ (per its API) and /t/; match both. HTTPS only so the
+# cookie-bearing rehost fetch is never made over cleartext.
 _RED_IMAGE_URL = re.compile(
-    r"https?://redacted\.sh/(?:i|t)/[^\s\[\]\"'<>]+",
+    r"https://redacted\.sh/(?:i|t)/[^\s\[\]\"'<>]+",
     flags=re.IGNORECASE,
 )
 
@@ -410,7 +411,9 @@ async def _rehost_red_images(
     }
     for field, image_host in fields.items():
         value = str(rewritten.get(field) or "")
-        for url in dict.fromkeys(_RED_IMAGE_URL.findall(value)):
+        # Longest first: if one URL is a prefix of another, replacing the short one first
+        # would corrupt the longer link.
+        for url in sorted(dict.fromkeys(_RED_IMAGE_URL.findall(value)), key=len, reverse=True):
             key = image_host, url
             if key not in replacements:
                 click.secho(f"Rehosting RED image to {image_host}: {url}", fg="yellow")

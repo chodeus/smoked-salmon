@@ -104,6 +104,12 @@ def create_track_changes(tags, metadata):
         ),
     )
 
+    if len(sorted_tags) != len(tracks):
+        raise UploadError(
+            f"Track count mismatch: {len(sorted_tags)} audio files but {len(tracks)} metadata tracks. "
+            "Fix the folder or the metadata before uploading."
+        )
+
     for (filename, tagset), trackmeta in zip(sorted_tags, tracks, strict=False):
         changes[filename] = []
 
