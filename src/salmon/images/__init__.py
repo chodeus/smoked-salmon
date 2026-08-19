@@ -175,7 +175,7 @@ async def _handle_failed_spectrals(spectrals, successful) -> dict:
                 fg="magenta",
                 bold=True,
             ),
-            default="ptpimg",
+            default="catbox",
         )
         host = host_input.lower()
         if host not in HOSTS:
