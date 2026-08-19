@@ -391,21 +391,40 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
             # Two-phase via a reserved staging dir: a swap/chain (a->b, b->a) passes the
             # collision check, and a direct os.rename would clobber a source before it moved.
             staging_dir = tempfile.mkdtemp(dir=path, prefix=".salmon-rename-")
-            staged: list[tuple[str, str]] = []
-            for index, (filename, new_name) in enumerate(to_rename):
-                old_dir = os.path.dirname(os.path.join(path, filename))
-                new_dir = os.path.dirname(os.path.join(path, new_name))
-                if old_dir != path:
-                    # lowercase: move_non_audio_files compares against file.lower()
-                    directory_move_pairs.add((os.path.splitext(filename)[1].lower(), old_dir, new_dir))
-                temp_path = os.path.join(staging_dir, str(index))
-                os.replace(os.path.join(path, filename), temp_path)
-                staged.append((temp_path, os.path.join(path, new_name)))
-            for temp_path, final_path in staged:
-                # os.replace for Windows parity: a samefile-exempt target entry may
-                # still exist, where os.rename would raise instead of overwriting.
-                os.replace(temp_path, final_path)
-            os.rmdir(staging_dir)  # rmdir not rmtree: staged audio must survive a partial failure
+            staged: list[tuple[str, str, str]] = []  # (temp, original, final)
+            completed: list[tuple[str, str]] = []  # (final, temp)
+            try:
+                for index, (filename, new_name) in enumerate(to_rename):
+                    old_dir = os.path.dirname(os.path.join(path, filename))
+                    new_dir = os.path.dirname(os.path.join(path, new_name))
+                    if old_dir != path:
+                        # lowercase: move_non_audio_files compares against file.lower()
+                        directory_move_pairs.add((os.path.splitext(filename)[1].lower(), old_dir, new_dir))
+                    temp_path = os.path.join(staging_dir, str(index))
+                    os.replace(os.path.join(path, filename), temp_path)
+                    staged.append((temp_path, os.path.join(path, filename), os.path.join(path, new_name)))
+                for temp_path, _original, final_path in staged:
+                    # os.replace for Windows parity: a samefile-exempt target entry may
+                    # still exist, where os.rename would raise instead of overwriting.
+                    os.replace(temp_path, final_path)
+                    completed.append((final_path, temp_path))
+            except BaseException:
+                # Roll back so a failure (or Ctrl-C) never strands files under temp
+                # names or a half-renamed layout. Finals go back to their own empty
+                # staging slots first — collision-free for any swap/chain order —
+                # then every temp returns to its original name (all slots vacated).
+                for final_path, temp_path in completed:
+                    with suppress(OSError):
+                        os.replace(final_path, temp_path)
+                for temp_path, original_path, _final in staged:
+                    if os.path.exists(temp_path):
+                        with suppress(OSError):
+                            os.replace(temp_path, original_path)
+                raise
+            finally:
+                # rmdir not rmtree: if a rollback step failed, staged audio must survive.
+                with suppress(OSError):
+                    os.rmdir(staging_dir)
 
             if spectral_ids:
                 _remap_spectral_ids(spectral_ids, to_rename)
