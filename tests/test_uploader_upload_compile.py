@@ -38,7 +38,7 @@ FOOTER = (
 EXPECTED_ALBUM_DESC = "[b][size=4]Tracklist[/size][/b]\n[b]01.[/b] Testartist - Intro [i](3:05)[/i]\n"
 
 EXPECTED_RELEASE_DESC = (
-    "[img]https://ptpimg.me/67vp4c.png[/img] [b]16 bit [color=#2E86C1]44.1[/color] kHz[/b]\n"
+    "[img]https://i.ibb.co/hPnL0dT/cdq.png[/img] [b]16 bit [color=#2E86C1]44.1[/color] kHz[/b]\n"
     "Released on [b]2024-03-01[/b]\n" + FOOTER
 )
 
@@ -278,7 +278,7 @@ def test_compile_data_hybrid_forces_tracklist_and_drops_encode_specifics(tracker
     )
     assert "01. Intro [i](3:05)[/i] [16 bit / 44.1 kHz]" in data["release_desc"]
     assert "Encode Specifics" not in data["release_desc"]
-    assert "https://ptpimg.me/67vp4c.png" not in data["release_desc"]
+    assert "https://i.ibb.co/hPnL0dT/cdq.png" not in data["release_desc"]
 
 
 def test_compile_data_new_group_year_and_group_year_go_to_different_fields(tracker, pinned_cfg):
@@ -415,7 +415,7 @@ def test_t_description_includes_spectral_bbcode_when_urls_given(pinned_cfg):
 
 def test_t_description_24bit_uses_other_icon(pinned_cfg):
     desc = t_desc(track_data={"01. Intro.flac": make_track(precision=24)})
-    assert "[img]https://ptpimg.me/c1osdy.png[/img] [b]24 bit [color=#2E86C1]44.1[/color] kHz[/b]" in desc
+    assert "[img]https://i.ibb.co/4R16Ktwx/hires.png[/img] [b]24 bit [color=#2E86C1]44.1[/color] kHz[/b]" in desc
 
 
 def test_t_description_no_precision_uses_plain_encode_specifics(pinned_cfg):
@@ -448,7 +448,7 @@ def test_t_description_matched_source_url_with_icons(pinned_cfg):
     url = "https://testartist.bandcamp.com/album/testalbum"
     desc = t_desc(source_url=url)
     assert (
-        f"[b]Source:[/b] [pad=0|3][url={url}][img]https://ptpimg.me/91oo89.png[/img] Bandcamp[/url][/pad]\n" in desc
+        f"[b]Source:[/b] [pad=0|3][url={url}][img]https://i.ibb.co/jd8Ysrm/bandcamp.png[/img] Bandcamp[/url][/pad]\n" in desc
     )
 
 
