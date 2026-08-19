@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 from typing import Any
 
 import asyncclick as click
@@ -81,7 +82,9 @@ async def upload_images(filepaths: tuple, image_host) -> list[str]:
             click.secho(url)
             urls.append(url)
         if cfg.upload.description.copy_uploaded_url_to_clipboard:
-            pyperclip.copy("\n".join(urls))
+            # Clipboard is unavailable on headless servers; never fail the upload over it.
+            with contextlib.suppress(Exception):
+                pyperclip.copy("\n".join(urls))
         return urls
     except (ImageUploadFailed, ValueError) as error:
         click.secho(f"Image Upload Failed. {error}", fg="red")
