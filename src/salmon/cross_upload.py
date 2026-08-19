@@ -34,8 +34,9 @@ _ARTIST_FIELDS = {
     "producer": "producer",
 }
 
+# RED serves hosted images under /i/ (per its API) and /t/; match both so none are missed.
 _RED_IMAGE_URL = re.compile(
-    r"https?://redacted\.sh/t/[^\s\[\]\"'<>]+",
+    r"https?://redacted\.sh/(?:i|t)/[^\s\[\]\"'<>]+",
     flags=re.IGNORECASE,
 )
 
@@ -205,7 +206,7 @@ async def _upload_response(
             transcodes,
         )
         return 0, target_group_id
-    data = await _rehost_red_images(data, source_site)
+    data = await _rehost_red_images(data, source_site, target_site)
     # Add to an existing target group if the album is already there, rather than
     # creating a duplicate group and splitting the swarm.
     searchstrs = generate_dupe_check_searchstrs(
@@ -378,16 +379,31 @@ async def _upload_conversions(
         click.secho(f"Uploaded {label}: {target_site.base_url}/torrents.php?torrentid={torrent_id}", fg="green")
 
 
-async def _rehost_red_images(data: dict[str, Any], source_site: "BaseGazelleApi") -> dict[str, Any]:
+async def _rehost_red_images(
+    data: dict[str, Any], source_site: "BaseGazelleApi", target_site: "BaseGazelleApi"
+) -> dict[str, Any]:
     if source_site.site_code != "RED":
         return data
+
+    # Rehosting exists to move RED-hosted images onto a host the TARGET can display.
+    # If the configured host is 'red' but the target isn't RED, that would rehost
+    # RED->RED and leave the target with an image its users can't see — fall back to catbox.
+    def _host_for(configured: str) -> str:
+        return "catbox" if (configured == "red" and target_site.site_code != "RED") else configured
+
+    if target_site.site_code != "RED" and "red" in {cfg.image.cover_uploader, cfg.image.image_uploader}:
+        click.secho(
+            f"Image host is 'red' but the target is {target_site.site_code}; rehosting those images "
+            "to catbox so they render on the target.",
+            fg="yellow",
+        )
 
     rewritten = data.copy()
     replacements: dict[tuple[str, str], str] = {}
     fields = {
-        "image": cfg.image.cover_uploader,
-        "album_desc": cfg.image.image_uploader,
-        "release_desc": cfg.image.image_uploader,
+        "image": _host_for(cfg.image.cover_uploader),
+        "album_desc": _host_for(cfg.image.image_uploader),
+        "release_desc": _host_for(cfg.image.image_uploader),
     }
     for field, image_host in fields.items():
         value = str(rewritten.get(field) or "")
