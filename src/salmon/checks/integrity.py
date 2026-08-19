@@ -219,6 +219,24 @@ def _reserve_backup_path(path: str) -> str:
             counter += 1
 
 
+def _restore_backup(path: str, backup_path: str, moved: bool, *, clobber_partial: bool) -> None:
+    """Put the original back after a failure; discard an unused placeholder.
+
+    clobber_partial: overwrite a half-written output at ``path`` (flac re-encodes
+    into ``path``; mp3val edits the backup in place, so mp3 must not clobber).
+    """
+    if not moved:
+        with suppress(OSError):
+            os.remove(backup_path)
+        return
+    if not os.path.exists(backup_path):
+        return
+    if os.path.exists(path) and not clobber_partial:
+        return
+    with suppress(OSError):
+        os.replace(backup_path, path)
+
+
 async def _sanitize_flac(path: str) -> bool:
     """Sanitize a FLAC file by re-encoding and cleaning metadata.
 
@@ -260,16 +278,13 @@ async def _sanitize_flac(path: str) -> bool:
     except Exception as e:
         click.secho(f"Failed to sanitize {path}, {e}", fg="red", bold=True)
         # Restore the original if the re-encode failed with it renamed aside (#12).
-        # If the rename never happened the backup is just our empty placeholder —
-        # "restoring" it would clobber the intact file.
-        if moved and os.path.exists(backup_path):
-            if os.path.exists(path):
-                os.remove(path)
-            os.rename(backup_path, path)
-        elif not moved:
-            with suppress(OSError):
-                os.remove(backup_path)
+        _restore_backup(path, backup_path, moved, clobber_partial=True)
         return False
+    except BaseException:
+        # Cancellation (webui cancel / Ctrl-C) is not an Exception — restore
+        # the original before letting it propagate.
+        _restore_backup(path, backup_path, moved, clobber_partial=True)
+        raise
 
 
 async def _sanitize_mp3(path: str) -> bool:
@@ -309,11 +324,11 @@ async def _sanitize_mp3(path: str) -> bool:
 
     except Exception as e:
         click.secho(f"Failed to sanitize {path}, {e}", fg="red", bold=True)
-        # Ensure we restore the original file if something went wrong; an unused
-        # placeholder (rename never happened) must be discarded, not "restored".
-        if moved and os.path.exists(backup_path) and not os.path.exists(path):
-            os.rename(backup_path, path)
-        elif not moved:
-            with suppress(OSError):
-                os.remove(backup_path)
+        # Ensure we restore the original file if something went wrong.
+        _restore_backup(path, backup_path, moved, clobber_partial=False)
         return False
+    except BaseException:
+        # Cancellation (webui cancel / Ctrl-C) is not an Exception — restore
+        # the original before letting it propagate.
+        _restore_backup(path, backup_path, moved, clobber_partial=False)
+        raise

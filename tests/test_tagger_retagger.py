@@ -1,3 +1,4 @@
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -61,6 +62,46 @@ def test_rename_files_swap_preserves_content(tmp_path, monkeypatch) -> None:
     assert (tmp_path / "01.flac").read_text() == "B"
     assert (tmp_path / "02.flac").read_text() == "A"
     assert not list(tmp_path.glob(".salmon-rename-*"))  # no temp files left behind
+
+
+def test_rename_files_rolls_back_on_midway_failure(tmp_path, monkeypatch) -> None:
+    # A failure mid-phase-2 must restore every file to its original name — no
+    # bare staging indices, no half-renamed layout.
+    monkeypatch.setattr(cfg.upload.formatting, "file_template", "{tracknumber}")
+    monkeypatch.setattr(cfg.upload.formatting, "split_multi_disc_into_folders", False)
+
+    (tmp_path / "01.flac").write_text("A")
+    (tmp_path / "02.flac").write_text("B")
+    tags = {
+        "01.flac": SimpleNamespace(tracknumber="02", discnumber="1"),
+        "02.flac": SimpleNamespace(tracknumber="01", discnumber="1"),
+    }
+    metadata = {
+        "tracks": {
+            "1": {
+                "1": {"artists": [("Artist", "main")], "title": "Track 1"},
+                "2": {"artists": [("Artist", "main")], "title": "Track 2"},
+            }
+        }
+    }
+
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def flaky_replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 4:  # the second phase-2 move
+            raise OSError("disk full")
+        real_replace(src, dst)
+
+    monkeypatch.setattr("salmon.tagger.retagger.os.replace", flaky_replace)
+
+    with pytest.raises(OSError, match="disk full"):
+        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert (tmp_path / "01.flac").read_text() == "A"
+    assert (tmp_path / "02.flac").read_text() == "B"
+    assert not list(tmp_path.glob(".salmon-rename-*"))
 
 
 def test_rename_files_refuses_target_onto_untracked_file(tmp_path, monkeypatch) -> None:
