@@ -208,17 +208,18 @@ async def _sanitize_flac(path: str) -> bool:
     Returns:
         True if sanitization succeeded, False otherwise.
     """
+    backup_path = path + ".corrupted"
     try:
-        os.rename(path, path + ".corrupted")
+        os.rename(path, backup_path)
         result = await anyio.run_process(
-            ["flac", f"-{cfg.upload.compression.flac_compression_level}", path + ".corrupted", "-o", path],
+            ["flac", f"-{cfg.upload.compression.flac_compression_level}", backup_path, "-o", path],
             check=False,
         )
         if result.returncode != 0:
             stderr_text = result.stderr.decode() if result.stderr else ""
             stdout_text = result.stdout.decode() if result.stdout else ""
             raise Exception(f"FLAC encoding failed:\n{stdout_text}\n{stderr_text}")
-        os.remove(path + ".corrupted")
+        os.remove(backup_path)
         result = await anyio.run_process(
             ["metaflac", "--dont-use-padding", "--remove", "--block-type=PADDING,PICTURE", path],
             check=False,
@@ -234,6 +235,11 @@ async def _sanitize_flac(path: str) -> bool:
         return True
     except Exception as e:
         click.secho(f"Failed to sanitize {path}, {e}", fg="red", bold=True)
+        # Restore the original if the re-encode failed with it renamed aside (#12)
+        if os.path.exists(backup_path):
+            if os.path.exists(path):
+                os.remove(path)
+            os.rename(backup_path, path)
         return False
 
 

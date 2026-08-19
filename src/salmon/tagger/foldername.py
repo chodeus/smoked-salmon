@@ -42,6 +42,11 @@ def rename_folder(path, metadata, auto_rename, check=True):
 
         new_base = _edit_folder_interactive(new_base, auto_rename) if auto_rename or user_rename_choice else old_base
 
+    # A name with a path separator or . / .. would escape the download dir and, via the
+    # rmtree below, delete something outside it — reject before building new_path.
+    if os.sep in new_base or (os.altsep and os.altsep in new_base) or new_base in {"", ".", ".."}:
+        raise UploadError(f"Invalid folder name: {new_base!r}")
+
     new_path = os.path.join(cfg.directory.download_directory, new_base)
     if os.path.isdir(new_path) and not os.path.samefile(path, new_path):
         if not check or click.confirm(

@@ -187,11 +187,14 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
     elif cambia_output.parsed.parsed_logs[0].checksum.integrity == cambia.Integrity.Unknown:
         click.secho("Lacking a valid checksum. The torrent will be marked as trumpable.", fg="yellow")
 
-    # Appended rerip logs: the last log per track carries the valid hash (#358)
-    last_copy_hash: dict[int, str] = {}
-    for parsed_log in cambia_output.parsed.parsed_logs:
+    # Appended rerip logs: last log per (disc, track) wins. Key on the disc's TOC id
+    # so a second disc's track numbers don't overwrite the first's (#358).
+    parsed_logs = cambia_output.parsed.parsed_logs
+    last_copy_hash: dict[tuple[str, int], str] = {}
+    for parsed_log in parsed_logs:
+        disc_id = parsed_log.toc.accurip_tocid.hash
         for track in parsed_log.tracks:
-            last_copy_hash[track.num] = track.test_and_copy.copy_hash
+            last_copy_hash[(disc_id, track.num)] = track.test_and_copy.copy_hash
     copy_crc_set = set(last_copy_hash.values())
 
     # Get list of files to check
@@ -206,8 +209,14 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         raise ValueError("No audio files found!")
 
     click.secho("\nVerifying audio file CRC values...", fg="cyan", bold=True)
-    if cambia_output.parsed.parsed_logs[0].tracks[0].is_range:
-        toc_entries = cambia_output.parsed.parsed_logs[0].toc.raw.entries
+    # Multiple discs in one log make the flat file set ambiguous against per-(disc,track)
+    # hashes and against a single log's range/TOC; the log score + checksum checks above
+    # already ran, so skip the file-CRC comparison rather than risk a false failure (#358, 3b).
+    if len({pl.toc.accurip_tocid.hash for pl in parsed_logs}) > 1:
+        click.secho("Multi-disc log detected — skipping combined CRC file verification.", fg="yellow")
+        return
+    if parsed_logs[0].tracks[0].is_range:
+        toc_entries = parsed_logs[0].toc.raw.entries
 
         # Log contains range rip CRC, but we have individual track files
         # Concatenate track files to recreate the original range rip for CRC verification
