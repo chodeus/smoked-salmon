@@ -11,6 +11,7 @@ import pyperclip
 import salmon.trackers
 from salmon import cfg
 from salmon.checks import mqa_test
+from salmon.checks.blacklist import red_blacklist_reason
 from salmon.checks.integrity import (
     check_integrity,
     format_integrity,
@@ -471,6 +472,15 @@ async def upload(
                 group_id = await check_existing_group(gazelle_site, searchstrs)
 
             remaining_gazelle_sites.remove(tracker)
+
+            # RED bans specific releases from being uploaded; block RED here (OPS is unaffected).
+            if gazelle_site.site_code == "RED":
+                block_reason = red_blacklist_reason(metadata["artists"], metadata["title"], metadata.get("label"))
+                if block_reason:
+                    click.secho(f"\n⛔ Blocked — {block_reason}", fg="red", bold=True)
+                    click.secho("Not uploading this release to RED.", fg="red", bold=True)
+                    tracker = None
+                    continue
 
             # Handle cover image for this tracker
             if group_id:
