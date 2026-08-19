@@ -252,7 +252,7 @@ def _web_echo(message: Any = None, **kw: Any) -> None:
 
 def _web_secho(message: Any = None, **kw: Any) -> None:
     interaction = _current.get()
-    if interaction is not None:
+    if interaction is not None and not kw.get("err"):
         text = "" if message is None else asyncclick.unstyle(str(message))
         interaction.log_fragment(text, kw.get("nl", True))
     _originals["secho"](message, **kw)
