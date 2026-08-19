@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 import salmon.trackers.red as red_mod
 from salmon.trackers.base import BaseGazelleApi, HttpResponse
 
@@ -7,10 +9,14 @@ class _Files:
     torrent_data = b"x"
 
 
+def _files() -> Any:
+    return cast("Any", _Files())
+
+
 async def test_base_dry_run_upload_returns_zero_and_no_network():
     api = BaseGazelleApi.__new__(BaseGazelleApi)
     api.site_string = "OPS"
-    assert await api.dry_run_upload({"title": "x"}, _Files()) == (0, 0)
+    assert await api.dry_run_upload({"title": "x"}, _files()) == (0, 0)
 
 
 async def test_red_dry_run_sends_dryrun_flag_and_no_real_upload(monkeypatch):
@@ -26,7 +32,7 @@ async def test_red_dry_run_sends_dryrun_flag_and_no_real_upload(monkeypatch):
     async def fake_ensure():
         pass
 
-    posted = {"url": None}
+    posted: dict[str, str] = {"url": ""}
 
     async def fake_request(method, url, data=None, **kwargs):
         posted["url"] = url
@@ -35,7 +41,7 @@ async def test_red_dry_run_sends_dryrun_flag_and_no_real_upload(monkeypatch):
     monkeypatch.setattr(api, "ensure_authenticated", fake_ensure)
     monkeypatch.setattr(api, "_request", fake_request)
 
-    result = await api.dry_run_upload({"title": "x"}, _Files())
+    result = await api.dry_run_upload({"title": "x"}, _files())
     assert captured.get("dryrun") is True          # RED's dryrun flag was set
     assert "action=upload" in posted["url"]         # it hit the upload endpoint (in dryrun mode)
     assert result == (0, 0)                          # no torrent id returned
@@ -53,5 +59,5 @@ async def test_red_dry_run_without_api_key_makes_no_request(monkeypatch):
         return None
 
     monkeypatch.setattr(api, "_request", fake_request)
-    assert await api.dry_run_upload({"title": "x"}, _Files()) == (0, 0)
+    assert await api.dry_run_upload({"title": "x"}, _files()) == (0, 0)
     assert called["request"] is False               # no api_key -> local-only, never posts
