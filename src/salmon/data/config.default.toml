@@ -39,6 +39,15 @@ image_uploader = "catbox"
 cover_uploader = "catbox"
 specs_uploader = "catbox"
 
+# Per-tracker overrides (optional): e.g. use RED's own image host for RED covers
+# while OPS uses a neutral host. Anything not overridden falls back to the values
+# above. RED-hosted images only render for logged-in RED users, so "red" is refused
+# as a cover/image host for OPS/DIC, and never allowed for spectrals on any tracker.
+# [image.red]
+# cover_uploader = "red"
+# [image.ops]
+# cover_uploader = "catbox"
+
 # Default selection for "What spectral IDs would you like to upload?" prompt.
 # "*" = all, "+" = randomized selection, "0" = none. Leave unset to use context-based default.
 # default_spectral_ids = "*"

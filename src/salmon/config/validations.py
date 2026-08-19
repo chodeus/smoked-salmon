@@ -28,6 +28,12 @@ ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", 
 SpectralSelectionLiteral = Literal["*", "+", "0"]
 
 
+class ImageHostOverride(BaseStruct):
+    image_uploader: ImgUploaderLiteral | None = None
+    cover_uploader: ImgUploaderLiteral | None = None
+    specs_uploader: ImgUploaderLiteral | None = None
+
+
 class ImageUploader(BaseStruct):
     image_uploader: ImgUploaderLiteral = "catbox"
     cover_uploader: ImgUploaderLiteral = "catbox"
@@ -39,9 +45,24 @@ class ImageUploader(BaseStruct):
     remove_auto_downloaded_cover_image: bool = False
     auto_compress_cover: bool = False
     default_spectral_ids: SpectralSelectionLiteral | None = None
+    red: ImageHostOverride | None = None
+    ops: ImageHostOverride | None = None
+    dic: ImageHostOverride | None = None
+
+    def resolve(self, site_code: str | None, kind: str) -> str:
+        """Return the host for a tracker + kind (image/cover/specs_uploader), honoring per-tracker overrides."""
+        if site_code:
+            override = getattr(self, site_code.lower(), None)
+            if override is not None and getattr(override, kind) is not None:
+                return getattr(override, kind)
+        return getattr(self, kind)
 
     def __post_init__(self):
-        uploader_selections = set({self.image_uploader, self.cover_uploader, self.specs_uploader})
+        uploader_selections = {self.image_uploader, self.cover_uploader, self.specs_uploader}
+        for _code in ("red", "ops", "dic"):
+            _ov = getattr(self, _code)
+            if _ov is not None:
+                uploader_selections.update(v for v in (_ov.image_uploader, _ov.cover_uploader, _ov.specs_uploader) if v)
         if ("ptpimg" in uploader_selections) and self.ptpimg_key is None:
             raise ValueError("ptpimg key not specified")
         if "ptscreens" in uploader_selections and self.ptscreens_key is None:
@@ -53,6 +74,17 @@ class ImageUploader(BaseStruct):
         # RED's rules forbid uploading spectrals to its image host.
         if self.specs_uploader == "red":
             raise ValueError("RED's image host does not allow spectral uploads")
+        for code in ("red", "ops", "dic"):
+            override = getattr(self, code)
+            if override is None:
+                continue
+            if override.specs_uploader == "red":
+                raise ValueError(f"[image.{code}]: RED's image host does not allow spectral uploads")
+            if code != "red" and "red" in (override.cover_uploader, override.image_uploader):
+                raise ValueError(
+                    f"[image.{code}]: RED's image host only renders for RED users; "
+                    f"use a neutral host for {code.upper()}"
+                )
 
 
 class TidalSettings(BaseStruct):
