@@ -1,6 +1,7 @@
 from os.path import dirname, join
 
 import aiohttp_jinja2
+import asyncclick as click
 import jinja2
 from aiohttp import web
 from aiohttp_jinja2 import render_template
@@ -25,7 +26,17 @@ async def create_app_async() -> web.AppRunner:
     aiohttp_jinja2.setup(app, loader=jinja2.FileSystemLoader(join(dirname(__file__), "templates")))
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, web_cfg.host, web_cfg.port)
+    # The spectral viewer serves images without authentication. Don't expose it on a
+    # non-loopback address unless a web auth_token is configured — bind loopback instead.
+    host = web_cfg.host
+    if host not in ("127.0.0.1", "localhost", "::1", "") and not getattr(web_cfg, "auth_token", None):
+        click.secho(
+            f"Spectral viewer: binding 127.0.0.1 instead of {host} (unauthenticated; set "
+            "[upload.web_interface] auth_token to serve it on the LAN).",
+            fg="yellow",
+        )
+        host = "127.0.0.1"
+    site = web.TCPSite(runner, host, web_cfg.port)
     await site.start()
     return runner
 

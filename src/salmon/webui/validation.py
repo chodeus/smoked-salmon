@@ -27,11 +27,15 @@ def validate_album_dir(raw_path: str) -> str:
     '/', ``$HOME`` and bind mounts, which would sweep the whole system.
     """
     path = os.path.realpath(os.path.expanduser(raw_path))
-    if not os.path.isdir(path):
-        raise HTTPException(status_code=404, detail=f"Not a directory: {raw_path}")
-    if not is_within_roots(path):
+    roots = allowed_roots()
+    # Confinement BEFORE any filesystem probe: an isdir() check on an out-of-root path would
+    # leak whether that path exists (CWE-203). Also reject the roots themselves — a job that
+    # deletes its path (AbortAndDeleteFolder -> rmtree) must never target a configured root.
+    if not is_within_roots(path, roots) or path in roots:
         raise HTTPException(
             status_code=403,
             detail="Refusing to operate outside the configured salmon directories.",
         )
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=404, detail=f"Not a directory: {raw_path}")
     return path

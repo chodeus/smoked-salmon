@@ -479,8 +479,8 @@ def test_job_factory_error_is_surfaced_in_job_dict(client, album_dir, monkeypatc
 
 def test_spectrals_generate_nonexistent_path_returns_404(client):
     resp = client.post("/api/spectrals/generate", json={"path": "/definitely/not/here"})
-    assert resp.status_code == 404
-    assert resp.json()["detail"] == "Not a directory: /definitely/not/here"
+    assert resp.status_code == 403
+    assert "outside the configured salmon directories" in resp.json()["detail"]
 
 
 def test_spectrals_generate_missing_body_field_returns_422(client):
@@ -636,13 +636,13 @@ def test_transcode_invalid_bitrate_returns_422(client, album_dir):
 
 def test_transcode_nonexistent_dir_returns_404(client):
     resp = client.post("/api/convert/transcode", json={"path": "/definitely/not/here", "bitrate": "V0"})
-    assert resp.status_code == 404
-    assert resp.json()["detail"] == "Not a directory: /definitely/not/here"
+    assert resp.status_code == 403
+    assert "outside the configured salmon directories" in resp.json()["detail"]
 
 
 def test_downconvert_nonexistent_dir_returns_404(client):
     resp = client.post("/api/convert/downconvert", json={"path": "/definitely/not/here"})
-    assert resp.status_code == 404
+    assert resp.status_code == 403
 
 
 def test_transcode_happy_path(client, album_dir, monkeypatch):
@@ -716,7 +716,7 @@ def test_checks_run_empty_checks_returns_422(client, album_dir):
 
 def test_checks_run_nonexistent_dir_returns_404_before_check_validation(client):
     resp = client.post("/api/checks/run", json={"path": "/definitely/not/here", "checks": ["bogus"]})
-    assert resp.status_code == 404
+    assert resp.status_code == 403
 
 
 def test_checks_run_integrity_and_log_happy_path(client, album_dir, integrity_stub):
