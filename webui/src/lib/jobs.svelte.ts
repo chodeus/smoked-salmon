@@ -40,6 +40,8 @@ class JobStore {
   private ws: WebSocket | null = null
   private started = false
   private resyncBuffer: any[] | null = null
+  private resyncing = false
+  private resyncPending = false
 
   init() {
     if (this.started) return
@@ -60,6 +62,13 @@ class JobStore {
   /** Replace the store with a fresh snapshot; called on every (re)connect.
    *  Events arriving during the fetch are buffered and replayed on top. */
   private async resync() {
+    // Single-flight: a reconnect/retry mustn't run two snapshots at once, or an older
+    // snapshot could clobber a newer one and drop events. Queue one follow-up instead.
+    if (this.resyncing) {
+      this.resyncPending = true
+      return
+    }
+    this.resyncing = true
     this.resyncBuffer = []
     try {
       const snapshot = await apiGet<Job[]>('/jobs')
@@ -76,6 +85,12 @@ class JobStore {
       for (const event of buffered) this.apply(event)
       this.loadError = `Failed to load job list: ${e}`
       setTimeout(() => this.resync(), 2000)
+    } finally {
+      this.resyncing = false
+      if (this.resyncPending) {
+        this.resyncPending = false
+        void this.resync()
+      }
     }
   }
 
