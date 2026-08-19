@@ -27,6 +27,7 @@
 
   let activeJobId = $state<string | null>(null)
   let error = $state('')
+  let starting = $state(false)
 
   const activeJob = $derived(activeJobId ? jobStore.get(activeJobId) : undefined)
 
@@ -40,20 +41,26 @@
   }
 
   $effect(() => {
-    apiGet<{ trackers: string[]; sources: string[] }>('/upload/options').then((o) => {
-      trackers = o.trackers
-      sources = o.sources
-      if (!tracker && o.trackers.length) tracker = o.trackers[0]
-    })
+    apiGet<{ trackers: string[]; sources: string[] }>('/upload/options')
+      .then((o) => {
+        trackers = o.trackers
+        sources = o.sources
+        if (!tracker && o.trackers.length) tracker = o.trackers[0]
+      })
+      .catch((e) => {
+        error = `Failed to load tracker options: ${e}`
+      })
   })
 
   async function start() {
+    if (starting) return
     error = ''
     const parsedGroupId = parseGroupId(groupId)
     if (parsedGroupId === undefined) {
-      error = 'Ungültige Group-ID — Zahl oder torrents.php-Permalink angeben.'
+      error = 'Invalid group ID — provide a number or a torrents.php permalink.'
       return
     }
+    starting = true
     try {
       const job = await apiPost<Job>('/upload', {
         path,
@@ -76,6 +83,8 @@
       activeJobId = job.id
     } catch (e) {
       error = String(e)
+    } finally {
+      starting = false
     }
   }
 
@@ -135,7 +144,7 @@
       <label class="check"><input type="checkbox" bind:checked={skipIntegrityCheck} /> Integritäts-Check überspringen</label>
     </div>
     <div style="margin-top: 0.8rem">
-      <button class="btn" onclick={start} disabled={!path || !tracker}>Upload starten</button>
+      <button class="btn" onclick={start} disabled={!path || !tracker || starting}>Start upload</button>
     </div>
     {#if error}<p class="muted">{error}</p>{/if}
   </div>

@@ -340,6 +340,8 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
                     ext,
                     multiple_artists,
                     trackno_or=f"{disc_number:0{disc_digits}d}.{track_number:0{track_digits}d}",
+                    track_digits=track_digits,
+                    disc_digits=disc_digits,
                 )
                 old_dir = os.path.dirname(os.path.join(path, filename))
                 if old_dir != path:
@@ -489,7 +491,7 @@ def move_non_audio_files(directory_move_pairs, directory_disc_map=None):
         disc_number = directory_disc_map.get(old_dir)
         for file in os.listdir(old_dir):
             file_path = os.path.join(old_dir, file)
-            if file.endswith(ext) or os.path.isdir(file_path):
+            if file.lower().endswith(ext) or os.path.isdir(file_path):
                 continue
             dest_name = file
             if merging_multiple_folders and disc_number is not None:
