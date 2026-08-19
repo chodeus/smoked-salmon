@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import tempfile
+from contextlib import suppress
 from itertools import chain
 from string import Formatter
 from typing import Any
@@ -362,11 +363,27 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
                 if not os.path.isdir(folder):
                     os.mkdir(folder)
             # os.rename silently overwrites on POSIX; refuse if two files map to one name,
-            # or if a target lands on a file that is keeping its current name (not renamed).
+            # or if a target lands on any existing file (tracked or not) that isn't itself
+            # a rename source vacating in phase 1.
             renamed_sources = {old for old, _ in to_rename}
             unchanged = set(tags) - renamed_sources
             targets = [n for _, n in to_rename]
-            collisions = sorted({n for n in targets if targets.count(n) > 1 or n in unchanged})
+
+            def _target_blocked(name: str) -> bool:
+                if name in unchanged:
+                    return True
+                full = os.path.join(path, name)
+                if not os.path.exists(full):
+                    return False
+                for old in renamed_sources:
+                    # samefile: a case-variant of a source (case-insensitive fs) is the
+                    # source itself and vacates in phase 1 — not a collision.
+                    with suppress(OSError):
+                        if os.path.samefile(full, os.path.join(path, old)):
+                            return False
+                return True
+
+            collisions = sorted({n for n in targets if targets.count(n) > 1 or _target_blocked(n)})
             if collisions:
                 raise UploadError(f"Rename would overwrite existing files: {', '.join(collisions)}")
 

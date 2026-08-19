@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 import aiohttp
 import anyio
 import msgspec
+from yarl import URL
 
 from salmon import cfg
 from salmon.errors import ImageUploadFailed
@@ -55,7 +56,10 @@ class ImageUploader(BaseImageUploader):
         cookies = _build_tracker_cookies(red_settings.session, red_settings.keeplogged)
 
         try:
-            async with aiohttp.ClientSession(headers=headers, cookies=cookies) as session:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                # Jar-scope the session cookie to RED so a redirect can't carry it elsewhere
+                # (mirrors trackers.base._request).
+                session.cookie_jar.update_cookies(cookies, response_url=URL(BASE_URL))
                 authkey = await self._get_authkey(session, red_settings.session)
                 form = aiohttp.FormData()
                 form.add_field("auth", authkey)
