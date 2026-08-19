@@ -8,7 +8,7 @@ import pyperclip
 from salmon import cfg
 from salmon.common import AliasedCommands, commandgroup
 from salmon.errors import ImageUploadFailed
-from salmon.images import catbox, imgbb, imgbox, oeimg, ptpimg, ptscreens
+from salmon.images import catbox, imgbb, imgbox, oeimg, ptpimg, ptscreens, red
 
 HOSTS = {
     "ptpimg": ptpimg,
@@ -17,6 +17,7 @@ HOSTS = {
     "oeimg": oeimg,
     "imgbb": imgbb,
     "imgbox": imgbox,
+    "red": red,
 }
 
 
