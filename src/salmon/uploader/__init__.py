@@ -17,6 +17,7 @@ from salmon.checks.integrity import (
     sanitize_integrity,
 )
 from salmon.checks.logs import check_log_cambia
+from salmon.checks.tag_rules import collect_upload_warnings
 from salmon.checks.upconverts import upload_upconvert_test
 from salmon.common import commandgroup
 from salmon.constants import ENCODINGS, FORMATS, SOURCES, TAG_ENCODINGS
@@ -539,6 +540,9 @@ async def upload(
 
             if not request_id and cfg.upload.requests.check_requests:
                 request_id = await check_requests(gazelle_site, searchstrs)
+
+            for rule_warning in collect_upload_warnings(gazelle_site.site_code, os.path.basename(path), track_data):
+                click.secho(f"⚠ {rule_warning}", fg="yellow", bold=True)
 
             try:
                 torrent_id, group_id, torrent_path, torrent_content, url = await upload_and_report(
