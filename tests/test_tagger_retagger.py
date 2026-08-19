@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from salmon import cfg
-from salmon.tagger.retagger import rename_files
+from salmon.tagger.retagger import _remap_spectral_ids, rename_files
 
 
 def test_rename_files_can_flatten_multi_disc_tracks(tmp_path, monkeypatch) -> None:
@@ -28,3 +28,11 @@ def test_rename_files_can_flatten_multi_disc_tracks(tmp_path, monkeypatch) -> No
     assert (tmp_path / "2.01.flac").exists()
     assert not (tmp_path / "CD01").exists()
     assert not (tmp_path / "CD02").exists()
+
+
+def test_remap_spectral_ids_does_not_chain():
+    # to_rename forms a chain a->b, b->c. Track a's spectral must land on b (its
+    # direct target), not be dragged through to c by sequential application.
+    spectral_ids = {1: "a.flac", 2: "b.flac"}
+    _remap_spectral_ids(spectral_ids, [("a.flac", "b.flac"), ("b.flac", "c.flac")])
+    assert spectral_ids == {1: "b.flac", 2: "c.flac"}
