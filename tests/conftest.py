@@ -93,8 +93,17 @@ def fake_tracker() -> FakeGazelleApi:
 
 @pytest.fixture
 def album_dir(tmp_path: Path) -> Path:
-    """A fake album folder with dummy audio bytes (enough for hashing/paths)."""
-    album = tmp_path / "Testartist - Testalbum (2024) [FLAC]"
+    """A fake album folder with dummy audio bytes (enough for hashing/paths).
+
+    Created under the configured download_directory (in a per-test subfolder)
+    so it passes the webui's path-confinement check and mirrors reality.
+    """
+    from salmon import cfg
+
+    # realpath so the path matches the webui's confinement resolution (macOS /var -> /private/var)
+    base = Path(os.path.realpath(cfg.directory.download_directory)) / tmp_path.name
+    base.mkdir(parents=True, exist_ok=True)
+    album = base / "Testartist - Testalbum (2024) [FLAC]"
     album.mkdir()
     for i, title in enumerate(["Intro", "Mittelteil", "Outro"], start=1):
         (album / f"{i:02d}. {title}.flac").write_bytes(b"fLaC" + bytes(2000))

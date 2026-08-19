@@ -5,6 +5,7 @@ import os
 from fastapi import APIRouter, HTTPException
 
 from salmon import cfg
+from salmon.webui.validation import is_within_roots
 
 router = APIRouter(tags=["browse"])
 
@@ -15,13 +16,16 @@ AUDIO_EXTENSIONS = {".flac", ".mp3", ".m4a"}
 def browse(path: str | None = None) -> dict:
     """List subdirectories and audio files of a directory.
 
-    Defaults to the configured download directory.
+    Defaults to the configured download directory and stays confined to
+    salmon's configured directories (no browsing out to '/', $HOME or mounts).
     """
     if not path:
         path = cfg.directory.download_directory
-    path = os.path.abspath(os.path.expanduser(path))
+    path = os.path.realpath(os.path.expanduser(path))
     if not os.path.isdir(path):
         raise HTTPException(status_code=404, detail=f"Not a directory: {path}")
+    if not is_within_roots(path):
+        raise HTTPException(status_code=403, detail="Refusing to browse outside the configured directories.")
 
     dirs = []
     audio_files = []
@@ -37,9 +41,10 @@ def browse(path: str | None = None) -> dict:
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
 
+    parent = os.path.dirname(path)
     return {
         "path": path,
-        "parent": os.path.dirname(path) if path != "/" else None,
+        "parent": parent if is_within_roots(parent) else None,
         "dirs": dirs,
         "audio_files": audio_files,
     }
