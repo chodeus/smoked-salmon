@@ -443,7 +443,7 @@ async def upload(
     tracker = gazelle_site.site_code
     torrent_id = None
     cover_url = None
-    stored_cover_url = None  # Store the cover URL for reuse across trackers
+    stored_cover_urls: dict[str, str] = {}  # cover URL cached per image host (trackers may use different hosts)
     # Regenerate searchstrs (will be used to search for requests)
     searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
 
@@ -491,13 +491,16 @@ async def upload(
             else:
                 # For new groups, we need a cover URL
                 # If we already uploaded it for a previous tracker, reuse that URL
-                if not stored_cover_url:
+                cover_host = cfg.image.resolve(gazelle_site.site_code, "cover_uploader")
+                if cover_host not in stored_cover_urls:
                     cover_path, is_downloaded = await download_cover_if_nonexistent(path, metadata["cover"])
-                    stored_cover_url = await upload_cover(cover_path)
+                    uploaded = await upload_cover(cover_path, gazelle_site.site_code)
+                    if uploaded:
+                        stored_cover_urls[cover_host] = uploaded
                     if is_downloaded and remove_downloaded_cover_image and cover_path:
                         click.secho("Removing downloaded Cover Image File", fg="yellow")
                         os.remove(cover_path)
-                cover_url = stored_cover_url
+                cover_url = stored_cover_urls.get(cover_host)
 
                 if not cover_url:
                     click.secho("\nNo cover image is available for this new group upload.", fg="yellow", bold=True)
@@ -524,11 +527,14 @@ async def upload(
                             click.secho("Checking for cover image again...", fg="cyan")
                             cover_path, is_downloaded = await download_cover_if_nonexistent(path, metadata["cover"])
                             if cover_path:
-                                stored_cover_url = await upload_cover(cover_path)
+                                cover_host = cfg.image.resolve(gazelle_site.site_code, "cover_uploader")
+                                uploaded = await upload_cover(cover_path, gazelle_site.site_code)
+                                if uploaded:
+                                    stored_cover_urls[cover_host] = uploaded
                                 if is_downloaded and remove_downloaded_cover_image and cover_path:
                                     click.secho("Removing downloaded Cover Image File", fg="yellow")
                                     os.remove(cover_path)
-                                cover_url = stored_cover_url
+                                cover_url = stored_cover_urls.get(cover_host)
 
                             if cover_url:
                                 click.secho("Cover image found and uploaded.", fg="green")
