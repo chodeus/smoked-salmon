@@ -187,6 +187,7 @@ class BaseGazelleApi:
     site_code: str
     site_string: str
     api_key: str = ""  # Optional, only for API key upload
+    api_key_prefix: str = ""  # OPS wants "token <key>"; RED wants the bare key
     keeplogged: str | None = None
 
     def __init__(self) -> None:
@@ -274,7 +275,7 @@ class BaseGazelleApi:
             await self.ensure_authenticated()
 
         use_api_key = prefer_api_key and bool(self.api_key)
-        headers = {**self.headers, **({"Authorization": self.api_key} if use_api_key else {})}
+        headers = {**self.headers, **({"Authorization": f"{self.api_key_prefix}{self.api_key}"} if use_api_key else {})}
         cookies = {} if use_api_key else self._get_cookies()
 
         if cfg.upload.debug_tracker_connection:
