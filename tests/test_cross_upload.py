@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import anyio
 from torf import Torrent
@@ -31,7 +32,7 @@ class SourceSite:
 
 
 def test_single_and_batch_inputs(tmp_path: Path) -> None:
-    source = SourceSite()
+    source: Any = SourceSite()
     assert _input_items("42", source) == [42]
     assert _input_items("https://redacted.sh/torrents.php?id=1&torrentid=42", source) == [42]
 
@@ -80,12 +81,12 @@ def test_cross_upload_data_maps_source_to_target() -> None:
             "scene": True,
         },
     }
-    target = SimpleNamespace(
+    target: Any = SimpleNamespace(
         site_code="OPS",
         release_types={"Demo": 10, "Unknown": 21},
     )
 
-    data = _compile_data(response, SourceSite(), target)
+    data = _compile_data(response, cast("Any", SourceSite()), target)
 
     assert data["title"] == "Album & More"
     assert data["artists[]"] == ["Main & Artist", "Guest"]
@@ -134,7 +135,7 @@ def test_conversion_uploads_share_original_group(tmp_path: Path, monkeypatch) ->
                 "torrents": [],
             }
 
-    target = Target()
+    target: Any = Target()
     original_data = {
         "title": "Album",
         "artists[]": ["Artist"],
@@ -202,8 +203,8 @@ def test_existing_group_skips_duplicate_original(tmp_path: Path, monkeypatch) ->
     async def run():
         return await cross_upload_module._upload_response(
             {"torrent": {"format": "FLAC", "encoding": "Lossless", "media": "WEB"}},
-            SourceSite(),
-            Target(),
+            cast("Any", SourceSite()),
+            cast("Any", Target()),
             target_group_id=9,
             transcodes=("320", "V0"),
         )
@@ -248,7 +249,7 @@ def test_existing_conversions_are_filtered_before_processing() -> None:
         "catalogue_number": "CAT-1",
     }
 
-    assert anyio.run(_missing_conversions, Target(), 9, data, True, ("V0", "320")) == (False, ("320",))
+    assert anyio.run(_missing_conversions, cast("Any", Target()), 9, data, True, ("V0", "320")) == (False, ("320",))
 
 
 def test_red_images_are_rehosted_to_configured_hosts(monkeypatch) -> None:
@@ -270,7 +271,7 @@ def test_red_images_are_rehosted_to_configured_hosts(monkeypatch) -> None:
     result = anyio.run(
         cross_upload_module._rehost_red_images,
         data,
-        SimpleNamespace(site_code="RED"),
+        cast("Any", SimpleNamespace(site_code="RED")),
     )
 
     assert all("redacted.sh/t/" not in result[field] for field in ("image", "album_desc", "release_desc"))

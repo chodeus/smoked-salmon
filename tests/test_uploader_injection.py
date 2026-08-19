@@ -10,6 +10,7 @@ fakes; no real connections are made.
 import base64
 import subprocess
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import qbittorrentapi
@@ -63,7 +64,7 @@ def make_client(monkeypatch, cls, fake_session):
 
 
 def make_seedbox(**overrides) -> Seedbox:
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         name="box",
         enabled=True,
         url="remote",
@@ -707,7 +708,7 @@ def test_resolve_shell_path_at_prefix_joins_remote_folder() -> None:
 async def test_add_to_downloader_reads_torrent_file_and_calls_client(tmp_path) -> None:
     torrent_path = tmp_path / "release.torrent"
     torrent_path.write_bytes(b"d8:announce3:urle")
-    client = FakeInjectClient()
+    client: Any = FakeInjectClient()
 
     result = await seedbox_module._add_to_downloader(client, "/shell/path", str(torrent_path), "salmon", True)
 
@@ -718,7 +719,7 @@ async def test_add_to_downloader_reads_torrent_file_and_calls_client(tmp_path) -
 async def test_add_to_downloader_reports_client_error(tmp_path, click_messages) -> None:
     torrent_path = tmp_path / "release.torrent"
     torrent_path.write_bytes(b"data")
-    client = FakeInjectClient()
+    client: Any = FakeInjectClient()
     client.add_error = RuntimeError("client exploded")
 
     result = await seedbox_module._add_to_downloader(client, "/shell", str(torrent_path), "", False)
@@ -730,7 +731,7 @@ async def test_add_to_downloader_reports_client_error(tmp_path, click_messages) 
 async def test_add_to_downloader_reports_failure_when_client_returns_false(tmp_path, click_messages) -> None:
     torrent_path = tmp_path / "release.torrent"
     torrent_path.write_bytes(b"data")
-    client = FakeInjectClient()
+    client: Any = FakeInjectClient()
     client.add_result = False
 
     result = await seedbox_module._add_to_downloader(client, "/shell", str(torrent_path), "", False)

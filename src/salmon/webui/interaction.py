@@ -312,4 +312,4 @@ def install_interaction_patches() -> None:
     salmon.commands.handle_spectrals_upload_and_deletion = _web_handle_spectrals_upload_and_deletion
     # pre_data._prompt_encoding uses the raw builtin input(); a module-level
     # name shadows the builtin lookup.
-    salmon.tagger.pre_data.input = _web_input
+    setattr(salmon.tagger.pre_data, "input", _web_input)  # noqa: B010 - shadows the builtin, not a real attribute

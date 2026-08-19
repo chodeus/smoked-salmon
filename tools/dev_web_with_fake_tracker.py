@@ -23,7 +23,7 @@ WEB_PORT = 55155
 async def main() -> None:
     import uvicorn
     from aiohttp import web as aioweb
-    from fake_gazelle import make_fake_gazelle
+    from fake_gazelle import make_fake_gazelle  # pyright: ignore[reportMissingImports] - tests/ added to sys.path above
 
     from salmon.trackers.red import RedApi
     from salmon.webui.app import create_app

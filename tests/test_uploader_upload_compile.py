@@ -71,7 +71,7 @@ def make_metadata(**overrides):
     return md
 
 
-def make_track(tracknumber="1", discnumber="1", title="Intro", duration=185, precision=16):
+def make_track(tracknumber="1", discnumber="1", title="Intro", duration=185, precision: int | None = 16):
     return {
         "duration": duration,
         "sample rate": 44100,
@@ -448,7 +448,8 @@ def test_t_description_matched_source_url_with_icons(pinned_cfg):
     url = "https://testartist.bandcamp.com/album/testalbum"
     desc = t_desc(source_url=url)
     assert (
-        f"[b]Source:[/b] [pad=0|3][url={url}][img]https://i.ibb.co/jd8Ysrm/bandcamp.png[/img] Bandcamp[/url][/pad]\n" in desc
+        f"[b]Source:[/b] [pad=0|3][url={url}][img]https://i.ibb.co/jd8Ysrm/bandcamp.png[/img] "
+        "Bandcamp[/url][/pad]\n" in desc
     )
 
 

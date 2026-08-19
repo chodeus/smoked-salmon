@@ -31,7 +31,7 @@ from salmon.errors import AbortAndDeleteFolder
 from salmon.webui.interaction import WebInteraction, set_interaction
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Callable, Coroutine
 
 _id_counter = itertools.count(1)
 
@@ -141,7 +141,7 @@ class JobManager:
         self,
         job_type: str,
         title: str,
-        factory: Callable[[Job], Awaitable[Any]],
+        factory: Callable[[Job], Coroutine[Any, Any, Any]],
         params: dict[str, Any] | None = None,
         lock_key: str | None = None,
     ) -> Job:
@@ -156,7 +156,7 @@ class JobManager:
         self,
         job_type: str,
         title: str,
-        factory: Callable[[Job], Awaitable[Any]],
+        factory: Callable[[Job], Coroutine[Any, Any, Any]],
         params: dict[str, Any] | None = None,
         lock_key: str | None = None,
     ) -> Job:
@@ -190,7 +190,7 @@ class JobManager:
         else:
             self._broadcast(event)
 
-    async def _run(self, job: Job, factory: Callable[[Job], Awaitable[Any]]) -> None:
+    async def _run(self, job: Job, factory: Callable[[Job], Coroutine[Any, Any, Any]]) -> None:
         self._set_status(job, "running")
         token = set_progress_callback(_make_progress_callback(job, self._broadcast))
         try:
@@ -205,7 +205,7 @@ class JobManager:
             self._finish(job)
             self._broadcast({"event": "finished", "job": job.to_dict()})
 
-    def _thread_main(self, job: Job, factory: Callable[[Job], Awaitable[Any]]) -> None:
+    def _thread_main(self, job: Job, factory: Callable[[Job], Coroutine[Any, Any, Any]]) -> None:
         interaction_token = set_interaction(job.interaction)
         progress_token = set_progress_callback(_make_progress_callback(job, self._emit))
         loop = asyncio.new_event_loop()

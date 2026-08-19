@@ -28,6 +28,11 @@ from salmon.webui.jobs import (
     manager,
 )
 
+
+def task_of(job) -> asyncio.Task:
+    assert job.task is not None
+    return job.task
+
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
@@ -65,7 +70,7 @@ def join_job(client: TestClient, job_id: str) -> dict:
         async def _wait() -> None:
             assert job.task is not None
             with contextlib.suppress(asyncio.CancelledError):
-                await job.task
+                await task_of(job)
 
         assert client.portal is not None
         client.portal.call(_wait)
@@ -160,7 +165,7 @@ async def test_job_success_sets_done_result_and_finished_at():
     job = m.create("demo", "Demo", factory, params={"p": 1})
     assert job.status == "queued"
     assert job.finished_at is None
-    await job.task
+    await task_of(job)
     assert job.status == "done"
     assert job.result == {"answer": 42}
     assert job.error is None
@@ -175,7 +180,7 @@ async def test_factory_value_error_sets_error_status_and_message():
         raise ValueError("boom")
 
     job = m.create("demo", "Demo", factory)
-    await job.task
+    await task_of(job)
     assert job.status == "error"
     assert job.error == "ValueError: boom"
     assert job.result is None
@@ -188,7 +193,7 @@ async def test_factory_click_abort_sets_friendly_error():
         raise click.Abort()
 
     job = m.create("demo", "Demo", factory)
-    await job.task
+    await task_of(job)
     assert job.status == "error"
     assert job.error == "Aborted."
 
@@ -200,7 +205,7 @@ async def test_factory_exception_group_single_leaf_is_unwrapped():
         raise ExceptionGroup("wrapper", [ValueError("boom")])
 
     job = m.create("demo", "Demo", factory)
-    await job.task
+    await task_of(job)
     assert job.status == "error"
     assert job.error == "ValueError: boom"
 
@@ -212,7 +217,7 @@ async def test_factory_exception_group_multiple_leaves_are_joined():
         raise ExceptionGroup("wrapper", [ValueError("a"), TypeError("b")])
 
     job = m.create("demo", "Demo", factory)
-    await job.task
+    await task_of(job)
     assert job.status == "error"
     assert job.error == "ValueError: a; TypeError: b"
 
@@ -225,7 +230,7 @@ async def test_factory_nested_exception_group_with_abort_prefers_abort_message()
         raise ExceptionGroup("outer", [inner, ValueError("ignored")])
 
     job = m.create("demo", "Demo", factory)
-    await job.task
+    await task_of(job)
     assert job.status == "error"
     assert job.error == "Aborted."
 
@@ -240,7 +245,7 @@ async def test_cancel_running_job_sets_cancelled_and_releases_lock():
     await wait_running(job)
     assert m.cancel(job.id) is True
     with contextlib.suppress(asyncio.CancelledError):
-        await job.task
+        await task_of(job)
     assert job.status == "cancelled"
     assert job.finished_at is not None
     assert "/some/album" not in m._active_lock_keys
@@ -254,7 +259,7 @@ async def test_cancel_unknown_or_finished_job_returns_false():
         return "ok"
 
     job = m.create("demo", "Demo", factory)
-    await job.task
+    await task_of(job)
     assert m.cancel(job.id) is False
 
 
@@ -270,7 +275,7 @@ async def test_lock_key_conflict_raises_and_conflicting_job_is_not_registered():
         m.create("demo", "Demo 2", factory, lock_key="/album")
     assert len(m.jobs) == 1
     release.set()
-    await first.task
+    await task_of(first)
 
 
 async def test_lock_released_after_finish_allows_second_job():
@@ -280,10 +285,10 @@ async def test_lock_released_after_finish_allows_second_job():
         return "ok"
 
     first = m.create("demo", "Demo", factory, lock_key="/album")
-    await first.task
+    await task_of(first)
     assert "/album" not in m._active_lock_keys
     second = m.create("demo", "Demo again", factory, lock_key="/album")
-    await second.task
+    await task_of(second)
     assert second.status == "done"
 
 
@@ -298,12 +303,12 @@ async def test_cancel_before_first_run_finalizes_job_and_releases_lock():
     job = m.create("demo", "Demo", factory, lock_key="/leaky")
     assert m.cancel(job.id) is True  # cancelled before the loop ran the task
     with pytest.raises(asyncio.CancelledError):
-        await job.task
+        await task_of(job)
     assert job.status == "cancelled"
     assert job.finished_at is not None
     assert "/leaky" not in m._active_lock_keys
     second = m.create("demo", "Demo 2", factory, lock_key="/leaky")
-    await second.task
+    await task_of(second)
     assert second.status == "done"
 
 
@@ -316,7 +321,7 @@ async def test_subscriber_receives_created_status_progress_finished_in_order():
         return "ok"
 
     job = m.create("demo", "Demo", factory)
-    await job.task
+    await task_of(job)
 
     events = []
     while not queue.empty():
@@ -343,7 +348,7 @@ async def test_unsubscribed_queue_receives_no_events():
         return "ok"
 
     job = m.create("demo", "Demo", factory)
-    await job.task
+    await task_of(job)
     assert queue.empty()
 
 
@@ -371,7 +376,7 @@ async def test_prune_finished_evicts_oldest_beyond_max_finished_jobs():
     finished_jobs = []
     for _ in range(MAX_FINISHED_JOBS + 1):
         job = m.create("demo", "Demo", factory)
-        await job.task
+        await task_of(job)
         finished_jobs.append(job)
 
     # The next create prunes exactly the oldest finished job.
@@ -379,7 +384,7 @@ async def test_prune_finished_evicts_oldest_beyond_max_finished_jobs():
     assert finished_jobs[0].id not in m.jobs
     assert finished_jobs[1].id in m.jobs
     assert len(m.jobs) == MAX_FINISHED_JOBS + 1
-    await extra.task
+    await task_of(extra)
 
 
 # ---------------------------------------------------------------------------

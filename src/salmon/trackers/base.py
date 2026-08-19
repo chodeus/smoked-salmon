@@ -654,7 +654,7 @@ class BaseGazelleApi:
                 return torrent_id, group_id
             except (TypeError, ValueError) as err:
                 soup = BeautifulSoup(resp_text, "lxml")
-                error = soup.find("h2", string="Error")
+                error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
                 error_message = resp_text
                 if error and error.parent and error.parent.parent:
                     p_tag = error.parent.parent.find("p")
@@ -742,7 +742,7 @@ class BaseGazelleApi:
         resp_text = resp.text
 
         soup = BeautifulSoup(resp_text, "lxml")
-        edit_error = soup.find("h2", string="Error")
+        edit_error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
         if edit_error and edit_error.parent and edit_error.parent.parent:
             p_tag = edit_error.parent.parent.find("p")
             error_message = p_tag.text if p_tag else "Unknown error"

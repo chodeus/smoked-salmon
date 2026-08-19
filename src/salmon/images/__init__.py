@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+from collections.abc import Sequence
 from typing import Any
 
 import asyncclick as click
@@ -65,11 +66,11 @@ async def up(filepaths: tuple[str, ...], image_host: Any) -> None:
     await upload_images(filepaths, image_host)
 
 
-async def upload_images(filepaths: tuple, image_host) -> list[str]:
+async def upload_images(filepaths: Sequence[str], image_host) -> list[str]:
     """Upload images to the specified host asynchronously.
 
     Args:
-        filepaths: Tuple of file paths to upload.
+        filepaths: File paths to upload.
         image_host: The image host module.
 
     Returns:
