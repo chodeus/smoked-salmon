@@ -315,6 +315,7 @@ async def test_cancel_before_first_run_finalizes_job_and_releases_lock():
 async def test_subscriber_receives_created_status_progress_finished_in_order():
     m = JobManager()
     queue = m.subscribe()
+    assert queue is not None
 
     async def factory(job):
         report_progress(1, 3, "first file")
@@ -342,6 +343,7 @@ async def test_subscriber_receives_created_status_progress_finished_in_order():
 async def test_unsubscribed_queue_receives_no_events():
     m = JobManager()
     queue = m.subscribe()
+    assert queue is not None
     m.unsubscribe(queue)
 
     async def factory(job):
@@ -355,6 +357,7 @@ async def test_unsubscribed_queue_receives_no_events():
 async def test_full_subscriber_queue_drops_oldest_event():
     m = JobManager()
     queue = m.subscribe()
+    assert queue is not None
     for i in range(SUBSCRIBER_QUEUE_SIZE + 1):
         m._broadcast({"event": "tick", "i": i})
 
