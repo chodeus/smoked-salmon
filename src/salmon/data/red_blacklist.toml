@@ -1,0 +1,161 @@
+# RED (redacted.sh) upload blacklist — releases that must NOT be uploaded to RED.
+# Source: RED "Do Not Upload" / Current Blacklist (Music), last updated 2024-06-07.
+#
+# This BLOCKS a RED upload when it matches (OPS uploads are unaffected).
+# Matching is case- and punctuation-insensitive on whole words: every word in
+# an entry's `artist` (and `album`, if given) must appear in the release.
+#   - `artist` with no `album`  -> blocks that artist's whole discography
+#   - `artist` + `album`        -> blocks only that release
+#   - `label`                   -> blocks by record label
+#
+# Editable: remove an entry if RED de-lists it (their changelog shows removals),
+# or add your own. If you have a legitimate copy of a blacklisted release, RED
+# requires a StaffPM with proof before uploading.
+
+[[entry]]
+artist = "Ayesha Erotica"
+note = "Most releases are impersonator fakes; StaffPM proof required for a legit release."
+
+[[entry]]
+artist = "The Beatles"
+album = "Carnival of Light"
+note = "Unreleased; numerous fakes online."
+
+[[entry]]
+artist = "Boards of Canada"
+album = "Catalog 3"
+note = "Early release only in friends/family hands; history of fakes. Contact staff first."
+
+[[entry]]
+artist = "Boards of Canada"
+album = "Acid Memories"
+note = "Early release; history of fakes. Contact staff first."
+
+[[entry]]
+artist = "Boards of Canada"
+album = "Closes Vol 1"
+note = "Early release; history of fakes. Contact staff first."
+
+[[entry]]
+artist = "Boards of Canada"
+album = "Play by Numbers"
+note = "Early release; history of fakes. Contact staff first."
+
+[[entry]]
+artist = "Boards of Canada"
+album = "Hooper Bay"
+note = "Early release; history of fakes. Contact staff first."
+
+[[entry]]
+artist = "Boards of Canada"
+album = "Boc Maxima"
+note = "Early release; history of fakes. Contact staff first."
+
+[[entry]]
+artist = "Boards of Canada"
+album = "Old Tunes"
+note = "Early 'Old Tunes' collections; history of fakes. Contact staff first."
+
+[[entry]]
+artist = "Death Cab For Yeezy"
+note = "Fan-made mixes, not official in any way."
+
+[[entry]]
+artist = "Dr. Dre"
+album = "Detox"
+note = "Cancelled album; numerous fake leaks."
+
+[[entry]]
+artist = "Fleet Foxes"
+album = "Shore Stems Edition"
+note = "Stems are never allowed, even official ones."
+
+[[entry]]
+artist = "Green Day"
+album = "Cigarettes & Valentines"
+note = "Unreleased; masters stolen. Numerous fakes."
+
+[[entry]]
+artist = "Jean-Michel Jarre"
+album = "Music for Supermarkets"
+note = "Single-copy release, masters destroyed; every rip is a radio-broadcast bootleg."
+
+[[entry]]
+artist = "Madlib"
+album = "Recycled Records"
+note = "Web-rips from the Coca-Cola Recycled Records site; StaffPM proof of a proper source required."
+
+[[entry]]
+artist = "Nicole 12"
+note = "Entire discography prohibited (overt sexual imagery of youths)."
+
+[[entry]]
+artist = "Nine Inch Nails"
+album = "Strobe Light"
+note = "Fan-made mashup of an April Fools' fake album."
+
+[[entry]]
+artist = "Nirvana"
+album = "Live In Japan Pacific Rim Tour"
+note = "Discs 1/2 sourced from audience recordings."
+
+[[entry]]
+artist = "Nirvana"
+album = "Under the Covers"
+note = "FM-sourced bootleg with skips from faulty pressings."
+
+[[entry]]
+artist = "Pink Floyd"
+album = "Dawn of the Piper"
+note = "Internet-sourced, non-retail bootleg."
+
+[[entry]]
+artist = "Pink Floyd"
+album = "Tree Full of Secrets"
+note = "Internet-sourced, non-retail bootleg."
+
+[[entry]]
+artist = "Glen Porter"
+album = "Blessed by a Young Death"
+note = "Do not upload the streaming version (blank-audio defect on a track)."
+
+[[entry]]
+artist = "Prof Stoned"
+note = "User compilations / fan remasters; not 'reasonably official'."
+
+[[entry]]
+artist = "Bruce Springsteen"
+album = "Odds and Sod"
+note = "Internet-sourced, non-retail bootleg."
+
+[[entry]]
+artist = "The Upholsterers"
+album = "Your Furniture Was Always Dead"
+note = "Early Jack White project; many fakes."
+
+[[entry]]
+artist = "Wu-Tang Clan"
+album = "Once Upon a Time in Shaolin"
+note = "Single copy exists, masters destroyed; every online copy is a fake."
+
+[[entry]]
+artist = "Various Artists"
+album = "Encyclopedia of Jazz"
+note = "Circulating version is missing tracks; 100-disc sub-sets are not standalone releases."
+
+[[entry]]
+artist = "Various Artists"
+album = "Yes Means Nein"
+note = "Do not upload the streaming/Beatport version (blank copy of track 10)."
+
+[[entry]]
+artist = "Viper"
+note = "New Viper uploads require Staff PM approval (low-effort spam since 2014)."
+
+[[entry]]
+label = "Sip It & Trip It Records"
+note = "Not a real label; recycled internet rips."
+
+[[entry]]
+label = "Sandero Classic Sound"
+note = "Bootleg e-label; releases are not 'reasonably official' (spam)."
