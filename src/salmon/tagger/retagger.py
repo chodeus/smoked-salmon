@@ -14,6 +14,7 @@ from salmon.constants import (
     BLACKLISTED_CHARS,
     BLACKLISTED_FULLWIDTH_REPLACEMENTS,
 )
+from salmon.errors import UploadError
 from salmon.tagger.tagfile import TagFile
 
 
@@ -163,9 +164,35 @@ def append_guests_to_track_titles(track):
     return track["title"]
 
 
+def _remap_spectral_ids(spectral_ids, to_rename):
+    """Remap spectral ids from old filenames to new, once, from a snapshot.
+
+    Applying the original->new map (not each rename sequentially) keeps a chained
+    rename (a->b, b->c) from dragging track a's spectral onto track c.
+    """
+    rename_map = dict(to_rename)
+    for key, value in list(spectral_ids.items()):
+        if value in rename_map:
+            spectral_ids[key] = rename_map[value]
+
+
+def _disc_track_sort_key(value):
+    s = str(value)
+    return (0, int(s)) if s.isdigit() else (1, s.lower())
+
+
 def metadata_to_track_list(metadata):
-    """Turn the double nested dictionary of tracks into a flat list of tracks."""
-    return list(chain.from_iterable([d.values() for d in metadata.values()]))
+    """Flatten the {disc: {track: meta}} dict into a list in disc/track order.
+
+    Sorted to match the (disc, track) ordering of the tag side in
+    create_track_changes, so the two zip together onto the right files.
+    """
+    ordered = []
+    for disc_key in sorted(metadata, key=_disc_track_sort_key):
+        disc = metadata[disc_key]
+        for track_key in sorted(disc, key=_disc_track_sort_key):
+            ordered.append(disc[track_key])
+    return ordered
 
 
 def _compare_tag(tagfield, metafield, tagset, trackmeta):
@@ -325,6 +352,13 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
             for folder in folders_to_create:
                 if not os.path.isdir(folder):
                     os.mkdir(folder)
+            # os.rename silently overwrites on POSIX; refuse if two files map to one name
+            # (e.g. a flattened multi-disc rip whose disc numbers didn't parse).
+            targets = [n for _, n in to_rename]
+            collisions = sorted({n for n in targets if targets.count(n) > 1})
+            if collisions:
+                raise UploadError(f"Rename would overwrite files with identical names: {', '.join(collisions)}")
+
             directory_move_pairs = set()
             for filename, new_name in to_rename:
                 old_dir = os.path.dirname(os.path.join(path, filename))
@@ -336,11 +370,8 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
                 new_path = new_path + new_path_ext
                 os.rename(os.path.join(path, filename), new_path)
 
-                if spectral_ids:
-                    for old_name, new_name in to_rename:
-                        for key, value in spectral_ids.items():
-                            if value == old_name:
-                                spectral_ids[key] = new_name
+            if spectral_ids:
+                _remap_spectral_ids(spectral_ids, to_rename)
 
             move_non_audio_files(directory_move_pairs, directory_disc_map)
             delete_empty_folders(path)
