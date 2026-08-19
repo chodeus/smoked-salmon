@@ -1,4 +1,15 @@
 # ===========================================
+# Stage 0: Web UI builder - build the Svelte SPA into salmon/webui/static
+# ===========================================
+FROM node:22-alpine AS webui-builder
+WORKDIR /build/webui
+COPY webui/package.json webui/package-lock.json ./
+RUN npm ci
+COPY webui/ ./
+# vite outDir is ../src/salmon/webui/static (see webui/vite.config.ts)
+RUN npm run build
+
+# ===========================================
 # Stage 1: Builder - Install dependencies and build the project
 # ===========================================
 FROM python:3.13-slim-trixie AS builder
@@ -28,6 +39,7 @@ RUN --mount=type=cache,target=/opt/uv-cache \
 
 # Copy source code
 COPY . .
+COPY --from=webui-builder /build/src/salmon/webui/static src/salmon/webui/static
 
 # Install the project in non-editable mode for production
 RUN --mount=type=cache,target=/opt/uv-cache \
@@ -57,8 +69,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Ensure app directory and its contents are writable by any user
 RUN mkdir -p /app/.music /app/.torrents && chmod -R 777 /app
 
-# Expose port for web interface
-EXPOSE 55110
+# 55110: legacy spectral viewer during `salmon up`; 55155: `salmon web` interface
+EXPOSE 55110 55155
 
 # Set the entrypoint to run the 'salmon' script
 ENTRYPOINT ["salmon"]
