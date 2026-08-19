@@ -12,13 +12,18 @@
     if (!token || busy) return
     busy = true
     error = ''
-    const ok = await login(token)
-    busy = false
-    if (ok) {
-      onLoggedIn()
-    } else {
-      error = 'Incorrect token.'
-      token = ''
+    try {
+      const ok = await login(token)
+      if (ok) {
+        onLoggedIn()
+      } else {
+        error = 'Incorrect token.'
+        token = ''
+      }
+    } catch (e) {
+      error = `Login failed: ${e}`
+    } finally {
+      busy = false
     }
   }
 </script>

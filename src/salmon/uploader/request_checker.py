@@ -181,9 +181,12 @@ async def _prompt_for_request_id(gazelle_site: "BaseGazelleApi", results: list[d
             parsed_qs = parse.parse_qs(parse.urlparse(request_id).query)
             if "id" in parsed_qs:
                 return int(parsed_qs["id"][0])
+            click.secho("That requests URL has no id parameter.", fg="red")
         elif request_id.lower().startswith("n") or not request_id.strip():
             click.echo("Not filling a request")
             return None
+        else:
+            click.secho(f"'{request_id.strip()}' isn't a request id, URL, or 'n' — try again.", fg="red")
 
 
 async def _confirm_request_id(gazelle_site: "BaseGazelleApi", request_id: str | int) -> bool:

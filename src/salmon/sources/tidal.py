@@ -127,7 +127,7 @@ class TidalBase(BaseScraper):
             if obj["type"] == "artworks" and obj["attributes"]["mediaType"] == "IMAGE":
                 files = obj["attributes"].get("files", [])
                 if files:
-                    cover = max(files, key=lambda f: f["meta"].get("width", 0))["href"]
+                    cover = max(files, key=lambda f: f.get("meta", {}).get("width", 0))["href"]
                 break
 
         tracklist = []

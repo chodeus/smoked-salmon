@@ -69,8 +69,13 @@ class JobStore {
       for (const event of buffered) this.apply(event)
       this.loadError = ''
     } catch (e) {
+      // Replay events buffered during the failed snapshot instead of dropping them
+      // (the socket may still be connected), and retry the snapshot shortly.
+      const buffered = this.resyncBuffer ?? []
       this.resyncBuffer = null
-      this.loadError = `Jobliste konnte nicht geladen werden: ${e}`
+      for (const event of buffered) this.apply(event)
+      this.loadError = `Failed to load job list: ${e}`
+      setTimeout(() => this.resync(), 2000)
     }
   }
 
