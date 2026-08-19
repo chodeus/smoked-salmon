@@ -47,21 +47,27 @@ _SENSITIVE_KEYS = re.compile(
     r'"(authkey|passkey|auth|api_key|Authorization)"\s*:\s*"[^"]*"',
     re.IGNORECASE,
 )
+# Same secrets as they appear in HTML/URLs (download links carry authkey/torrent_pass).
+_SENSITIVE_URL_PARAMS = re.compile(
+    r"\b(authkey|passkey|torrent_pass|auth|api_key)=[^&\"'\s<>]+",
+    re.IGNORECASE,
+)
 
 
 def _redact(text: str) -> str:
-    """Redact sensitive keys from debug output strings.
+    """Redact sensitive values (JSON fields and URL query params) from a string."""
+    text = _SENSITIVE_KEYS.sub(lambda m: f'"{m.group(1)}": "[REDACTED]"', text)
+    return _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
 
-    Replaces values of known sensitive fields (authkey, passkey, auth, etc.)
-    with [REDACTED] to prevent accidental exposure in logs.
 
-    Args:
-        text: The string to redact.
+def _safe_response_excerpt(text: str, limit: int = 500) -> str:
+    """A redacted, length-capped excerpt of a tracker response for error messages.
 
-    Returns:
-        The string with sensitive values replaced.
+    Upload responses are whole HTML pages whose download links embed authkey/
+    torrent_pass; surfacing them raw leaks the passkey into job state.
     """
-    return _SENSITIVE_KEYS.sub(lambda m: f'"{m.group(1)}": "[REDACTED]"', text)
+    redacted = _redact(text)
+    return redacted if len(redacted) <= limit else redacted[:limit] + "… [truncated]"
 
 
 def _normalize_session_cookie(cookie: str) -> str:
@@ -590,7 +596,7 @@ class BaseGazelleApi:
         except (msgspec.DecodeError, ValueError) as e:
             click.secho("❌ Failed to decode JSON response", fg="red", err=True)
             click.secho(f"Status code: {response.status}", fg="red", err=True)
-            click.secho(f"Response text: {repr(response.text)}", fg="red", err=True)
+            click.secho(f"Response text: {_safe_response_excerpt(response.text)}", fg="red", err=True)
             raise click.Abort from e
 
         try:
@@ -660,16 +666,16 @@ class BaseGazelleApi:
             except (TypeError, ValueError) as err:
                 soup = BeautifulSoup(resp_text, "lxml")
                 error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
-                error_message = resp_text
+                error_message = _safe_response_excerpt(resp_text)
                 if error and error.parent and error.parent.parent:
                     p_tag = error.parent.parent.find("p")
                     if p_tag:
-                        error_message = p_tag.text
+                        error_message = _redact(p_tag.text)
                 raise RequestError(f"Request fill failed: {error_message}") from err
         try:
             return self.parse_most_recent_torrent_and_group_id_from_group_page(resp_text)
         except TypeError as err:
-            raise RequestError(f"Site upload failed, response text: {resp_text}") from err
+            raise RequestError(f"Site upload failed, response text: {_safe_response_excerpt(resp_text)}") from err
 
     async def upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Upload torrent via API or upload.php.

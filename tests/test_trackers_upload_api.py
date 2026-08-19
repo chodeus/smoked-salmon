@@ -173,6 +173,24 @@ def test_redact_keeps_non_sensitive_fields_untouched():
     assert "secret" not in redacted
 
 
+def test_redact_masks_url_query_secrets_in_html():
+    html = '<a href="torrents.php?action=download&id=5&authkey=DEADBEEF&torrent_pass=PA55KEY">DL</a>'
+    redacted = _redact(html)
+    assert "DEADBEEF" not in redacted
+    assert "PA55KEY" not in redacted
+    assert "authkey=[REDACTED]" in redacted
+    assert "torrent_pass=[REDACTED]" in redacted
+
+
+def test_safe_response_excerpt_redacts_and_truncates():
+    from salmon.trackers.base import _safe_response_excerpt
+
+    big = "x" * 999 + "?authkey=SECRET"
+    out = _safe_response_excerpt(big, limit=100)
+    assert out.endswith("… [truncated]")
+    assert "SECRET" not in _safe_response_excerpt("?authkey=SECRET")
+
+
 # ---------------------------------------------------------------------------
 # authenticate / ensure_authenticated / announce
 # ---------------------------------------------------------------------------
