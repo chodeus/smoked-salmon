@@ -17,6 +17,7 @@ from salmon.constants import ARTIST_IMPORTANCES
 from salmon.converter.downconverting import convert_folder, generate_conversion_description
 from salmon.converter.transcoding import Bitrate, generate_transcode_description, transcode_folder
 from salmon.images import HOSTS
+from salmon.uploader.dupe_checker import check_existing_group, generate_dupe_check_searchstrs
 from salmon.uploader.upload import compile_files, generate_torrent
 
 if TYPE_CHECKING:
@@ -188,6 +189,7 @@ async def _upload_response(
     downconvert, transcodes = _conversion_options(source_torrent, downconvert, transcodes, all_formats)
 
     path = _release_path(response)
+    _verify_release_files(response, path)
     data = _compile_data(response, source_site, target_site)
     if target_group_id:
         if not downconvert and not transcodes:
@@ -204,6 +206,14 @@ async def _upload_response(
         )
         return 0, target_group_id
     data = await _rehost_red_images(data, source_site)
+    # Add to an existing target group if the album is already there, rather than
+    # creating a duplicate group and splitting the swarm.
+    searchstrs = generate_dupe_check_searchstrs(
+        [(name, "main") for name in data["artists[]"]], data["title"], data.get("catalogue_number")
+    )
+    existing_group = await check_existing_group(target_site, searchstrs, offer_deletion=False)
+    if existing_group:
+        data = {**data, "groupid": existing_group}
     torrent_path, torrent = generate_torrent(target_site, str(path))
     files = await compile_files(str(path), torrent, {"source": source_torrent["media"]})
     click.secho(f"Uploading {path.name} using {torrent_path}...", fg="yellow")
@@ -402,7 +412,9 @@ async def _rehost_red_image(url: str, source_site: "BaseGazelleApi", image_host:
                 headers=headers,
                 cookies=source_site._get_cookies(),
             ) as session,
-            session.get(url) as response,
+            # No redirects: aiohttp's empty-domain cookie jar would send the RED session
+            # cookie to whatever host a redirect points at.
+            session.get(url, allow_redirects=False) as response,
         ):
             if response.status >= 400 or not response.content_type.startswith("image/"):
                 raise click.ClickException(f"Could not download RED image {url} (HTTP {response.status}).")
@@ -427,6 +439,31 @@ def _release_path(response: dict[str, Any]) -> Path:
     if not path.is_dir():
         raise click.ClickException(f"Release files not found at {path}.")
     return path
+
+
+def _verify_release_files(response: dict[str, Any], path: Path) -> None:
+    """Abort if the on-disk files don't match the source torrent's file list.
+
+    The target torrent is generated fresh (different infohash by design, due to the
+    site 'source' tag), so we verify content by name+size against the API file list.
+    Catches a folder that was retagged or renamed since it was grabbed.
+    """
+    file_list = response["torrent"].get("fileList") or ""
+    expected: dict[str, int] = {}
+    for entry in file_list.split("|||"):
+        match = re.match(r"(.+)\{\{\{(\d+)\}\}\}$", entry.strip())
+        if match:
+            expected[Path(html.unescape(match.group(1))).name] = int(match.group(2))
+    if not expected:
+        return
+
+    actual = {f.name: f.stat().st_size for f in path.rglob("*") if f.is_file()}
+    mismatched = sorted(name for name, size in expected.items() if actual.get(name) != size)
+    if mismatched:
+        raise click.ClickException(
+            f"Local files don't match the source torrent ({len(mismatched)} differ, e.g. "
+            f"{mismatched[0]!r}). Re-download or point at the original files before cross-uploading."
+        )
 
 
 def _compile_data(
