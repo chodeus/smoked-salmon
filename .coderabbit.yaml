@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit config for the chodeus/smoked-salmon fork.
+#
+# One-time comprehensive review: a PR of `master` into the `upstream-base` branch
+# (pinned at the upstream fork point) surfaces the whole fork delta in a single
+# pass. base_branches must list it or CodeRabbit only auto-reviews the default branch.
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "^upstream-base$"
+  path_filters:
+    - "!uv.lock"
+    - "!**/package-lock.json"
+    - "!webui/node_modules/**"
+    - "!src/salmon/webui/static/**"
+    - "!src/salmon/data/version.toml"
+  tools:
+    # Lint/format/type is already enforced by our CI (ruff + basedpyright); skip here to avoid duplicate noise.
+    ruff:
+      enabled: false
+    gitleaks:
+      enabled: true
