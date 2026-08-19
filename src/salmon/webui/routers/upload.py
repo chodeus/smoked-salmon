@@ -84,7 +84,7 @@ async def start(req: UploadStartRequest) -> dict:
         )
         return {"album_path": path, "tracker": req.tracker}
 
-    title = f"Upload zu {req.tracker}: {os.path.basename(path)}"
+    title = f"Upload to {req.tracker}: {os.path.basename(path)}"
     try:
         job = manager.create_threaded("upload", title, run, req.model_dump() | {"path": path}, lock_key=path)
     except JobConflictError as e:
