@@ -171,6 +171,8 @@ class UploadWebInterface(BaseStruct):
     port: int = 55110
     display_host: str = "localhost"
     static_root_url: str = "/static"
+    auth_token: str | None = None
+    allowed_hosts: list[str] = msgspec.field(default_factory=list)
 
     def __post_init__(self):
         if self.port < 1 or self.port > 65535:
