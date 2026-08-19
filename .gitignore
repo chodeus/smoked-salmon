@@ -24,3 +24,7 @@ accounts.json
 salmon/web/static/specs
 !.gitkeep
 .venv
+
+# webui
+webui/node_modules/
+src/salmon/webui/static/

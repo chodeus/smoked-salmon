@@ -58,7 +58,7 @@ async def _add_to_downloader(
     torrent_path: str,
     label: str,
     add_paused: bool,
-) -> None:
+) -> bool:
     """Read a torrent file and add it to the download client.
 
     Args:
@@ -67,14 +67,22 @@ async def _add_to_downloader(
         torrent_path: Local path to the .torrent file.
         label: Label to apply in the download client.
         add_paused: Whether to add the torrent in paused state.
+
+    Returns:
+        True if the torrent was added successfully, False otherwise.
     """
     async with await anyio.open_file(torrent_path, "rb") as f:
         torrent = await f.read()
     try:
-        client.add_to_downloader(shell_path, torrent, is_paused=add_paused, label=label)
-        click.secho("Torrent added to client successfully", fg="green")
+        success = client.add_to_downloader(shell_path, torrent, is_paused=add_paused, label=label)
     except Exception as e:
         click.secho(f"Failed to add torrent to client: {e}", fg="red")
+        return False
+    if not success:
+        click.secho("FAILED to add torrent to client", fg="red", bold=True)
+        return False
+    click.secho("Torrent added to client successfully", fg="green")
+    return True
 
 
 class UploadManager:
@@ -88,6 +96,8 @@ class UploadManager:
         click.secho("Initializing upload managers", fg="cyan")
         self._client_cache: dict[str, TorrentClient] = {}
         for seedbox in cfg.seedbox:
+            if not seedbox.enabled:
+                continue
             try:
                 if seedbox.torrent_client not in self._client_cache:
                     self._client_cache[seedbox.torrent_client] = TorrentClientGenerator.parse_libtc_url(
@@ -121,6 +131,8 @@ class UploadManager:
         """
         click.secho(f"Preparing upload tasks for: {directory}", fg="cyan")
         for seedbox in cfg.seedbox:
+            if not seedbox.enabled:
+                continue
             if seedbox.torrent_client not in self._client_cache:
                 continue
             if seedbox.flac_only and not is_flac:
@@ -157,7 +169,11 @@ class UploadManager:
                         shell_path = _resolve_shell_path(seedbox.directory, seedbox.extra_args)
                     else:
                         shell_path = seedbox.directory or os.path.abspath(cfg.directory.download_directory)
-                    await _add_to_downloader(client, shell_path, local_path, seedbox.label, seedbox.add_paused)
+                    success = await _add_to_downloader(
+                        client, shell_path, local_path, seedbox.label, seedbox.add_paused
+                    )
+                    if not success:
+                        click.secho(f"Seed task failed for seedbox: {seedbox.name}", fg="red")
             except Exception as e:
                 click.secho(f"Critical error during task: {e}", fg="red")
 

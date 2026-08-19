@@ -21,6 +21,7 @@ from salmon.errors import (
     LoginError,
     RequestError,
     RequestFailedError,
+    UploadError,
 )
 
 ARTIST_TYPES = [
@@ -128,7 +129,7 @@ class SearchReleaseData(msgspec.Struct, frozen=True):
     url: str
 
 
-class RetryableError(Exception):
+class RetryableError(RequestError):
     """Exception for retryable network errors."""
 
     pass
@@ -153,11 +154,12 @@ class BaseGazelleApi:
     site_string: str
     api_key: str = ""  # Optional, only for API key upload
 
-    # Rate limiter: 5 requests per 10 seconds (shared across all instances)
-    _rate_limiter = AsyncLimiter(5, 10)
-
     def __init__(self) -> None:
         """Initialize the API client. Subclasses should call this after setting cookie/base_url."""
+        # Rate limiter: 5 requests per 10 seconds. Per instance, because an
+        # AsyncLimiter binds to the first event loop that uses it and the web
+        # interface runs upload jobs on their own loops.
+        self._rate_limiter = AsyncLimiter(5, 10)
         self.headers = {
             "Connection": "keep-alive",
             "Cache-Control": "max-age=0",
@@ -322,7 +324,8 @@ class BaseGazelleApi:
         Raises:
             LoginError: If authentication fails.
             RequestFailedError: If the request fails.
-            RetryableError: If network error persists after retries.
+            RetryableError: If network error persists after retries
+                (a RequestError subclass).
         """
         url = self.base_url + "/ajax.php"
         params = {"action": action, **(params or {})}
@@ -524,6 +527,7 @@ class BaseGazelleApi:
 
         Raises:
             RequestError: If upload fails.
+            UploadError: If the site reports success but no torrent id.
         """
         url = self.base_url + "/ajax.php?action=upload"
         data["auth"] = self.authkey
@@ -541,7 +545,7 @@ class BaseGazelleApi:
 
         try:
             if resp["status"] != "success":
-                raise RequestError(f"API upload failed: {resp['error']}")
+                raise RequestError(f"API upload failed: {resp.get('error', resp)}")
             if ("requestid" in resp["response"] and resp["response"]["requestid"]) or (
                 "fillRequest" in resp["response"]
                 and resp["response"]["fillRequest"]
@@ -564,6 +568,8 @@ class BaseGazelleApi:
             elif "torrentId" in resp["response"]:
                 torrent_id = resp["response"]["torrentId"]
                 group_id = resp["response"]["groupId"]
+            elif "requestid" not in resp["response"] and "fillRequest" not in resp["response"]:
+                raise UploadError(f"API upload succeeded but returned no torrent id, response: {resp}")
             return torrent_id, group_id
         except TypeError as err:
             raise RequestError(f"API upload failed, response: {resp}") from err
@@ -603,7 +609,7 @@ class BaseGazelleApi:
                 return torrent_id, group_id
             except (TypeError, ValueError) as err:
                 soup = BeautifulSoup(resp_text, "lxml")
-                error = soup.find("h2", text="Error")
+                error = soup.find("h2", string="Error")
                 error_message = resp_text
                 if error and error.parent and error.parent.parent:
                     p_tag = error.parent.parent.find("p")
@@ -691,7 +697,7 @@ class BaseGazelleApi:
         resp_text = resp.text
 
         soup = BeautifulSoup(resp_text, "lxml")
-        edit_error = soup.find("h2", text="Error")
+        edit_error = soup.find("h2", string="Error")
         if edit_error and edit_error.parent and edit_error.parent.parent:
             p_tag = edit_error.parent.parent.find("p")
             error_message = p_tag.text if p_tag else "Unknown error"

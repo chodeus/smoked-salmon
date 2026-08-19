@@ -7,6 +7,7 @@ import anyio
 from tqdm import tqdm
 
 from salmon import cfg
+from salmon.common.progress import report_progress
 
 T = TypeVar("T")
 
@@ -88,6 +89,7 @@ async def process_files(
                 result = await process_func(file, idx)
             results[idx] = result
             pbar.update(1)
+            report_progress(pbar.n, len(files), desc)
 
         async with anyio.create_task_group() as tg:
             for idx, file in enumerate(files):

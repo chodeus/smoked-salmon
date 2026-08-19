@@ -178,8 +178,9 @@ async def _prompt_for_request_id(gazelle_site: "BaseGazelleApi", results: list[d
                 return raw_input
 
         elif request_id.strip().lower().startswith(gazelle_site.base_url + "/requests.php"):
-            parsed_id = parse.parse_qs(parse.urlparse(request_id).query)["id"][0]
-            return int(parsed_id)
+            parsed_qs = parse.parse_qs(parse.urlparse(request_id).query)
+            if "id" in parsed_qs:
+                return int(parsed_qs["id"][0])
         elif request_id.lower().startswith("n") or not request_id.strip():
             click.echo("Not filling a request")
             return None

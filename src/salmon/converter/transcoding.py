@@ -349,8 +349,15 @@ async def _flac_to_mp3(lame_qual: Bitrate, flac_path: str, mp3_path: str) -> Non
         if read_fd >= 0:
             os.close(read_fd)
 
-    _, flac_err = await flac_proc.communicate()
-    _, lame_err = await lame_proc.communicate()
+    try:
+        _, flac_err = await flac_proc.communicate()
+        _, lame_err = await lame_proc.communicate()
+    except BaseException:
+        for proc in (flac_proc, lame_proc):
+            if proc.returncode is None:
+                proc.kill()
+        await asyncio.gather(flac_proc.wait(), lame_proc.wait(), return_exceptions=True)
+        raise
 
     if flac_proc.returncode:
         err = flac_err.decode()
