@@ -3,3 +3,4 @@ Dockerfile
 config.py
 smoked.db
 __pycache__
+webui/node_modules
