@@ -17,7 +17,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 COOKIE_NAME = "salmon_web_token"
 ENV_VAR = "SALMON_WEB_TOKEN"
 # Reachable without a token: the login form's own calls and the health probe.
-EXEMPT_API_PATHS = {"/api/login", "/api/auth", "/api/health"}
+# /api/health exposes config, directories, binary paths and trackers, so it requires auth.
+EXEMPT_API_PATHS = {"/api/login", "/api/auth"}
 
 
 def resolve_auth_token(explicit: str | None = None) -> str | None:

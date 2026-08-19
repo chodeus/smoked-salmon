@@ -565,7 +565,7 @@ class BaseGazelleApi:
             )
             return []
         recent_uploads = self.parse_uploads_from_log_html(first_page)
-        tasks = [self.fetch_log(i) for i in range(2, max_pages)]
+        tasks = [self.fetch_log(i) for i in range(2, max_pages + 1)]
         # gather does not cancel siblings on error; tolerate a mid-crawl failure (#432)
         for page_text in await asyncio.gather(*tasks, return_exceptions=True):
             if isinstance(page_text, str):

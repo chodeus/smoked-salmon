@@ -107,6 +107,10 @@ class WebInteraction:
         }
         future: concurrent.futures.Future = concurrent.futures.Future()
         with self._lock:
+            # Re-check under the lock: close() may have run since the early check, and
+            # would otherwise find _pending still None and cancel nothing.
+            if self.cancel_requested.is_set() or self.closed.is_set():
+                raise concurrent.futures.CancelledError()
             self._pending = (question["id"], future)
         self._set_question(question)
         self.emit({"event": "question", "question": question})

@@ -25,8 +25,9 @@ def test_token_required_rejects_unauthenticated():
     _clean()
     with TestClient(create_app(auth_token="s3cret"), base_url="http://localhost") as c:
         assert c.get("/api/jobs").status_code == 401
-        # exempt endpoints stay reachable so the login screen can load
-        assert c.get("/api/health").status_code == 200
+        # /api/health now requires auth (it exposes config, directories, binaries, trackers)
+        assert c.get("/api/health").status_code == 401
+        # /api/auth stays exempt so the login screen can check status
         assert c.get("/api/auth").json() == {"required": True, "authenticated": False}
 
 

@@ -360,12 +360,14 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
             for folder in folders_to_create:
                 if not os.path.isdir(folder):
                     os.mkdir(folder)
-            # os.rename silently overwrites on POSIX; refuse if two files map to one name
-            # (e.g. a flattened multi-disc rip whose disc numbers didn't parse).
+            # os.rename silently overwrites on POSIX; refuse if two files map to one name,
+            # or if a target lands on a file that is keeping its current name (not renamed).
+            renamed_sources = {old for old, _ in to_rename}
+            unchanged = set(tags) - renamed_sources
             targets = [n for _, n in to_rename]
-            collisions = sorted({n for n in targets if targets.count(n) > 1})
+            collisions = sorted({n for n in targets if targets.count(n) > 1 or n in unchanged})
             if collisions:
-                raise UploadError(f"Rename would overwrite files with identical names: {', '.join(collisions)}")
+                raise UploadError(f"Rename would overwrite existing files: {', '.join(collisions)}")
 
             directory_move_pairs = set()
             for filename, new_name in to_rename:
