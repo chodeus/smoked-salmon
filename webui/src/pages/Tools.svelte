@@ -30,6 +30,7 @@
 
   // tag
   let tagPath = $state('')
+  let tagPathIsLibrary = $state(false)
   let tagSource = $state('')
   let tagEncoding = $state('')
   let tagOverwrite = $state(false)
@@ -178,7 +179,7 @@
 <div class="card">
   <h2>Tag an album</h2>
   <p class="muted">Retag and rename without uploading. Prompts appear here as questions.</p>
-  <FolderPicker bind:value={tagPath} />
+  <FolderPicker bind:value={tagPath} writable bind:readOnlySource={tagPathIsLibrary} />
   <div class="row" style="margin-top: 0.6rem; flex-wrap: wrap">
     <select bind:value={tagSource} style="width: auto">
       <option value="">— source —</option>
@@ -190,7 +191,7 @@
     </select>
     <label class="check"><input type="checkbox" bind:checked={tagAutoRename} /> Auto-Rename</label>
     <label class="check"><input type="checkbox" bind:checked={tagOverwrite} /> Overwrite metadata</label>
-    <button class="btn" onclick={startTag} disabled={!tagPath || !tagSource}>Tag</button>
+    <button class="btn" onclick={startTag} disabled={!tagPath || !tagSource || tagPathIsLibrary}>Tag</button>
   </div>
   {#if tagError}<p class="muted">{tagError}</p>{/if}
 </div>

@@ -1,4 +1,7 @@
+import json
+import math
 import os
+import shutil
 
 import anyio
 import asyncclick as click
@@ -6,6 +9,7 @@ from mutagen import File as MutagenFile
 
 from salmon import cfg
 from salmon.common import get_audio_files
+from salmon.tagger.mutation import abort_partial
 from salmon.tagger.tagfile import TagFile
 
 STANDARDIZED_TAGS = {
@@ -99,22 +103,176 @@ def print_a_tag(tags):
         click.echo(f"> {key}: {value}")
 
 
+# The fields worth hand-editing; the rest are derived or written by the tagger.
+EDITABLE_TAG_FIELDS = (
+    "title",
+    "artist",
+    "album",
+    "albumartist",
+    "date",
+    "tracknumber",
+    "discnumber",
+    "genre",
+    "label",
+    "catno",
+    "isrc",
+    "comment",
+    "composer",
+    "conductor",
+)
+
+
 async def prompt_editor(path: str) -> bool:
-    """Ask user whether or not to open the files in a tag editor.
+    """Ask whether the tags are acceptable, and open an editor if they are not.
 
     Args:
         path: Path to the directory containing audio files.
 
     Returns:
-        True if the editor was opened, False if tags were accepted.
+        True if the tags may have changed and should be re-read.
     """
-    if not click.confirm(
+    if click.confirm(
         click.style("\nAre the above tags acceptable? ([n] to open in tag editor)", fg="magenta"),
         default=True,
     ):
-        await anyio.run_process(["puddletag", path], check=False)
-        return True
-    return False
+        return False
+    return await open_tag_editor(path)
+
+
+async def open_tag_editor(path: str) -> bool:
+    """Open puddletag if it is installed, otherwise edit the tags as JSON.
+
+    puddletag needs a desktop session, so it is unusable over the web interface
+    and in a container. click.edit is bridged to the browser, so the JSON route
+    works everywhere.
+
+    Returns:
+        True if the tags may have changed.
+    """
+    if shutil.which("puddletag"):
+        try:
+            result = await anyio.run_process(["puddletag", path], check=False)
+        except OSError as e:
+            # which() found it, but it would not start — not executable, no display, …
+            click.secho(f"puddletag could not start ({e}); falling back to the text editor.", fg="yellow")
+        else:
+            if result.returncode == 0:
+                return True
+            click.secho(f"puddletag exited with {result.returncode}; falling back to the text editor.", fg="yellow")
+    return edit_tags_as_json(path)
+
+
+def _tags_to_dict(tags: dict[str, TagFile]) -> dict[str, dict]:
+    """The editable fields of every track, as the JSON document the user edits."""
+    return {
+        filename: {field: getattr(tag, field, None) for field in EDITABLE_TAG_FIELDS} for filename, tag in tags.items()
+    }
+
+
+def _reject_bad_document(after: object, before: dict[str, dict]) -> str | None:
+    """Describe why an edited tag document is unusable, or None if it is fine."""
+    if not isinstance(after, dict):
+        return "The edited tags must be a JSON object keyed by filename"
+    unknown = set(after) - set(before)
+    if unknown:
+        return f"Unknown file(s) in the edited tags: {', '.join(sorted(unknown))}"
+    missing = set(before) - set(after)
+    if missing:
+        # Skipping them quietly would report success while ignoring the deletion.
+        return f"File(s) missing from the edited tags: {', '.join(sorted(missing))}"
+    for filename, fields in after.items():
+        if not isinstance(fields, dict):
+            return f"{filename} must map to a JSON object, not {type(fields).__name__}"
+        unsupported = sorted(set(fields) - set(EDITABLE_TAG_FIELDS))
+        if unsupported:
+            # Dropping these silently would report success while losing the edit.
+            return f"{filename} has tag field(s) that cannot be written: {', '.join(unsupported)}"
+        for key, value in fields.items():
+            if value is None or isinstance(value, str):
+                continue
+            # bool subclasses int. Ints are finite by construction, and isfinite()
+            # raises OverflowError on a huge one; only floats can be inf, which
+            # 1e9999 reaches through the number path parse_constant never sees.
+            if isinstance(value, bool):
+                return f"{filename}.{key} must be text, a number, a list of text, or null"
+            if isinstance(value, int):
+                continue
+            if isinstance(value, float) and math.isfinite(value):
+                continue
+            if isinstance(value, list) and all(isinstance(v, str) for v in value):
+                continue
+            return f"{filename}.{key} must be text, a number, a list of text, or null"
+    return None
+
+
+def edit_tags_as_json(path: str) -> bool:
+    """Edit every track's tags as one JSON document and write back what changed.
+
+    Returns:
+        True if any tag was written.
+    """
+    tags = gather_tags(path)
+    if not tags:
+        click.secho("No audio files to edit.", fg="red")
+        return False
+
+    before = _tags_to_dict(tags)
+    edited = click.edit(
+        json.dumps(before, indent=2, ensure_ascii=False), extension=".json", editor=cfg.upload.default_editor
+    )
+    if edited is None:
+        click.secho("No changes made.", fg="yellow")
+        return False
+
+    def _no_constants(name: str):
+        """Reject NaN/Infinity/-Infinity, which json.loads would otherwise accept."""
+        raise ValueError(f"{name} is not a valid tag value")
+
+    try:
+        after = json.loads(edited, parse_constant=_no_constants)
+    except ValueError as e:
+        click.secho(f"That is not valid JSON ({e}); no tags were changed.", fg="red")
+        return False
+
+    problem = _reject_bad_document(after, before)
+    if problem:
+        click.secho(f"{problem}; no tags were changed.", fg="red")
+        return False
+
+    # Work out every change before writing any of them, so a document that is
+    # only wrong halfway down cannot leave the album half-applied.
+    planned = {}
+    for filename, fields in after.items():
+        changed = {k: v for k, v in fields.items() if k in EDITABLE_TAG_FIELDS and v != before[filename].get(k)}
+        if changed:
+            planned[filename] = changed
+
+    # Validation cannot prevent a write failing part-way through a multi-file
+    # album. Say exactly which files changed, then abort: continuing would upload
+    # a release whose tracks disagree with each other.
+    written: list[str] = []
+    for filename, changed in planned.items():
+        tag = tags[filename]
+        try:
+            for key, value in changed.items():
+                setattr(tag, key, value)
+            tag.save()
+        except Exception as e:
+            click.secho(f"Failed to write {filename}: {e}", fg="red", bold=True)
+            if written:
+                click.secho(f"Already written: {', '.join(written)}.", fg="yellow")
+                click.secho(
+                    "The album's tags are now inconsistent — repair them before uploading.", fg="red", bold=True
+                )
+            click.secho(f"Not written: {', '.join(f for f in planned if f not in written)}.", fg="yellow")
+            raise click.Abort from e
+        written.append(filename)
+
+    if not written:
+        click.secho("No changes made.", fg="yellow")
+        return False
+    click.secho(f"Updated tags on {len(written)} file(s).", fg="green")
+    return True
 
 
 def standardize_tags(path: str) -> None:
@@ -126,7 +284,9 @@ def standardize_tags(path: str) -> None:
     Args:
         path: Path to the directory containing audio files.
     """
-    for filename in get_audio_files(path):
+    done: list[str] = []
+    filenames = list(get_audio_files(path))
+    for index, filename in enumerate(filenames):
         mut = MutagenFile(os.path.join(path, filename))
         if mut is None:
             continue
@@ -142,5 +302,9 @@ def standardize_tags(path: str) -> None:
                     del tags[alias]
                     found_aliased.add(alias)
         if found_aliased:
-            mut.save()
+            try:
+                mut.save()
+            except Exception as e:
+                abort_partial(f"Standardising tags on {filename}", done, filename, filenames[index + 1 :], e)
+            done.append(filename)
             click.secho(f"Unaliased the following tags for {filename}: " + ", ".join(found_aliased))
