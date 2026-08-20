@@ -3,6 +3,7 @@
 import shutil
 import sys
 import threading
+import time
 import traceback
 from importlib.metadata import PackageNotFoundError, version
 
@@ -57,9 +58,25 @@ def health() -> dict:
     }
 
 
+# The dashboard runs this on load, so cache it: each call costs two live requests
+# per tracker, and reloading the page should not keep hitting the sites.
+CHECKCONF_TTL_SECONDS = 300
+_checkconf_cache: dict[str, object] = {"at": 0.0, "result": None}
+
+
 @router.post("/checkconf")
-async def checkconf() -> dict:
+async def checkconf(force: bool = False) -> dict:
     """Test every configured tracker's session cookie and API key."""
+    cached = _checkconf_cache["result"]
+    age = time.time() - float(_checkconf_cache["at"])  # type: ignore[arg-type]
+    if cached is not None and not force and age < CHECKCONF_TTL_SECONDS:
+        return {**cached, "cached": True, "age_seconds": int(age)}  # type: ignore[dict-item]
+
     results = [await check_tracker_connection(code) for code in salmon.trackers.tracker_list]
-    ok = all(r["session_ok"] and (r["api_key_ok"] is not False) for r in results)
-    return {"ok": ok, "trackers": results}
+    payload = {
+        "ok": all(r["session_ok"] and (r["api_key_ok"] is not False) for r in results),
+        "trackers": results,
+    }
+    _checkconf_cache["at"] = time.time()
+    _checkconf_cache["result"] = payload
+    return {**payload, "cached": False, "age_seconds": 0}

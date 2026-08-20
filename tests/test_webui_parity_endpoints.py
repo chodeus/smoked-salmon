@@ -215,3 +215,33 @@ def test_upload_rejects_non_positive_spectral_tracks(client, album, bad) -> None
     # Negative numbers index from the end of the track list; 0 is a sentinel.
     r = client.post("/api/upload", json={"path": album, "tracker": "RED", "spectrals": [bad]})
     assert r.status_code == 422
+
+
+def test_checkconf_is_cached_so_dashboard_loads_do_not_hammer_trackers(client, monkeypatch) -> None:
+    # The dashboard calls this on every load; each real call costs two live
+    # requests per tracker, so repeat calls must be served from cache.
+    from salmon.webui.routers import system
+
+    calls = []
+
+    async def fake_check(code):
+        calls.append(code)
+        return {"tracker": code, "session_ok": True, "session_error": None,
+                "api_key_configured": False, "api_key_ok": None, "api_key_error": None}
+
+    monkeypatch.setattr(system, "check_tracker_connection", fake_check)
+    monkeypatch.setitem(system._checkconf_cache, "at", 0.0)
+    monkeypatch.setitem(system._checkconf_cache, "result", None)
+
+    first = client.post("/api/checkconf").json()
+    assert first["cached"] is False
+    hits_after_first = len(calls)
+    assert hits_after_first > 0
+
+    second = client.post("/api/checkconf").json()
+    assert second["cached"] is True
+    assert len(calls) == hits_after_first, "cached call must not touch the trackers"
+
+    forced = client.post("/api/checkconf?force=true").json()
+    assert forced["cached"] is False
+    assert len(calls) > hits_after_first, "force=true must bypass the cache"

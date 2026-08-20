@@ -28,19 +28,29 @@
   let checks = $state<TrackerCheck[] | null>(null)
   let checkError = $state('')
 
-  async function checkconf() {
+  let cachedAge = $state<number | null>(null)
+
+  async function checkconf(force = false) {
     checking = true
     checkError = ''
-    checks = null
     try {
-      const res = await apiPost<{ trackers: TrackerCheck[] }>('/checkconf')
+      const res = await apiPost<{ trackers: TrackerCheck[]; cached: boolean; age_seconds: number }>(
+        `/checkconf${force ? '?force=true' : ''}`,
+      )
       checks = res.trackers
+      cachedAge = res.cached ? res.age_seconds : 0
     } catch (e) {
       checkError = String(e)
     } finally {
       checking = false
     }
   }
+
+  // Verified on load, like health - the result is cached server-side so
+  // reloading the dashboard does not keep hitting the trackers.
+  $effect(() => {
+    checkconf()
+  })
 
   $effect(() => {
     apiGet<Health>('/health')
@@ -54,11 +64,15 @@
 <div class="card">
   <div class="row">
     <h2 class="grow" style="margin: 0">Tracker connections</h2>
-    <button class="btn small" onclick={checkconf} disabled={checking}>
-      {checking ? 'Checking …' : 'Check now'}
+    {#if cachedAge !== null && cachedAge > 0}
+      <span class="muted" style="margin-right: 0.6rem">checked {cachedAge}s ago</span>
+    {/if}
+    <button class="btn small" onclick={() => checkconf(true)} disabled={checking}>
+      {checking ? 'Checking …' : 'Re-check'}
     </button>
   </div>
   {#if checkError}<p class="muted">{checkError}</p>{/if}
+  {#if checking && !checks}<p class="muted">Testing tracker connections …</p>{/if}
   {#if checks}
     <table>
       <tbody>
