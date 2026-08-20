@@ -144,6 +144,9 @@ async def all_checks(path: str, source: str | None, trackers: tuple[str, ...]) -
         if code.upper() not in salmon.trackers.tracker_list:
             raise click.UsageError(f"Unknown tracker {code}. Configured: {', '.join(salmon.trackers.tracker_list)}")
 
+    if source and source not in SOURCES.values():
+        raise click.UsageError(f"Unknown source {source}. Valid sources: {', '.join(SOURCES.values())}")
+
     result = await run_checks(path, None, source, [c.upper() for c in trackers])
     colours = {OK: "green", WARN: "yellow", BLOCK: "red", SKIP: None}
     marks = {OK: "OK  ", WARN: "WARN", BLOCK: "FAIL", SKIP: "--  "}

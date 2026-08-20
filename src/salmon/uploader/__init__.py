@@ -314,6 +314,7 @@ async def upload(
     essential_only: bool = False,
     skip_initial_review: bool = False,
     apply_ai_suggestions: bool = False,
+    trackers: list[str] | None = None,
 ) -> None:
     """Upload an album folder to Gazelle Site.
 
@@ -342,6 +343,8 @@ async def upload(
         essential_only: If True, only essential extensions are allowed.
         skip_initial_review: Skip the first manual metadata review before AI review.
         apply_ai_suggestions: Automatically apply AI review suggestions when present.
+        trackers: Restrict the follow-up tracker offer to these sites, in order.
+            None offers every configured tracker, which is what the CLI does.
     """
     path = os.path.abspath(path)
     # Stage before anything mutates: standardize_tags writes to the source directly,
@@ -485,7 +488,12 @@ async def upload(
         await last_min_dupe_check(gazelle_site, searchstrs)
 
     # Shallow copy to avoid errors on multiple uploads in one session.
-    remaining_gazelle_sites = list(salmon.trackers.tracker_list)
+    # `trackers` narrows the follow-up offer to a caller-chosen set; None — what the
+    # CLI passes — offers every configured site. The current one stays in the list
+    # because it is removed after its own upload below.
+    remaining_gazelle_sites = list(trackers) if trackers else list(salmon.trackers.tracker_list)
+    if gazelle_site.site_code not in remaining_gazelle_sites:
+        remaining_gazelle_sites.insert(0, gazelle_site.site_code)
     tracker = gazelle_site.site_code
     torrent_id = None
     cover_url = None
@@ -1214,9 +1222,7 @@ async def upload_and_report(
         is_flac = metadata.get("format", "").upper() == "FLAC"
         site_code = gazelle_site.site_code
         seedbox_uploader.add_upload_task(path, task_type="folder", is_flac=is_flac, site_code=site_code)
-        seedbox_uploader.add_upload_task(
-            torrent_path, task_type="seed", is_flac=is_flac, site_code=site_code
-        )
+        seedbox_uploader.add_upload_task(torrent_path, task_type="seed", is_flac=is_flac, site_code=site_code)
 
     return torrent_id, group_id, torrent_path, torrent_content, url
 

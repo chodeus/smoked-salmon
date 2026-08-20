@@ -47,3 +47,10 @@ async def test_unknown_tracker_is_rejected(album_dir):
     result = await _run(album_dir, "--tracker", "NOPE")
     assert result.exit_code != 0
     assert "Unknown tracker" in result.output
+
+
+async def test_invalid_source_is_rejected(album_dir):
+    """An unknown source is truthy, so without this it would silently skip the log check."""
+    result = await _run(album_dir, "--source", "INVALID")
+    assert result.exit_code != 0
+    assert "Unknown source" in result.output

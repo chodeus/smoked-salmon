@@ -199,3 +199,16 @@ async def test_a_failing_blacklist_lookup_blocks_rather_than_clears(album_dir, m
 
 async def _empty():
     return []
+
+
+def test_one_unparseable_log_warns_even_when_another_scores_full_marks():
+    """A good log does not vouch for a sibling that would not parse."""
+    logs = {
+        "logs": [
+            {"file": "good.log", "score": 100, "checksum_integrity": "Match"},
+            {"file": "broken.log", "error": "not a log"},
+        ]
+    }
+    verdict, detail = pf._log_verdict(logs, {"source": "CD"})
+    assert verdict == pf.WARN
+    assert "1 of 2" in detail

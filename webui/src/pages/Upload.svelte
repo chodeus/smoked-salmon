@@ -130,6 +130,7 @@
       const job = await apiPost<Job>('/upload', {
         path,
         tracker: chosen[0],
+        trackers: chosen,
         source: source || null,
         group_id: parsedGroupId,
         request: request || null,
@@ -168,7 +169,7 @@
 <h1>Upload</h1>
 <p class="lead">Verify an album, then upload it to a tracker. Anything the CLI would ask you is asked here instead, as the job runs.</p>
 
-{#if !activeJob || activeJob.status !== 'running'}
+{#if !activeJob || (activeJob.status !== 'queued' && activeJob.status !== 'running')}
   <div class="card">
     <FolderPicker bind:value={path} />
     <div class="grid">
@@ -185,7 +186,7 @@
         {#if chosen.length > 1}
           <small class="hint">
             Verified against all {chosen.length}. The upload starts on {chosen[0]}; when it finishes you are asked
-            whether to continue to {chosen.slice(1).join(' and ')}.
+            whether to continue, and only {chosen.slice(1).join(' and ')} will be offered.
           </small>
         {:else if showHelp}
           <small class="hint">{HELP.tracker}</small>

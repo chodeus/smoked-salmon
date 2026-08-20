@@ -38,7 +38,7 @@ async def run(req: ChecksRequest) -> dict:
     async def job_body(job: Job) -> dict:
         return await run_checks(path, req.checks, req.source, req.trackers)
 
-    selected = ", ".join(req.checks or CHECK_IDS)
+    selected = ", ".join(CHECK_IDS if req.checks is None else req.checks) or "no file checks"
     try:
         job = manager.create_threaded(
             "checks",

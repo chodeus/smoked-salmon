@@ -5,10 +5,12 @@ those have their own tests.
 """
 
 import os
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
+import salmon.trackers
 from salmon import cfg
 from salmon.webui.app import create_app
 from salmon.webui.jobs import manager
@@ -318,3 +320,68 @@ def test_dir_info_handles_a_missing_directory() -> None:
     info = _dir_info("/definitely/not/a/real/path")
     assert info == {"path": "/definitely/not/a/real/path", "exists": False, "free_bytes": None, "total_bytes": None}
     assert _dir_info(None)["exists"] is False
+
+
+def test_empty_check_selection_is_not_reported_as_running_everything(client, album_dir) -> None:
+    """`checks: []` skips the file checks, so the job title must not claim they ran."""
+    resp = client.post("/api/checks/run", json={"path": str(album_dir), "checks": []})
+    assert resp.status_code == 200
+    assert resp.json()["title"].startswith("Checks (no file checks):")
+
+    omitted = client.post("/api/checks/run", json={"path": str(album_dir)})
+    assert "integrity" in omitted.json()["title"]
+
+
+def _wait(client, job_id, tries=200):
+    for _ in range(tries):
+        body = client.get(f"/api/jobs/{job_id}").json()
+        if body["status"] in {"done", "error", "cancelled"}:
+            return body
+        time.sleep(0.01)
+    raise AssertionError("job did not finish")
+
+
+def _capture_upload(monkeypatch):
+    """Stub run_upload and return the dict its kwargs land in."""
+    from salmon.webui.routers import upload as upload_router
+
+    seen: dict = {}
+
+    async def fake_upload(*args, **kwargs):
+        seen["args"] = args
+        seen.update(kwargs)
+
+    monkeypatch.setattr(upload_router, "run_upload", fake_upload)
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
+    return seen
+
+
+def test_upload_forwards_the_selected_trackers(client, album_dir, monkeypatch) -> None:
+    """Without this, run_upload offers every configured site for continuation —
+    so picking OPS could still offer RED."""
+    seen = _capture_upload(monkeypatch)
+    resp = client.post(
+        "/api/upload",
+        json={"path": str(album_dir), "tracker": "RED", "trackers": ["RED", "OPS"], "source": "WEB"},
+    )
+    assert resp.status_code == 200
+    _wait(client, resp.json()["id"])
+    assert seen["trackers"] == ["RED", "OPS"]
+
+
+def test_upload_omitting_trackers_keeps_the_cli_behaviour(client, album_dir, monkeypatch) -> None:
+    seen = _capture_upload(monkeypatch)
+    resp = client.post("/api/upload", json={"path": str(album_dir), "tracker": "RED", "source": "WEB"})
+    assert resp.status_code == 200
+    _wait(client, resp.json()["id"])
+    assert seen["trackers"] is None, "an empty selection must mean 'offer everything', as the CLI does"
+
+
+def test_upload_rejects_an_unknown_tracker_in_the_list(client, album_dir, monkeypatch) -> None:
+    _capture_upload(monkeypatch)
+    resp = client.post(
+        "/api/upload",
+        json={"path": str(album_dir), "tracker": "RED", "trackers": ["RED", "NOPE"], "source": "WEB"},
+    )
+    assert resp.status_code == 422
+    assert "NOPE" in resp.json()["detail"]

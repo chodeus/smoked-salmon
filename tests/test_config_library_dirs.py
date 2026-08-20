@@ -1,7 +1,5 @@
 """library_dirs: browsable/uploadable sources that must never be deleted."""
 
-import inspect
-
 import pytest
 
 from salmon import cfg
@@ -173,9 +171,9 @@ def test_library_dir_beside_the_writable_dirs_is_accepted(tmp_path) -> None:
     assert directory.library_dirs == [str(lib)]
 
 
-def test_tag_endpoint_refuses_a_library_source(tmp_path, monkeypatch) -> None:
+async def test_tag_endpoint_refuses_a_library_source(tmp_path, monkeypatch) -> None:
     """`salmon tag` saves over the source files and renames the folder, so the
-    web endpoint must reject a read-only library album the way convert does."""
+    endpoint must refuse a read-only library album the way convert does."""
     import fastapi
     import pytest as _pytest
 
@@ -186,11 +184,13 @@ def test_tag_endpoint_refuses_a_library_source(tmp_path, monkeypatch) -> None:
     album.mkdir(parents=True)
     monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
 
-    with _pytest.raises(fastapi.HTTPException) as exc:
-        tools.validate_writable_album_dir(str(album))
-    assert exc.value.status_code == 403
+    called: list[str] = []
+    monkeypatch.setattr(tools, "_TAG", lambda **_kw: called.append("tag"))
+    monkeypatch.setattr(tools, "_queue", lambda *_a, **_kw: called.append("queue"))
 
-    # and the endpoint is wired to that validator, not the permissive one
-    source = inspect.getsource(tools.tag)
-    assert "validate_writable_album_dir(" in source
-    assert "validate_album_dir(" not in source.replace("validate_writable_album_dir(", "")
+    request = tools.TagRequest(path=str(album), source="CD")
+    with _pytest.raises(fastapi.HTTPException) as exc:
+        await tools.tag(request)
+
+    assert exc.value.status_code == 403
+    assert called == [], "the job must never be queued for a library path"

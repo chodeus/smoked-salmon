@@ -78,8 +78,9 @@ def _log_verdict(result: dict, ctx: dict) -> tuple[Verdict, str]:
         return WARN, "No rip log, so the rip cannot be verified. Allowed, but it scores 0 on RED."
     broken = [x for x in logs if "error" in x]
     scored = [x for x in logs if "score" in x]
-    if not scored:
-        return WARN, f"Could not parse {len(broken)} log(s)."
+    # One good log does not vouch for a sibling that would not parse.
+    if broken:
+        return WARN, f"Could not parse {len(broken)} of {len(logs)} log(s)."
     worst = min(scored, key=lambda x: x["score"])
     mismatched = [x for x in scored if x["checksum_integrity"] != "Match"]
     if mismatched:
