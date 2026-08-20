@@ -16,22 +16,33 @@ import asyncclick as click
 def _rename_no_clobber(src: str, dst: str) -> None:
     """Rename without ever replacing an existing destination.
 
-    os.rename silently overwrites on POSIX, so checking os.path.exists first
-    leaves a window in which another process can create the target — and the
-    overwritten file is not something a rollback can put back. Linking fails
-    outright when the destination exists, which closes that window.
+    os.rename overwrites silently on POSIX, and checking os.path.exists first
+    only narrows the window — an overwritten file is not something a rollback
+    can put back. os.link fails outright when the destination exists, which is
+    the guarantee this needs.
+
+    There is no check-then-rename fallback: that is the race being removed, so
+    a filesystem without hardlinks aborts instead of quietly reintroducing it.
     """
     try:
         os.link(src, dst)
     except OSError as e:
-        if e.errno in {errno.EEXIST}:
+        if e.errno == errno.EEXIST:
             raise
-        # Filesystems without hardlinks (or cross-device): fall back, accepting
-        # the check-then-rename window rather than failing the whole operation.
-        if os.path.exists(dst):
-            raise FileExistsError(errno.EEXIST, "Destination exists", dst) from e
-        os.rename(src, dst)
-        return
+        raise OSError(
+            e.errno,
+            f"cannot rename safely on this filesystem ({e.strerror}); refusing rather than risking an overwrite",
+            src,
+        ) from e
+
+    # Between the link and here, another process could have moved the original
+    # away and put something else at src. Unlinking then destroys their file, so
+    # only remove src while it is still the same inode we just linked.
+    try:
+        if os.stat(src).st_ino != os.stat(dst).st_ino:
+            raise OSError(errno.EPERM, "source changed mid-rename; leaving both paths in place", src)
+    except FileNotFoundError:
+        return  # src already gone; the link at dst stands as the rename
     os.unlink(src)
 
 

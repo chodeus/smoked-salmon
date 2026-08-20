@@ -5,6 +5,7 @@ requirement is that it is reported and the run stops — continuing would upload
 release whose tracks disagree with each other.
 """
 
+import errno
 import os
 
 import asyncclick
@@ -101,3 +102,43 @@ def test_rename_never_overwrites_an_existing_target(tmp_path, capsys):
 
     assert (tmp_path / "new-a.flac").read_text() == "bystander", "the target was overwritten"
     assert (tmp_path / "a.flac").read_text() == "source"
+
+
+def test_a_source_replaced_mid_rename_is_not_deleted(tmp_path, monkeypatch):
+    """Between link and unlink another process can move the original away and put
+    a different file at the source path. Unlinking would destroy theirs."""
+    import salmon.tagger.mutation as m
+
+    src = tmp_path / "a.flac"
+    src.write_text("original")
+    real_link = os.link
+
+    def link_then_swap(a, b):
+        real_link(a, b)
+        os.rename(a, tmp_path / "moved-away.flac")  # concurrent actor
+        (tmp_path / "a.flac").write_text("someone else's file")
+
+    monkeypatch.setattr(os, "link", link_then_swap)
+    with pytest.raises(OSError, match="source changed mid-rename"):
+        m._rename_no_clobber(str(src), str(tmp_path / "new-a.flac"))
+
+    assert (tmp_path / "a.flac").read_text() == "someone else's file", "the replacement was deleted"
+    assert (tmp_path / "new-a.flac").read_text() == "original"
+
+
+def test_a_filesystem_without_hardlinks_aborts_rather_than_racing(tmp_path, monkeypatch):
+    """The old fallback was check-then-rename — the very race being removed."""
+    import salmon.tagger.mutation as m
+
+    src = tmp_path / "a.flac"
+    src.write_text("original")
+
+    def no_links(_a, _b):
+        raise OSError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(os, "link", no_links)
+    with pytest.raises(OSError, match="refusing rather than risking an overwrite"):
+        m._rename_no_clobber(str(src), str(tmp_path / "new-a.flac"))
+
+    assert src.read_text() == "original", "the source must be left alone"
+    assert not (tmp_path / "new-a.flac").exists()
