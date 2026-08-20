@@ -149,6 +149,8 @@ class Seedbox(BaseStruct):
     url: str = ""  # Name of remote in rclone
     type: Literal["local", "rclone"] = "local"
     directory: str = ""  # Directory when adding torrent to download client
+    # Empty = every tracker; e.g. ["RED"] pins this destination to one site.
+    trackers: list[str] = msgspec.field(default_factory=list)
     flac_only: bool = False  # if true, only upload FLAC files
     extra_args: list[str] = msgspec.field(default_factory=list)  # pass these arguments to rclone
     torrent_client: str = ""
@@ -158,6 +160,10 @@ class Seedbox(BaseStruct):
     def __post_init__(self):
         if self.type not in ("local", "rclone"):
             raise ValueError("Invalid seedbox type specified")
+        self.trackers = [t.upper() for t in self.trackers]
+        unknown = sorted(set(self.trackers) - {"RED", "OPS", "DIC"})
+        if unknown:
+            raise ValueError(f"Unknown tracker(s) for seedbox '{self.name}': {', '.join(unknown)}")
 
 
 class UploadSearch(BaseStruct):
