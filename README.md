@@ -371,7 +371,7 @@ Every CLI command has a web equivalent, so nothing is terminal-only:
 
 #### Pre-flight verification
 
-The Upload page verifies an album before anything is staged. It runs the same checks the upload itself runs — rip log, file integrity, MQA, upconversion — plus a duplicate search on every tracker you select and, for RED, its Do-Not-Upload list. Each comes back as a row you can read at a glance.
+The Upload page verifies an album before anything is staged. It runs the same checks the upload itself runs — rip log, file integrity, MQA, upconversion — plus a duplicate search on every tracker you select and, for RED, its Do-Not-Upload list. The duplicate search needs a readable album tag; if the title cannot be read it is reported as skipped rather than passed. Each comes back as a row you can read at a glance.
 
 A failed integrity check, MQA, upconversion or a blacklisted release **blocks** the upload and cannot be overridden. Softer signals — an imperfect rip log, a missing log, a possible duplicate — need an explicit acknowledgement instead. Changing the path, source, trackers or any skip box invalidates the verdict, so a stale green cannot let something through. Dry runs post nothing and skip the gate.
 
