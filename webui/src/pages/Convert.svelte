@@ -5,6 +5,7 @@
   import { jobStore, type Job } from '../lib/jobs.svelte'
 
   let path = $state('')
+  let pathIsLibrary = $state(false)
   let bitrate = $state<'V0' | '320'>('V0')
   let jobIds = $state<string[]>([])
   let error = $state('')
@@ -49,15 +50,15 @@
 <p class="lead">Transcode an album to MP3 V0 or 320, downconvert 24-bit to 16-bit, or recompress FLACs in place.</p>
 
 <div class="card">
-  <FolderPicker bind:value={path} writable />
+  <FolderPicker bind:value={path} writable bind:readOnlySource={pathIsLibrary} />
   <div class="row" style="margin-top: 0.7rem">
     <select bind:value={bitrate} style="width: auto">
       <option value="V0">MP3 V0</option>
       <option value="320">MP3 320</option>
     </select>
-    <button class="btn" onclick={transcode} disabled={!path}>Transcode</button>
-    <button class="btn secondary" onclick={downconvert} disabled={!path}>24bit → 16bit</button>
-    <button class="btn secondary" onclick={compress} disabled={!path}>Recompress FLACs</button>
+    <button class="btn" onclick={transcode} disabled={!path || pathIsLibrary}>Transcode</button>
+    <button class="btn secondary" onclick={downconvert} disabled={!path || pathIsLibrary}>24bit → 16bit</button>
+    <button class="btn secondary" onclick={compress} disabled={!path || pathIsLibrary}>Recompress FLACs</button>
   </div>
   {#if error}<p class="muted">{error}</p>{/if}
 </div>

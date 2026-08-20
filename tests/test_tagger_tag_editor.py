@@ -239,3 +239,17 @@ async def test_a_puddletag_that_cannot_start_falls_back(album, monkeypatch):
     monkeypatch.setattr(tags_mod, "edit_tags_as_json", lambda _p: used.append("json") or True)
     assert await tags_mod.open_tag_editor(album["path"]) is True
     assert used == ["json"], "a launch failure must not be reported as a successful edit"
+
+
+def test_an_oversized_integer_is_rejected_not_crashed(album, monkeypatch):
+    """math.isfinite() raises OverflowError on a huge int; it must not escape."""
+
+    def edit(text, **_kw):
+        doc = json.loads(text)
+        doc["01.flac"]["title"] = "Renamed"
+        doc["02.flac"]["tracknumber"] = None
+        return json.dumps(doc).replace('"tracknumber": null', '"tracknumber": ' + "9" * 400)
+
+    monkeypatch.setattr(tags_mod.click, "edit", edit)
+    assert tags_mod.edit_tags_as_json(album["path"]) is True
+    assert album["saved"] == ["01.flac", "02.flac"], "a large integer is a valid, finite tag value"

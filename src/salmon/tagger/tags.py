@@ -184,9 +184,14 @@ def _reject_bad_document(after: object, before: dict[str, dict]) -> str | None:
         for key, value in fields.items():
             if value is None or isinstance(value, str):
                 continue
-            # bool subclasses int; and 1e9999 reaches inf through the number path,
-            # which parse_constant never sees.
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            # bool subclasses int. Ints are finite by construction, and isfinite()
+            # raises OverflowError on a huge one; only floats can be inf, which
+            # 1e9999 reaches through the number path parse_constant never sees.
+            if isinstance(value, bool):
+                return f"{filename}.{key} must be text, a number, a list of text, or null"
+            if isinstance(value, int):
+                continue
+            if isinstance(value, float) and math.isfinite(value):
                 continue
             if isinstance(value, list) and all(isinstance(v, str) for v in value):
                 continue

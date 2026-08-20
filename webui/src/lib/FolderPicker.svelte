@@ -4,11 +4,15 @@
   let {
     value = $bindable(''),
     writable = false,
+    readOnlySource = $bindable(false),
   }: {
     value: string
     /** Set on pickers whose operation writes to the folder; library roots are
      *  read-only sources, so offering them would only produce a 403. */
     writable?: boolean
+    /** True while `value` names a read-only library source — bind it to keep the
+     *  form's submit disabled, since a typed path never passes through select(). */
+    readOnlySource?: boolean
   } = $props()
 
   interface BrowseResult {
@@ -22,6 +26,23 @@
   let browsing = $state(false)
   let listing = $state<BrowseResult | null>(null)
   let error = $state('')
+  let roots = $state<BrowseResult['roots']>([])
+
+  // Loaded once so a path typed straight into the field can be judged without browsing.
+  $effect(() => {
+    if (roots.length) return
+    apiGet<BrowseResult>('/browse')
+      .then((r) => (roots = r.roots ?? []))
+      .catch(() => {})
+  })
+
+  /** Containment that survives Windows separators and a root of '/'. */
+  function within(root: string, path: string): boolean {
+    const norm = (v: string) => v.replace(/\\/g, '/').replace(/\/+$/, '')
+    const r = norm(root)
+    const c = norm(path)
+    return c === r || c.startsWith(r + '/')
+  }
 
   async function open(path?: string) {
     browsing = true
@@ -29,19 +50,22 @@
     try {
       const query = path ? `?path=${encodeURIComponent(path)}` : ''
       listing = await apiGet<BrowseResult>(`/browse${query}`)
+      if (listing.roots?.length) roots = listing.roots
     } catch (e) {
       error = String(e)
     }
   }
 
-  /** Library roots stay in the response even when hidden from the buttons, so a
-   *  path reached by typing or browsing can still be checked against them. */
   function libraryRootFor(path: string): string | null {
-    for (const r of listing?.roots ?? []) {
-      if (r.library && (path === r.path || path.startsWith(r.path + '/'))) return r.path
-    }
+    for (const r of roots) if (r.library && within(r.path, path)) return r.path
     return null
   }
+
+  const readOnlyRoot = $derived(writable && value ? libraryRootFor(value) : null)
+
+  $effect(() => {
+    readOnlySource = readOnlyRoot !== null
+  })
 
   function select(path?: string) {
     const chosen = path ?? listing?.path ?? value
@@ -58,7 +82,7 @@
     return p.split('/').filter(Boolean).pop() ?? p
   }
 
-  const roots = $derived((listing?.roots ?? []).filter((r) => !writable || !r.library))
+  const navRoots = $derived(roots.filter((r) => !writable || !r.library))
 </script>
 
 <div class="picker">
@@ -66,6 +90,12 @@
     <input type="text" class="mono grow" bind:value placeholder="/path/to/album" />
     <button class="btn secondary" onclick={() => open(value || undefined)}>Browse</button>
   </div>
+  {#if readOnlyRoot}
+    <p class="pick-error">
+      {readOnlyRoot} is a read-only library source — this operation writes to the folder, so pick a
+      staging directory instead.
+    </p>
+  {/if}
 
   {#if browsing && listing}
     <div class="listing card">
@@ -76,12 +106,12 @@
         <button class="btn small" onclick={() => select()}>Select "{shortName(listing.path)}"</button>
         <button class="btn small secondary" onclick={() => (browsing = false)}>Close</button>
       </div>
-      {#if roots.length > 1}
+      {#if navRoots.length > 1}
         <div class="roots">
-          {#each roots as r}
+          {#each navRoots as r}
             <button
               class="root"
-              class:current={listing!.path === r.path || listing!.path.startsWith(r.path + '/')}
+              class:current={within(r.path, listing!.path)}
               onclick={() => open(r.path)}
             >
               {r.name}{r.library ? ' (library)' : ''}
