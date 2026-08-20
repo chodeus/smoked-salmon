@@ -175,6 +175,10 @@ def _reject_bad_document(after: object, before: dict[str, dict]) -> str | None:
     unknown = set(after) - set(before)
     if unknown:
         return f"Unknown file(s) in the edited tags: {', '.join(sorted(unknown))}"
+    missing = set(before) - set(after)
+    if missing:
+        # Skipping them quietly would report success while ignoring the deletion.
+        return f"File(s) missing from the edited tags: {', '.join(sorted(missing))}"
     for filename, fields in after.items():
         if not isinstance(fields, dict):
             return f"{filename} must map to a JSON object, not {type(fields).__name__}"

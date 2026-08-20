@@ -51,3 +51,27 @@ def test_rename_all_or_none_completes_when_nothing_fails(tmp_path):
         (tmp_path / n).write_text(n)
     rename_all_or_none([(str(tmp_path / n), str(tmp_path / f"new-{n}")) for n in ("a.flac", "b.flac")])
     assert sorted(os.listdir(tmp_path)) == ["new-a.flac", "new-b.flac"]
+
+
+def test_a_failed_restore_is_not_reported_as_a_clean_rollback(tmp_path, monkeypatch, capsys):
+    """Saying 'rolled back' after a restore failed is the opposite of true."""
+    for n in ("a.flac", "b.flac"):
+        (tmp_path / n).write_text(n)
+    renames = [(str(tmp_path / n), str(tmp_path / f"new-{n}")) for n in ("a.flac", "b.flac")]
+    (tmp_path / "new-b.flac").mkdir()
+
+    real_rename = os.rename
+
+    def rename(src, dst):
+        if str(dst).endswith("a.flac") and "new-" not in os.path.basename(str(dst)):
+            raise OSError(13, "Permission denied")  # the undo fails
+        real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", rename)
+    with pytest.raises(asyncclick.Abort):
+        rename_all_or_none(renames)
+
+    out = capsys.readouterr().out
+    assert "Could not restore" in out
+    assert "rollback was incomplete" in out or "the rollback was incomplete" in out
+    assert "and was rolled back" not in out

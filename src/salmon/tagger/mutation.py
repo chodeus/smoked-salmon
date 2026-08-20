@@ -30,6 +30,7 @@ def rename_all_or_none(renames: list[tuple[str, str]]) -> None:
     rather than merely reported.
     """
     completed: list[tuple[str, str]] = []
+    restore_failed = False
     try:
         for old, new in renames:
             os.rename(old, new)
@@ -40,7 +41,9 @@ def rename_all_or_none(renames: list[tuple[str, str]]) -> None:
             try:
                 os.rename(new, old)
             except OSError:
-                # Undo failed too; say so rather than implying a clean rollback.
+                restore_failed = True
                 click.secho(f"Could not restore {old}", fg="red", bold=True)
-        click.secho(f"\nRename failed and was rolled back: {e}", fg="red", bold=True)
+        # Saying "rolled back" after a failed restore would be the opposite of true.
+        outcome = "the rollback was incomplete" if restore_failed else "was rolled back"
+        click.secho(f"\nRename failed and {outcome}: {e}", fg="red", bold=True)
         raise click.Abort from e

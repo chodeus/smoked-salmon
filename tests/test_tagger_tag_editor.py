@@ -324,3 +324,17 @@ def test_a_failure_on_the_first_file_leaves_nothing_written(album, monkeypatch, 
     with pytest.raises(asyncclick.Abort):
         tags_mod.edit_tags_as_json(album["path"])
     assert "inconsistent" not in capsys.readouterr().out
+
+
+def test_a_document_that_drops_a_track_is_rejected(album, monkeypatch):
+    """Skipping it quietly would report success while ignoring the deletion."""
+
+    def edit(text, **_kw):
+        doc = json.loads(text)
+        doc["01.flac"]["title"] = "Renamed"
+        del doc["02.flac"]
+        return json.dumps(doc)
+
+    monkeypatch.setattr(tags_mod.click, "edit", edit)
+    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert album["saved"] == []
