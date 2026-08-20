@@ -5,9 +5,10 @@ import os
 
 import asyncclick as click
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import salmon.trackers
+from salmon.constants import TAG_ENCODINGS
 from salmon.uploader import upload as run_upload
 from salmon.uploader.preassumptions import confirm_group_upload, print_preassumptions
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
@@ -34,11 +35,22 @@ class UploadStartRequest(BaseModel):
     skip_mqa: bool = False
     skip_log_check: bool = False
     skip_integrity_check: bool = False
+    essential_only: bool = False
+    dry_run: bool = False
+    overwrite: bool = False
+    encoding: str | None = None
+    spectrals: list[int] = Field(default_factory=list)
+    skip_initial_review: bool = False
+    apply_ai_suggestions: bool = False
 
 
 @router.get("/upload/options")
 async def options() -> dict:
-    return {"trackers": salmon.trackers.tracker_list, "sources": SOURCES}
+    return {
+        "trackers": salmon.trackers.tracker_list,
+        "sources": SOURCES,
+        "encodings": list(TAG_ENCODINGS),
+    }
 
 
 @router.post("/upload")
@@ -48,6 +60,11 @@ async def start(req: UploadStartRequest) -> dict:
         raise HTTPException(status_code=422, detail=f"Unknown tracker: {req.tracker}")
     if req.source is not None and req.source not in SOURCES:
         raise HTTPException(status_code=422, detail=f"Unknown source: {req.source}")
+    if req.encoding is not None and req.encoding not in TAG_ENCODINGS:
+        raise HTTPException(status_code=422, detail=f"Unknown encoding: {req.encoding}")
+    # Mirrors the CLI, where these two are mutually exclusive.
+    if req.essential_only and req.scene:
+        raise HTTPException(status_code=422, detail="essential_only and scene cannot be combined.")
 
     request_id = req.request
     if request_id:
@@ -58,8 +75,10 @@ async def start(req: UploadStartRequest) -> dict:
 
     async def run(job: Job) -> dict:
         gazelle_site = salmon.trackers.get_class(req.tracker)()
+        gazelle_site.dry_run = req.dry_run
+        spectrals = tuple(req.spectrals)
         print_preassumptions(
-            gazelle_site, path, req.group_id, req.source, req.lossy, (), None, req.spectrals_after
+            gazelle_site, path, req.group_id, req.source, req.lossy, spectrals, req.encoding, req.spectrals_after
         )
         if req.group_id:
             await confirm_group_upload(gazelle_site, req.group_id, req.source)
@@ -69,9 +88,10 @@ async def start(req: UploadStartRequest) -> dict:
             req.group_id,
             req.source,
             req.lossy,
-            (),
-            None,
+            spectrals,
+            req.encoding,
             scene=req.scene,
+            overwrite_meta=req.overwrite,
             recompress=req.compress,
             source_url=req.source_url.strip() if req.source_url else None,
             request_id=request_id,
@@ -81,8 +101,11 @@ async def start(req: UploadStartRequest) -> dict:
             skip_mqa=req.skip_mqa,
             skip_log_check=req.skip_log_check,
             skip_integrity_check=req.skip_integrity_check,
+            essential_only=req.essential_only,
+            skip_initial_review=req.skip_initial_review,
+            apply_ai_suggestions=req.apply_ai_suggestions,
         )
-        return {"album_path": path, "tracker": req.tracker}
+        return {"album_path": path, "tracker": req.tracker, "dry_run": req.dry_run}
 
     title = f"Upload to {req.tracker}: {os.path.basename(path)}"
     try:

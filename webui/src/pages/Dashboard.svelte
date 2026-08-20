@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { apiGet } from '../lib/api'
+  import { apiGet, apiPost } from '../lib/api'
 
   interface Health {
     version: string
@@ -13,8 +13,34 @@
     directories: Record<string, string | null>
   }
 
+  interface TrackerCheck {
+    tracker: string
+    session_ok: boolean
+    session_error: string | null
+    api_key_configured: boolean
+    api_key_ok: boolean | null
+    api_key_error: string | null
+  }
+
   let health = $state<Health | null>(null)
   let error = $state('')
+  let checking = $state(false)
+  let checks = $state<TrackerCheck[] | null>(null)
+  let checkError = $state('')
+
+  async function checkconf() {
+    checking = true
+    checkError = ''
+    checks = null
+    try {
+      const res = await apiPost<{ trackers: TrackerCheck[] }>('/checkconf')
+      checks = res.trackers
+    } catch (e) {
+      checkError = String(e)
+    } finally {
+      checking = false
+    }
+  }
 
   $effect(() => {
     apiGet<Health>('/health')
@@ -24,6 +50,37 @@
 </script>
 
 <h1>Dashboard</h1>
+
+<div class="card">
+  <div class="row">
+    <h2 class="grow" style="margin: 0">Tracker connections</h2>
+    <button class="btn small" onclick={checkconf} disabled={checking}>
+      {checking ? 'Checking …' : 'Check now'}
+    </button>
+  </div>
+  {#if checkError}<p class="muted">{checkError}</p>{/if}
+  {#if checks}
+    <table>
+      <tbody>
+        {#each checks as c}
+          <tr>
+            <td class="mono">{c.tracker}</td>
+            <td>
+              {#if c.session_ok}<span class="chip ok">session ok</span>
+              {:else}<span class="chip err">session failed</span>{/if}
+            </td>
+            <td>
+              {#if !c.api_key_configured}<span class="chip">no API key</span>
+              {:else if c.api_key_ok}<span class="chip ok">API key ok</span>
+              {:else}<span class="chip err">API key failed</span>{/if}
+            </td>
+            <td class="muted">{c.session_error ?? c.api_key_error ?? ''}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {/if}
+</div>
 
 {#if error}
   <div class="card"><p class="muted">Backend unreachable: {error}</p></div>

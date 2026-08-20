@@ -8,6 +8,7 @@
 
   let trackers = $state<string[]>([])
   let sources = $state<string[]>([])
+  let encodings = $state<string[]>([])
 
   let path = $state('')
   let tracker = $state('')
@@ -24,6 +25,13 @@
   let skipMqa = $state(false)
   let skipLogCheck = $state(false)
   let skipIntegrityCheck = $state(false)
+  let essentialOnly = $state(false)
+  let dryRun = $state(false)
+  let overwrite = $state(false)
+  let encoding = $state('')
+  let spectrals = $state('')
+  let skipInitialReview = $state(false)
+  let applyAiSuggestions = $state(false)
 
   let activeJobId = $state<string | null>(null)
   let error = $state('')
@@ -41,10 +49,11 @@
   }
 
   $effect(() => {
-    apiGet<{ trackers: string[]; sources: string[] }>('/upload/options')
+    apiGet<{ trackers: string[]; sources: string[]; encodings: string[] }>('/upload/options')
       .then((o) => {
         trackers = o.trackers
         sources = o.sources
+        encodings = o.encodings ?? []
         if (!tracker && o.trackers.length) tracker = o.trackers[0]
       })
       .catch((e) => {
@@ -58,6 +67,18 @@
     const parsedGroupId = parseGroupId(groupId)
     if (parsedGroupId === undefined) {
       error = 'Invalid group ID — provide a number or a torrents.php permalink.'
+      return
+    }
+    const spectralTracks = spectrals
+      .split(/[,\s]+/)
+      .filter(Boolean)
+      .map(Number)
+    if (spectralTracks.some((n) => !Number.isInteger(n) || n < 1)) {
+      error = 'Spectral track numbers must be positive whole numbers.'
+      return
+    }
+    if (essentialOnly && scene) {
+      error = 'Essential-only and scene cannot be combined.'
       return
     }
     starting = true
@@ -78,6 +99,13 @@
         skip_mqa: skipMqa,
         skip_log_check: skipLogCheck,
         skip_integrity_check: skipIntegrityCheck,
+        essential_only: essentialOnly,
+        dry_run: dryRun,
+        overwrite,
+        encoding: encoding || null,
+        spectrals: spectralTracks,
+        skip_initial_review: skipInitialReview,
+        apply_ai_suggestions: applyAiSuggestions,
       })
       jobStore.add(job)
       activeJobId = job.id
@@ -132,6 +160,17 @@
         Source-URL (optional, WEB)
         <input type="text" bind:value={sourceUrl} placeholder="https://…" />
       </label>
+      <label>
+        Encoding (lossy sources)
+        <select bind:value={encoding}>
+          <option value="">— ask —</option>
+          {#each encodings as e}<option value={e}>{e}</option>{/each}
+        </select>
+      </label>
+      <label>
+        Spectral tracks (optional)
+        <input type="text" bind:value={spectrals} placeholder="e.g. 1 4 7" />
+      </label>
     </div>
     <div class="row" style="flex-wrap: wrap; margin-top: 0.6rem">
       <label class="check"><input type="checkbox" bind:checked={autoRename} /> Auto-Rename</label>
@@ -142,9 +181,16 @@
       <label class="check"><input type="checkbox" bind:checked={skipMqa} /> Skip MQA check</label>
       <label class="check"><input type="checkbox" bind:checked={skipLogCheck} /> Skip log check</label>
       <label class="check"><input type="checkbox" bind:checked={skipIntegrityCheck} /> Skip integrity check</label>
+      <label class="check"><input type="checkbox" bind:checked={essentialOnly} /> Essential files only</label>
+      <label class="check"><input type="checkbox" bind:checked={overwrite} /> Overwrite metadata</label>
+      <label class="check"><input type="checkbox" bind:checked={skipInitialReview} /> Skip initial review</label>
+      <label class="check"><input type="checkbox" bind:checked={applyAiSuggestions} /> Apply AI suggestions</label>
+      <label class="check"><input type="checkbox" bind:checked={dryRun} /> Dry run (validate only)</label>
     </div>
     <div style="margin-top: 0.8rem">
-      <button class="btn" onclick={start} disabled={!path || !tracker || starting}>Start upload</button>
+      <button class="btn" onclick={start} disabled={!path || !tracker || starting}>
+        {dryRun ? 'Start dry run' : 'Start upload'}
+      </button>
     </div>
     {#if error}<p class="muted">{error}</p>{/if}
   </div>

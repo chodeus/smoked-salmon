@@ -5,6 +5,7 @@
   import Spectrals from './pages/Spectrals.svelte'
   import Convert from './pages/Convert.svelte'
   import Checks from './pages/Checks.svelte'
+  import Tools from './pages/Tools.svelte'
   import Jobs from './pages/Jobs.svelte'
   import Login from './pages/Login.svelte'
   import { jobStore } from './lib/jobs.svelte'
@@ -17,6 +18,7 @@
     spectrals: { component: Spectrals, label: 'Spectrals' },
     convert: { component: Convert, label: 'Convert' },
     checks: { component: Checks, label: 'Checks' },
+    tools: { component: Tools, label: 'Tools' },
     jobs: { component: Jobs, label: 'Jobs' },
   }
 

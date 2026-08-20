@@ -11,7 +11,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from salmon import cfg
 from salmon.webui.auth import AuthMiddleware, auth_router, resolve_auth_token
 from salmon.webui.interaction import install_interaction_patches
-from salmon.webui.routers import browse, checks, convert, jobs, search, spectrals, system, upload
+from salmon.webui.routers import browse, checks, convert, jobs, search, spectrals, system, tools, upload
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
             allow_headers=["*"],
         )
 
-    for router in (system, search, browse, spectrals, convert, checks, jobs, upload):
+    for router in (system, search, browse, spectrals, convert, checks, jobs, upload, tools):
         app.include_router(router.router, prefix="/api")
     app.include_router(auth_router, prefix="/api")
 
