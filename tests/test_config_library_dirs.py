@@ -89,3 +89,50 @@ def test_is_within_roots_handles_filesystem_root(monkeypatch) -> None:
 
     assert is_within_roots("/data/album", ["/"])
     assert not is_within_roots("/data/music-old", ["/data/music"])
+
+
+def test_library_source_is_staged_as_a_real_copy(tmp_path, monkeypatch) -> None:
+    # A hardlink shares the inode, so tag writes would reach the library file.
+    # Staging must produce an independent copy.
+    import os
+
+    from salmon.uploader import _stage_library_source
+
+    lib = tmp_path / "music"
+    album = lib / "Artist - Album"
+    album.mkdir(parents=True)
+    track = album / "01.flac"
+    track.write_bytes(b"fLaC-original")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
+    monkeypatch.setattr(cfg.directory, "download_directory", str(staging))
+
+    dest = _stage_library_source(str(album))
+
+    assert dest == str(staging / "Artist - Album")
+    copied = staging / "Artist - Album" / "01.flac"
+    assert copied.read_bytes() == b"fLaC-original"
+    # the decisive assertion: separate inode, so writing the copy cannot touch the library
+    assert os.stat(copied).st_ino != os.stat(track).st_ino
+
+    copied.write_bytes(b"retagged")
+    assert track.read_bytes() == b"fLaC-original"
+
+
+def test_staging_refuses_to_clobber_an_existing_folder(tmp_path, monkeypatch) -> None:
+    from salmon.errors import UploadError
+    from salmon.uploader import _stage_library_source
+
+    lib = tmp_path / "music"
+    album = lib / "Album"
+    album.mkdir(parents=True)
+    staging = tmp_path / "staging"
+    (staging / "Album").mkdir(parents=True)
+
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
+    monkeypatch.setattr(cfg.directory, "download_directory", str(staging))
+
+    with pytest.raises(UploadError, match="already exists"):
+        _stage_library_source(str(album))

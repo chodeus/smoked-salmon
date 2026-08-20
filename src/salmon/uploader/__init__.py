@@ -37,6 +37,7 @@ from salmon.errors import (
     EditedLogError,
     InvalidMetadataError,
     RequestError,
+    UploadError,
 )
 from salmon.images import upload_cover
 from salmon.tagger import (
@@ -276,6 +277,20 @@ async def up(
         click.secho(f"\nDry run complete ({tracker_name}). No torrents were uploaded.", fg="cyan", bold=True)
 
 
+def _stage_library_source(path: str) -> str:
+    """Copy a library album into download_directory before anything can mutate it.
+
+    Must be a real copy, not a hardlink: a hardlink shares the inode, so the tag
+    writes later in the flow would reach the library file too.
+    """
+    dest = os.path.join(cfg.directory.download_directory, os.path.basename(path.rstrip(os.sep)))
+    if os.path.exists(dest):
+        raise UploadError(f"Cannot stage library source, {dest} already exists.")
+    click.secho(f"\nCopying from library to {dest} (library files are never modified)...", fg="cyan")
+    shutil.copytree(path, dest)
+    return dest
+
+
 async def upload(
     gazelle_site: "BaseGazelleApi",
     path: str,
@@ -329,6 +344,10 @@ async def upload(
         apply_ai_suggestions: Automatically apply AI review suggestions when present.
     """
     path = os.path.abspath(path)
+    # Stage before anything mutates: standardize_tags writes to the source directly,
+    # and a hardlinked copy would share the inode with it.
+    if cfg.directory.is_library_path(path):
+        path = _stage_library_source(path)
     remove_downloaded_cover_image = scene or cfg.image.remove_auto_downloaded_cover_image
     if not source:
         source = await _prompt_source()
