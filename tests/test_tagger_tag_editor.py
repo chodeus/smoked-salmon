@@ -253,3 +253,44 @@ def test_an_oversized_integer_is_rejected_not_crashed(album, monkeypatch):
     monkeypatch.setattr(tags_mod.click, "edit", edit)
     assert tags_mod.edit_tags_as_json(album["path"]) is True
     assert album["saved"] == ["01.flac", "02.flac"], "a large integer is a valid, finite tag value"
+
+
+def test_a_write_failure_reports_what_was_and_was_not_written(album, monkeypatch, capsys):
+    """Validation cannot foresee a disk error, so the album can still end up
+    half-applied — that must be stated, not raised over."""
+    fake = {"01.flac": {"title": "One"}, "02.flac": {"title": "Two"}}
+    saved: list[str] = []
+
+    class _Tag:
+        def __init__(self, name):
+            object.__setattr__(self, "name", name)
+
+        def __getattr__(self, item):
+            return fake[object.__getattribute__(self, "name")].get(item)
+
+        def __setattr__(self, key, value):
+            fake[object.__getattribute__(self, "name")][key] = value
+
+        def save(self):
+            name = object.__getattribute__(self, "name")
+            if name == "02.flac":
+                raise OSError(28, "No space left on device")
+            saved.append(name)
+
+    monkeypatch.setattr(tags_mod, "gather_tags", lambda _p: {n: _Tag(n) for n in fake})
+
+    def edit(text, **_kw):
+        doc = json.loads(text)
+        doc["01.flac"]["title"] = "First"
+        doc["02.flac"]["title"] = "Second"
+        return json.dumps(doc)
+
+    monkeypatch.setattr(tags_mod.click, "edit", edit)
+    result = tags_mod.edit_tags_as_json(album["path"])
+    out = capsys.readouterr().out
+
+    assert result is True, "the first file did change, so the caller must re-read tags"
+    assert saved == ["01.flac"]
+    assert "Failed to write 02.flac" in out
+    assert "Already written: 01.flac" in out
+    assert "Not written: 02.flac" in out

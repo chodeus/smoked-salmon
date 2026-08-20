@@ -241,18 +241,28 @@ def edit_tags_as_json(path: str) -> bool:
         if changed:
             planned[filename] = changed
 
-    written = 0
+    # Validation cannot prevent a write failing part-way through a multi-file
+    # album, so report exactly which files changed rather than raising over a
+    # half-applied edit.
+    written: list[str] = []
     for filename, changed in planned.items():
         tag = tags[filename]
-        for key, value in changed.items():
-            setattr(tag, key, value)
-        tag.save()
-        written += 1
+        try:
+            for key, value in changed.items():
+                setattr(tag, key, value)
+            tag.save()
+        except Exception as e:
+            click.secho(f"Failed to write {filename}: {e}", fg="red", bold=True)
+            if written:
+                click.secho(f"Already written: {', '.join(written)}.", fg="yellow")
+            click.secho(f"Not written: {', '.join(f for f in planned if f not in written)}.", fg="yellow")
+            return bool(written)
+        written.append(filename)
 
     if not written:
         click.secho("No changes made.", fg="yellow")
         return False
-    click.secho(f"Updated tags on {written} file(s).", fg="green")
+    click.secho(f"Updated tags on {len(written)} file(s).", fg="green")
     return True
 
 
