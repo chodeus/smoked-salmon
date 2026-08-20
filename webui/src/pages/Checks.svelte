@@ -89,7 +89,7 @@
         <h3>Integrity</h3>
         <p>
           <span class="chip {job.result.integrity.passed ? 'ok' : 'err'}">
-            {job.result.integrity.passed ? 'bestanden' : 'fehlgeschlagen'}
+            {job.result.integrity.passed ? 'passed' : 'failed'}
           </span>
         </p>
         {#if job.result.integrity.details}
@@ -101,7 +101,7 @@
         <h3>MQA</h3>
         <p>
           <span class="chip {job.result.mqa.detected ? 'err' : 'ok'}">
-            {job.result.mqa.detected ? 'MQA erkannt!' : 'kein MQA'}
+            {job.result.mqa.detected ? 'MQA detected!' : 'no MQA'}
           </span>
         </p>
         {#if job.result.mqa.detected}
