@@ -7,6 +7,7 @@ import asyncclick as click
 from salmon import cfg
 from salmon.constants import ALLOWED_EXTENSIONS, ESSENTIAL_EXTENSIONS
 from salmon.errors import NoncompliantFolderStructure
+from salmon.tagger.mutation import rename_all_or_none
 
 
 async def check_folder_structure(path: str, scene: bool, *, essential_only: bool = False) -> None:
@@ -154,9 +155,7 @@ def _check_path_lengths(path: str, scene: bool) -> None:
         for n in collisions:
             click.echo(f" >> {n}")
         raise NoncompliantFolderStructure
-    for filepath, newpath in renames:
-        os.rename(filepath, newpath)
-        click.echo(f" >> {newpath}")
+    rename_all_or_none(renames)
 
 
 def _check_zero_len_folder(path: str) -> None:

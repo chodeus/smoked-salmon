@@ -9,6 +9,7 @@ from mutagen import File as MutagenFile
 
 from salmon import cfg
 from salmon.common import get_audio_files
+from salmon.tagger.mutation import abort_partial
 from salmon.tagger.tagfile import TagFile
 
 STANDARDIZED_TAGS = {
@@ -278,6 +279,7 @@ def standardize_tags(path: str) -> None:
     Args:
         path: Path to the directory containing audio files.
     """
+    done: list[str] = []
     for filename in get_audio_files(path):
         mut = MutagenFile(os.path.join(path, filename))
         if mut is None:
@@ -294,5 +296,9 @@ def standardize_tags(path: str) -> None:
                     del tags[alias]
                     found_aliased.add(alias)
         if found_aliased:
-            mut.save()
+            try:
+                mut.save()
+            except Exception as e:
+                abort_partial(f"Standardising tags on {filename}", done, [filename], e)
+            done.append(filename)
             click.secho(f"Unaliased the following tags for {filename}: " + ", ".join(found_aliased))
