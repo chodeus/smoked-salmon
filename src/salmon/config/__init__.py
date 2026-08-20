@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -10,11 +11,18 @@ from platformdirs import user_config_dir
 from .validations import Cfg
 
 APPNAME = "smoked-salmon"
+# Containers mount a single /config; platformdirs would bury the file under an
+# app-name subdirectory of the mount.
+CONFIG_DIR_ENV = "SALMON_CONFIG_DIR"
 
 _PKG_DIR = Path(__file__).parent.parent
 
 
 def get_user_cfg_path() -> Path:
+    """config.toml location: $SALMON_CONFIG_DIR when set, else the platform config dir."""
+    override = os.environ.get(CONFIG_DIR_ENV)
+    if override:
+        return Path(override).expanduser() / "config.toml"
     return Path(user_config_dir(APPNAME)) / "config.toml"
 
 
