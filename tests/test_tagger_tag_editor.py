@@ -211,3 +211,31 @@ def test_an_unsupported_field_is_rejected_not_silently_dropped(album, monkeypatc
     assert tags_mod.edit_tags_as_json(album["path"]) is False
     assert album["saved"] == []
     assert album["fake"]["01.flac"]["title"] == "One"
+
+
+def test_an_overflowing_number_is_rejected(album, monkeypatch):
+    """1e9999 becomes inf through the ordinary number path, which parse_constant never sees."""
+
+    def edit(text, **_kw):
+        doc = json.loads(text)
+        doc["01.flac"]["title"] = "Renamed"
+        doc["02.flac"]["tracknumber"] = None
+        return json.dumps(doc).replace('"tracknumber": null', '"tracknumber": 1e9999')
+
+    monkeypatch.setattr(tags_mod.click, "edit", edit)
+    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert album["saved"] == []
+
+
+async def test_a_puddletag_that_cannot_start_falls_back(album, monkeypatch):
+    """which() can succeed while exec still fails — not executable, no display."""
+    used: list[str] = []
+
+    async def boom(*_a, **_kw):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(tags_mod.shutil, "which", lambda _n: "/usr/bin/puddletag")
+    monkeypatch.setattr(tags_mod.anyio, "run_process", boom)
+    monkeypatch.setattr(tags_mod, "edit_tags_as_json", lambda _p: used.append("json") or True)
+    assert await tags_mod.open_tag_editor(album["path"]) is True
+    assert used == ["json"], "a launch failure must not be reported as a successful edit"

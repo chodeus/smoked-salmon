@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import shutil
 
@@ -148,10 +149,15 @@ async def open_tag_editor(path: str) -> bool:
         True if the tags may have changed.
     """
     if shutil.which("puddletag"):
-        result = await anyio.run_process(["puddletag", path], check=False)
-        if result.returncode == 0:
-            return True
-        click.secho(f"puddletag exited with {result.returncode}; falling back to the text editor.", fg="yellow")
+        try:
+            result = await anyio.run_process(["puddletag", path], check=False)
+        except OSError as e:
+            # which() found it, but it would not start — not executable, no display, …
+            click.secho(f"puddletag could not start ({e}); falling back to the text editor.", fg="yellow")
+        else:
+            if result.returncode == 0:
+                return True
+            click.secho(f"puddletag exited with {result.returncode}; falling back to the text editor.", fg="yellow")
     return edit_tags_as_json(path)
 
 
@@ -178,8 +184,9 @@ def _reject_bad_document(after: object, before: dict[str, dict]) -> str | None:
         for key, value in fields.items():
             if value is None or isinstance(value, str):
                 continue
-            # bool subclasses int, so it would pass an isinstance(value, int) check.
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
+            # bool subclasses int; and 1e9999 reaches inf through the number path,
+            # which parse_constant never sees.
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
                 continue
             if isinstance(value, list) and all(isinstance(v, str) for v in value):
                 continue

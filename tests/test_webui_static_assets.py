@@ -18,5 +18,7 @@ def test_the_icon_is_the_project_logo_not_an_emoji() -> None:
     """It shipped as an SVG holding a text emoji, which is why the tab showed a
     generic fish rather than the salmon."""
     index = (WEBUI / "index.html").read_text()
-    assert "favicon.svg" not in index
-    assert not list((WEBUI / "public").glob("*.svg")), "an emoji-in-SVG favicon is back"
+    icons = re.findall(r'<link[^>]+rel="(?:icon|apple-touch-icon)"[^>]+href="/([^"]+)"', index)
+    svg_icons = [i for i in icons if i.lower().endswith(".svg")]
+    assert not svg_icons, f"icon references must not be SVG: {svg_icons}"
+    assert not (WEBUI / "public" / "favicon.svg").exists()

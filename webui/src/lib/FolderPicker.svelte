@@ -102,7 +102,7 @@
       </ul>
     </div>
   {/if}
-  {#if error}
+  {#if error && !(browsing && listing)}
     <p class="muted">{error}</p>
   {/if}
 </div>
