@@ -163,6 +163,7 @@ async def open_tag_editor(path: str) -> bool:
 
 
 def _tags_to_dict(tags: dict[str, TagFile]) -> dict[str, dict]:
+    """The editable fields of every track, as the JSON document the user edits."""
     return {
         filename: {field: getattr(tag, field, None) for field in EDITABLE_TAG_FIELDS} for filename, tag in tags.items()
     }
@@ -224,7 +225,7 @@ def edit_tags_as_json(path: str) -> bool:
         return False
 
     def _no_constants(name: str):
-        # json.loads accepts NaN/Infinity/-Infinity by default; neither is a tag value.
+        """Reject NaN/Infinity/-Infinity, which json.loads would otherwise accept."""
         raise ValueError(f"{name} is not a valid tag value")
 
     try:
