@@ -57,8 +57,12 @@ Installing with pip is not recommended because uv (and pipx) manage python versi
 #### Linux
 1. Install system packages:
     ```bash
-    sudo apt install sox flac mp3val curl lame
+    sudo apt install sox libsox-fmt-mp3 flac mp3val curl lame rclone git
     ```
+
+    `libsox-fmt-mp3` is required for spectrals of MP3 releases — Debian's `sox` package cannot read MP3 without it, and fails silently. `metaflac` comes with `flac`. `rclone` is only needed for remote seeding, and `git` for the install step below.
+
+    Optional: `feh` for the native spectral viewer, `puddletag` if you set `prompt_puddletag`.
 
 2. Install uv:
     ```bash
@@ -67,14 +71,16 @@ Installing with pip is not recommended because uv (and pipx) manage python versi
 
 3. Install smoked-salmon package from github:
 	```bash
-	uv tool install git+https://github.com/smokin-salmon/smoked-salmon
+	uv tool install git+https://github.com/chodeus/smoked-salmon
 	```
 
 #### Windows
 1. Install required system packages using winget:
     ```powershell
-    winget install -e ChrisBagwell.SoX Xiph.FLAC LAME.LAME ring0.MP3val.WF
+    winget install -e ChrisBagwell.SoX Xiph.FLAC LAME.LAME ring0.MP3val.WF Git.Git
     ```
+
+    Add `Rclone.Rclone` as well if you plan to use remote seeding.
 
 2. Fix sox Unicode filename handling issue on Windows:
     ```powershell
@@ -93,7 +99,7 @@ Installing with pip is not recommended because uv (and pipx) manage python versi
 
 4. Install smoked-salmon package from github:
 	```powershell
-	uv tool install git+https://github.com/smokin-salmon/smoked-salmon
+	uv tool install git+https://github.com/chodeus/smoked-salmon
 	```
 
 #### macOS
@@ -104,8 +110,10 @@ Installing with pip is not recommended because uv (and pipx) manage python versi
 
 2. Install system packages using Homebrew:
     ```bash
-    brew install sox flac mp3val curl lame
+    brew install sox flac mp3val curl lame rclone git
     ```
+
+    Homebrew's `sox` already handles MP3. `rclone` is only needed for remote seeding.
 
 3. Install uv:
     ```bash
@@ -114,7 +122,7 @@ Installing with pip is not recommended because uv (and pipx) manage python versi
 
 4. Install smoked-salmon package from github:
 	```bash
-	uv tool install git+https://github.com/smokin-salmon/smoked-salmon
+	uv tool install git+https://github.com/chodeus/smoked-salmon
 	```
 
 ### 🔹  Initial Setup
