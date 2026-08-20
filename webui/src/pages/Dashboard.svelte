@@ -200,7 +200,7 @@
                   <span class="muted">{formatBytes(dir.free_bytes ?? 0)} free</span>
                 </div>
               {:else}
-                <span class="chip ok">ok</span>
+                <span class="chip">usage unavailable</span>
               {/if}
             </td>
           </tr>
