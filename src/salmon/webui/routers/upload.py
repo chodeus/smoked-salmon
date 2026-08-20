@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 import salmon.trackers
+from salmon.constants import SOURCES as SOURCE_CODES
 from salmon.constants import TAG_ENCODINGS
 from salmon.uploader import upload as run_upload
 from salmon.uploader.preassumptions import confirm_group_upload, print_preassumptions
@@ -16,7 +17,9 @@ from salmon.webui.validation import validate_album_dir
 
 router = APIRouter(tags=["upload"])
 
-SOURCES = ["CD", "WEB", "Vinyl", "Soundboard", "SACD", "DAT", "Cassette", "Blu-Ray", "DVD"]
+# Derived, never hand-maintained: the copy this replaced had drifted to offer
+# "Blu-Ray", which the tagger then rejects mid-job as an invalid source.
+SOURCES = list(SOURCE_CODES.values())
 
 
 class UploadStartRequest(BaseModel):

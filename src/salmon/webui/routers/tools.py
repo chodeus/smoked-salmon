@@ -13,13 +13,13 @@ from pydantic import BaseModel, Field
 
 import salmon.trackers
 from salmon import cfg
+from salmon.constants import SOURCES as SOURCE_CODES
 from salmon.constants import TAG_ENCODINGS
 from salmon.cross_upload import cross_upload as cross_upload_command
 from salmon.images import HOSTS, upload_images
 from salmon.tagger import tag as tag_command
 from salmon.uploader.description import build_tracklist_description
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
-from salmon.webui.routers.upload import SOURCES
 from salmon.webui.validation import is_within_roots, validate_album_dir
 
 router = APIRouter(tags=["tools"])
@@ -75,7 +75,7 @@ def _queue(kind: str, title: str, run, meta: dict, lock_key: str | None = None) 
 async def options() -> dict:
     return {
         "trackers": salmon.trackers.tracker_list,
-        "sources": SOURCES,
+        "sources": list(SOURCE_CODES.values()),
         "encodings": list(TAG_ENCODINGS),
         "image_hosts": sorted(HOSTS),
         "transcodes": ["320", "V0"],
@@ -120,7 +120,7 @@ async def images_upload(req: ImageUploadRequest) -> dict:
 async def tag(req: TagRequest) -> dict:
     """Interactively retag an album; prompts surface as browser questions."""
     path = validate_album_dir(req.path)
-    if req.source not in SOURCES:
+    if req.source not in SOURCE_CODES.values():
         raise HTTPException(status_code=422, detail=f"Unknown source: {req.source}")
     if req.encoding is not None and req.encoding not in TAG_ENCODINGS:
         raise HTTPException(status_code=422, detail=f"Unknown encoding: {req.encoding}")

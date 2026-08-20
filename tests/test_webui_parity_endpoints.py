@@ -155,3 +155,20 @@ def test_compress_refuses_a_read_only_library_source(client, tmp_path, monkeypat
     monkeypatch.setattr(cfg.directory, "library_dirs", [lib])
 
     assert client.post("/api/convert/compress", json={"path": album}).status_code == 403
+
+
+def test_offered_sources_match_the_canonical_set(client) -> None:
+    """The web form must not offer a source the tagger will later reject.
+
+    The hand-maintained copy this replaced had drifted to include "Blu-Ray",
+    so a job would start, do real work, then die on InvalidMetadataError.
+    """
+    from salmon.constants import SOURCES as canonical
+
+    for endpoint in ("/api/upload/options", "/api/tools/options"):
+        offered = set(client.get(endpoint).json()["sources"])
+        assert offered == set(canonical.values()), f"{endpoint} drifted from salmon.constants.SOURCES"
+
+
+def test_upload_rejects_a_source_the_tagger_would_reject(client, album) -> None:
+    assert client.post("/api/upload", json={"path": album, "tracker": "RED", "source": "Blu-Ray"}).status_code == 422
