@@ -1,4 +1,5 @@
 <script lang="ts">
+  import logo from './assets/salmon-logo.png'
   import Dashboard from './pages/Dashboard.svelte'
   import Upload from './pages/Upload.svelte'
   import Search from './pages/Search.svelte'
@@ -58,7 +59,7 @@
 <div class="layout">
   <nav>
     <div class="brand">
-      <span class="fish">🐟</span> salmon<span class="accent">web</span>
+      <img class="logo" src={logo} alt="" width="24" height="24" /> salmon<span class="accent">web</span>
     </div>
     {#each Object.entries(routes) as [path, r]}
       <a href="#/{path}" class:active={route === r}>
@@ -70,7 +71,7 @@
     {/each}
     <div class="spacer"></div>
     <span class="chip {jobStore.connected ? 'ok' : 'err'}">
-      {jobStore.connected ? 'verbunden' : 'getrennt'}
+      {jobStore.connected ? 'connected' : 'disconnected'}
     </span>
   </nav>
 
@@ -101,10 +102,18 @@
     gap: 0.2rem;
   }
   .brand {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
     font-weight: 700;
     font-size: 1.1rem;
     margin-bottom: 1rem;
     padding: 0 0.5rem;
+  }
+  .brand .logo {
+    width: 24px;
+    height: 24px;
+    flex: none;
   }
   .brand .accent {
     color: var(--accent);

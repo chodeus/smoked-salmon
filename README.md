@@ -333,6 +333,14 @@ To rehearse an upload without posting anything — everything is gathered, check
 salmon up /data/path/to/album -s WEB --dry-run
 ```
 
+To vet an album before deciding whether to upload it at all — every check in one pass, with a single verdict and a non-zero exit when the release is unfit:
+```bash
+salmon check all /data/path/to/album
+salmon check all /data/path/to/album -s CD -t RED    # also search RED for duplicates
+```
+
+`up` already runs all of these as part of an upload. `check all` is for triage: sorting through a library without starting one.
+
 To start the web interface:
 ```bash
 salmon web --host 0.0.0.0
@@ -353,13 +361,27 @@ Every CLI command has a web equivalent, so nothing is terminal-only:
 
 | Page | Covers |
 | --- | --- |
-| Upload | `up`, with every flag the CLI takes including `--dry-run` |
-| Checks | `check` (log, integrity, MQA, upconvert) |
+| Upload | `up`, with every flag the CLI takes including `--dry-run`, behind pre-flight verification |
+| Checks | `check all` and its subcommands (log, integrity, MQA, upconvert) |
 | Spectrals | `specs`, `checkspecs` |
 | Convert | `transcode`, `downconv`, `compress` |
 | Search | `metas`, `meta` |
 | Tools | `descgen`, `images`, `tag`, `cross-upload` |
-| Dashboard | `health`, `checkconf` |
+| Dashboard | `health`, `checkconf`, with disk usage per directory |
+
+#### Pre-flight verification
+
+The Upload page verifies an album before anything is staged. It runs the same checks the upload itself runs — rip log, file integrity, MQA, upconversion — plus a duplicate search on every tracker you select and, for RED, its Do-Not-Upload list. The duplicate search needs a readable album tag; if the title cannot be read it is reported as skipped rather than passed. Each comes back as a row you can read at a glance.
+
+A failed integrity check, MQA, upconversion or a blacklisted release **blocks** the upload and cannot be overridden. Softer signals — an imperfect rip log, a missing log, a possible duplicate — need an explicit acknowledgement instead. Changing the path, source, trackers or any skip box invalidates the verdict, so a stale green cannot let something through. Dry runs post nothing and skip the gate.
+
+#### Source detection
+
+Pre-flight infers the media source from the files: a rip log proves CD, store tags (Amazon, iTunes, Bandcamp) prove WEB, side numbering suggests vinyl, and anything above 16bit/44.1kHz rules out a CD rip. A plain 16/44 release with no log is reported as **undecidable** rather than guessed — it is equally consistent with a logless CD rip and a WEB download, and naming the wrong source is a mislabelled upload.
+
+#### Reading the interface
+
+Every page says what it is for under its heading. The Upload page's options carry hover tooltips and an **Explain these options** toggle that shows the same text inline, so the help does not need a mouse. The Dashboard opens with tiles for trackers connected, required tools present and jobs in flight, and shows free space per configured directory — the disk filling up is what stops an upload mid-job.
 
 Because the interface holds your tracker session cookies and can trigger real uploads, protect it with a shared secret whenever it is reachable beyond loopback. Set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`); leaving it unset disables the gate entirely.
 

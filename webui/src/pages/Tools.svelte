@@ -142,6 +142,7 @@
 </script>
 
 <h1>Tools</h1>
+<p class="lead">Build a tracklist description, upload images, retag a folder, or copy an existing upload to another tracker.</p>
 
 {#if optionsError}
   <div class="card"><p class="muted">{optionsError}</p></div>

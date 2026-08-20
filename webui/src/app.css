@@ -29,6 +29,7 @@ a:hover { text-decoration: underline; }
 
 h1, h2, h3 { font-weight: 600; margin: 0 0 0.5rem; }
 h1 { font-size: 1.3rem; }
+.lead { color: var(--text-dim); font-size: 0.9rem; margin: -0.2rem 0 1rem; max-width: 62ch; }
 h2 { font-size: 1.05rem; }
 
 code, .mono {
@@ -117,6 +118,11 @@ th, td {
   font-size: 0.88rem;
 }
 th { color: var(--text-dim); font-weight: 600; }
+
+/* Anything carrying a title= is explained on hover; hint that it is there. */
+label[title] { cursor: help; }
+label.check[title] > :last-child,
+label[title] > :first-child { text-decoration: underline dotted var(--border); text-underline-offset: 3px; }
 
 .muted { color: var(--text-dim); }
 .row { display: flex; gap: 0.6rem; align-items: center; }
