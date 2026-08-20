@@ -1,18 +1,16 @@
-"""Quality-check jobs: rip logs, integrity, MQA, upconvert detection."""
+"""Quality-check jobs: rip logs, integrity, MQA, upconvert detection, pre-upload verdicts."""
 
 import asyncio
 import os
 
 import asyncclick as click
-import cambia
-import msgspec
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+import salmon.trackers
 from salmon.checks.integrity import check_integrity
-from salmon.checks.mqa import check_mqa
-from salmon.checks.upconverts import check_upconvert
-from salmon.common.files import get_audio_files
+from salmon.checks.preflight import run_log_check, run_mqa_check, run_preflight, run_upconvert_check
+from salmon.constants import SOURCES
 from salmon.webui.jobs import Job, JobCapacityError, manager
 from salmon.webui.validation import validate_album_dir
 
@@ -26,49 +24,14 @@ class ChecksRequest(BaseModel):
     checks: list[str]
 
 
-def _check_logs(path: str) -> dict:
-    logs = []
-    for root, _dirs, files in os.walk(path):
-        for f in sorted(files):
-            if f.lower().endswith(".log"):
-                logpath = os.path.join(root, f)
-                try:
-                    output = cambia.parse_log_file(logpath)
-                    score = int(output.evaluation_combined[0].combined_score)
-                    integrity = output.parsed.parsed_logs[0].checksum.integrity
-                    logs.append(
-                        {
-                            "file": os.path.relpath(logpath, path),
-                            "score": score,
-                            "checksum_integrity": str(integrity).rsplit(".", 1)[-1].rstrip(">"),
-                        }
-                    )
-                except Exception as e:
-                    logs.append({"file": os.path.relpath(logpath, path), "error": str(e)})
-    return {"logs": logs}
-
-
-async def _check_mqa_files(path: str) -> dict:
-    results = []
-    detected = False
-    for f in get_audio_files(path, True):
-        found = await check_mqa(os.path.join(path, f))
-        detected = detected or found
-        results.append({"file": f, "detected": found})
-    return {"detected": detected, "files": results}
-
-
-async def _check_upconverts(path: str) -> dict:
-    results = []
-    for f in get_audio_files(path, True):
-        if not f.lower().endswith(".flac"):
-            continue
-        try:
-            result = await check_upconvert(os.path.join(path, f))
-            results.append(msgspec.to_builtins(result) | {"file": f})
-        except Exception as e:
-            results.append({"file": f, "error": str(e)})
-    return {"files": results}
+class PreflightRequest(BaseModel):
+    path: str
+    source: str | None = None
+    trackers: list[str] = []
+    skip_log_check: bool = False
+    skip_integrity_check: bool = False
+    skip_mqa: bool = False
+    skip_up: bool = False
 
 
 @router.post("/checks/run")
@@ -81,19 +44,48 @@ async def run_checks(req: ChecksRequest) -> dict:
     async def run(job: Job) -> dict:
         results: dict[str, dict] = {}
         if "log" in req.checks:
-            results["log"] = await asyncio.to_thread(_check_logs, path)
+            results["log"] = await asyncio.to_thread(run_log_check, path)
         if "integrity" in req.checks:
             passed, details = await check_integrity(path)
             results["integrity"] = {"passed": passed, "details": click.unstyle(details)}
         if "mqa" in req.checks:
-            results["mqa"] = await _check_mqa_files(path)
+            results["mqa"] = await run_mqa_check(path)
         if "upconvert" in req.checks:
-            results["upconvert"] = await _check_upconverts(path)
+            results["upconvert"] = await run_upconvert_check(path)
         return results
 
     title = f"Checks ({', '.join(req.checks)}): {os.path.basename(path)}"
     try:
         job = manager.create_threaded("checks", title, run, {"path": path, "checks": req.checks})
+    except JobCapacityError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
+    return job.to_dict()
+
+
+@router.post("/checks/preflight")
+async def preflight(req: PreflightRequest) -> dict:
+    """Verify an album against every check before anything is staged or uploaded."""
+    path = validate_album_dir(req.path)
+    if req.source and req.source not in SOURCES.values():
+        raise HTTPException(status_code=422, detail=f"Invalid source: {req.source}")
+    unknown = [t for t in req.trackers if t not in salmon.trackers.tracker_list]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unknown tracker(s): {', '.join(unknown)}")
+
+    skips = {
+        "log": req.skip_log_check,
+        "integrity": req.skip_integrity_check,
+        "mqa": req.skip_mqa,
+        "upconvert": req.skip_up,
+    }
+
+    async def run(job: Job) -> dict:
+        return await run_preflight(path, req.source, req.trackers, skips)
+
+    try:
+        job = manager.create_threaded(
+            "preflight", f"Pre-flight: {os.path.basename(path)}", run, {"path": path, "trackers": req.trackers}
+        )
     except JobCapacityError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     return job.to_dict()

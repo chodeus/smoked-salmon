@@ -3,6 +3,7 @@
   import FolderPicker from '../lib/FolderPicker.svelte'
   import JobActivity from '../lib/JobActivity.svelte'
   import JobStatus from '../lib/JobStatus.svelte'
+  import Preflight from '../lib/Preflight.svelte'
   import QuestionPanel from '../lib/QuestionPanel.svelte'
   import { jobStore, type Job } from '../lib/jobs.svelte'
 
@@ -33,11 +34,20 @@
   let skipInitialReview = $state(false)
   let applyAiSuggestions = $state(false)
 
+  let preflightCleared = $state(false)
   let activeJobId = $state<string | null>(null)
   let error = $state('')
   let starting = $state(false)
 
   const activeJob = $derived(activeJobId ? jobStore.get(activeJobId) : undefined)
+  const skips = $derived({
+    skip_log_check: skipLogCheck,
+    skip_integrity_check: skipIntegrityCheck,
+    skip_mqa: skipMqa,
+    skip_up: skipUp,
+  })
+  // Dry runs post nothing, so they are exempt from the pre-flight gate.
+  const gated = $derived(!dryRun && !preflightCleared)
 
   function parseGroupId(value: string): number | null | undefined {
     const trimmed = value.trim()
@@ -64,6 +74,10 @@
   async function start() {
     if (starting) return
     error = ''
+    if (gated) {
+      error = 'Verify the album before uploading.'
+      return
+    }
     const parsedGroupId = parseGroupId(groupId)
     if (parsedGroupId === undefined) {
       error = 'Invalid group ID — provide a number or a torrents.php permalink.'
@@ -127,7 +141,7 @@
   <div class="card">
     <FolderPicker bind:value={path} />
     <div class="grid">
-      <label title="Which site to upload to. Multi-tracker uploads are offered after the first completes.">
+      <label title="Which site to upload to. While upload.multi_tracker_upload is on (the default), the remaining trackers are offered after the first upload completes.">
         Tracker
         <select bind:value={tracker}>
           {#each trackers as t}<option value={t}>{t}</option>{/each}
@@ -176,21 +190,32 @@
       <label class="check" title="Rename files and folders to salmon's templates without asking to confirm each one."><input type="checkbox" bind:checked={autoRename} /> Auto-Rename</label>
       <label class="check" title="Generate, review and report spectrals after the torrent is uploaded instead of before it."><input type="checkbox" bind:checked={spectralsAfter} /> Spectrals after upload</label>
       <label class="check" title="Re-encode FLACs to the configured compression level before uploading. Slower, smaller files, audio unchanged."><input type="checkbox" bind:checked={compress} /> Recompress FLACs</label>
-      <label class="check" title="Mark as a scene release: the original folder name is kept and files are not renamed. Cannot be combined with essential-files-only."><input type="checkbox" bind:checked={scene} /> Scene-Release</label>
+      <label class="check" title="Mark as a scene release: the folder and file names are left untouched, tags are not standardised and the cover is not compressed. Cannot be combined with essential-files-only."><input type="checkbox" bind:checked={scene} /> Scene-Release</label>
       <label class="check" title="Skip the upconversion check, which looks for 16-bit audio padded out to 24-bit."><input type="checkbox" bind:checked={skipUp} /> Skip upconvert check</label>
       <label class="check" title="Skip the MQA marker check. Only the first file is tested anyway."><input type="checkbox" bind:checked={skipMqa} /> Skip MQA check</label>
       <label class="check" title="Skip scoring CD rip logs and verifying their checksums against the audio."><input type="checkbox" bind:checked={skipLogCheck} /> Skip log check</label>
       <label class="check" title="Skip verifying that every audio file decodes cleanly (flac -wt / mp3val)."><input type="checkbox" bind:checked={skipIntegrityCheck} /> Skip integrity check</label>
       <label class="check" title="Upload only audio, logs, cues and artwork; strip nfo, sfv, md5, txt and other extras. Cannot be combined with scene."><input type="checkbox" bind:checked={essentialOnly} /> Essential files only</label>
       <label class="check" title="Ignore the artists, year, label, catalogue number and genres already in the file tags and take them from the scraped sources instead."><input type="checkbox" bind:checked={overwrite} /> Overwrite metadata</label>
-      <label class="check" title="Skip the manual metadata review that normally happens before AI review."><input type="checkbox" bind:checked={skipInitialReview} /> Skip initial review</label>
-      <label class="check" title="Accept AI review suggestions automatically. Only does anything when AI review is enabled in config."><input type="checkbox" bind:checked={applyAiSuggestions} /> Apply AI suggestions</label>
+      <label class="check" title="Skip the manual metadata review that runs before the AI review. Only does anything when upload.ai_review.enabled is set."><input type="checkbox" bind:checked={skipInitialReview} /> Skip initial review</label>
+      <label class="check" title="Runs the AI metadata review without asking, applies its edits, and skips your manual check of what it changed. Needs upload.ai_review.enabled and an API key in config; does nothing otherwise."><input type="checkbox" bind:checked={applyAiSuggestions} /> Apply AI suggestions</label>
       <label class="check" title="Run everything — checks, spectrals, torrent creation — but do not post it. RED validates server-side; OPS builds locally only."><input type="checkbox" bind:checked={dryRun} /> Dry run (validate only)</label>
     </div>
+    <Preflight
+      {path}
+      {source}
+      {skips}
+      trackers={tracker ? [tracker] : []}
+      bind:cleared={preflightCleared}
+      onUseSource={(s) => (source = s)}
+    />
     <div style="margin-top: 0.8rem">
-      <button class="btn" onclick={start} disabled={!path || !tracker || starting}>
+      <button class="btn" onclick={start} disabled={!path || !tracker || starting || gated}>
         {dryRun ? 'Start dry run' : 'Start upload'}
       </button>
+      {#if gated}
+        <span class="muted" style="margin-left: 0.6rem">Verify the album above before uploading.</span>
+      {/if}
     </div>
     {#if error}<p class="muted">{error}</p>{/if}
   </div>
