@@ -121,13 +121,16 @@ class UploadManager:
         """
         return self._client_cache[seedbox.torrent_client]
 
-    def add_upload_task(self, directory: str, task_type: str, is_flac: bool) -> None:
+    def add_upload_task(
+        self, directory: str, task_type: str, is_flac: bool, site_code: str | None = None
+    ) -> None:
         """Queue upload tasks for a path across all configured seedboxes.
 
         Args:
             directory: Local folder path (for "folder" tasks) or .torrent file path (for "seed" tasks).
             task_type: Either "folder" to transfer files or "seed" to add to the download client.
             is_flac: Whether the release is FLAC; skips seedboxes with flac_only=True if False.
+            site_code: Tracker this upload went to; skips seedboxes pinned to other trackers.
         """
         click.secho(f"Preparing upload tasks for: {directory}", fg="cyan")
         for seedbox in cfg.seedbox:
@@ -136,6 +139,9 @@ class UploadManager:
             if seedbox.torrent_client not in self._client_cache:
                 continue
             if seedbox.flac_only and not is_flac:
+                continue
+            # No trackers listed = every tracker, so single-destination configs are unaffected.
+            if seedbox.trackers and (site_code or "").upper() not in seedbox.trackers:
                 continue
             task = (seedbox, directory, task_type)
             if task in self.tasks:

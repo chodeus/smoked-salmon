@@ -16,6 +16,7 @@ reviews:
     drafts: false
     base_branches:
       - "^upstream-base$"
+      - "^master$"
   path_filters:
     - "!uv.lock"
     - "!**/package-lock.json"
