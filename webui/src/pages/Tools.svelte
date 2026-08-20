@@ -178,7 +178,7 @@
 <div class="card">
   <h2>Tag an album</h2>
   <p class="muted">Retag and rename without uploading. Prompts appear here as questions.</p>
-  <FolderPicker bind:value={tagPath} />
+  <FolderPicker bind:value={tagPath} writable />
   <div class="row" style="margin-top: 0.6rem; flex-wrap: wrap">
     <select bind:value={tagSource} style="width: auto">
       <option value="">— source —</option>

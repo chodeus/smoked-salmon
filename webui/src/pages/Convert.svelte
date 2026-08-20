@@ -49,7 +49,7 @@
 <p class="lead">Transcode an album to MP3 V0 or 320, downconvert 24-bit to 16-bit, or recompress FLACs in place.</p>
 
 <div class="card">
-  <FolderPicker bind:value={path} />
+  <FolderPicker bind:value={path} writable />
   <div class="row" style="margin-top: 0.7rem">
     <select bind:value={bitrate} style="width: auto">
       <option value="V0">MP3 V0</option>

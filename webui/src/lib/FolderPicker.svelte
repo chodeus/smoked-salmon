@@ -1,13 +1,22 @@
 <script lang="ts">
   import { apiGet } from './api'
 
-  let { value = $bindable('') }: { value: string } = $props()
+  let {
+    value = $bindable(''),
+    writable = false,
+  }: {
+    value: string
+    /** Set on pickers whose operation writes to the folder; library roots are
+     *  read-only sources, so offering them would only produce a 403. */
+    writable?: boolean
+  } = $props()
 
   interface BrowseResult {
     path: string
     parent: string | null
     dirs: { name: string; path: string }[]
     audio_files: string[]
+    roots: { path: string; name: string; library: boolean }[]
   }
 
   let browsing = $state(false)
@@ -33,6 +42,8 @@
   function shortName(p: string): string {
     return p.split('/').filter(Boolean).pop() ?? p
   }
+
+  const roots = $derived((listing?.roots ?? []).filter((r) => !writable || !r.library))
 </script>
 
 <div class="picker">
@@ -49,6 +60,19 @@
         <button class="btn small" onclick={() => select()}>Select "{shortName(listing.path)}"</button>
         <button class="btn small secondary" onclick={() => (browsing = false)}>Close</button>
       </div>
+      {#if roots.length > 1}
+        <div class="roots">
+          {#each roots as r}
+            <button
+              class="root"
+              class:current={listing!.path === r.path || listing!.path.startsWith(r.path + '/')}
+              onclick={() => open(r.path)}
+            >
+              {r.name}{r.library ? ' (library)' : ''}
+            </button>
+          {/each}
+        </div>
+      {/if}
       <ul>
         {#if listing.parent}
           <li><button class="nav" onclick={() => open(listing!.parent!)}>..</button></li>
@@ -68,6 +92,25 @@
 </div>
 
 <style>
+  .roots {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin: 0.5rem 0 0.2rem;
+  }
+  .root {
+    font-size: 0.78rem;
+    padding: 0.25rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .root.current {
+    border-color: var(--accent);
+    color: var(--text);
+  }
   .listing {
     margin-top: 0.5rem;
     max-height: 300px;
