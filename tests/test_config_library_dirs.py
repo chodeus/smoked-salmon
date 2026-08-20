@@ -1,5 +1,7 @@
 """library_dirs: browsable/uploadable sources that must never be deleted."""
 
+import inspect
+
 import pytest
 
 from salmon import cfg
@@ -169,3 +171,26 @@ def test_library_dir_beside_the_writable_dirs_is_accepted(tmp_path) -> None:
         library_dirs=[str(lib)],
     )
     assert directory.library_dirs == [str(lib)]
+
+
+def test_tag_endpoint_refuses_a_library_source(tmp_path, monkeypatch) -> None:
+    """`salmon tag` saves over the source files and renames the folder, so the
+    web endpoint must reject a read-only library album the way convert does."""
+    import fastapi
+    import pytest as _pytest
+
+    from salmon.webui.routers import tools
+
+    lib = tmp_path / "music"
+    album = lib / "Artist" / "Album"
+    album.mkdir(parents=True)
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
+
+    with _pytest.raises(fastapi.HTTPException) as exc:
+        tools.validate_writable_album_dir(str(album))
+    assert exc.value.status_code == 403
+
+    # and the endpoint is wired to that validator, not the permissive one
+    source = inspect.getsource(tools.tag)
+    assert "validate_writable_album_dir(" in source
+    assert "validate_album_dir(" not in source.replace("validate_writable_album_dir(", "")
