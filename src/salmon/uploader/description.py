@@ -9,10 +9,19 @@ from salmon.tagger.retagger import create_artist_str
 from salmon.tagger.sources import run_metadata
 from salmon.uploader.upload import generate_source_links
 
+# One scrape per URL; keep a caller from opening an unbounded number at once.
+MAX_CONCURRENT_SCRAPES = 4
+
 
 async def build_tracklist_description(urls: tuple[str, ...] | list[str]) -> str:
     """Scrape each URL, merge the metadata, and render a BBCode tracklist."""
-    metadatas = await asyncio.gather(*[run_metadata(url, return_source_name=True) for url in urls])
+    limit = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
+
+    async def scrape(url: str):
+        async with limit:
+            return await run_metadata(url, return_source_name=True)
+
+    metadatas = await asyncio.gather(*[scrape(url) for url in urls])
     metadata = clean_metadata(combine_metadatas(*((source, meta) for meta, source in metadatas)))
     remove_various_artists(metadata["tracks"])
 

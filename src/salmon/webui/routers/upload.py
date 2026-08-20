@@ -2,6 +2,7 @@
 thread job; terminal prompts surface as browser questions via the jobs API."""
 
 import os
+from typing import Annotated
 
 import asyncclick as click
 from fastapi import APIRouter, HTTPException
@@ -42,7 +43,9 @@ class UploadStartRequest(BaseModel):
     dry_run: bool = False
     overwrite: bool = False
     encoding: str | None = None
-    spectrals: list[int] = Field(default_factory=list)
+    # Track numbers are 1-based; negatives index from the end in get_wanted_filenames
+    # and 0 is a sentinel, so both would silently select the wrong tracks.
+    spectrals: list[Annotated[int, Field(gt=0)]] = Field(default_factory=list)
     skip_initial_review: bool = False
     apply_ai_suggestions: bool = False
 

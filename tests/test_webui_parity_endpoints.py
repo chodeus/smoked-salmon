@@ -172,3 +172,46 @@ def test_offered_sources_match_the_canonical_set(client) -> None:
 
 def test_upload_rejects_a_source_the_tagger_would_reject(client, album) -> None:
     assert client.post("/api/upload", json={"path": album, "tracker": "RED", "source": "Blu-Ray"}).status_code == 422
+
+
+def test_descgen_caps_the_number_of_urls(client) -> None:
+    from salmon.webui.routers.tools import MAX_DESCGEN_URLS
+
+    too_many = [f"https://example.com/{i}" for i in range(MAX_DESCGEN_URLS + 1)]
+    assert client.post("/api/descgen", json={"urls": too_many}).status_code == 422
+
+
+def test_descgen_refuses_internal_addresses(client) -> None:
+    # SSRF: the scrapers match arbitrary hosts, so an internal URL would be fetched.
+    for url in ("http://127.0.0.1/album", "http://10.0.20.11/album", "file:///etc/passwd"):
+        r = client.post("/api/descgen", json={"urls": [url]})
+        assert r.status_code == 422, f"{url} should be refused"
+
+
+@pytest.fixture
+def two_trackers(monkeypatch):
+    """cross-upload needs two distinct trackers; the test config may configure one."""
+    import salmon.trackers
+
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
+    return "RED", "OPS"
+
+
+def test_cross_upload_refuses_a_local_path_outside_the_roots(client, two_trackers) -> None:
+    source, target = two_trackers
+    r = client.post("/api/cross-upload", json={"path": "/etc", "source": source, "target": target})
+    assert r.status_code == 403
+
+
+def test_cross_upload_still_accepts_a_torrent_id(client, two_trackers) -> None:
+    # IDs and URLs are not filesystem paths and must pass the confinement check.
+    source, target = two_trackers
+    r = client.post("/api/cross-upload", json={"path": "12345", "source": source, "target": target})
+    assert r.status_code != 403
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_upload_rejects_non_positive_spectral_tracks(client, album, bad) -> None:
+    # Negative numbers index from the end of the track list; 0 is a sentinel.
+    r = client.post("/api/upload", json={"path": album, "tracker": "RED", "spectrals": [bad]})
+    assert r.status_code == 422

@@ -12,6 +12,7 @@
     transcodes: string[]
   } | null>(null)
 
+  let optionsError = $state('')
   let jobIds = $state<string[]>([])
   const jobs = $derived(jobIds.map((id) => jobStore.get(id)).filter(Boolean) as Job[])
 
@@ -53,7 +54,9 @@
         if (o && !xSource && o.trackers.length) xSource = o.trackers[0]
         if (o && !xTarget && o.trackers.length > 1) xTarget = o.trackers[1]
       })
-      .catch(() => {})
+      .catch((e) => {
+        optionsError = `Could not load options: ${e}`
+      })
   })
 
   function track(job: Job) {
@@ -139,6 +142,10 @@
 </script>
 
 <h1>Tools</h1>
+
+{#if optionsError}
+  <div class="card"><p class="muted">{optionsError}</p></div>
+{/if}
 
 <div class="card">
   <h2>Description generator</h2>

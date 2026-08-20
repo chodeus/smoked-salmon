@@ -20,7 +20,9 @@ from salmon.images import HOSTS, upload_images
 from salmon.tagger import tag as tag_command
 from salmon.uploader.description import build_tracklist_description
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
-from salmon.webui.validation import is_within_roots, validate_album_dir
+from salmon.webui.validation import assert_public_url, is_within_roots, validate_album_dir
+
+MAX_DESCGEN_URLS = 20
 
 router = APIRouter(tags=["tools"])
 
@@ -33,7 +35,8 @@ _CROSS_UPLOAD = cast("Any", cross_upload_command.callback)
 
 
 class DescgenRequest(BaseModel):
-    urls: list[str] = Field(min_length=1)
+    # Each URL costs a scrape; cap the fan-out a single request can start.
+    urls: list[str] = Field(min_length=1, max_length=MAX_DESCGEN_URLS)
 
 
 class ImageUploadRequest(BaseModel):
@@ -85,6 +88,8 @@ async def options() -> dict:
 @router.post("/descgen")
 async def descgen(req: DescgenRequest) -> dict:
     """Build a tracklist description from one or more metadata URLs."""
+    for url in req.urls:
+        await assert_public_url(url)
     try:
         description = await build_tracklist_description(req.urls)
     except Exception as e:
@@ -151,6 +156,11 @@ async def cross_upload(req: CrossUploadRequest) -> dict:
     for bitrate in req.transcodes:
         if bitrate not in ("320", "V0"):
             raise HTTPException(status_code=422, detail=f"Unknown transcode: {bitrate}")
+    # The command accepts a directory, a .torrent file, a torrent ID or a source URL.
+    # Anything that resolves to a real path must be confined; IDs and URLs pass through.
+    local = os.path.realpath(os.path.expanduser(req.path))
+    if os.path.exists(local) and not is_within_roots(local):
+        raise HTTPException(status_code=403, detail="Refusing to read outside the configured directories.")
 
     async def run(job: Job) -> dict:
         await _CROSS_UPLOAD(
