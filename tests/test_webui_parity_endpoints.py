@@ -5,10 +5,12 @@ those have their own tests.
 """
 
 import os
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
+import salmon.trackers
 from salmon import cfg
 from salmon.webui.app import create_app
 from salmon.webui.jobs import manager
@@ -110,9 +112,22 @@ def test_cli_still_exposes_every_command_after_the_refactor() -> None:
 
     names = set(commandgroup.commands)
     expected = {
-        "check", "checkconf", "checkspecs", "compress", "cross-upload", "descgen",
-        "downconv", "health", "images", "meta", "metas", "specs", "tag",
-        "transcode", "up", "web",
+        "check",
+        "checkconf",
+        "checkspecs",
+        "compress",
+        "cross-upload",
+        "descgen",
+        "downconv",
+        "health",
+        "images",
+        "meta",
+        "metas",
+        "specs",
+        "tag",
+        "transcode",
+        "up",
+        "web",
     }
     assert expected <= names, f"missing CLI commands: {sorted(expected - names)}"
 
@@ -215,3 +230,158 @@ def test_upload_rejects_non_positive_spectral_tracks(client, album, bad) -> None
     # Negative numbers index from the end of the track list; 0 is a sentinel.
     r = client.post("/api/upload", json={"path": album, "tracker": "RED", "spectrals": [bad]})
     assert r.status_code == 422
+
+
+def test_checkconf_is_cached_so_dashboard_loads_do_not_hammer_trackers(client, monkeypatch) -> None:
+    # The dashboard calls this on every load; each real call costs two live
+    # requests per tracker, so repeat calls must be served from cache.
+    from salmon.webui.routers import system
+
+    calls = []
+
+    async def fake_check(code):
+        calls.append(code)
+        return {
+            "tracker": code,
+            "session_ok": True,
+            "session_error": None,
+            "api_key_configured": False,
+            "api_key_ok": None,
+            "api_key_error": None,
+        }
+
+    monkeypatch.setattr(system, "check_tracker_connection", fake_check)
+    monkeypatch.setitem(system._checkconf_cache, "at", 0.0)
+    monkeypatch.setitem(system._checkconf_cache, "result", None)
+
+    first = client.post("/api/checkconf").json()
+    assert first["cached"] is False
+    hits_after_first = len(calls)
+    assert hits_after_first > 0
+
+    second = client.post("/api/checkconf").json()
+    assert second["cached"] is True
+    assert len(calls) == hits_after_first, "cached call must not touch the trackers"
+
+    forced = client.post("/api/checkconf?force=true").json()
+    assert forced["cached"] is False
+    assert len(calls) > hits_after_first, "force=true must bypass the cache"
+
+
+def test_concurrent_checkconf_misses_share_one_probe(client, monkeypatch) -> None:
+    """Several dashboards loading at once must not each start their own tracker probe."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from salmon.webui.routers import system
+
+    rounds = []
+
+    async def fake_check(code):
+        rounds.append(code)
+        await asyncio.sleep(0.05)  # long enough for the other requests to pile up
+        return {
+            "tracker": code,
+            "session_ok": True,
+            "session_error": None,
+            "api_key_configured": False,
+            "api_key_ok": None,
+            "api_key_error": None,
+        }
+
+    monkeypatch.setattr(system, "check_tracker_connection", fake_check)
+    monkeypatch.setitem(system._checkconf_cache, "at", 0.0)
+    monkeypatch.setitem(system._checkconf_cache, "result", None)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        bodies = [f.result().json() for f in [pool.submit(client.post, "/api/checkconf") for _ in range(4)]]
+
+    import salmon.trackers
+
+    assert len(rounds) == len(salmon.trackers.tracker_list), "the probe must run exactly once"
+    assert sum(1 for b in bodies if b["cached"] is False) == 1
+    assert all(b["ok"] for b in bodies)
+
+
+def test_health_reports_disk_usage_for_each_directory(client) -> None:
+    """The dashboard draws a usage bar from these, so every entry must carry the fields."""
+    body = client.get("/api/health").json()
+    assert set(body["directories"]) == {"download", "tmp", "dottorrents"}
+    for name, info in body["directories"].items():
+        assert set(info) == {"path", "exists", "free_bytes", "total_bytes"}, name
+        if info["exists"]:
+            assert info["total_bytes"] and info["total_bytes"] > 0, name
+            assert 0 <= info["free_bytes"] <= info["total_bytes"], name
+
+
+def test_dir_info_handles_a_missing_directory() -> None:
+    from salmon.webui.routers.system import _dir_info
+
+    info = _dir_info("/definitely/not/a/real/path")
+    assert info == {"path": "/definitely/not/a/real/path", "exists": False, "free_bytes": None, "total_bytes": None}
+    assert _dir_info(None)["exists"] is False
+
+
+def test_empty_check_selection_is_not_reported_as_running_everything(client, album_dir) -> None:
+    """`checks: []` skips the file checks, so the job title must not claim they ran."""
+    resp = client.post("/api/checks/run", json={"path": str(album_dir), "checks": []})
+    assert resp.status_code == 200
+    assert resp.json()["title"].startswith("Checks (no file checks):")
+
+    omitted = client.post("/api/checks/run", json={"path": str(album_dir)})
+    assert "integrity" in omitted.json()["title"]
+
+
+def _wait(client, job_id, tries=200):
+    for _ in range(tries):
+        body = client.get(f"/api/jobs/{job_id}").json()
+        if body["status"] in {"done", "error", "cancelled"}:
+            return body
+        time.sleep(0.01)
+    raise AssertionError("job did not finish")
+
+
+def _capture_upload(monkeypatch):
+    """Stub run_upload and return the dict its kwargs land in."""
+    from salmon.webui.routers import upload as upload_router
+
+    seen: dict = {}
+
+    async def fake_upload(*args, **kwargs):
+        seen["args"] = args
+        seen.update(kwargs)
+
+    monkeypatch.setattr(upload_router, "run_upload", fake_upload)
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
+    return seen
+
+
+def test_upload_forwards_the_selected_trackers(client, album_dir, monkeypatch) -> None:
+    """Without this, run_upload offers every configured site for continuation —
+    so picking OPS could still offer RED."""
+    seen = _capture_upload(monkeypatch)
+    resp = client.post(
+        "/api/upload",
+        json={"path": str(album_dir), "tracker": "RED", "trackers": ["RED", "OPS"], "source": "WEB"},
+    )
+    assert resp.status_code == 200
+    _wait(client, resp.json()["id"])
+    assert seen["trackers"] == ["RED", "OPS"]
+
+
+def test_upload_omitting_trackers_keeps_the_cli_behaviour(client, album_dir, monkeypatch) -> None:
+    seen = _capture_upload(monkeypatch)
+    resp = client.post("/api/upload", json={"path": str(album_dir), "tracker": "RED", "source": "WEB"})
+    assert resp.status_code == 200
+    _wait(client, resp.json()["id"])
+    assert seen["trackers"] is None, "an empty selection must mean 'offer everything', as the CLI does"
+
+
+def test_upload_rejects_an_unknown_tracker_in_the_list(client, album_dir, monkeypatch) -> None:
+    _capture_upload(monkeypatch)
+    resp = client.post(
+        "/api/upload",
+        json={"path": str(album_dir), "tracker": "RED", "trackers": ["RED", "NOPE"], "source": "WEB"},
+    )
+    assert resp.status_code == 422
+    assert "NOPE" in resp.json()["detail"]

@@ -47,6 +47,7 @@ class UploadStartRequest(BaseModel):
     # and 0 is a sentinel, so both would silently select the wrong tracks.
     spectrals: list[Annotated[int, Field(gt=0)]] = Field(default_factory=list)
     skip_initial_review: bool = False
+    trackers: list[str] = []
     apply_ai_suggestions: bool = False
 
 
@@ -62,6 +63,9 @@ async def options() -> dict:
 @router.post("/upload")
 async def start(req: UploadStartRequest) -> dict:
     path = validate_album_dir(req.path)
+    unknown = [t for t in req.trackers if t not in salmon.trackers.tracker_list]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unknown tracker(s): {', '.join(unknown)}")
     if req.tracker not in salmon.trackers.tracker_list:
         raise HTTPException(status_code=422, detail=f"Unknown tracker: {req.tracker}")
     if req.source is not None and req.source not in SOURCES:
@@ -109,6 +113,7 @@ async def start(req: UploadStartRequest) -> dict:
             skip_integrity_check=req.skip_integrity_check,
             essential_only=req.essential_only,
             skip_initial_review=req.skip_initial_review,
+            trackers=req.trackers or None,
             apply_ai_suggestions=req.apply_ai_suggestions,
         )
         return {"album_path": path, "tracker": req.tracker, "dry_run": req.dry_run}

@@ -1,8 +1,12 @@
 """System endpoints: health, binaries, configuration overview, debugging."""
 
+import asyncio
+import math
+import os
 import shutil
 import sys
 import threading
+import time
 import traceback
 from importlib.metadata import PackageNotFoundError, version
 
@@ -23,12 +27,29 @@ def debug_threads(request: Request) -> dict:
         raise HTTPException(status_code=404, detail="Not found.")
     names = {t.ident: t.name for t in threading.enumerate()}
     return {
-        str(names.get(ident, ident)): traceback.format_stack(frame)
-        for ident, frame in sys._current_frames().items()
+        str(names.get(ident, ident)): traceback.format_stack(frame) for ident, frame in sys._current_frames().items()
     }
+
 
 REQUIRED_BINARIES = ["sox", "flac", "lame", "mp3val", "curl"]
 OPTIONAL_BINARIES = ["rclone", "feh", "puddletag"]
+
+
+def _dir_info(path: str | None) -> dict:
+    """Path, existence and free space, so the dashboard can show a usage bar."""
+    info: dict = {"path": path, "exists": False, "free_bytes": None, "total_bytes": None}
+    if not path:
+        return info
+    expanded = os.path.expanduser(path)
+    info["exists"] = os.path.isdir(expanded)
+    if not info["exists"]:
+        return info
+    try:
+        usage = shutil.disk_usage(expanded)
+    except OSError:
+        return info
+    info["free_bytes"], info["total_bytes"] = usage.free, usage.total
+    return info
 
 
 @router.get("/health")
@@ -50,16 +71,49 @@ def health() -> dict:
         "trackers": tracker_list,
         "default_tracker": cfg.tracker.default_tracker,
         "directories": {
-            "download": cfg.directory.download_directory,
-            "tmp": cfg.directory.tmp_dir,
-            "dottorrents": cfg.directory.dottorrents_dir,
+            "download": _dir_info(cfg.directory.download_directory),
+            "tmp": _dir_info(cfg.directory.tmp_dir),
+            "dottorrents": _dir_info(cfg.directory.dottorrents_dir),
         },
     }
 
 
+# The dashboard runs this on load, so cache it: each call costs two live requests
+# per tracker, and reloading the page should not keep hitting the sites.
+CHECKCONF_TTL_SECONDS = 300
+# monotonic: a backwards wall-clock jump must not keep a stale result alive.
+_checkconf_cache: dict[str, object] = {"at": -math.inf, "result": None}
+# One probe at a time, so concurrent dashboard loads share a single refresh.
+_checkconf_lock = asyncio.Lock()
+
+
+def _cached_checkconf(force: bool) -> dict | None:
+    cached = _checkconf_cache["result"]
+    if cached is None or force:
+        return None
+    age = time.monotonic() - float(_checkconf_cache["at"])  # type: ignore[arg-type]
+    if age >= CHECKCONF_TTL_SECONDS:
+        return None
+    return {**cached, "cached": True, "age_seconds": int(age)}  # type: ignore[dict-item]
+
+
 @router.post("/checkconf")
-async def checkconf() -> dict:
+async def checkconf(force: bool = False) -> dict:
     """Test every configured tracker's session cookie and API key."""
-    results = [await check_tracker_connection(code) for code in salmon.trackers.tracker_list]
-    ok = all(r["session_ok"] and (r["api_key_ok"] is not False) for r in results)
-    return {"ok": ok, "trackers": results}
+    if (hit := _cached_checkconf(force)) is not None:
+        return hit
+    seen_at = _checkconf_cache["at"]
+    async with _checkconf_lock:
+        # If someone refreshed while we queued, their result is newer than this
+        # request, so it satisfies a forced refresh too. Only a force that saw no
+        # such refresh goes on to probe.
+        if _checkconf_cache["at"] != seen_at and (hit := _cached_checkconf(force=False)) is not None:
+            return hit
+        results = [await check_tracker_connection(code) for code in salmon.trackers.tracker_list]
+        payload = {
+            "ok": all(r["session_ok"] and (r["api_key_ok"] is not False) for r in results),
+            "trackers": results,
+        }
+        _checkconf_cache["at"] = time.monotonic()
+        _checkconf_cache["result"] = payload
+        return {**payload, "cached": False, "age_seconds": 0}

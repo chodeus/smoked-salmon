@@ -43,12 +43,13 @@
 </script>
 
 <h1>Spectrals</h1>
+<p class="lead">Generate spectral images for an album and upload them, for lossy-master checks and reports.</p>
 
 <div class="card">
   <FolderPicker bind:value={path} />
   <div style="margin-top: 0.7rem">
     <button class="btn" onclick={generate} disabled={!path || activeJob?.status === 'running'}>
-      Spectrals generieren
+      Generate spectrals
     </button>
   </div>
   {#if error}<p class="muted">{error}</p>{/if}
@@ -62,7 +63,7 @@
     {#if activeJob.status === 'done' && activeJob.result}
       <div class="row" style="margin: 0.8rem 0">
         <button class="btn secondary" onclick={upload} disabled={uploadJob?.status === 'running'}>
-          Auf Image-Host hochladen
+          Upload to image host
         </button>
       </div>
       {#if uploadJob}

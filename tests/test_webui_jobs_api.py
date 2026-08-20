@@ -138,7 +138,7 @@ def integrity_stub(monkeypatch):
     async def fake_check_integrity(path):
         return True, "\x1b[32mok\x1b[0m"
 
-    monkeypatch.setattr("salmon.webui.routers.checks.check_integrity", fake_check_integrity)
+    monkeypatch.setattr("salmon.checks.album.check_integrity", fake_check_integrity)
 
 
 def run_generate_to_done(client: TestClient, album_dir) -> str:
@@ -463,7 +463,7 @@ def test_job_factory_error_is_surfaced_in_job_dict(client, album_dir, monkeypatc
     async def broken_check_integrity(path):
         raise ValueError("integrity exploded")
 
-    monkeypatch.setattr("salmon.webui.routers.checks.check_integrity", broken_check_integrity)
+    monkeypatch.setattr("salmon.checks.album.check_integrity", broken_check_integrity)
     resp = client.post("/api/checks/run", json={"path": str(album_dir), "checks": ["integrity"]})
     assert resp.status_code == 200
     data = join_job(client, resp.json()["id"])
@@ -708,10 +708,15 @@ def test_checks_run_invalid_check_name_returns_422(client, album_dir):
     assert resp.json()["detail"] == "Invalid checks: ['bogus']"
 
 
-def test_checks_run_empty_checks_returns_422(client, album_dir):
+def test_checks_run_no_checks_still_verifies_the_source(client, album_dir):
+    """Skipping every file check is legitimate — source and duplicates still gate."""
     resp = client.post("/api/checks/run", json={"path": str(album_dir), "checks": []})
-    assert resp.status_code == 422
-    assert resp.json()["detail"] == "Invalid checks: none selected"
+    assert resp.status_code == 200
+    data = join_job(client, resp.json()["id"])
+    assert data["status"] == "done"
+    verdicts = {r["id"]: r["verdict"] for r in data["result"]["rows"]}
+    assert verdicts["integrity"] == "skip"
+    assert "source" in verdicts
 
 
 def test_checks_run_nonexistent_dir_returns_404_before_check_validation(client):
@@ -734,8 +739,10 @@ def test_checks_run_integrity_and_log_happy_path(client, album_dir, integrity_st
     data = join_job(client, job["id"])
     assert data["status"] == "done"
     # ANSI styling from the integrity checker is stripped for the API
-    assert data["result"]["integrity"] == {"passed": True, "details": "ok"}
-    logs = {entry["file"]: entry for entry in data["result"]["log"]["logs"]}
+    assert data["result"]["raw"]["integrity"] == {"passed": True, "details": "ok"}
+    verdicts = {r["id"]: r["verdict"] for r in data["result"]["rows"]}
+    assert verdicts["integrity"] == "ok"
+    logs = {entry["file"]: entry for entry in data["result"]["raw"]["log"]["logs"]}
     assert set(logs) == {"empty.log", "garbage.log"}
     assert "Empty request body" in logs["empty.log"]["error"]
     assert logs["garbage.log"]["score"] == -15
@@ -778,7 +785,7 @@ def test_ws_localhost_origin_receives_job_events_in_order(client, album_dir, int
         assert finished["event"] == "finished"
         assert finished["job"]["id"] == job_id
         assert finished["job"]["status"] == "done"
-        assert finished["job"]["result"]["integrity"]["passed"] is True
+        assert finished["job"]["result"]["raw"]["integrity"]["passed"] is True
 
 
 def test_ws_without_origin_header_is_accepted(client):

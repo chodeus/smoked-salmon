@@ -46,6 +46,7 @@
 </script>
 
 <h1>Convert</h1>
+<p class="lead">Transcode an album to MP3 V0 or 320, downconvert 24-bit to 16-bit, or recompress FLACs in place.</p>
 
 <div class="card">
   <FolderPicker bind:value={path} />

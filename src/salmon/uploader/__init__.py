@@ -291,6 +291,20 @@ def _stage_library_source(path: str) -> str:
     return dest
 
 
+def follow_up_trackers(trackers: list[str] | None, current: str) -> list[str]:
+    """Sites available for the follow-up offer after uploading to `current`.
+
+    None means every configured site (what the CLI passes). Codes are deduped in
+    order — only one entry is removed per upload, so a repeat would be re-offered
+    and could upload to the same tracker twice. `current` stays in the list
+    because it is removed after its own upload.
+    """
+    sites = list(dict.fromkeys(trackers)) if trackers is not None else list(salmon.trackers.tracker_list)
+    if current not in sites:
+        sites.insert(0, current)
+    return sites
+
+
 async def upload(
     gazelle_site: "BaseGazelleApi",
     path: str,
@@ -314,6 +328,7 @@ async def upload(
     essential_only: bool = False,
     skip_initial_review: bool = False,
     apply_ai_suggestions: bool = False,
+    trackers: list[str] | None = None,
 ) -> None:
     """Upload an album folder to Gazelle Site.
 
@@ -342,6 +357,9 @@ async def upload(
         essential_only: If True, only essential extensions are allowed.
         skip_initial_review: Skip the first manual metadata review before AI review.
         apply_ai_suggestions: Automatically apply AI review suggestions when present.
+        trackers: Restrict the follow-up tracker offer to these sites, in order;
+            duplicates are ignored. None offers every configured tracker, which
+            is what the CLI does; an empty list offers none.
     """
     path = os.path.abspath(path)
     # Stage before anything mutates: standardize_tags writes to the source directly,
@@ -484,8 +502,7 @@ async def upload(
     if cfg.upload.requests.last_minute_dupe_check:
         await last_min_dupe_check(gazelle_site, searchstrs)
 
-    # Shallow copy to avoid errors on multiple uploads in one session.
-    remaining_gazelle_sites = list(salmon.trackers.tracker_list)
+    remaining_gazelle_sites = follow_up_trackers(trackers, gazelle_site.site_code)
     tracker = gazelle_site.site_code
     torrent_id = None
     cover_url = None
@@ -1214,9 +1231,7 @@ async def upload_and_report(
         is_flac = metadata.get("format", "").upper() == "FLAC"
         site_code = gazelle_site.site_code
         seedbox_uploader.add_upload_task(path, task_type="folder", is_flac=is_flac, site_code=site_code)
-        seedbox_uploader.add_upload_task(
-            torrent_path, task_type="seed", is_flac=is_flac, site_code=site_code
-        )
+        seedbox_uploader.add_upload_task(torrent_path, task_type="seed", is_flac=is_flac, site_code=site_code)
 
     return torrent_id, group_id, torrent_path, torrent_content, url
 

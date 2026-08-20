@@ -6,6 +6,11 @@
   import { jobStore } from '../lib/jobs.svelte'
 
   let cancelError = $state('')
+  let opened = $state<string[]>([])
+
+  function toggle(id: string) {
+    opened = opened.includes(id) ? opened.filter((o) => o !== id) : [...opened, id]
+  }
 
   async function cancel(id: string) {
     cancelError = ''
@@ -21,6 +26,7 @@
 </script>
 
 <h1>Jobs</h1>
+<p class="lead">Everything running or finished in this session. Open a job to answer its prompts or read its log.</p>
 
 {#if jobStore.loadError}
   <div class="card"><p class="muted">{jobStore.loadError}</p></div>
@@ -38,15 +44,18 @@
     <div class="row">
       <h2 class="grow" style="margin: 0">{job.title}</h2>
       <span class="muted mono">{job.id}</span>
+      <button class="btn small secondary" onclick={() => toggle(job.id)}>
+        {opened.includes(job.id) ? 'Hide log' : 'Open'}
+      </button>
       {#if job.status === 'running' || job.status === 'queued'}
         <button class="btn small secondary" onclick={() => cancel(job.id)}>Cancel</button>
       {/if}
     </div>
     <JobStatus {job} />
     <QuestionPanel {job} />
-    {#if job.question}
-      <!-- Context for answering: spectral gallery and the recent log tail. -->
-      <JobActivity {job} logTail={15} />
+    {#if job.question || opened.includes(job.id)}
+      <!-- Context for answering, and the log for any job the user opens. -->
+      <JobActivity {job} logTail={opened.includes(job.id) ? 200 : 15} />
     {/if}
   </div>
 {/each}

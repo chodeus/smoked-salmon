@@ -2,6 +2,8 @@
   import { apiPost } from '../lib/api'
   import FolderPicker from '../lib/FolderPicker.svelte'
   import JobStatus from '../lib/JobStatus.svelte'
+  import VerdictRows from '../lib/VerdictRows.svelte'
+  import { checksumChip, logScoreChip } from '../lib/verdicts'
   import { jobStore, type Job } from '../lib/jobs.svelte'
 
   const ALL_CHECKS = [
@@ -35,6 +37,7 @@
 </script>
 
 <h1>Checks</h1>
+<p class="lead">Run the quality checks on any folder without uploading it — rip-log score, file integrity, MQA markers and upconversion.</p>
 
 <div class="card">
   <FolderPicker bind:value={path} />
@@ -58,22 +61,24 @@
     <JobStatus {job} />
 
     {#if job.status === 'done' && job.result}
-      {#if job.result.log}
+      <VerdictRows rows={job.result.rows} />
+
+      {#if job.result.raw.log}
         <h3>Rip-Logs</h3>
-        {#if job.result.log.logs.length === 0}
+        {#if job.result.raw.log.logs.length === 0}
           <p class="muted">No .log files found.</p>
         {:else}
           <table>
             <tbody>
-              {#each job.result.log.logs as log}
+              {#each job.result.raw.log.logs as log}
                 <tr>
                   <td class="mono">{log.file}</td>
                   {#if log.error}
                     <td><span class="chip err">Error</span> <span class="muted">{log.error}</span></td>
                   {:else}
                     <td>
-                      <span class="chip {log.score === 100 ? 'ok' : 'warn'}">Score {log.score}</span>
-                      <span class="chip {log.checksum_integrity === 'Match' ? 'ok' : 'warn'}">
+                      <span class="chip {logScoreChip(log.score)}">Score {log.score}</span>
+                      <span class="chip {checksumChip(log.checksum_integrity)}">
                         Checksum: {log.checksum_integrity}
                       </span>
                     </td>
@@ -85,59 +90,36 @@
         {/if}
       {/if}
 
-      {#if job.result.integrity}
+      {#if job.result.raw.integrity?.details}
         <h3>Integrity</h3>
-        <p>
-          <span class="chip {job.result.integrity.passed ? 'ok' : 'err'}">
-            {job.result.integrity.passed ? 'bestanden' : 'fehlgeschlagen'}
-          </span>
-        </p>
-        {#if job.result.integrity.details}
-          <pre class="mono muted">{job.result.integrity.details}</pre>
-        {/if}
+        <pre class="mono muted">{job.result.raw.integrity.details}</pre>
       {/if}
 
-      {#if job.result.mqa}
+      {#if job.result.raw.mqa?.detected}
         <h3>MQA</h3>
-        <p>
-          <span class="chip {job.result.mqa.detected ? 'err' : 'ok'}">
-            {job.result.mqa.detected ? 'MQA erkannt!' : 'kein MQA'}
-          </span>
-        </p>
-        {#if job.result.mqa.detected}
-          <ul class="mono">
-            {#each job.result.mqa.files.filter((f: any) => f.detected) as f}
-              <li>{f.file}</li>
-            {/each}
-          </ul>
-        {/if}
+        <ul class="mono">
+          {#each job.result.raw.mqa.files.filter((f: any) => f.detected) as f}
+            <li>{f.file}</li>
+          {/each}
+        </ul>
       {/if}
 
-      {#if job.result.upconvert}
+      {#if job.result.raw.upconvert?.files.length}
         <h3>Upconvert</h3>
-        {#if job.result.upconvert.files.length === 0}
-          <p class="muted">No 24-bit FLACs found.</p>
-        {:else}
-          <table>
-            <tbody>
-              {#each job.result.upconvert.files as f}
-                <tr>
-                  <td class="mono">{f.file}</td>
-                  {#if f.error}
-                    <td><span class="chip warn">{f.error}</span></td>
-                  {:else}
-                    <td>
-                      <span class="chip {f.is_upconverted ? 'err' : 'ok'}">
-                        {f.is_upconverted ? 'Upconvert!' : 'ok'}
-                      </span>
-                      <span class="muted">{f.bitdepth}bit, wasted bits: {f.wasted_bits}</span>
-                    </td>
-                  {/if}
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {/if}
+        <table>
+          <tbody>
+            {#each job.result.raw.upconvert.files as f}
+              <tr>
+                <td class="mono">{f.file}</td>
+                {#if f.error}
+                  <td><span class="chip warn">{f.error}</span></td>
+                {:else}
+                  <td class="muted">{f.bitdepth}bit, wasted bits: {f.wasted_bits}</td>
+                {/if}
+              </tr>
+            {/each}
+          </tbody>
+        </table>
       {/if}
     {/if}
   </div>

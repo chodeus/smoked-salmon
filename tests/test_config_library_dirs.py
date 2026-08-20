@@ -169,3 +169,28 @@ def test_library_dir_beside_the_writable_dirs_is_accepted(tmp_path) -> None:
         library_dirs=[str(lib)],
     )
     assert directory.library_dirs == [str(lib)]
+
+
+async def test_tag_endpoint_refuses_a_library_source(tmp_path, monkeypatch) -> None:
+    """`salmon tag` saves over the source files and renames the folder, so the
+    endpoint must refuse a read-only library album the way convert does."""
+    import fastapi
+    import pytest as _pytest
+
+    from salmon.webui.routers import tools
+
+    lib = tmp_path / "music"
+    album = lib / "Artist" / "Album"
+    album.mkdir(parents=True)
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
+
+    called: list[str] = []
+    monkeypatch.setattr(tools, "_TAG", lambda **_kw: called.append("tag"))
+    monkeypatch.setattr(tools, "_queue", lambda *_a, **_kw: called.append("queue"))
+
+    request = tools.TagRequest(path=str(album), source="CD")
+    with _pytest.raises(fastapi.HTTPException) as exc:
+        await tools.tag(request)
+
+    assert exc.value.status_code == 403
+    assert called == [], "the job must never be queued for a library path"
