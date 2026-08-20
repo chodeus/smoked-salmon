@@ -136,3 +136,36 @@ def test_staging_refuses_to_clobber_an_existing_folder(tmp_path, monkeypatch) ->
 
     with pytest.raises(UploadError, match="already exists"):
         _stage_library_source(str(album))
+
+
+@pytest.mark.parametrize("field", ["download_directory", "dottorrents_dir", "tmp_dir"])
+def test_library_dir_containing_a_writable_dir_is_rejected(tmp_path, field) -> None:
+    # library_dirs = ["/data"] with download_directory = "/data/torrents/salmon" would
+    # stage into the library and mark every staging album read-only. Fail at load.
+    lib = tmp_path / "data"
+    inner = lib / "torrents" / "salmon"
+    inner.mkdir(parents=True)
+    kwargs = {
+        "dottorrents_dir": str(tmp_path / "elsewhere"),
+        "download_directory": str(tmp_path / "elsewhere"),
+        "library_dirs": [str(lib)],
+    }
+    (tmp_path / "elsewhere").mkdir(exist_ok=True)
+    kwargs[field] = str(inner)
+
+    with pytest.raises(ValueError, match="must not contain"):
+        Directory(**kwargs)
+
+
+def test_library_dir_beside_the_writable_dirs_is_accepted(tmp_path) -> None:
+    lib = tmp_path / "media" / "music"
+    lib.mkdir(parents=True)
+    staging = tmp_path / "torrents" / "salmon"
+    staging.mkdir(parents=True)
+
+    directory = Directory(
+        dottorrents_dir=str(staging),
+        download_directory=str(staging),
+        library_dirs=[str(lib)],
+    )
+    assert directory.library_dirs == [str(lib)]
