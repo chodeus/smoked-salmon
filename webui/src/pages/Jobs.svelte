@@ -30,7 +30,7 @@
 {/if}
 
 {#if jobStore.jobs.length === 0 && !jobStore.loadError}
-  <div class="card"><p class="muted">Noch keine Jobs in dieser Sitzung.</p></div>
+  <div class="card"><p class="muted">No jobs in this session yet.</p></div>
 {/if}
 
 {#each jobStore.jobs as job (job.id)}
