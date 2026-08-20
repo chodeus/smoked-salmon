@@ -12,6 +12,11 @@ download_directory = '.music'
 # Hardlinks are enabled by default, set the option below to false to DISABLE hardlinks (and use standard copy files)
 # hardlinks = true
 
+# Read-only source libraries. Folders here can be browsed and uploaded from in the web
+# interface, but salmon will never delete them. Keep them on the same filesystem as
+# download_directory so hardlinking works instead of copying.
+# library_dirs = ['/data/media/music']
+
 # Can be a watch folder for your torrent client, or a folder somewhere else where the .torrent files will be generated
 # You still need to have it set even if using direct torrent injection with qbittorrent
 dottorrents_dir = '.torrents'

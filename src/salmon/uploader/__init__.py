@@ -431,6 +431,14 @@ async def upload(
     except click.Abort:
         return click.secho("\nAborting upload...", fg="red")
     except AbortAndDeleteFolder:
+        # library_dirs hold curated sources, not disposable downloads.
+        if cfg.directory.is_library_path(path):
+            click.secho(
+                f"\n{path} is inside a configured library_dirs entry; refusing to delete it.",
+                fg="yellow",
+                bold=True,
+            )
+            return click.secho("\nAborting upload...", fg="red")
         if platform.system() == "Windows" and cfg.upload.windows_use_recycle_bin:
             try:
                 import send2trash

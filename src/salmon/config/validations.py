@@ -14,6 +14,8 @@ class Directory(BaseStruct):
     hardlinks: bool = True
     tmp_dir: str | None = None
     clean_tmp_dir: bool = False
+    # Read-only sources: browsable and uploadable, never deleted.
+    library_dirs: list[str] = msgspec.field(default_factory=list)
 
     def __post_init__(self):
         if not os.path.isdir(self.dottorrents_dir):
@@ -22,6 +24,18 @@ class Directory(BaseStruct):
             raise ValueError("download_directory is not a valid directory")
         if self.tmp_dir and not os.path.isdir(self.tmp_dir):
             raise ValueError("tmp_dir is not a valid directory")
+        for entry in self.library_dirs:
+            if not os.path.isdir(entry):
+                raise ValueError(f"library_dirs entry is not a valid directory: {entry}")
+
+    def is_library_path(self, path: str) -> bool:
+        """True if path sits inside a library_dirs entry, which must never be deleted."""
+        real = os.path.realpath(os.path.expanduser(path))
+        for entry in self.library_dirs:
+            root = os.path.realpath(os.path.expanduser(entry))
+            if real == root or real.startswith(root + os.sep):
+                return True
+        return False
 
 
 ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "red"]

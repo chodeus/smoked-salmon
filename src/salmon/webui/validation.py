@@ -8,8 +8,17 @@ from salmon import cfg
 
 
 def allowed_roots() -> list[str]:
-    """Real paths the UI may operate within: salmon's configured directories."""
-    raw = [cfg.directory.download_directory, cfg.directory.dottorrents_dir, cfg.directory.tmp_dir]
+    """Real paths the UI may operate within: salmon's configured directories.
+
+    library_dirs are sources, so they are browsable and uploadable; the delete
+    path refuses them separately (see Directory.is_library_path).
+    """
+    raw = [
+        cfg.directory.download_directory,
+        cfg.directory.dottorrents_dir,
+        cfg.directory.tmp_dir,
+        *cfg.directory.library_dirs,
+    ]
     return [os.path.realpath(os.path.expanduser(r)) for r in raw if r]
 
 
