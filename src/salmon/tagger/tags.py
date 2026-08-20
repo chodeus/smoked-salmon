@@ -242,8 +242,8 @@ def edit_tags_as_json(path: str) -> bool:
             planned[filename] = changed
 
     # Validation cannot prevent a write failing part-way through a multi-file
-    # album, so report exactly which files changed rather than raising over a
-    # half-applied edit.
+    # album. Say exactly which files changed, then abort: continuing would upload
+    # a release whose tracks disagree with each other.
     written: list[str] = []
     for filename, changed in planned.items():
         tag = tags[filename]
@@ -255,8 +255,11 @@ def edit_tags_as_json(path: str) -> bool:
             click.secho(f"Failed to write {filename}: {e}", fg="red", bold=True)
             if written:
                 click.secho(f"Already written: {', '.join(written)}.", fg="yellow")
+                click.secho(
+                    "The album's tags are now inconsistent — repair them before uploading.", fg="red", bold=True
+                )
             click.secho(f"Not written: {', '.join(f for f in planned if f not in written)}.", fg="yellow")
-            return bool(written)
+            raise click.Abort from e
         written.append(filename)
 
     if not written:

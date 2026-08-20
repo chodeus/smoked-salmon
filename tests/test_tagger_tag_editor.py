@@ -286,11 +286,41 @@ def test_a_write_failure_reports_what_was_and_was_not_written(album, monkeypatch
         return json.dumps(doc)
 
     monkeypatch.setattr(tags_mod.click, "edit", edit)
-    result = tags_mod.edit_tags_as_json(album["path"])
+    import asyncclick
+
+    with pytest.raises(asyncclick.Abort):
+        tags_mod.edit_tags_as_json(album["path"])
     out = capsys.readouterr().out
 
-    assert result is True, "the first file did change, so the caller must re-read tags"
     assert saved == ["01.flac"]
     assert "Failed to write 02.flac" in out
     assert "Already written: 01.flac" in out
     assert "Not written: 02.flac" in out
+    assert "inconsistent" in out, "the user must be told the album is now mixed"
+
+
+def test_a_failure_on_the_first_file_leaves_nothing_written(album, monkeypatch, capsys):
+    """Nothing was applied, so there is no inconsistency to warn about."""
+    fake = {"01.flac": {"title": "One"}}
+
+    class _Tag:
+        def __init__(self, name):
+            object.__setattr__(self, "name", name)
+
+        def __getattr__(self, item):
+            return fake["01.flac"].get(item)
+
+        def __setattr__(self, key, value):
+            fake["01.flac"][key] = value
+
+        def save(self):
+            raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(tags_mod, "gather_tags", lambda _p: {"01.flac": _Tag("01.flac")})
+    monkeypatch.setattr(tags_mod.click, "edit", lambda text, **_kw: json.dumps({"01.flac": {"title": "Changed"}}))
+
+    import asyncclick
+
+    with pytest.raises(asyncclick.Abort):
+        tags_mod.edit_tags_as_json(album["path"])
+    assert "inconsistent" not in capsys.readouterr().out
