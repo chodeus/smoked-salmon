@@ -17,6 +17,7 @@ from salmon.constants import (
     BLACKLISTED_FULLWIDTH_REPLACEMENTS,
 )
 from salmon.errors import UploadError
+from salmon.tagger.mutation import abort_partial
 from salmon.tagger.tagfile import TagFile
 
 
@@ -289,13 +290,19 @@ def print_changes(album_changes, track_changes, a_track):
 
 def retag_files(path, album_changes, track_changes):
     """Apply the proposed metadata changes to the files."""
+    done: list[str] = []
     for filename, changes in track_changes.items():
-        mut = TagFile(os.path.join(path, filename))
-        for change in changes:
-            setattr(mut, change.tag, str(change.new))
-        for tag, value in album_changes.items():
-            setattr(mut, tag, str(value))
-        mut.save()
+        try:
+            mut = TagFile(os.path.join(path, filename))
+            for change in changes:
+                setattr(mut, change.tag, str(change.new))
+            for tag, value in album_changes.items():
+                setattr(mut, tag, str(value))
+            mut.save()
+        except Exception as e:
+            remaining = [f for f in track_changes if f not in done and f != filename]
+            abort_partial(f"Retagging {filename}", done, filename, remaining, e)
+        done.append(filename)
     click.secho("Retagged files.", fg="green")
 
 
@@ -434,11 +441,13 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
     else:
         click.secho("\nNo file renaming is recommended.", fg="green")
 
+
 def print_filenames(to_rename):
     """Print all the proposed filename changes."""
     click.secho("\nProposed filename changes:", fg="yellow", bold=True)
     for filename, new_name in to_rename:
         click.echo(f"   {filename} {ARROWS} {new_name}")
+
 
 def generate_file_name(tags, ext, multiple_artists, trackno_or=None, track_digits=2, disc_digits=2):
     """Generate the template keys and format the template with the tags."""
@@ -465,9 +474,7 @@ def generate_file_name(tags, ext, multiple_artists, trackno_or=None, track_digit
             tag_val = tags.get(k)
             if isinstance(tag_val, list) and tag_val:
                 tag_val = tag_val[0]
-            template_keys[k] = _parse_integer(
-                tag_val if isinstance(tag_val, (str, int)) else "", _width_for(k)
-            )
+            template_keys[k] = _parse_integer(tag_val if isinstance(tag_val, (str, int)) else "", _width_for(k))
     else:
         template_keys = {}
         for k in keys:
@@ -495,10 +502,12 @@ def generate_file_name(tags, ext, multiple_artists, trackno_or=None, track_digit
             new_base = new_base.replace(char, sub)
     return re.sub(BLACKLISTED_CHARS, cfg.upload.formatting.blacklisted_substitution, new_base)
 
+
 def _parse_integer(value, width=2):
     if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
         return f"{int(value):0{width}d}"
     return value
+
 
 def _get_tag_number(tracktags, field):
     if isinstance(tracktags, dict):

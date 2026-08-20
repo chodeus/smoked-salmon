@@ -5,7 +5,7 @@ import os
 from fastapi import APIRouter, HTTPException
 
 from salmon import cfg
-from salmon.webui.validation import is_within_roots
+from salmon.webui.validation import allowed_roots, is_within_roots
 
 router = APIRouter(tags=["browse"])
 
@@ -47,4 +47,10 @@ def browse(path: str | None = None) -> dict:
         "parent": parent if is_within_roots(parent) else None,
         "dirs": dirs,
         "audio_files": audio_files,
+        # Roots are siblings, not ancestors — without these the picker can only
+        # ever reach whichever one it opened at.
+        "roots": [
+            {"path": r, "name": os.path.basename(r) or r, "library": cfg.directory.is_library_path(r)}
+            for r in allowed_roots()
+        ],
     }
