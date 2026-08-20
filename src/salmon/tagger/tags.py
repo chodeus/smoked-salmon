@@ -1,4 +1,6 @@
+import json
 import os
+import shutil
 
 import anyio
 import asyncclick as click
@@ -99,22 +101,112 @@ def print_a_tag(tags):
         click.echo(f"> {key}: {value}")
 
 
+# The fields worth hand-editing; the rest are derived or written by the tagger.
+EDITABLE_TAG_FIELDS = (
+    "title",
+    "artist",
+    "album",
+    "albumartist",
+    "date",
+    "tracknumber",
+    "discnumber",
+    "genre",
+    "label",
+    "catno",
+    "isrc",
+    "comment",
+    "composer",
+    "conductor",
+)
+
+
 async def prompt_editor(path: str) -> bool:
-    """Ask user whether or not to open the files in a tag editor.
+    """Ask whether the tags are acceptable, and open an editor if they are not.
 
     Args:
         path: Path to the directory containing audio files.
 
     Returns:
-        True if the editor was opened, False if tags were accepted.
+        True if the tags may have changed and should be re-read.
     """
-    if not click.confirm(
+    if click.confirm(
         click.style("\nAre the above tags acceptable? ([n] to open in tag editor)", fg="magenta"),
         default=True,
     ):
-        await anyio.run_process(["puddletag", path], check=False)
-        return True
-    return False
+        return False
+    return await open_tag_editor(path)
+
+
+async def open_tag_editor(path: str) -> bool:
+    """Open puddletag if it is installed, otherwise edit the tags as JSON.
+
+    puddletag needs a desktop session, so it is unusable over the web interface
+    and in a container. click.edit is bridged to the browser, so the JSON route
+    works everywhere.
+
+    Returns:
+        True if the tags may have changed.
+    """
+    if shutil.which("puddletag"):
+        result = await anyio.run_process(["puddletag", path], check=False)
+        if result.returncode == 0:
+            return True
+        click.secho(f"puddletag exited with {result.returncode}; falling back to the text editor.", fg="yellow")
+    return edit_tags_as_json(path)
+
+
+def _tags_to_dict(tags: dict[str, TagFile]) -> dict[str, dict]:
+    return {
+        filename: {field: getattr(tag, field, None) for field in EDITABLE_TAG_FIELDS} for filename, tag in tags.items()
+    }
+
+
+def edit_tags_as_json(path: str) -> bool:
+    """Edit every track's tags as one JSON document and write back what changed.
+
+    Returns:
+        True if any tag was written.
+    """
+    tags = gather_tags(path)
+    if not tags:
+        click.secho("No audio files to edit.", fg="red")
+        return False
+
+    before = _tags_to_dict(tags)
+    edited = click.edit(
+        json.dumps(before, indent=2, ensure_ascii=False), extension=".json", editor=cfg.upload.default_editor
+    )
+    if edited is None:
+        click.secho("No changes made.", fg="yellow")
+        return False
+
+    try:
+        after = json.loads(edited)
+    except ValueError as e:
+        click.secho(f"That is not valid JSON ({e}); no tags were changed.", fg="red")
+        return False
+
+    unknown = set(after) - set(before)
+    if unknown:
+        click.secho(f"Unknown file(s) in the edited tags: {', '.join(sorted(unknown))}; nothing written.", fg="red")
+        return False
+
+    written = 0
+    for filename, fields in after.items():
+        changed = {k: v for k, v in fields.items() if k in EDITABLE_TAG_FIELDS and v != before[filename].get(k)}
+        if not changed:
+            continue
+        tag = tags[filename]
+        for key, value in changed.items():
+            setattr(tag, key, value)
+        tag.save()
+        written += 1
+
+    if not written:
+        click.secho("No changes made.", fg="yellow")
+        return False
+    click.secho(f"Updated tags on {written} file(s).", fg="green")
+    return True
 
 
 def standardize_tags(path: str) -> None:
