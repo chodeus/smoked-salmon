@@ -1,19 +1,33 @@
-[![Build and Publish Docker Image](https://github.com/smokin-salmon/smoked-salmon/actions/workflows/docker-image.yml/badge.svg)](https://github.com/smokin-salmon/smoked-salmon/actions/workflows/docker-image.yml) [![Linting](https://github.com/smokin-salmon/smoked-salmon/actions/workflows/lint.yml/badge.svg?branch=master)](https://github.com/smokin-salmon/smoked-salmon/actions/workflows/lint.yml)
+[![Alpha Image](https://github.com/chodeus/smoked-salmon/actions/workflows/build-alpha.yml/badge.svg)](https://github.com/chodeus/smoked-salmon/actions/workflows/build-alpha.yml) [![Tests](https://github.com/chodeus/smoked-salmon/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/chodeus/smoked-salmon/actions/workflows/test.yml) [![Linting](https://github.com/chodeus/smoked-salmon/actions/workflows/lint.yml/badge.svg?branch=master)](https://github.com/chodeus/smoked-salmon/actions/workflows/lint.yml)
 
 # 🐟 smoked-salmon  
 
 A simple tool to take the work out of uploading on Gazelle-based trackers. It generates spectrals, gathers metadata, allows re-tagging/renaming files, and automates the upload process.
 
-> **About this fork** — upstream's release pipeline stalled at 0.10.1 while fixes piled up unreleased. This fork is upstream master plus the outstanding community fix branches (RED image host, Apple Music/Tidal repairs, upload-path hardening and a new `salmon web` interface, cross-upload, multi-disc improvements) and fixes for upstream issues #353, #356, #358, #429, #430, #432, #433. Images: `ghcr.io/chodeus/smoked-salmon` (`:latest` = release, `:alpha` = master). The recent-uploads check now defaults **off** (#432: it could flood `login.php` and get an IP firewalled), and image hosts default to keyless catbox instead of the defunct ptpimg.
+> **About this fork** — upstream's release pipeline stalled at 0.10.1 while fixes piled up unreleased. This fork is upstream `master` plus the outstanding community fix branches and a batch of our own work, reviewed and covered by tests.
+>
+> **Images:** `ghcr.io/chodeus/smoked-salmon` — `:alpha` is built on every push to `master`, `:latest` on release.
+>
+> **What this fork adds on top of upstream master**
+> - A full browser interface (`salmon web`) behind a shared-secret token, with inline spectrals and interactive prompts.
+> - Per-tracker image hosts, per-tracker seedbox destinations, and site-aware upload rules (path limits, bit-depth/sample-rate policy).
+> - A RED do-not-upload blacklist that blocks matching releases before anything is sent to RED.
+> - `--dry-run`, RED↔OPS cross-upload, and a single-mount (`/config` + `/data`) container layout.
+> - Fixes for upstream issues #353, #356, #358, #429, #430, #432, #433, plus Apple Music / Tidal repairs and multi-disc log handling.
+>
+> **Defaults that differ from upstream:** the recent-uploads check is **off** (#432 — it could flood `login.php` and get an IP firewalled), and image hosts default to keyless **catbox** instead of the defunct ptpimg.
 
 ## 🌟 Features  
 
-- **Interactive Uploading** – Supports **multiple trackers** (RED / OPS / DIC).
+- **Interactive Uploading** – Supports **multiple trackers** (RED / OPS / DIC), from the CLI or the web interface.
+- **Web Interface** – `salmon web` serves the whole workflow in a browser: uploads, checks, transcodes, metadata search and spectral review, gated by a shared-secret token.
 - **Log Checking** – Calculates log scores, verifies log checksum integrity, and validates log-to-FLAC file matching.
 - **Upconvert Detection** – Checks 24-bit flac files for potential upconverts.
 - **MQA Detection** – Checks files for common MQA markers.
 - **Duplicate Upload Detection** – Prevents redundant uploads.  
-- **Spectral Analysis** – Generates, compresses, and verifies spectrals, exposed via a web interface.  
+- **Blacklist Enforcement** – A release on RED's do-not-upload list is blocked before anything is sent to RED; other trackers in the same run continue.  
+- **Dry Run** – `--dry-run` builds and validates a complete upload without posting it.  
+- **Spectral Analysis** – Generates, compresses, and verifies spectrals, shown inline in the web interface.  
 - **Spectral Upload** – Can generate spectrals for an existing upload (based on local files), and update the release description.  
 - **Lossy Master Report Generation** – Supports lossy master reports during upload.
 - **Metadata Retrieval** – Fetches metadata from:
@@ -25,8 +39,11 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 - **Description generation** – Edition description generation (tracklist, sources, available streaming platforms, encoding details...).
 - **Down-convert and Transcode** – Can downconvert 24-bit flac files to 16-bit, and transcode to mp3.
 - **Multi-Format Upload** – Automatically transcodes and uploads multiple formats (FLAC 16-bit, MP3, etc.) in a single workflow.
+- **Per-Tracker Image Hosts** – Use a tracker's own image host for its covers and a neutral host elsewhere. Spectrals are never sent to RED's host.
+- **Site-Aware Rules** – Path-length limits and bit-depth/sample-rate policy applied per tracker, since RED and OPS differ.
+- **Cross-Upload** – Copy an existing upload from one tracker to another, rehosting images where the target requires it.
 - **Torrent Client Injection** – Can inject generated torrent files into torrent clients (qBittorrent, Transmission, Deluge, ruTorrent).
-- **Remote Seeding** – Can transfer files to multiple remote locations via rclone and inject torrents into remote torrent clients for automatic seeding.
+- **Remote Seeding** – Can transfer files to remote locations via rclone and inject torrents into remote clients for automatic seeding. Each destination can be pinned to specific trackers, so a tracker's uploads land in its own directory and category.
 - **Update Notifications** – Informs users when a new version is available.
 
 ## 📥 Installation  
@@ -123,25 +140,24 @@ Installing with pip is not recommended because uv (and pipx) manage python versi
 
 ### 🐳 Docker Installation
 
-A Docker image is generated per release.  
-**Disclaimer**: I am not actively using the docker image myself, feedback is appreciated regarding that guide.
+A Docker image is built on every push to `master` (`:alpha`) and on release (`:latest`). This fork is developed and run as a container, so the instructions below are the maintained path.
 
 1. Pull the image:
 
    ```bash
    # Stable release
-   docker pull ghcr.io/smokin-salmon/smoked-salmon:latest
+   docker pull ghcr.io/chodeus/smoked-salmon:latest
 
    # Alpha (built on every push to master, equivalent to `uv tool install git+...`)
-   docker pull ghcr.io/smokin-salmon/smoked-salmon:alpha
+   docker pull ghcr.io/chodeus/smoked-salmon:alpha
    ```
 
    > The examples below use the `latest` tag. Replace with `alpha` to use the latest development version.
 
-2. Copy the content of the file [`config.toml`](https://github.com/smokin-salmon/smoked-salmon/blob/master/data/config.default.toml) to a location on your host server.
+2. Copy the content of the file [`config.toml`](https://github.com/chodeus/smoked-salmon/blob/master/src/salmon/data/config.default.toml) to a location on your host server.
    Edit the `config.toml` file with your preferred text editor to add your API keys, session cookies and update your preferences (see the [Configuration Wiki](https://github.com/smokin-salmon/smoked-salmon/wiki/Configuration)).
 
-3. Configure rclone if needed. The Docker Compose configuration expects an rclone configuration file. You can get the path to your rclone config file by running `rclone config file` on your host system.
+3. Configure rclone only if you use the remote-seeding features: put `rclone.conf` in the same `/config` volume and set `RCLONE_CONFIG=/config/rclone.conf`. Run `rclone config file` on your host to find your existing one.
 
 ---
 
@@ -154,7 +170,7 @@ A Docker image is generated per release.
    docker run --rm -it --network=host \
    -v /path/to/your/config/directory:/config \
    -v /path/to/your/data:/data \
-   ghcr.io/smokin-salmon/smoked-salmon:latest checkconf
+   ghcr.io/chodeus/smoked-salmon:latest checkconf
    ```
 
 2. **Upload**
@@ -164,7 +180,7 @@ A Docker image is generated per release.
    docker run --rm -it --network=host \
    -v /path/to/your/config/directory:/config \
    -v /path/to/your/data:/data \
-   ghcr.io/smokin-salmon/smoked-salmon:latest up "/data/path/to/album" -s WEB
+   ghcr.io/chodeus/smoked-salmon:latest up "/data/path/to/album" -s WEB
    ```
 
 > **Container paths.** The image sets `SALMON_CONFIG_DIR=/config`, so it reads
@@ -183,7 +199,7 @@ To avoid repeating the long `docker run` command, add the following alias to you
 alias salmon='docker run --rm -it --network=host \
   -v /path/to/your/config/directory:/config \
   -v /path/to/your/data:/data \
-  ghcr.io/smokin-salmon/smoked-salmon:latest'
+  ghcr.io/chodeus/smoked-salmon:latest'
 ```
 
 Then use it just like a native install:
@@ -223,6 +239,16 @@ salmon up "/data/path/to/album" -s WEB
 
   Keeping `download_directory` on the same volume as your library lets salmon hardlink instead of copying.
 
+- **Uploading from a curated library**  
+  By default salmon expects to be pointed at a disposable download: it retags the folder in place, and aborting an upload can delete it. If you upload from a collection you want left alone (a Lidarr library, say), list it under `library_dirs`:
+
+  ```toml
+  [directory]
+  library_dirs = ["/data/media/music"]
+  ```
+
+  Those folders become browsable in the web interface, are never deleted, and are copied into `download_directory` before anything touches them. The copy is deliberate rather than a hardlink — a hardlink shares the inode, so retagging would write straight back into your library.
+
 - **rclone Configuration**  
   Only needed for the remote-seeding features. Put `rclone.conf` in the `/config` volume and point rclone at it with an environment variable, so no extra mount is required:
 
@@ -239,7 +265,7 @@ If using Docker Compose, create a `docker-compose.yml` to define your volume map
 ```yaml
 services:
   salmon:
-    image: ghcr.io/smokin-salmon/smoked-salmon:latest
+    image: ghcr.io/chodeus/smoked-salmon:latest
     network_mode: host
     environment:
       - RCLONE_CONFIG=/config/rclone.conf   # Optional: only if using rclone features
@@ -270,7 +296,7 @@ smoked-salmon uses distinct terminal colors for different types of messages:
 * Magenta – User prompts
 
 ### 🔧 CLI Mode
-smoked-salmon runs in CLI mode, except for spectral visualization, which launches a web server. Quick start usage instructions can be found on the [Wiki Usage page](https://github.com/smokin-salmon/smoked-salmon/wiki#usage).
+smoked-salmon can be driven entirely from the CLI, or from the browser (see below). Quick start usage instructions can be found on the [Wiki Usage page](https://github.com/smokin-salmon/smoked-salmon/wiki#usage).
 
 The examples below show how to run smoked-salmon directly. If you're using Docker, you'll need to adjust them accordingly, but the underlying principles remain the same.
 
@@ -294,10 +320,30 @@ To start an upload (with the WEB source):
 salmon up /data/path/to/album -s WEB
 ```
 
+To rehearse an upload without posting anything — everything is gathered, checked and built, then stopped at the last step:
+```bash
+salmon up /data/path/to/album -s WEB --dry-run
+```
+
+To start the web interface:
+```bash
+salmon web --host 0.0.0.0
+```
+
 You can get help directly from the CLI by appending --help to any command. This is especially useful for the up command which has a lot of possible options.
 
-### 🌐 Spectral Web Interface
-Spectrals are viewable via a built-in web server. By default, access it at: http://localhost:55110/spectrals
+### 🌐 Web Interface
+`salmon web` serves the whole workflow in a browser — uploads, checks, transcodes, metadata search and spectral review — on port **55155** by default:
+
+```bash
+salmon web --host 0.0.0.0
+```
+
+Prompts that the CLI would ask on the terminal appear in the browser instead, and spectrals are shown inline as they are generated.
+
+Because the interface holds your tracker session cookies and can trigger real uploads, protect it with a shared secret whenever it is reachable beyond loopback. Set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`); leaving it unset disables the gate entirely.
+
+> The older standalone spectral viewer still exists for `salmon up`, but it binds loopback inside the process, so publishing port 55110 from a container has no effect — the web interface above supersedes it.
 
 ## 🔄 Updating
 
@@ -315,11 +361,11 @@ uv sync
 
 For **Docker users**:
 ```bash
-docker pull ghcr.io/smokin-salmon/smoked-salmon:latest
+docker pull ghcr.io/chodeus/smoked-salmon:alpha   # or :latest
 ```
 
 ## 📞 Support
-For bug reports and feature requests, use GitHub Issues. Or use the forums.
+For bug reports and feature requests specific to this fork, use [its GitHub Issues](https://github.com/chodeus/smoked-salmon/issues). For anything that also affects upstream, [smokin-salmon/smoked-salmon](https://github.com/smokin-salmon/smoked-salmon/issues) or the tracker forums are the better home.
 
 
 ## 🎭 Testimonials
@@ -333,3 +379,4 @@ For bug reports and feature requests, use GitHub Issues. Or use the forums.
 * Originally created by [ligh7s](https://github.com/ligh7s/smoked-salmon). Huge thanks!
 * Further development & maintenance by elghoto, xmoforf, miandru, redusys, kyokomiki and others. Keeping the dream alive.
 * Docker image build workflow and update notification mechanisms heavily inspired from the awesome work of Audionut on his [Upload Assistant tool](https://github.com/Audionut/Upload-Assistant) !
+* This fork carries community fix branches from AKarp123, SomeCrab163, styx-techno, Constrat and calliah333 — thanks to all of them for work upstream had not released.
