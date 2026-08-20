@@ -67,12 +67,15 @@ COPY --from=builder /app/.venv /app/.venv
 
 # Set environment variables for Python virtual environment
 ENV PATH="/app/.venv/bin:$PATH"
+# Single-mount container layout: config.toml, rclone.conf and tmp_dir all live in /config.
+ENV SALMON_CONFIG_DIR=/config
 
 # Ensure app directory and its contents are writable by any user
 RUN mkdir -p /app/.music /app/.torrents && chmod -R 777 /app
 
-# 55110: legacy spectral viewer during `salmon up`; 55155: `salmon web` interface
-EXPOSE 55110 55155
+# 55155: `salmon web`. The legacy spectral viewer binds loopback inside the
+# container, so publishing its port could never work.
+EXPOSE 55155
 
 # Set the entrypoint to run the 'salmon' script
 ENTRYPOINT ["salmon"]

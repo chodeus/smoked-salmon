@@ -152,10 +152,8 @@ A Docker image is generated per release.
 
    ```bash
    docker run --rm -it --network=host \
-   -v /path/to/your/music:/app/.music \
-   -v /path/to/your/config.toml/directory:/root/.config/smoked-salmon/ \
-   -v /path/to/your/generated/dottorrents:/app/.torrents \
-   -v /get/this/from/"rclone config file":/root/.config/rclone/rclone.conf  # Optional: only if using rclone features \
+   -v /path/to/your/config/directory:/config \
+   -v /path/to/your/data:/data \
    ghcr.io/smokin-salmon/smoked-salmon:latest checkconf
    ```
 
@@ -164,12 +162,18 @@ A Docker image is generated per release.
 
    ```bash
    docker run --rm -it --network=host \
-   -v /path/to/your/music:/app/.music \
-   -v /path/to/your/config.toml/directory:/root/.config/smoked-salmon/ \
-   -v /path/to/your/generated/dottorrents:/app/.torrents \
-   -v /get/this/from/"rclone config file":/root/.config/rclone/rclone.conf  # Optional: only if using rclone features \
-   ghcr.io/smokin-salmon/smoked-salmon:latest up "/app/.music/path/to/album" -s WEB
+   -v /path/to/your/config/directory:/config \
+   -v /path/to/your/data:/data \
+   ghcr.io/smokin-salmon/smoked-salmon:latest up "/data/path/to/album" -s WEB
    ```
+
+> **Container paths.** The image sets `SALMON_CONFIG_DIR=/config`, so it reads
+> `/config/config.toml` — two mounts are enough. Point `rclone` at the same
+> volume with `-e RCLONE_CONFIG=/config/rclone.conf`, and set `tmp_dir`,
+> `download_directory` and `dottorrents_dir` in `config.toml` rather than
+> adding more mounts. Upgrading from an image that read
+> `/root/.config/smoked-salmon/`: move `config.toml` into the `/config` volume,
+> otherwise salmon will not find it and will exit on startup.
 
 ### 💡 Shell Alias (Optional)
 
@@ -177,10 +181,8 @@ To avoid repeating the long `docker run` command, add the following alias to you
 
 ```bash
 alias salmon='docker run --rm -it --network=host \
-  -v /path/to/your/music:/app/.music \
-  -v /path/to/your/config.toml/directory:/root/.config/smoked-salmon/ \
-  -v /path/to/your/generated/dottorrents:/app/.torrents \
-  -v /path/to/your/rclone.conf:/root/.config/rclone/rclone.conf \
+  -v /path/to/your/config/directory:/config \
+  -v /path/to/your/data:/data \
   ghcr.io/smokin-salmon/smoked-salmon:latest'
 ```
 
@@ -189,7 +191,7 @@ Then use it just like a native install:
 ```bash
 salmon checkconf
 salmon health
-salmon up "/app/.music/path/to/album" -s WEB
+salmon up "/data/path/to/album" -s WEB
 ```
 
 ---
@@ -247,7 +249,7 @@ services:
 docker compose run --rm salmon checkconf
 
 # Upload
-docker compose run --rm salmon up "/app/.music/path/to/album" -s WEB
+docker compose run --rm salmon up "/data/path/to/album" -s WEB
 ```
 
 ## 🚀 Usage
