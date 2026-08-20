@@ -2,6 +2,7 @@
 
 import asyncio
 import math
+import os
 import shutil
 import sys
 import threading
@@ -34,6 +35,23 @@ REQUIRED_BINARIES = ["sox", "flac", "lame", "mp3val", "curl"]
 OPTIONAL_BINARIES = ["rclone", "feh", "puddletag"]
 
 
+def _dir_info(path: str | None) -> dict:
+    """Path, existence and free space, so the dashboard can show a usage bar."""
+    info: dict = {"path": path, "exists": False, "free_bytes": None, "total_bytes": None}
+    if not path:
+        return info
+    expanded = os.path.expanduser(path)
+    info["exists"] = os.path.isdir(expanded)
+    if not info["exists"]:
+        return info
+    try:
+        usage = shutil.disk_usage(expanded)
+    except OSError:
+        return info
+    info["free_bytes"], info["total_bytes"] = usage.free, usage.total
+    return info
+
+
 @router.get("/health")
 def health() -> dict:
     try:
@@ -53,9 +71,9 @@ def health() -> dict:
         "trackers": tracker_list,
         "default_tracker": cfg.tracker.default_tracker,
         "directories": {
-            "download": cfg.directory.download_directory,
-            "tmp": cfg.directory.tmp_dir,
-            "dottorrents": cfg.directory.dottorrents_dir,
+            "download": _dir_info(cfg.directory.download_directory),
+            "tmp": _dir_info(cfg.directory.tmp_dir),
+            "dottorrents": _dir_info(cfg.directory.dottorrents_dir),
         },
     }
 

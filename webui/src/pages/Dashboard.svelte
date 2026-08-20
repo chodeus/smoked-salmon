@@ -1,5 +1,6 @@
 <script lang="ts">
   import { apiGet, apiPost } from '../lib/api'
+  import { jobStore } from '../lib/jobs.svelte'
 
   interface Health {
     version: string
@@ -10,7 +11,14 @@
     }
     trackers: string[]
     default_tracker: string | null
-    directories: Record<string, string | null>
+    directories: Record<string, DirInfo>
+  }
+
+  interface DirInfo {
+    path: string | null
+    exists: boolean
+    free_bytes: number | null
+    total_bytes: number | null
   }
 
   interface TrackerCheck {
@@ -29,6 +37,27 @@
   let checkError = $state('')
 
   let cachedAge = $state<number | null>(null)
+
+  const trackersOk = $derived(checks ? checks.filter((c) => c.session_ok && c.api_key_ok !== false).length : null)
+  const binariesMissing = $derived(
+    health ? Object.values(health.binaries.required).filter((v) => !v).length : null,
+  )
+  const jobsRunning = $derived(jobStore.jobs.filter((j) => j.status === 'running' || j.status === 'queued').length)
+
+  function formatBytes(n: number): string {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+    let i = 0
+    while (n >= 1024 && i < units.length - 1) {
+      n /= 1024
+      i++
+    }
+    return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${units[i]}`
+  }
+
+  function usedPercent(d: DirInfo): number | null {
+    if (!d.total_bytes || d.free_bytes === null) return null
+    return Math.round(100 * (1 - d.free_bytes / d.total_bytes))
+  }
 
   async function checkconf(force = false) {
     checking = true
@@ -61,6 +90,21 @@
 
 <h1>Dashboard</h1>
 <p class="lead">Version, tracker connections and the command-line tools salmon depends on. Checked automatically when the page loads.</p>
+
+<div class="tiles">
+  <div class="tile {trackersOk === null ? '' : trackersOk === checks?.length ? 'ok' : 'err'}">
+    <span class="figure">{trackersOk ?? '–'}<span class="of">/{checks?.length ?? '–'}</span></span>
+    <span class="muted">trackers connected</span>
+  </div>
+  <div class="tile {binariesMissing === null ? '' : binariesMissing === 0 ? 'ok' : 'err'}">
+    <span class="figure">{binariesMissing === null ? '–' : binariesMissing === 0 ? 'all' : binariesMissing}</span>
+    <span class="muted">{binariesMissing === 0 ? 'required tools present' : 'required tools missing'}</span>
+  </div>
+  <div class="tile {jobsRunning > 0 ? 'run' : ''}">
+    <span class="figure">{jobsRunning}</span>
+    <span class="muted">jobs in flight</span>
+  </div>
+</div>
 
 <div class="card">
   <div class="row">
@@ -141,13 +185,88 @@
     <h2>Directories</h2>
     <table>
       <tbody>
-        {#each Object.entries(health.directories) as [name, path]}
+        {#each Object.entries(health.directories) as [name, dir]}
           <tr>
             <td>{name}</td>
-            <td class="mono muted">{path ?? '–'}</td>
+            <td class="mono muted">{dir.path ?? '–'}</td>
+            <td>
+              {#if !dir.path}
+                <span class="chip">unset</span>
+              {:else if !dir.exists}
+                <span class="chip err">missing</span>
+              {:else if usedPercent(dir) !== null}
+                <div class="disk" title="{formatBytes(dir.free_bytes ?? 0)} free of {formatBytes(dir.total_bytes ?? 0)}">
+                  <div class="disk-bar"><div class="disk-fill {(usedPercent(dir) ?? 0) >= 90 ? 'err' : (usedPercent(dir) ?? 0) >= 75 ? 'warn' : ''}" style="width: {usedPercent(dir)}%"></div></div>
+                  <span class="muted">{formatBytes(dir.free_bytes ?? 0)} free</span>
+                </div>
+              {:else}
+                <span class="chip ok">ok</span>
+              {/if}
+            </td>
           </tr>
         {/each}
       </tbody>
     </table>
   </div>
 {/if}
+
+<style>
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+    gap: 0.7rem;
+    margin-bottom: 0.9rem;
+  }
+  .tile {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--border);
+    border-radius: 10px;
+    padding: 0.7rem 0.8rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .tile.ok {
+    border-left-color: var(--ok);
+  }
+  .tile.err {
+    border-left-color: var(--err);
+  }
+  .tile.run {
+    border-left-color: var(--accent);
+  }
+  .figure {
+    font-size: 1.5rem;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+  .figure .of {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text-dim);
+  }
+  .disk {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 160px;
+  }
+  .disk-bar {
+    flex: 1;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .disk-fill {
+    height: 100%;
+    background: var(--accent);
+  }
+  .disk-fill.warn {
+    background: var(--warn);
+  }
+  .disk-fill.err {
+    background: var(--err);
+  }
+</style>

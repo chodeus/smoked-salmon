@@ -299,3 +299,22 @@ def test_concurrent_checkconf_misses_share_one_probe(client, monkeypatch) -> Non
     assert len(rounds) == len(salmon.trackers.tracker_list), "the probe must run exactly once"
     assert sum(1 for b in bodies if b["cached"] is False) == 1
     assert all(b["ok"] for b in bodies)
+
+
+def test_health_reports_disk_usage_for_each_directory(client) -> None:
+    """The dashboard draws a usage bar from these, so every entry must carry the fields."""
+    body = client.get("/api/health").json()
+    assert set(body["directories"]) == {"download", "tmp", "dottorrents"}
+    for name, info in body["directories"].items():
+        assert set(info) == {"path", "exists", "free_bytes", "total_bytes"}, name
+        if info["exists"]:
+            assert info["total_bytes"] and info["total_bytes"] > 0, name
+            assert 0 <= info["free_bytes"] <= info["total_bytes"], name
+
+
+def test_dir_info_handles_a_missing_directory() -> None:
+    from salmon.webui.routers.system import _dir_info
+
+    info = _dir_info("/definitely/not/a/real/path")
+    assert info == {"path": "/definitely/not/a/real/path", "exists": False, "free_bytes": None, "total_bytes": None}
+    assert _dir_info(None)["exists"] is False
