@@ -301,7 +301,7 @@ def retag_files(path, album_changes, track_changes):
             mut.save()
         except Exception as e:
             remaining = [f for f in track_changes if f not in done and f != filename]
-            abort_partial(f"Retagging {filename}", done, [filename, *remaining], e)
+            abort_partial(f"Retagging {filename}", done, filename, remaining, e)
         done.append(filename)
     click.secho("Retagged files.", fg="green")
 

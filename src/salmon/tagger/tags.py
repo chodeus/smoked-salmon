@@ -284,7 +284,8 @@ def standardize_tags(path: str) -> None:
         path: Path to the directory containing audio files.
     """
     done: list[str] = []
-    for filename in get_audio_files(path):
+    filenames = list(get_audio_files(path))
+    for index, filename in enumerate(filenames):
         mut = MutagenFile(os.path.join(path, filename))
         if mut is None:
             continue
@@ -303,6 +304,6 @@ def standardize_tags(path: str) -> None:
             try:
                 mut.save()
             except Exception as e:
-                abort_partial(f"Standardising tags on {filename}", done, [filename], e)
+                abort_partial(f"Standardising tags on {filename}", done, filename, filenames[index + 1 :], e)
             done.append(filename)
             click.secho(f"Unaliased the following tags for {filename}: " + ", ".join(found_aliased))

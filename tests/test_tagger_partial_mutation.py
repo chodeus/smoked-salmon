@@ -15,16 +15,27 @@ from salmon.tagger.mutation import abort_partial, rename_all_or_none
 
 def test_abort_partial_names_what_changed_and_stops(capsys):
     with pytest.raises(asyncclick.Abort):
-        abort_partial("Retagging 02.flac", ["01.flac"], ["02.flac", "03.flac"], OSError("disk full"))
+        abort_partial("Retagging 02.flac", ["01.flac"], "02.flac", ["03.flac"], OSError("disk full"))
     out = capsys.readouterr().out
     assert "Already changed: 01.flac" in out
-    assert "Not changed: 02.flac, 03.flac" in out
+    assert "May be partially changed: 02.flac" in out
+    assert "Not changed: 03.flac" in out
     assert "inconsistent" in out
 
 
-def test_abort_partial_does_not_cry_inconsistent_when_nothing_changed(capsys):
+def test_the_failing_file_is_not_called_unchanged(capsys):
+    """A write can fail after modifying the file, so its state is unknown."""
     with pytest.raises(asyncclick.Abort):
-        abort_partial("Retagging 01.flac", [], ["01.flac"], OSError("denied"))
+        abort_partial("Retagging 01.flac", [], "01.flac", [], OSError("denied"))
+    out = capsys.readouterr().out
+    assert "May be partially changed: 01.flac" in out
+    assert "Not changed" not in out
+    assert "inconsistent" in out, "a half-written first file is still an inconsistency"
+
+
+def test_abort_partial_is_quiet_about_consistency_when_nothing_was_touched(capsys):
+    with pytest.raises(asyncclick.Abort):
+        abort_partial("Reading 01.flac", [], None, ["01.flac"], OSError("denied"))
     assert "inconsistent" not in capsys.readouterr().out
 
 
@@ -55,23 +66,38 @@ def test_rename_all_or_none_completes_when_nothing_fails(tmp_path):
 
 def test_a_failed_restore_is_not_reported_as_a_clean_rollback(tmp_path, monkeypatch, capsys):
     """Saying 'rolled back' after a restore failed is the opposite of true."""
+    import salmon.tagger.mutation as m
+
     for n in ("a.flac", "b.flac"):
         (tmp_path / n).write_text(n)
     renames = [(str(tmp_path / n), str(tmp_path / f"new-{n}")) for n in ("a.flac", "b.flac")]
-    (tmp_path / "new-b.flac").mkdir()
+    (tmp_path / "new-b.flac").write_text("blocks the second rename")
 
-    real_rename = os.rename
+    real = m._rename_no_clobber
 
-    def rename(src, dst):
-        if str(dst).endswith("a.flac") and "new-" not in os.path.basename(str(dst)):
-            raise OSError(13, "Permission denied")  # the undo fails
-        real_rename(src, dst)
+    def flaky(src, dst):
+        if os.path.basename(dst) == "a.flac":
+            raise OSError(13, "Permission denied")  # the undo itself fails
+        real(src, dst)
 
-    monkeypatch.setattr(os, "rename", rename)
+    monkeypatch.setattr(m, "_rename_no_clobber", flaky)
     with pytest.raises(asyncclick.Abort):
-        rename_all_or_none(renames)
+        m.rename_all_or_none(renames)
 
     out = capsys.readouterr().out
     assert "Could not restore" in out
-    assert "rollback was incomplete" in out or "the rollback was incomplete" in out
+    assert "rollback was incomplete" in out
     assert "and was rolled back" not in out
+
+
+def test_rename_never_overwrites_an_existing_target(tmp_path, capsys):
+    """os.rename replaces on POSIX; a target created after the collision check
+    would be destroyed and no rollback could bring it back."""
+    (tmp_path / "a.flac").write_text("source")
+    (tmp_path / "new-a.flac").write_text("bystander")
+
+    with pytest.raises(asyncclick.Abort):
+        rename_all_or_none([(str(tmp_path / "a.flac"), str(tmp_path / "new-a.flac"))])
+
+    assert (tmp_path / "new-a.flac").read_text() == "bystander", "the target was overwritten"
+    assert (tmp_path / "a.flac").read_text() == "source"

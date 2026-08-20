@@ -67,7 +67,9 @@
     try {
       const query = path ? `?path=${encodeURIComponent(path)}` : ''
       listing = await apiGet<BrowseResult>(`/browse${query}`)
-      if (listing.roots?.length) roots = listing.roots
+      // Also recovers classification when the initial roots fetch failed.
+      roots = listing.roots ?? []
+      classified = true
     } catch (e) {
       error = String(e)
     }
