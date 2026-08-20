@@ -8,7 +8,9 @@ from importlib.metadata import PackageNotFoundError, version
 
 from fastapi import APIRouter, HTTPException, Request
 
+import salmon.trackers
 from salmon import cfg
+from salmon.checks.connection import check_tracker_connection
 from salmon.config import find_config_path
 
 router = APIRouter(tags=["system"])
@@ -53,3 +55,11 @@ def health() -> dict:
             "dottorrents": cfg.directory.dottorrents_dir,
         },
     }
+
+
+@router.post("/checkconf")
+async def checkconf() -> dict:
+    """Test every configured tracker's session cookie and API key."""
+    results = [await check_tracker_connection(code) for code in salmon.trackers.tracker_list]
+    ok = all(r["session_ok"] and (r["api_key_ok"] is not False) for r in results)
+    return {"ok": ok, "trackers": results}

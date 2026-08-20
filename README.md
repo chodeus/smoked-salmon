@@ -20,7 +20,7 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 ## 🌟 Features  
 
 - **Interactive Uploading** – Supports **multiple trackers** (RED / OPS / DIC), from the CLI or the web interface.
-- **Web Interface** – `salmon web` serves the whole workflow in a browser: uploads, checks, transcodes, metadata search and spectral review, gated by a shared-secret token.
+- **Web Interface** – `salmon web` exposes every CLI command in a browser: uploads (with the full option set, including dry runs), checks, transcode/downconvert/recompress, tagging, cross-upload, description generation, image uploads, metadata search, spectral review and tracker connection tests — gated by a shared-secret token.
 - **Log Checking** – Calculates log scores, verifies log checksum integrity, and validates log-to-FLAC file matching.
 - **Upconvert Detection** – Checks 24-bit flac files for potential upconverts.
 - **MQA Detection** – Checks files for common MQA markers.
@@ -341,13 +341,25 @@ salmon web --host 0.0.0.0
 You can get help directly from the CLI by appending --help to any command. This is especially useful for the up command which has a lot of possible options.
 
 ### 🌐 Web Interface
-`salmon web` serves the whole workflow in a browser — uploads, checks, transcodes, metadata search and spectral review — on port **55155** by default:
+`salmon web` serves the whole workflow in a browser on port **55155** by default:
 
 ```bash
 salmon web --host 0.0.0.0
 ```
 
 Prompts that the CLI would ask on the terminal appear in the browser instead, and spectrals are shown inline as they are generated.
+
+Every CLI command has a web equivalent, so nothing is terminal-only:
+
+| Page | Covers |
+| --- | --- |
+| Upload | `up`, with every flag the CLI takes including `--dry-run` |
+| Checks | `check` (log, integrity, MQA, upconvert) |
+| Spectrals | `specs`, `checkspecs` |
+| Convert | `transcode`, `downconv`, `compress` |
+| Search | `metas`, `meta` |
+| Tools | `descgen`, `images`, `tag`, `cross-upload` |
+| Dashboard | `health`, `checkconf` |
 
 Because the interface holds your tracker session cookies and can trigger real uploads, protect it with a shared secret whenever it is reachable beyond loopback. Set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`); leaving it unset disables the gate entirely.
 
