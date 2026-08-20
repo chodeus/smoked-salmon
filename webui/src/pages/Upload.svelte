@@ -12,7 +12,7 @@
   let encodings = $state<string[]>([])
 
   let path = $state('')
-  let tracker = $state('')
+  let chosen = $state<string[]>([])
   let source = $state('')
   let groupId = $state('')
   let request = $state('')
@@ -75,6 +75,10 @@
   // Dry runs post nothing, so they are exempt from the pre-flight gate.
   const gated = $derived(!dryRun && !preflightCleared)
 
+  function toggleTracker(t: string) {
+    chosen = chosen.includes(t) ? chosen.filter((c) => c !== t) : [...trackers.filter((x) => chosen.includes(x) || x === t)]
+  }
+
   function parseGroupId(value: string): number | null | undefined {
     const trimmed = value.trim()
     if (!trimmed) return null
@@ -90,7 +94,7 @@
         trackers = o.trackers
         sources = o.sources
         encodings = o.encodings ?? []
-        if (!tracker && o.trackers.length) tracker = o.trackers[0]
+        if (!chosen.length && o.trackers.length) chosen = [o.trackers[0]]
       })
       .catch((e) => {
         error = `Failed to load tracker options: ${e}`
@@ -125,7 +129,7 @@
     try {
       const job = await apiPost<Job>('/upload', {
         path,
-        tracker,
+        tracker: chosen[0],
         source: source || null,
         group_id: parsedGroupId,
         request: request || null,
@@ -168,13 +172,25 @@
   <div class="card">
     <FolderPicker bind:value={path} />
     <div class="grid">
-      <label title={HELP.tracker}>
-        Tracker
-        <select bind:value={tracker}>
-          {#each trackers as t}<option value={t}>{t}</option>{/each}
-        </select>
-      {#if showHelp}<small class="hint">{HELP.tracker}</small>{/if}
-      </label>
+      <div class="field" title={HELP.tracker}>
+        <span class="field-label">Trackers</span>
+        <div class="row" style="flex-wrap: wrap; gap: 0.6rem">
+          {#each trackers as t}
+            <label class="check">
+              <input type="checkbox" checked={chosen.includes(t)} onchange={() => toggleTracker(t)} />
+              {t}
+            </label>
+          {/each}
+        </div>
+        {#if chosen.length > 1}
+          <small class="hint">
+            Verified against all {chosen.length}. The upload starts on {chosen[0]}; when it finishes you are asked
+            whether to continue to {chosen.slice(1).join(' and ')}.
+          </small>
+        {:else if showHelp}
+          <small class="hint">{HELP.tracker}</small>
+        {/if}
+      </div>
       <label title={HELP.source}>
         Source
         <select bind:value={source}>
@@ -245,12 +261,12 @@
       {path}
       {source}
       {checks}
-      trackers={tracker ? [tracker] : []}
+      trackers={chosen}
       bind:cleared={preflightCleared}
       onUseSource={(s) => (source = s)}
     />
     <div style="margin-top: 0.8rem">
-      <button class="btn" onclick={start} disabled={!path || !tracker || starting || gated}>
+      <button class="btn" onclick={start} disabled={!path || !chosen.length || starting || gated}>
         {dryRun ? 'Start dry run' : 'Start upload'}
       </button>
       {#if gated}
@@ -288,6 +304,16 @@
     flex-direction: column;
     gap: 0.2rem;
     font-size: 0.85rem;
+    color: var(--text-dim);
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+  }
+  .field-label {
     color: var(--text-dim);
   }
   label.check {

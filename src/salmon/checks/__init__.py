@@ -2,11 +2,13 @@ import os
 
 import asyncclick as click
 
+import salmon.trackers
 from salmon.checks.integrity import handle_integrity_check
 from salmon.checks.logs import check_log_cambia
 from salmon.checks.mqa import check_mqa
 from salmon.checks.upconverts import test_upconverted
 from salmon.common import commandgroup
+from salmon.constants import SOURCES
 from salmon.errors import CRCMismatchError, EditedLogError
 
 
@@ -123,3 +125,42 @@ async def mqa_test(path: str) -> None:
     if filepath and await check_mqa(filepath):
         click.secho(f"MQA syncword present in '{filepath}'", fg="red", bold=True)
         raise click.Abort
+
+
+@check.command(name="all")
+@click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True))
+@click.option(
+    "--source", "-s", default=None, help=f"Media source ({'/'.join(SOURCES.values())}); inferred when omitted"
+)
+@click.option("--tracker", "-t", "trackers", multiple=True, help="Also search this tracker for duplicates")
+async def all_checks(path: str, source: str | None, trackers: tuple[str, ...]) -> None:
+    """Run every check over an album and print a single verdict.
+
+    Exits non-zero when a release is unfit to upload.
+    """
+    from salmon.checks.preflight import BLOCK, OK, SKIP, WARN, run_checks
+
+    for code in trackers:
+        if code.upper() not in salmon.trackers.tracker_list:
+            raise click.UsageError(f"Unknown tracker {code}. Configured: {', '.join(salmon.trackers.tracker_list)}")
+
+    result = await run_checks(path, None, source, [c.upper() for c in trackers])
+    colours = {OK: "green", WARN: "yellow", BLOCK: "red", SKIP: None}
+    marks = {OK: "OK  ", WARN: "WARN", BLOCK: "FAIL", SKIP: "--  "}
+    click.secho(f"\n{os.path.basename(path)}", bold=True)
+    for row in result["rows"]:
+        verdict = row["verdict"]
+        click.secho(f"  {marks[verdict]}  ", fg=colours[verdict], bold=verdict == BLOCK, nl=False)
+        click.secho(f"{row['label']:<18}", bold=True, nl=False)
+        click.echo(row["detail"])
+
+    # Not picking a source blocks the upload button, but this command is a
+    # diagnostic — nothing is being claimed, so only real defects fail it.
+    blocking = [b for b in result["blocking"] if source or b != "source"]
+    if blocking:
+        click.secho(f"\nNot suitable for upload: {len(blocking)} blocking issue(s).", fg="red", bold=True)
+        raise SystemExit(1)
+    if result["warnings"]:
+        click.secho(f"\nUploadable, with {len(result['warnings'])} thing(s) to check first.", fg="yellow")
+        return
+    click.secho("\nAll checks passed.", fg="green", bold=True)
