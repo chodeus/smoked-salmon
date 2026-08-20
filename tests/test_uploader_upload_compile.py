@@ -629,9 +629,11 @@ class FakeTorrentContent:
 class RecordingSeedbox:
     def __init__(self):
         self.tasks = []
+        self.site_codes = []
 
-    def add_upload_task(self, directory, task_type, is_flac):
+    def add_upload_task(self, directory, task_type, is_flac, site_code=None):
         self.tasks.append((directory, task_type, is_flac))
+        self.site_codes.append(site_code)
 
 
 TORRENT_PATH = "/fake/dottorrents/album.torrent"
@@ -781,6 +783,14 @@ async def test_upload_and_report_queues_seedbox_folder_then_seed_tasks(monkeypat
         (args["path"], "folder", True),
         (TORRENT_PATH, "seed", True),
     ]
+
+
+async def test_upload_and_report_passes_site_code_for_seedbox_routing(monkeypatch, fake_tracker):
+    # Per-tracker seedbox destinations need to know which site the upload went to.
+    install_fakes(monkeypatch, seedbox=True)
+    seedbox = RecordingSeedbox()
+    await upload_and_report(**uar_args(fake_tracker, seedbox))
+    assert seedbox.site_codes == [fake_tracker.site_code, fake_tracker.site_code]
 
 
 async def test_upload_and_report_seedbox_is_flac_false_for_mp3(monkeypatch, fake_tracker):
