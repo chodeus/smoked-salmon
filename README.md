@@ -211,18 +211,23 @@ salmon up "/data/path/to/album" -s WEB
       - PGID=100
      ```
 
-- **.torrent Directory Mapping**  
-  Depending on how you've set the `DOTTORRENTS_DIR` in your `config.toml`, you may need to map an additional directory for `.torrent` file output. Add:
+- **Directory Settings**  
+  `download_directory`, `dottorrents_dir` and `tmp_dir` are set in `config.toml`. Point them at paths inside the `/data` volume (and `/config` for scratch) rather than adding a bind mount for each one — for example:
 
-  ```bash
-  -v /your/host/torrent/output:/app/.torrents
+  ```toml
+  [directory]
+  download_directory = "/data/torrents/salmon"
+  dottorrents_dir = "/data/torrents/salmon/.torrents"
+  tmp_dir = "/config/tmp"
   ```
 
+  Keeping `download_directory` on the same volume as your library lets salmon hardlink instead of copying.
+
 - **rclone Configuration**  
-  If you're using rclone features, make sure to map your rclone configuration file. This is optional and only needed if you plan to use rclone functionality. You can find your rclone config file location by running `rclone config file` on your host system:
+  Only needed for the remote-seeding features. Put `rclone.conf` in the `/config` volume and point rclone at it with an environment variable, so no extra mount is required:
 
   ```bash
-  -v /path/to/your/rclone.conf:/root/.config/rclone/rclone.conf
+  -e RCLONE_CONFIG=/config/rclone.conf
   ```
 
 ---
@@ -236,11 +241,11 @@ services:
   salmon:
     image: ghcr.io/smokin-salmon/smoked-salmon:latest
     network_mode: host
+    environment:
+      - RCLONE_CONFIG=/config/rclone.conf   # Optional: only if using rclone features
     volumes:
-      - /path/to/your/music:/app/.music
-      - /path/to/your/config.toml/directory:/root/.config/smoked-salmon/
-      - /path/to/your/generated/dottorrents:/app/.torrents
-      - /get/this/from/"rclone config file":/root/.config/rclone/rclone.conf  # Optional: only if using rclone features
+      - /path/to/your/config/directory:/config
+      - /path/to/your/data:/data
 
 ```
 
