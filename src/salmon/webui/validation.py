@@ -48,3 +48,19 @@ def validate_album_dir(raw_path: str) -> str:
     if not os.path.isdir(path):
         raise HTTPException(status_code=404, detail=f"Not a directory: {raw_path}")
     return path
+
+
+def validate_writable_album_dir(raw_path: str) -> str:
+    """Like validate_album_dir, but refuses read-only library sources.
+
+    Transcode/downconvert write a sibling folder next to the source and
+    spectral generation writes into the album itself, so neither may target a
+    curated library_dirs entry.
+    """
+    path = validate_album_dir(raw_path)
+    if cfg.directory.is_library_path(path):
+        raise HTTPException(
+            status_code=403,
+            detail="Refusing to write inside a read-only library directory.",
+        )
+    return path
