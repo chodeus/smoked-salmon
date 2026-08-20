@@ -47,7 +47,7 @@
     {/each}
   </div>
   <div style="margin-top: 0.7rem">
-    <button class="btn" onclick={run} disabled={!path || selected.length === 0}>Checks ausführen</button>
+    <button class="btn" onclick={run} disabled={!path || selected.length === 0}>Run checks</button>
   </div>
   {#if error}<p class="muted">{error}</p>{/if}
 </div>
@@ -86,7 +86,7 @@
       {/if}
 
       {#if job.result.integrity}
-        <h3>Integrität</h3>
+        <h3>Integrity</h3>
         <p>
           <span class="chip {job.result.integrity.passed ? 'ok' : 'err'}">
             {job.result.integrity.passed ? 'bestanden' : 'fehlgeschlagen'}
