@@ -119,3 +119,45 @@ async def test_a_failed_puddletag_launch_falls_back(album, monkeypatch):
     monkeypatch.setattr(tags_mod.anyio, "run_process", fake_run)
     monkeypatch.setattr(tags_mod, "edit_tags_as_json", lambda _p: True)
     assert await tags_mod.open_tag_editor(album["path"]) is True
+
+
+@pytest.mark.parametrize(
+    ("mutate", "why"),
+    [
+        (lambda d: d.__setitem__("02.flac", None), "a null file entry"),
+        (lambda d: d.__setitem__("02.flac", "not an object"), "a string file entry"),
+        (lambda d: d["02.flac"].__setitem__("title", {"nested": 1}), "a nested object value"),
+        (lambda d: d["02.flac"].__setitem__("artist", [1, 2]), "a list of non-strings"),
+    ],
+)
+def test_a_document_broken_partway_down_writes_nothing(album, monkeypatch, mutate, why):
+    """The first file is valid and changed; the second is not. Neither may be written."""
+
+    def edit(text, **_kw):
+        doc = json.loads(text)
+        doc["01.flac"]["title"] = "Renamed"  # a real change, earlier in the document
+        mutate(doc)
+        return json.dumps(doc)
+
+    monkeypatch.setattr(tags_mod.click, "edit", edit)
+    assert tags_mod.edit_tags_as_json(album["path"]) is False, why
+    assert album["saved"] == [], f"{why} left a partial write"
+    assert album["fake"]["01.flac"]["title"] == "One", f"{why} mutated the first file"
+
+
+def test_a_non_object_root_is_rejected(album, monkeypatch):
+    monkeypatch.setattr(tags_mod.click, "edit", lambda *_a, **_kw: '["not", "a", "map"]')
+    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert album["saved"] == []
+
+
+def test_scalar_and_list_values_are_accepted(album, monkeypatch):
+    def edit(text, **_kw):
+        doc = json.loads(text)
+        doc["01.flac"]["tracknumber"] = 3
+        doc["02.flac"]["artist"] = ["A", "B"]
+        return json.dumps(doc)
+
+    monkeypatch.setattr(tags_mod.click, "edit", edit)
+    assert tags_mod.edit_tags_as_json(album["path"]) is True
+    assert sorted(album["saved"]) == ["01.flac", "02.flac"]

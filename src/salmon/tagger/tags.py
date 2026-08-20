@@ -161,6 +161,25 @@ def _tags_to_dict(tags: dict[str, TagFile]) -> dict[str, dict]:
     }
 
 
+def _reject_bad_document(after: object, before: dict[str, dict]) -> str | None:
+    """Describe why an edited tag document is unusable, or None if it is fine."""
+    if not isinstance(after, dict):
+        return "The edited tags must be a JSON object keyed by filename"
+    unknown = set(after) - set(before)
+    if unknown:
+        return f"Unknown file(s) in the edited tags: {', '.join(sorted(unknown))}"
+    for filename, fields in after.items():
+        if not isinstance(fields, dict):
+            return f"{filename} must map to a JSON object, not {type(fields).__name__}"
+        for key, value in fields.items():
+            if value is None or isinstance(value, (str, int, float)):
+                continue
+            if isinstance(value, list) and all(isinstance(v, str) for v in value):
+                continue
+            return f"{filename}.{key} must be text, a number, a list of text, or null"
+    return None
+
+
 def edit_tags_as_json(path: str) -> bool:
     """Edit every track's tags as one JSON document and write back what changed.
 
@@ -186,16 +205,21 @@ def edit_tags_as_json(path: str) -> bool:
         click.secho(f"That is not valid JSON ({e}); no tags were changed.", fg="red")
         return False
 
-    unknown = set(after) - set(before)
-    if unknown:
-        click.secho(f"Unknown file(s) in the edited tags: {', '.join(sorted(unknown))}; nothing written.", fg="red")
+    problem = _reject_bad_document(after, before)
+    if problem:
+        click.secho(f"{problem}; no tags were changed.", fg="red")
         return False
 
-    written = 0
+    # Work out every change before writing any of them, so a document that is
+    # only wrong halfway down cannot leave the album half-applied.
+    planned = {}
     for filename, fields in after.items():
         changed = {k: v for k, v in fields.items() if k in EDITABLE_TAG_FIELDS and v != before[filename].get(k)}
-        if not changed:
-            continue
+        if changed:
+            planned[filename] = changed
+
+    written = 0
+    for filename, changed in planned.items():
         tag = tags[filename]
         for key, value in changed.items():
             setattr(tag, key, value)
