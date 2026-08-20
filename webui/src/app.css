@@ -118,6 +118,11 @@ th, td {
 }
 th { color: var(--text-dim); font-weight: 600; }
 
+/* Anything carrying a title= is explained on hover; hint that it is there. */
+label[title] { cursor: help; }
+label.check[title] > :last-child,
+label[title] > :first-child { text-decoration: underline dotted var(--border); text-underline-offset: 3px; }
+
 .muted { color: var(--text-dim); }
 .row { display: flex; gap: 0.6rem; align-items: center; }
 .grow { flex: 1; }

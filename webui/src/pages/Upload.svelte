@@ -127,20 +127,20 @@
   <div class="card">
     <FolderPicker bind:value={path} />
     <div class="grid">
-      <label>
+      <label title="Which site to upload to. Multi-tracker uploads are offered after the first completes.">
         Tracker
         <select bind:value={tracker}>
           {#each trackers as t}<option value={t}>{t}</option>{/each}
         </select>
       </label>
-      <label>
+      <label title="Media the files came from. Leave as ask to be prompted during the upload.">
         Source
         <select bind:value={source}>
           <option value="">— ask —</option>
           {#each sources as s}<option value={s}>{s}</option>{/each}
         </select>
       </label>
-      <label>
+      <label title="Whether the master itself is lossy-sourced. Check automatically inspects the spectrals and asks if unsure.">
         Lossy Master
         <select bind:value={lossy}>
           <option value="auto">check automatically</option>
@@ -148,44 +148,44 @@
           <option value="no">no</option>
         </select>
       </label>
-      <label>
+      <label title="Add to an existing torrent group instead of creating a new one. Accepts an ID or a torrents.php?id= URL.">
         Group-ID (optional)
         <input type="text" bind:value={groupId} placeholder="existing group" />
       </label>
-      <label>
+      <label title="Fill a request when the upload completes. Accepts a request URL or ID.">
         Request (optional)
         <input type="text" bind:value={request} placeholder="Request URL or ID" />
       </label>
-      <label>
+      <label title="For WEB uploads: the store or streaming URL the files came from, added to the release description.">
         Source-URL (optional, WEB)
         <input type="text" bind:value={sourceUrl} placeholder="https://…" />
       </label>
-      <label>
+      <label title="Required when the files are lossy; ignored for lossless. Leave as ask to be prompted.">
         Encoding (lossy sources)
         <select bind:value={encoding}>
           <option value="">— ask —</option>
           {#each encodings as e}<option value={e}>{e}</option>{/each}
         </select>
       </label>
-      <label>
+      <label title="Track numbers whose spectrals go into the release description, e.g. 1 4 7. Leave blank to choose during the upload.">
         Spectral tracks (optional)
         <input type="text" bind:value={spectrals} placeholder="e.g. 1 4 7" />
       </label>
     </div>
     <div class="row" style="flex-wrap: wrap; margin-top: 0.6rem">
-      <label class="check"><input type="checkbox" bind:checked={autoRename} /> Auto-Rename</label>
-      <label class="check"><input type="checkbox" bind:checked={spectralsAfter} /> Spectrals after upload</label>
-      <label class="check"><input type="checkbox" bind:checked={compress} /> Recompress FLACs</label>
-      <label class="check"><input type="checkbox" bind:checked={scene} /> Scene-Release</label>
-      <label class="check"><input type="checkbox" bind:checked={skipUp} /> Skip upconvert check</label>
-      <label class="check"><input type="checkbox" bind:checked={skipMqa} /> Skip MQA check</label>
-      <label class="check"><input type="checkbox" bind:checked={skipLogCheck} /> Skip log check</label>
-      <label class="check"><input type="checkbox" bind:checked={skipIntegrityCheck} /> Skip integrity check</label>
-      <label class="check"><input type="checkbox" bind:checked={essentialOnly} /> Essential files only</label>
-      <label class="check"><input type="checkbox" bind:checked={overwrite} /> Overwrite metadata</label>
-      <label class="check"><input type="checkbox" bind:checked={skipInitialReview} /> Skip initial review</label>
-      <label class="check"><input type="checkbox" bind:checked={applyAiSuggestions} /> Apply AI suggestions</label>
-      <label class="check"><input type="checkbox" bind:checked={dryRun} /> Dry run (validate only)</label>
+      <label class="check" title="Rename files and folders to salmon's templates without asking to confirm each one."><input type="checkbox" bind:checked={autoRename} /> Auto-Rename</label>
+      <label class="check" title="Generate, review and report spectrals after the torrent is uploaded instead of before it."><input type="checkbox" bind:checked={spectralsAfter} /> Spectrals after upload</label>
+      <label class="check" title="Re-encode FLACs to the configured compression level before uploading. Slower, smaller files, audio unchanged."><input type="checkbox" bind:checked={compress} /> Recompress FLACs</label>
+      <label class="check" title="Mark as a scene release: the original folder name is kept and files are not renamed. Cannot be combined with essential-files-only."><input type="checkbox" bind:checked={scene} /> Scene-Release</label>
+      <label class="check" title="Skip the upconversion check, which looks for 16-bit audio padded out to 24-bit."><input type="checkbox" bind:checked={skipUp} /> Skip upconvert check</label>
+      <label class="check" title="Skip the MQA marker check. Only the first file is tested anyway."><input type="checkbox" bind:checked={skipMqa} /> Skip MQA check</label>
+      <label class="check" title="Skip scoring CD rip logs and verifying their checksums against the audio."><input type="checkbox" bind:checked={skipLogCheck} /> Skip log check</label>
+      <label class="check" title="Skip verifying that every audio file decodes cleanly (flac -wt / mp3val)."><input type="checkbox" bind:checked={skipIntegrityCheck} /> Skip integrity check</label>
+      <label class="check" title="Upload only audio, logs, cues and artwork; strip nfo, sfv, md5, txt and other extras. Cannot be combined with scene."><input type="checkbox" bind:checked={essentialOnly} /> Essential files only</label>
+      <label class="check" title="Ignore the artists, year, label, catalogue number and genres already in the file tags and take them from the scraped sources instead."><input type="checkbox" bind:checked={overwrite} /> Overwrite metadata</label>
+      <label class="check" title="Skip the manual metadata review that normally happens before AI review."><input type="checkbox" bind:checked={skipInitialReview} /> Skip initial review</label>
+      <label class="check" title="Accept AI review suggestions automatically. Only does anything when AI review is enabled in config."><input type="checkbox" bind:checked={applyAiSuggestions} /> Apply AI suggestions</label>
+      <label class="check" title="Run everything — checks, spectrals, torrent creation — but do not post it. RED validates server-side; OPS builds locally only."><input type="checkbox" bind:checked={dryRun} /> Dry run (validate only)</label>
     </div>
     <div style="margin-top: 0.8rem">
       <button class="btn" onclick={start} disabled={!path || !tracker || starting}>
