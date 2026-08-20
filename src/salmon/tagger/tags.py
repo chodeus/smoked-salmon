@@ -171,8 +171,15 @@ def _reject_bad_document(after: object, before: dict[str, dict]) -> str | None:
     for filename, fields in after.items():
         if not isinstance(fields, dict):
             return f"{filename} must map to a JSON object, not {type(fields).__name__}"
+        unsupported = sorted(set(fields) - set(EDITABLE_TAG_FIELDS))
+        if unsupported:
+            # Dropping these silently would report success while losing the edit.
+            return f"{filename} has tag field(s) that cannot be written: {', '.join(unsupported)}"
         for key, value in fields.items():
-            if value is None or isinstance(value, (str, int, float)):
+            if value is None or isinstance(value, str):
+                continue
+            # bool subclasses int, so it would pass an isinstance(value, int) check.
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
                 continue
             if isinstance(value, list) and all(isinstance(v, str) for v in value):
                 continue
@@ -199,8 +206,12 @@ def edit_tags_as_json(path: str) -> bool:
         click.secho("No changes made.", fg="yellow")
         return False
 
+    def _no_constants(name: str):
+        # json.loads accepts NaN/Infinity/-Infinity by default; neither is a tag value.
+        raise ValueError(f"{name} is not a valid tag value")
+
     try:
-        after = json.loads(edited)
+        after = json.loads(edited, parse_constant=_no_constants)
     except ValueError as e:
         click.secho(f"That is not valid JSON ({e}); no tags were changed.", fg="red")
         return False

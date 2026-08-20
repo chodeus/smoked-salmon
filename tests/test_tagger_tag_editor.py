@@ -161,3 +161,53 @@ def test_scalar_and_list_values_are_accepted(album, monkeypatch):
     monkeypatch.setattr(tags_mod.click, "edit", edit)
     assert tags_mod.edit_tags_as_json(album["path"]) is True
     assert sorted(album["saved"]) == ["01.flac", "02.flac"]
+
+
+@pytest.mark.parametrize("literal", ["true", "false"])
+def test_booleans_are_rejected(album, monkeypatch, literal):
+    """bool subclasses int, so an isinstance(v, int) check would let these through."""
+
+    def edit(text, **_kw):
+        doc = json.loads(text)
+        doc["01.flac"]["title"] = "Renamed"
+        doc["02.flac"]["tracknumber"] = json.loads(literal)
+        return json.dumps(doc)
+
+    monkeypatch.setattr(tags_mod.click, "edit", edit)
+    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert album["saved"] == []
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_json_constants_are_rejected(album, monkeypatch, literal):
+    """json.loads accepts these by default; none is a tag value."""
+
+    def edit(text, **_kw):
+        # on a KNOWN file and a VALID field, so only the value check can reject it
+        doc = json.loads(text)
+        doc["01.flac"]["title"] = "Renamed"
+        raw = json.dumps(doc)
+        marker = '"tracknumber": null'
+        doc["02.flac"]["tracknumber"] = None
+        raw = json.dumps(doc)
+        assert marker in raw
+        return raw.replace(marker, '"tracknumber": ' + literal)
+
+    monkeypatch.setattr(tags_mod.click, "edit", edit)
+    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert album["saved"] == []
+
+
+def test_an_unsupported_field_is_rejected_not_silently_dropped(album, monkeypatch):
+    """Dropping it quietly would report success while losing the edit."""
+
+    def edit(text, **_kw):
+        doc = json.loads(text)
+        doc["01.flac"]["title"] = "Renamed"
+        doc["01.flac"]["titel"] = "typo'd field name"
+        return json.dumps(doc)
+
+    monkeypatch.setattr(tags_mod.click, "edit", edit)
+    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert album["saved"] == []
+    assert album["fake"]["01.flac"]["title"] == "One"

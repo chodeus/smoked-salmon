@@ -34,8 +34,23 @@
     }
   }
 
+  /** Library roots stay in the response even when hidden from the buttons, so a
+   *  path reached by typing or browsing can still be checked against them. */
+  function libraryRootFor(path: string): string | null {
+    for (const r of listing?.roots ?? []) {
+      if (r.library && (path === r.path || path.startsWith(r.path + '/'))) return r.path
+    }
+    return null
+  }
+
   function select(path?: string) {
-    value = path ?? listing?.path ?? value
+    const chosen = path ?? listing?.path ?? value
+    const root = writable && libraryRootFor(chosen)
+    if (root) {
+      error = `${root} is a read-only library source — this operation writes to the folder, so pick a staging directory instead.`
+      return
+    }
+    value = chosen
     browsing = false
   }
 
@@ -54,6 +69,7 @@
 
   {#if browsing && listing}
     <div class="listing card">
+      {#if error}<p class="pick-error">{error}</p>{/if}
       <div class="row">
         <span class="mono grow">{listing.path}</span>
         <span class="muted">{listing.audio_files.length} audio files</span>
@@ -92,6 +108,11 @@
 </div>
 
 <style>
+  .pick-error {
+    margin: 0 0 0.5rem;
+    font-size: 0.82rem;
+    color: var(--err);
+  }
   .roots {
     display: flex;
     flex-wrap: wrap;
