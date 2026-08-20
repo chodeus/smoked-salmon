@@ -70,6 +70,7 @@
 </script>
 
 <h1>Metadata search</h1>
+<p class="lead">Look up release metadata by artist and album, or pull a release straight from its URL.</p>
 
 <div class="card">
   <form

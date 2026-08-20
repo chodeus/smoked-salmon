@@ -29,6 +29,7 @@ a:hover { text-decoration: underline; }
 
 h1, h2, h3 { font-weight: 600; margin: 0 0 0.5rem; }
 h1 { font-size: 1.3rem; }
+.lead { color: var(--text-dim); font-size: 0.9rem; margin: -0.2rem 0 1rem; max-width: 62ch; }
 h2 { font-size: 1.05rem; }
 
 code, .mono {

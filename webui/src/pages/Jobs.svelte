@@ -21,6 +21,7 @@
 </script>
 
 <h1>Jobs</h1>
+<p class="lead">Everything running or finished in this session. Open a job to answer its prompts or read its log.</p>
 
 {#if jobStore.loadError}
   <div class="card"><p class="muted">{jobStore.loadError}</p></div>

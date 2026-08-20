@@ -136,6 +136,7 @@
 </script>
 
 <h1>Upload</h1>
+<p class="lead">Verify an album, then upload it to a tracker. Anything the CLI would ask you is asked here instead, as the job runs.</p>
 
 {#if !activeJob || activeJob.status !== 'running'}
   <div class="card">

@@ -60,6 +60,7 @@
 </script>
 
 <h1>Dashboard</h1>
+<p class="lead">Version, tracker connections and the command-line tools salmon depends on. Checked automatically when the page loads.</p>
 
 <div class="card">
   <div class="row">

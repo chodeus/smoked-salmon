@@ -43,6 +43,7 @@
 </script>
 
 <h1>Spectrals</h1>
+<p class="lead">Generate spectral images for an album and upload them, for lossy-master checks and reports.</p>
 
 <div class="card">
   <FolderPicker bind:value={path} />

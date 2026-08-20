@@ -35,6 +35,7 @@
 </script>
 
 <h1>Checks</h1>
+<p class="lead">Run the quality checks on any folder without uploading it — rip-log score, file integrity, MQA markers and upconversion.</p>
 
 <div class="card">
   <FolderPicker bind:value={path} />
