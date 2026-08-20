@@ -71,7 +71,10 @@ def _gather(path: str) -> dict:
     audio = get_audio_files(path, True)
     blobs, tracknos, precisions, rates = [], [], set(), set()
     for filename in audio:
-        mut = MutagenFile(os.path.join(path, filename))
+        try:
+            mut = MutagenFile(os.path.join(path, filename))
+        except Exception:  # a truncated or corrupt file must not sink the whole scan
+            continue
         if mut is None:
             continue
         blob = _tag_blob(mut)

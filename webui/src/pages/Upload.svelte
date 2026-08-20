@@ -40,12 +40,13 @@
   let starting = $state(false)
 
   const activeJob = $derived(activeJobId ? jobStore.get(activeJobId) : undefined)
-  const skips = $derived({
-    skip_log_check: skipLogCheck,
-    skip_integrity_check: skipIntegrityCheck,
-    skip_mqa: skipMqa,
-    skip_up: skipUp,
-  })
+  // Verify exactly what the upload will check, so the two cannot disagree.
+  const checks = $derived([
+    ...(skipIntegrityCheck ? [] : ['integrity']),
+    ...(skipUp ? [] : ['upconvert']),
+    ...(skipMqa ? [] : ['mqa']),
+    ...(skipLogCheck ? [] : ['log']),
+  ])
   // Dry runs post nothing, so they are exempt from the pre-flight gate.
   const gated = $derived(!dryRun && !preflightCleared)
 
@@ -205,7 +206,7 @@
     <Preflight
       {path}
       {source}
-      {skips}
+      {checks}
       trackers={tracker ? [tracker] : []}
       bind:cleared={preflightCleared}
       onUseSource={(s) => (source = s)}

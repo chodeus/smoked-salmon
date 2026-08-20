@@ -81,3 +81,9 @@ def test_unreadable_audio_does_not_crash(album_dir, monkeypatch):
     monkeypatch.setattr(src, "MutagenFile", lambda _path: None)
     result = src.detect_source(str(album_dir))
     assert result["confidence"] == "unknown"
+
+
+def test_corrupt_audio_file_does_not_sink_the_scan(album_dir):
+    """MutagenFile raises on a truncated file rather than returning None."""
+    result = src.detect_source(str(album_dir))
+    assert result["confidence"] == "unknown"
