@@ -67,7 +67,7 @@ async def downconvert(req: DownconvertRequest) -> dict:
 @router.post("/convert/compress")
 async def compress(req: CompressRequest) -> dict:
     """Recompress a folder's FLACs to the configured compression level, in place."""
-    path = validate_album_dir(req.path)
+    path = validate_writable_album_dir(req.path)
 
     async def run(job: Job) -> dict:
         count = 0

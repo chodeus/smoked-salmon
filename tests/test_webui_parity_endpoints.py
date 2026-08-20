@@ -144,3 +144,14 @@ def test_every_cli_command_has_a_web_equivalent() -> None:
         "/api/cross-upload",  # cross-upload
     ):
         assert path in paths, f"no web equivalent for {path}"
+
+
+def test_compress_refuses_a_read_only_library_source(client, tmp_path, monkeypatch) -> None:
+    # Recompression rewrites FLACs in place, so it must not touch a library_dirs entry.
+    base = os.path.realpath(cfg.directory.download_directory)
+    lib = os.path.join(base, tmp_path.name, "library")
+    album = os.path.join(lib, "Artist - Album")
+    os.makedirs(album, exist_ok=True)
+    monkeypatch.setattr(cfg.directory, "library_dirs", [lib])
+
+    assert client.post("/api/convert/compress", json={"path": album}).status_code == 403
