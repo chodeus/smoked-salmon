@@ -135,13 +135,13 @@
     </div>
     <div class="row" style="flex-wrap: wrap; margin-top: 0.6rem">
       <label class="check"><input type="checkbox" bind:checked={autoRename} /> Auto-Rename</label>
-      <label class="check"><input type="checkbox" bind:checked={spectralsAfter} /> Spectrals nach Upload</label>
-      <label class="check"><input type="checkbox" bind:checked={compress} /> FLACs rekomprimieren</label>
+      <label class="check"><input type="checkbox" bind:checked={spectralsAfter} /> Spectrals after upload</label>
+      <label class="check"><input type="checkbox" bind:checked={compress} /> Recompress FLACs</label>
       <label class="check"><input type="checkbox" bind:checked={scene} /> Scene-Release</label>
-      <label class="check"><input type="checkbox" bind:checked={skipUp} /> Upconvert-Check überspringen</label>
-      <label class="check"><input type="checkbox" bind:checked={skipMqa} /> MQA-Check überspringen</label>
-      <label class="check"><input type="checkbox" bind:checked={skipLogCheck} /> Log-Check überspringen</label>
-      <label class="check"><input type="checkbox" bind:checked={skipIntegrityCheck} /> Integritäts-Check überspringen</label>
+      <label class="check"><input type="checkbox" bind:checked={skipUp} /> Skip upconvert check</label>
+      <label class="check"><input type="checkbox" bind:checked={skipMqa} /> Skip MQA check</label>
+      <label class="check"><input type="checkbox" bind:checked={skipLogCheck} /> Skip log check</label>
+      <label class="check"><input type="checkbox" bind:checked={skipIntegrityCheck} /> Skip integrity check</label>
     </div>
     <div style="margin-top: 0.8rem">
       <button class="btn" onclick={start} disabled={!path || !tracker || starting}>Start upload</button>

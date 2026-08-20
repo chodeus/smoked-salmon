@@ -114,7 +114,7 @@
         </table>
       </div>
     {:else if !data.active}
-      <div class="card"><h2>{source}</h2><p class="muted">Inaktiv — API-Token in der Config nötig.</p></div>
+      <div class="card"><h2>{source}</h2><p class="muted">Inactive — API token required in config.</p></div>
     {/if}
   {/each}
 {/if}

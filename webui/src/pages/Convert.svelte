@@ -43,7 +43,7 @@
       <option value="V0">MP3 V0</option>
       <option value="320">MP3 320</option>
     </select>
-    <button class="btn" onclick={transcode} disabled={!path}>Transcodieren</button>
+    <button class="btn" onclick={transcode} disabled={!path}>Transcode</button>
     <button class="btn secondary" onclick={downconvert} disabled={!path}>24bit → 16bit</button>
   </div>
   {#if error}<p class="muted">{error}</p>{/if}

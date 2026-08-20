@@ -37,8 +37,8 @@
 
 <div class="picker">
   <div class="row">
-    <input type="text" class="mono grow" bind:value placeholder="/pfad/zum/album" />
-    <button class="btn secondary" onclick={() => open(value || undefined)}>Durchsuchen</button>
+    <input type="text" class="mono grow" bind:value placeholder="/path/to/album" />
+    <button class="btn secondary" onclick={() => open(value || undefined)}>Browse</button>
   </div>
 
   {#if browsing && listing}
@@ -47,7 +47,7 @@
         <span class="mono grow">{listing.path}</span>
         <span class="muted">{listing.audio_files.length} audio files</span>
         <button class="btn small" onclick={() => select()}>Select "{shortName(listing.path)}"</button>
-        <button class="btn small secondary" onclick={() => (browsing = false)}>Schließen</button>
+        <button class="btn small secondary" onclick={() => (browsing = false)}>Close</button>
       </div>
       <ul>
         {#if listing.parent}

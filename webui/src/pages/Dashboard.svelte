@@ -38,7 +38,7 @@
       {#each health.trackers as t}
         <span class="chip ok" style="margin-right: 0.4rem">{t}{t === health.default_tracker ? ' (default)' : ''}</span>
       {:else}
-        <span class="chip err">keine konfiguriert</span>
+        <span class="chip err">none configured</span>
       {/each}
     </p>
   </div>
@@ -50,14 +50,14 @@
         {#each Object.entries(health.binaries.required) as [name, path]}
           <tr>
             <td class="mono">{name}</td>
-            <td>{#if path}<span class="chip ok">ok</span>{:else}<span class="chip err">fehlt</span>{/if}</td>
+            <td>{#if path}<span class="chip ok">ok</span>{:else}<span class="chip err">missing</span>{/if}</td>
             <td class="mono muted">{path ?? ''}</td>
           </tr>
         {/each}
         {#each Object.entries(health.binaries.optional) as [name, path]}
           <tr>
             <td class="mono">{name} <span class="muted">(optional)</span></td>
-            <td>{#if path}<span class="chip ok">ok</span>{:else}<span class="chip">fehlt</span>{/if}</td>
+            <td>{#if path}<span class="chip ok">ok</span>{:else}<span class="chip">missing</span>{/if}</td>
             <td class="mono muted">{path ?? ''}</td>
           </tr>
         {/each}
@@ -66,7 +66,7 @@
   </div>
 
   <div class="card">
-    <h2>Verzeichnisse</h2>
+    <h2>Directories</h2>
     <table>
       <tbody>
         {#each Object.entries(health.directories) as [name, path]}
