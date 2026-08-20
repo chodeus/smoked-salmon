@@ -181,3 +181,21 @@ async def test_unselected_checks_are_skipped_not_dropped(album_dir, monkeypatch)
     assert verdicts["integrity"] == pf.SKIP
     assert verdicts["log"] == pf.SKIP
     assert verdicts["mqa"] != pf.SKIP
+
+
+async def test_a_failing_blacklist_lookup_blocks_rather_than_clears(album_dir, monkeypatch):
+    """Fail closed: an unreadable blacklist must never look like 'not blacklisted'."""
+    monkeypatch.setattr(
+        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+    )
+    monkeypatch.setattr(
+        pf, "_release_identity", lambda _p: {"artists": [("X", "main")], "title": "Y", "label": None, "catno": None}
+    )
+    monkeypatch.setattr(pf, "get_search_results", lambda *_a: _empty())
+    monkeypatch.setattr(pf, "red_blacklist_reason", lambda *_a: (_ for _ in ()).throw(RuntimeError("bad toml")))
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED"])
+    assert "blacklist:RED" in result["blocking"]
+
+
+async def _empty():
+    return []

@@ -13,7 +13,7 @@
 </script>
 
 <ul class="rows">
-  {#each rows as r}
+  {#each rows as r (r.id)}
     <li class="verdict-{r.verdict}">
       <span class="mark chip {CHIP[r.verdict]}">{MARK[r.verdict]}</span>
       <span class="label">{r.label}</span>

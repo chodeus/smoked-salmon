@@ -155,9 +155,13 @@ async def _tracker_rows(tracker: str, identity: dict) -> list[Row]:
     except Exception as e:
         rows.append(Row(f"dupe:{tracker}", f"Duplicate ({tracker})", WARN, f"Could not search {tracker}: {e}"))
     if tracker == "RED":
-        rows.append(
-            blacklist_row(tracker, red_blacklist_reason(identity["artists"], identity["title"], identity["label"]))
-        )
+        try:
+            reason = red_blacklist_reason(identity["artists"], identity["title"], identity["label"])
+        except Exception as e:
+            # Fail closed: an unreadable blacklist must not silently clear a release.
+            rows.append(Row("blacklist:RED", "RED blacklist", BLOCK, f"Could not check the blacklist: {e}"))
+        else:
+            rows.append(blacklist_row(tracker, reason))
     return rows
 
 

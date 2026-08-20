@@ -87,3 +87,28 @@ def test_corrupt_audio_file_does_not_sink_the_scan(album_dir):
     """MutagenFile raises on a truncated file rather than returning None."""
     result = src.detect_source(str(album_dir))
     assert result["confidence"] == "unknown"
+
+
+def test_cue_in_a_subdirectory_is_found(album_dir, tagged):
+    """Cue sheets often sit beside the audio in a disc subfolder, not at the root."""
+    tagged({"artist": "X", "album": "Y", "tracknumber": "1"})
+    disc = album_dir / "CD1"
+    disc.mkdir()
+    (disc / "album.cue").write_text('FILE "x.flac" WAVE')
+    result = src.detect_source(str(album_dir))
+    assert any("cue" in r.lower() for r in result["reasons"])
+
+
+def test_hi_res_with_no_readable_rate_does_not_claim_0khz(album_dir, monkeypatch):
+    class _Info:
+        bits_per_sample = 24
+        sample_rate = None
+
+    class _Audio:
+        tags = {"artist": "X", "album": "Y"}
+        info = _Info()
+
+    monkeypatch.setattr(src, "MutagenFile", lambda _p: _Audio())
+    result = src.detect_source(str(album_dir))
+    assert result["source"] == "WEB"
+    assert "0kHz" not in " ".join(result["reasons"])

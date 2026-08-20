@@ -110,9 +110,22 @@ def test_cli_still_exposes_every_command_after_the_refactor() -> None:
 
     names = set(commandgroup.commands)
     expected = {
-        "check", "checkconf", "checkspecs", "compress", "cross-upload", "descgen",
-        "downconv", "health", "images", "meta", "metas", "specs", "tag",
-        "transcode", "up", "web",
+        "check",
+        "checkconf",
+        "checkspecs",
+        "compress",
+        "cross-upload",
+        "descgen",
+        "downconv",
+        "health",
+        "images",
+        "meta",
+        "metas",
+        "specs",
+        "tag",
+        "transcode",
+        "up",
+        "web",
     }
     assert expected <= names, f"missing CLI commands: {sorted(expected - names)}"
 
@@ -226,8 +239,14 @@ def test_checkconf_is_cached_so_dashboard_loads_do_not_hammer_trackers(client, m
 
     async def fake_check(code):
         calls.append(code)
-        return {"tracker": code, "session_ok": True, "session_error": None,
-                "api_key_configured": False, "api_key_ok": None, "api_key_error": None}
+        return {
+            "tracker": code,
+            "session_ok": True,
+            "session_error": None,
+            "api_key_configured": False,
+            "api_key_ok": None,
+            "api_key_error": None,
+        }
 
     monkeypatch.setattr(system, "check_tracker_connection", fake_check)
     monkeypatch.setitem(system._checkconf_cache, "at", 0.0)
@@ -245,3 +264,38 @@ def test_checkconf_is_cached_so_dashboard_loads_do_not_hammer_trackers(client, m
     forced = client.post("/api/checkconf?force=true").json()
     assert forced["cached"] is False
     assert len(calls) > hits_after_first, "force=true must bypass the cache"
+
+
+def test_concurrent_checkconf_misses_share_one_probe(client, monkeypatch) -> None:
+    """Several dashboards loading at once must not each start their own tracker probe."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from salmon.webui.routers import system
+
+    rounds = []
+
+    async def fake_check(code):
+        rounds.append(code)
+        await asyncio.sleep(0.05)  # long enough for the other requests to pile up
+        return {
+            "tracker": code,
+            "session_ok": True,
+            "session_error": None,
+            "api_key_configured": False,
+            "api_key_ok": None,
+            "api_key_error": None,
+        }
+
+    monkeypatch.setattr(system, "check_tracker_connection", fake_check)
+    monkeypatch.setitem(system._checkconf_cache, "at", 0.0)
+    monkeypatch.setitem(system._checkconf_cache, "result", None)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        bodies = [f.result().json() for f in [pool.submit(client.post, "/api/checkconf") for _ in range(4)]]
+
+    import salmon.trackers
+
+    assert len(rounds) == len(salmon.trackers.tracker_list), "the probe must run exactly once"
+    assert sum(1 for b in bodies if b["cached"] is False) == 1
+    assert all(b["ok"] for b in bodies)

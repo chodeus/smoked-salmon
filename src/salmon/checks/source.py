@@ -66,6 +66,11 @@ def _has_rip_log(path: str) -> str | None:
     return None
 
 
+def _has_cue(path: str) -> bool:
+    """Cue sheets are often one level down, beside the audio rather than at the root."""
+    return any(name.lower().endswith(".cue") for _root, _dirs, files in os.walk(path) for name in files)
+
+
 def _gather(path: str) -> dict:
     """Collect every signal in one pass over the album."""
     audio = get_audio_files(path, True)
@@ -90,7 +95,7 @@ def _gather(path: str) -> dict:
         "tracknos": tracknos,
         "max_precision": max((p for p in precisions if p), default=None),
         "max_rate": max((r for r in rates if r), default=None),
-        "has_cue": any(f.lower().endswith(".cue") for f in os.listdir(path)),
+        "has_cue": _has_cue(path),
         "rip_log": _has_rip_log(path),
     }
 
@@ -138,7 +143,8 @@ def detect_source(path: str) -> dict:
     # rips are hi-res too, hence "likely" rather than proof of WEB.
     hi_res = (ev["max_precision"] or 16) > 16 or (ev["max_rate"] or 44100) > 44100
     if hi_res:
-        spec = f"{ev['max_precision'] or 16}bit/{(ev['max_rate'] or 0) / 1000:g}kHz"
+        rate = f"{ev['max_rate'] / 1000:g}kHz" if ev["max_rate"] else "an unknown rate"
+        spec = f"{ev['max_precision'] or 16}bit/{rate}"
         return {
             "source": "WEB",
             "confidence": "likely",
