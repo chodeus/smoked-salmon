@@ -74,3 +74,18 @@ def test_writable_validator_rejects_library_but_allows_staging(tmp_path, monkeyp
     assert exc.value.status_code == 403
     # staging stays writable
     assert validate_writable_album_dir(str(staging / "Working"))
+
+
+def test_filesystem_root_as_library_dir_still_contains_descendants(monkeypatch) -> None:
+    # "root + os.sep" is "//" when root is "/", so a naive prefix check would call
+    # /data/album non-library and let the abort handler rmtree it.
+    monkeypatch.setattr(cfg.directory, "library_dirs", ["/"])
+    assert cfg.directory.is_library_path("/data/album")
+    assert cfg.directory.is_library_path("/")
+
+
+def test_is_within_roots_handles_filesystem_root(monkeypatch) -> None:
+    from salmon.webui.validation import is_within_roots
+
+    assert is_within_roots("/data/album", ["/"])
+    assert not is_within_roots("/data/music-old", ["/data/music"])

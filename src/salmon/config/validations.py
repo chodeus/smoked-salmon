@@ -33,8 +33,13 @@ class Directory(BaseStruct):
         real = os.path.realpath(os.path.expanduser(path))
         for entry in self.library_dirs:
             root = os.path.realpath(os.path.expanduser(entry))
-            if real == root or real.startswith(root + os.sep):
-                return True
+            # commonpath, not startswith: "root + os.sep" is "//" when root is "/",
+            # which would classify every descendant as outside the library.
+            try:
+                if os.path.commonpath([real, root]) == root:
+                    return True
+            except ValueError:  # different drives on Windows
+                continue
         return False
 
 

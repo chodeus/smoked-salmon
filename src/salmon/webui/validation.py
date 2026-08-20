@@ -24,7 +24,14 @@ def allowed_roots() -> list[str]:
 
 def is_within_roots(path: str, roots: list[str] | None = None) -> bool:
     roots = allowed_roots() if roots is None else roots
-    return any(path == root or path.startswith(root + os.sep) for root in roots)
+    for root in roots:
+        # commonpath, not startswith: "root + os.sep" is "//" when root is "/".
+        try:
+            if os.path.commonpath([path, root]) == root:
+                return True
+        except ValueError:  # different drives on Windows
+            continue
+    return False
 
 
 def validate_album_dir(raw_path: str) -> str:
