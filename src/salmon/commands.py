@@ -1,4 +1,3 @@
-import asyncio
 import html
 import os
 import shutil
@@ -18,14 +17,12 @@ import salmon.tagger
 import salmon.trackers
 import salmon.uploader
 from salmon import cfg
-from salmon.common import commandgroup, str_to_int_if_int
+from salmon.checks.connection import check_tracker_connection
+from salmon.common import commandgroup
 from salmon.common import compress as recompress
 from salmon.config import find_config_path, get_default_config_path, get_user_cfg_path
 from salmon.tagger.audio_info import gather_audio_info
-from salmon.tagger.combine import combine_metadatas
-from salmon.tagger.metadata import clean_metadata, remove_various_artists
-from salmon.tagger.retagger import create_artist_str
-from salmon.tagger.sources import run_metadata
+from salmon.uploader.description import build_tracklist_description
 from salmon.uploader.spectrals import (
     check_spectrals,
     get_spectrals_path,
@@ -33,7 +30,6 @@ from salmon.uploader.spectrals import (
     post_upload_spectral_check,
 )
 from salmon.uploader.torrent_client import TorrentClientGenerator
-from salmon.uploader.upload import generate_source_links
 
 
 @commandgroup.command()
@@ -72,27 +68,7 @@ async def descgen(urls: tuple[str, ...]) -> None:
         click.secho("You must specify at least one URL", fg="red")
         return
 
-    tasks = [run_metadata(url, return_source_name=True) for url in urls]
-    metadatas = await asyncio.gather(*tasks)
-    metadata = clean_metadata(combine_metadatas(*((s, m) for m, s in metadatas)))
-    remove_various_artists(metadata["tracks"])
-
-    description = "[b][size=4]Tracklist[/b]\n\n"
-    multi_disc = len(metadata["tracks"]) > 1
-    for dnum, disc in metadata["tracks"].items():
-        for tnum, track in disc.items():
-            if multi_disc:
-                description += (
-                    f"[b]{str_to_int_if_int(str(dnum), zpad=True)}-{str_to_int_if_int(str(tnum), zpad=True)}.[/b] "
-                )
-            else:
-                description += f"[b]{str_to_int_if_int(str(tnum), zpad=True)}.[/b] "
-
-            description += f"{create_artist_str(track['artists'])} - {track['title']}\n"
-    if metadata["comment"]:
-        description += f"\n{metadata['comment']}\n"
-    if metadata["urls"]:
-        description += "\n[b]More info:[/b] " + generate_source_links(metadata["urls"])
+    description = await build_tracklist_description(urls)
     click.secho("\nDescription:\n", fg="yellow", bold=True)
     click.echo(description)
     if cfg.upload.description.copy_uploaded_url_to_clipboard:
@@ -251,38 +227,20 @@ async def checkconf(tracker: str | None, metadata: bool, seedbox: bool, reset: b
             click.secho(f"\n[ Testing Tracker: {t} ]", fg="cyan", bold=True)
             failed_checks: list[str] = []
 
-            tracker_instance = salmon.trackers.get_class(t)()
+            click.secho("\n[ Testing Session Cookie ]", fg="cyan", bold=True)
+            outcome = await check_tracker_connection(t)
 
-            # Test session cookie (independent of API key auth)
-            try:
-                click.secho("\n[ Testing Session Cookie ]", fg="cyan", bold=True)
-                await tracker_instance._request(
-                    "GET",
-                    f"{tracker_instance.base_url}/ajax.php",
-                    params={"action": "index"},
-                    prefer_api_key=False,
-                )
+            if outcome["session_ok"]:
                 click.secho("  ✔ Session cookie OK", fg="green")
-            except Exception as cookie_err:
-                click.secho(
-                    f"  ✖ Session cookie check failed: {cookie_err}",
-                    fg="red",
-                    bold=True,
-                )
+            else:
+                click.secho(f"  ✖ Session cookie check failed: {outcome['session_error']}", fg="red", bold=True)
                 failed_checks.append("session cookie")
 
-            if tracker_instance.api_key:
-                # Test API key authentication
-                try:
-                    await tracker_instance._request(
-                        "GET",
-                        f"{tracker_instance.base_url}/ajax.php",
-                        params={"action": "index"},
-                        prefer_api_key=True,
-                    )
+            if outcome["api_key_configured"]:
+                if outcome["api_key_ok"]:
                     click.secho("  ✔ API authentication OK", fg="green")
-                except Exception as e:
-                    click.secho(f"  ✖ API authentication failed: {e}", fg="red", bold=True)
+                else:
+                    click.secho(f"  ✖ API authentication failed: {outcome['api_key_error']}", fg="red", bold=True)
                     failed_checks.append("API key")
 
             if failed_checks:

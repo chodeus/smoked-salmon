@@ -1,6 +1,10 @@
 """Shared request validation for webui routers."""
 
+import asyncio
+import ipaddress
 import os
+import socket
+from urllib.parse import urlparse
 
 from fastapi import HTTPException
 
@@ -71,3 +75,33 @@ def validate_writable_album_dir(raw_path: str) -> str:
             detail="Refusing to write inside a read-only library directory.",
         )
     return path
+
+
+_BLOCKED_IP_ATTRS = ("is_private", "is_loopback", "is_link_local", "is_reserved", "is_multicast", "is_unspecified")
+
+
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return any(getattr(ip, attr) for attr in _BLOCKED_IP_ATTRS)
+
+
+async def assert_public_url(url: str) -> None:
+    """Reject non-http(s) URLs and any host resolving to a private/internal address.
+
+    Bandcamp uses per-artist custom domains, so scrapers match arbitrary hosts;
+    without this, /api/metadata?url=http://<internal-host>/album/x is an SSRF
+    that makes the server fetch internal services.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise HTTPException(status_code=422, detail="Only http(s) URLs are supported.")
+    host = parsed.hostname
+    try:
+        addrs = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(host, None)
+        except socket.gaierror as e:
+            raise HTTPException(status_code=422, detail=f"Could not resolve host: {host}") from e
+        addrs = [ipaddress.ip_address(info[4][0]) for info in infos]
+    if any(_is_blocked_ip(addr) for addr in addrs):
+        raise HTTPException(status_code=422, detail="Refusing to fetch a non-public address.")

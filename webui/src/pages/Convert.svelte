@@ -22,6 +22,17 @@
     }
   }
 
+  async function compress() {
+    error = ''
+    try {
+      const job = await apiPost<Job>('/convert/compress', { path })
+      jobStore.add(job)
+      jobIds = [job.id, ...jobIds]
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
   async function downconvert() {
     error = ''
     try {
@@ -45,6 +56,7 @@
     </select>
     <button class="btn" onclick={transcode} disabled={!path}>Transcode</button>
     <button class="btn secondary" onclick={downconvert} disabled={!path}>24bit → 16bit</button>
+    <button class="btn secondary" onclick={compress} disabled={!path}>Recompress FLACs</button>
   </div>
   {#if error}<p class="muted">{error}</p>{/if}
 </div>
@@ -55,6 +67,8 @@
     <JobStatus {job} />
     {#if job.status === 'done' && job.result?.output_path}
       <p class="mono muted">→ {job.result.output_path}</p>
+    {:else if job.status === 'done' && job.result?.recompressed !== undefined}
+      <p class="mono muted">Recompressed {job.result.recompressed} FLACs in place.</p>
     {/if}
   </div>
 {/each}
