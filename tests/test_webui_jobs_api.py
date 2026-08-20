@@ -10,6 +10,8 @@ hosts) is stubbed at the router-module seam; no network, no binaries.
 
 import asyncio
 import contextlib
+import os
+import pathlib
 
 import asyncclick as click
 import pytest
@@ -96,7 +98,7 @@ def spectral_stubs(monkeypatch, tmp_path):
     def fake_gather_audio_info(path, sort_by_tracknumber=False):
         return {"01. Intro.flac": {"duration": 60}}
 
-    def fake_create_specs_folder(path):
+    def fake_create_specs_folder(path, spectrals_path=None):
         specs_dir.mkdir(exist_ok=True)
         return str(specs_dir)
 
@@ -120,7 +122,7 @@ def hanging_spectral_stubs(monkeypatch, tmp_path):
     def fake_gather_audio_info(path, sort_by_tracknumber=False):
         return {}
 
-    def fake_create_specs_folder(path):
+    def fake_create_specs_folder(path, spectrals_path=None):
         specs_dir.mkdir(exist_ok=True)
         return str(specs_dir)
 
@@ -486,6 +488,32 @@ def test_spectrals_generate_nonexistent_path_returns_404(client):
 def test_spectrals_generate_missing_body_field_returns_422(client):
     resp = client.post("/api/spectrals/generate", json={})
     assert resp.status_code == 422
+
+
+@pytest.fixture
+def library_album(tmp_path, monkeypatch):
+    """An album inside a read-only library source."""
+    lib = pathlib.Path(os.path.realpath(tmp_path)) / "library"
+    album = lib / "Testartist - Testalbum (2024) [FLAC]"
+    album.mkdir(parents=True)
+    (album / "01. Intro.flac").write_bytes(b"fLaC" + bytes(2000))
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
+    return album
+
+
+def test_spectrals_generate_allowed_for_a_library_album(client, library_album, spectral_stubs):
+    # The images go to tmp_dir, so the album being read-only is irrelevant.
+    resp = client.post("/api/spectrals/generate", json={"path": str(library_album)})
+    assert resp.status_code == 200
+
+
+def test_spectrals_generate_refused_when_it_would_write_into_the_library(client, library_album, monkeypatch):
+    # No tmp_dir means get_spectrals_path falls back to <album>/Spectrals.
+    monkeypatch.setattr(cfg.directory, "tmp_dir", "")
+    resp = client.post("/api/spectrals/generate", json={"path": str(library_album)})
+    assert resp.status_code == 403
+    assert "read-only library directory" in resp.json()["detail"]
+    assert not (library_album / "Spectrals").exists()
 
 
 def test_spectrals_generate_happy_path(client, album_dir, spectral_stubs):

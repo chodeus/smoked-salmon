@@ -14,6 +14,35 @@ export interface ChecksResult {
   warnings: string[]
 }
 
+export interface DupeTorrent {
+  torrentId: number | null
+  format: string | null
+  encoding: string | null
+  media: string | null
+  hasLog: boolean | null
+  logScore: number | null
+  remasterTitle: string | null
+  remasterYear: number | null
+  remasterRecordLabel: string | null
+  seeders: number | null
+}
+
+export interface DupeGroup {
+  groupId: number | null
+  groupName: string | null
+  artist: string | null
+  groupYear: number | null
+  releaseType: string | null
+  url: string
+  torrents: DupeTorrent[]
+}
+
+// raw['dupe:<tracker>'] — every match behind the row, which only names the first two.
+export interface DupeDetail {
+  searchstrs: string[]
+  matches: DupeGroup[]
+}
+
 export const CHIP: Record<Verdict, string> = { ok: 'ok', warn: 'warn', block: 'err', skip: '' }
 export const MARK: Record<Verdict, string> = { ok: '✓', warn: '!', block: '✕', skip: '–' }
 

@@ -113,6 +113,8 @@
                 <td class="mono">{f.file}</td>
                 {#if f.error}
                   <td><span class="chip warn">{f.error}</span></td>
+                {:else if f.not_applicable}
+                  <td><span class="chip">{f.not_applicable}</span></td>
                 {:else}
                   <td class="muted">{f.bitdepth}bit, wasted bits: {f.wasted_bits}</td>
                 {/if}

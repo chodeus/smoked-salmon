@@ -77,6 +77,22 @@ def validate_writable_album_dir(raw_path: str) -> str:
     return path
 
 
+def refuse_library_output(output_path: str, what: str) -> None:
+    """Refuse a job whose OUTPUT would land inside a read-only library source.
+
+    For jobs that write beside the album rather than into it, the album being a
+    library source says nothing — where the output lands is what matters.
+    """
+    if cfg.directory.is_library_path(output_path):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"{what} would be written inside a read-only library directory. "
+                "Set directory.tmp_dir to a writable scratch folder."
+            ),
+        )
+
+
 _BLOCKED_IP_ATTRS = ("is_private", "is_loopback", "is_link_local", "is_reserved", "is_multicast", "is_unspecified")
 
 

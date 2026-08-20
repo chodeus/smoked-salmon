@@ -1,14 +1,18 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte'
   import { CHIP, MARK, type Row } from './verdicts'
 
   let {
     rows,
     acked = [],
     onToggleAck,
+    rowDetail,
   }: {
     rows: Row[]
     acked?: string[]
     onToggleAck?: (id: string) => void
+    /** Optional extra content under a row; renders nothing for rows it does not cover. */
+    rowDetail?: Snippet<[Row]>
   } = $props()
 </script>
 
@@ -23,6 +27,9 @@
           <input type="checkbox" checked={acked.includes(r.id)} onchange={() => onToggleAck(r.id)} />
           Acknowledge
         </label>
+      {/if}
+      {#if rowDetail}
+        <div class="row-detail">{@render rowDetail(r)}</div>
       {/if}
     </li>
   {/each}
@@ -58,6 +65,13 @@
   .verdict-skip .label,
   .verdict-skip .detail {
     opacity: 0.55;
+  }
+  .row-detail {
+    grid-column: 1 / -1;
+  }
+  /* A snippet that covers no row renders nothing; don't leave a grid gap behind. */
+  .row-detail:empty {
+    display: none;
   }
   .ack {
     display: flex;
