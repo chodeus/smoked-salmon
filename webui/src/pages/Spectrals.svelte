@@ -123,7 +123,7 @@
         {/if}
       {/if}
       <div class="gallery">
-        {#each activeJob.result.files as file}
+        {#each [...activeJob.result.files, ...activeJob.result.frequency.filter((f: { image: string }) => f.image).map((f: { image: string }) => f.image)] as file}
           <figure>
             <button onclick={() => (lightbox = imageUrl(activeJob!.id, file))}>
               <img src={imageUrl(activeJob.id, file)} alt={file} loading="lazy" />

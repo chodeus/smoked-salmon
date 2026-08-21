@@ -63,11 +63,15 @@ async def generate(req: GenerateRequest) -> dict:
         spectral_ids = await generate_spectrals_all(path, created, audio_info)
         spectra = await generate_frequency_plots(path, get_audio_files(path, True), created)
         provenance = await asyncio.to_thread(gather_provenance, path)
+        # "files" is what gets uploaded to an image host, so it stays the
+        # spectrograms alone; the frequency plots are served and shown, not posted.
+        plots = {s.image for s in spectra if s.image}
+        every_png = sorted(f for f in os.listdir(created) if f.lower().endswith(".png"))
         return {
             "album_path": path,
             "spectrals_path": created,
             "spectral_ids": {str(k): v for k, v in spectral_ids.items()},
-            "files": sorted(f for f in os.listdir(created) if f.lower().endswith(".png")),
+            "files": [f for f in every_png if f not in plots],
             "frequency": [msgspec.to_builtins(s) for s in spectra],
             "assessment": assess(spectra),
             "provenance": provenance,
@@ -95,7 +99,8 @@ def _finished_spectrals_job(job_id: str) -> Job:
 @router.get("/spectrals/{job_id}/image/{filename}")
 def image(job_id: str, filename: str) -> FileResponse:
     job = _finished_spectrals_job(job_id)
-    if filename not in job.result["files"]:
+    servable = set(job.result["files"]) | {s["image"] for s in job.result.get("frequency", []) if s["image"]}
+    if filename not in servable:
         raise HTTPException(status_code=404, detail="Unknown spectral image.")
     return FileResponse(os.path.join(job.result["spectrals_path"], filename))
 

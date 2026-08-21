@@ -20,6 +20,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from salmon import cfg
 from salmon.common.progress import report_progress
+from salmon.uploader.frequency import SpectrumResult
 from salmon.uploader.spectrals import get_spectrals_path
 from salmon.webui.app import create_app
 from salmon.webui.jobs import (
@@ -117,7 +118,12 @@ def spectral_stubs(monkeypatch, tmp_path, specs_requests):
         return {1: "01-intro.png", 2: "02-mittelteil.png"}
 
     async def fake_generate_frequency_plots(path, files, out_dir):
-        return []
+        (specs_dir / "01 Frequency.png").write_bytes(b"PNGF")
+        return [
+            SpectrumResult(
+                file="01. Intro.flac", image="01 Frequency.png", sample_rate=44100, cutoff_hz=21800.0, windows=9
+            )
+        ]
 
     monkeypatch.setattr("salmon.webui.routers.spectrals.gather_audio_info", fake_gather_audio_info)
     monkeypatch.setattr("salmon.webui.routers.spectrals.create_specs_folder", fake_create_specs_folder)
@@ -546,7 +552,36 @@ def test_spectrals_generate_happy_path(client, album_dir, spectral_stubs):
     assert data["result"]["spectrals_path"] == str(spectral_stubs)
     # keys are stringified for JSON, non-png files are excluded, list sorted
     assert data["result"]["spectral_ids"] == {"1": "01-intro.png", "2": "02-mittelteil.png"}
+    # Frequency plots are shown but never posted, so they stay out of "files".
     assert data["result"]["files"] == ["01-intro.png", "02-mittelteil.png"]
+    assert data["result"]["frequency"][0]["image"] == "01 Frequency.png"
+
+
+def test_only_the_spectrograms_are_sent_to_the_image_host(client, album_dir, spectral_stubs, monkeypatch):
+    uploaded: list[str] = []
+
+    async def fake_upload_images(files, host):
+        uploaded.extend(files)
+        return ["https://host/x.png" for _ in files]
+
+    monkeypatch.setattr("salmon.webui.routers.spectrals.upload_images", fake_upload_images)
+    job_id = client.post("/api/spectrals/generate", json={"path": str(album_dir)}).json()["id"]
+    join_job(client, job_id)
+
+    upload = client.post("/api/spectrals/upload", json={"job_id": job_id, "host": "catbox"})
+    join_job(client, upload.json()["id"])
+
+    assert [os.path.basename(f) for f in uploaded] == ["01-intro.png", "02-mittelteil.png"]
+
+
+def test_a_frequency_plot_is_still_served_even_though_it_is_not_uploaded(client, album_dir, spectral_stubs):
+    job_id = client.post("/api/spectrals/generate", json={"path": str(album_dir)}).json()["id"]
+    join_job(client, job_id)
+
+    resp = client.get(f"/api/spectrals/{job_id}/image/01%20Frequency.png")
+
+    assert resp.status_code == 200
+    assert resp.content == b"PNGF"
 
 
 def test_spectrals_generate_second_post_on_same_path_conflicts(client, album_dir, hanging_spectral_stubs):
