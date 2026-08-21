@@ -6,6 +6,8 @@ PyAV, numpy and Pillow, all already dependencies — no ffmpeg binary needed.
 """
 
 import asyncio
+import contextlib
+import math
 import os
 
 import av
@@ -109,11 +111,16 @@ def cutoff_drop(freqs: np.ndarray, db: np.ndarray, cutoff_hz: float, span_hz: fl
     above = db[(freqs > cutoff_hz) & (freqs <= cutoff_hz + span_hz)]
     if not len(below) or not len(above):
         return 0.0
-    return float(below.mean() - above.mean())
+    drop = float(below.mean() - above.mean())
+    # A corrupt decode gives a NaN spectrum, and NaN serialises to a literal the
+    # browser's JSON.parse rejects — it would take the whole job list with it.
+    return drop if math.isfinite(drop) else 0.0
 
 
 def render_plot(freqs: np.ndarray, db: np.ndarray, sample_rate: int, out_path: str, title: str) -> None:
     """Draw the curve with a labelled kHz/dB grid."""
+    if sample_rate <= 0:
+        raise ValueError(f"cannot plot a spectrum at {sample_rate} Hz")
     img = Image.new("RGB", (_WIDTH, _HEIGHT), _BG)
     draw = ImageDraw.Draw(img)
     plot_w = _WIDTH - _PAD_L - _PAD_R
@@ -160,7 +167,16 @@ def _analyse_one(album_path: str, filename: str, out_dir: str, index: int) -> Sp
             error="too little audio to average a spectrum",
         )
     image = f"{index + 1:02d} Frequency.png"
-    render_plot(freqs, db, sample_rate, os.path.join(out_dir, image), filename)
+    out_path = os.path.join(out_dir, image)
+    try:
+        render_plot(freqs, db, sample_rate, out_path, filename)
+    except Exception as e:
+        # A half-written PNG owned by no result would still be listed and posted.
+        with contextlib.suppress(OSError):
+            os.remove(out_path)
+        return SpectrumResult(
+            file=filename, image="", sample_rate=sample_rate, cutoff_hz=0.0, windows=windows, error=str(e)
+        )
     cutoff = find_cutoff(freqs, db)
     return SpectrumResult(
         file=filename,
@@ -191,7 +207,7 @@ def assess(results: list[SpectrumResult]) -> dict:
     if not results:
         return {"level": "ok", "notes": []}
 
-    analysed = [r for r in results if not r.error]
+    analysed = [r for r in results if not r.error and r.sample_rate > 0]
     if not analysed:
         return {"level": "ok", "notes": ["No file could be analysed."]}
 

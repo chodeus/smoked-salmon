@@ -1,8 +1,11 @@
 """Frequency analysis: the measured cutoff, and what it is allowed to claim."""
 
+import json
+import math
 import wave
 
 import numpy as np
+import pytest
 
 from salmon.uploader import frequency as fq
 
@@ -138,3 +141,54 @@ def test_silence_measures_no_cutoff_rather_than_the_whole_spectrum(tmp_path):
 
     result = fq._analyse_one(str(tmp_path), "silent.wav", str(tmp_path), 0)
     assert fq.assess([result])["notes"] == ["No track carried enough signal to measure."]
+
+
+# ---------------------------------------------------------------------------
+# Degenerate input: a measurement that cannot be made must not become a claim
+# ---------------------------------------------------------------------------
+
+
+def _nan_spectrum():
+    freqs = np.fft.rfftfreq(fq.FFT_SIZE, 1 / 44100)
+    return freqs, np.full(len(freqs), np.nan)
+
+
+def test_a_corrupt_spectrum_never_yields_a_non_finite_drop():
+    """NaN serialises to a literal the browser's JSON.parse rejects, which would
+    take the whole job payload down rather than just this row."""
+    freqs, db = _nan_spectrum()
+    drop = fq.cutoff_drop(freqs, db, 0.0)
+    assert math.isfinite(drop)
+    json.dumps({"drop_db": drop})  # raises nothing a browser would choke on
+
+
+def test_a_corrupt_spectrum_measures_no_cutoff():
+    freqs, db = _nan_spectrum()
+    assert fq.find_cutoff(freqs, db) == 0.0
+
+
+def test_a_failed_plot_costs_only_its_own_file(tmp_path, monkeypatch):
+    src = tmp_path / "full.wav"
+    _write_lowpassed_noise(src, 15_000)
+
+    def boom(*_args, **_kwargs):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(fq, "render_plot", boom)
+
+    result = fq._analyse_one(str(tmp_path), "full.wav", str(tmp_path), 0)
+
+    assert result.error == "no space left on device"
+    assert result.image == ""
+    assert not (tmp_path / "01 Frequency.png").exists(), "a half-written plot would still be listed and posted"
+
+
+def test_plotting_an_impossible_sample_rate_fails_clearly():
+    freqs, db = _nan_spectrum()
+    with pytest.raises(ValueError, match="0 Hz"):
+        fq.render_plot(freqs, db, 0, "unused.png", "title")
+
+
+def test_a_result_without_a_sample_rate_is_not_measured_against_nyquist():
+    unusable = fq.SpectrumResult(file="x.flac", image="i", sample_rate=0, cutoff_hz=100.0, windows=1)
+    assert fq.assess([unusable])["notes"] == ["No file could be analysed."]
