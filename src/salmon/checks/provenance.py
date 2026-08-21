@@ -24,7 +24,13 @@ MARKER_FIELDS = (
     "url",
 )
 
-_URL_RE = re.compile(r"(?:https?://|www\.)\S+|\b[\w-]+\.(?:com|net|org|io|co|me|ru|to|cc|sh)\b", re.IGNORECASE)
+# A bare domain has to swallow its port and path too, or "hd24bit.com/24bit"
+# leaves "/24bit" behind and the leftover reads as a claim about the audio.
+_URL_RE = re.compile(
+    r"(?:https?://|www\.)\S+"
+    r"|\b[\w-]+\.(?:com|net|org|io|co|me|ru|to|cc|sh)\b(?::\d+)?(?:[/?#]\S*)?",
+    re.IGNORECASE,
+)
 _DEPTH_CLAIM_RE = re.compile(r"(\d{2})\s*-?\s*bit", re.IGNORECASE)
 
 
@@ -59,7 +65,10 @@ def _contradictions(files: list[dict]) -> list[str]:
         if not depth:
             continue
         for field, text in entry["markers"].items():
-            for claim in _DEPTH_CLAIM_RE.findall(text):
+            # A depth inside a domain is part of the name of whoever ripped it
+            # ("hd24bit.com"), not an assertion about this file. The URL still
+            # shows up as a marker, so nothing is hidden — it just isn't a claim.
+            for claim in _DEPTH_CLAIM_RE.findall(_URL_RE.sub(" ", text)):
                 if int(claim) != depth:
                     found.append(f"{entry['file']}: {field} claims {claim}bit, the audio is {depth}bit")
     return found

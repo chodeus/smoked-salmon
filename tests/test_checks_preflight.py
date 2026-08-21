@@ -287,3 +287,33 @@ def test_one_unparseable_log_warns_even_when_another_scores_full_marks():
     verdict, detail = pf._log_verdict(logs, {"source": "CD"})
     assert verdict == pf.WARN
     assert "1 of 2" in detail
+
+
+def test_a_log_with_no_checksum_is_unverifiable_not_altered():
+    # EAC only began signing logs in 1.0 beta 3; an older log has none at all,
+    # which is a different state from a checksum that fails.
+    logs = {"logs": [{"file": "r.log", "score": 100, "checksum_integrity": "Unknown"}]}
+    verdict, detail = pf._log_verdict(logs, {"source": "CD"})
+    assert verdict == pf.WARN
+    assert "No log checksum" in detail
+    assert "does not match" not in detail
+    assert "trumpable" in detail
+
+
+def test_a_failing_checksum_still_says_the_log_was_altered():
+    logs = {"logs": [{"file": "r.log", "score": 100, "checksum_integrity": "Mismatch"}]}
+    verdict, detail = pf._log_verdict(logs, {"source": "CD"})
+    assert verdict == pf.WARN
+    assert "does not match" in detail
+    assert "altered" in detail
+
+
+def test_integrity_warnings_are_not_reported_as_clean():
+    result = {"passed": True, "details": "", "concerns": ["a.mp3: WARNING: file is truncated"]}
+    verdict, detail = pf._integrity_verdict(result, {})
+    assert verdict == pf.WARN
+    assert "truncated" in detail
+
+
+def test_integrity_with_nothing_to_report_is_green():
+    assert pf._integrity_verdict({"passed": True, "details": "", "concerns": []}, {})[0] == pf.OK
