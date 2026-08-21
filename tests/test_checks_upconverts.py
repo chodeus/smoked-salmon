@@ -1,7 +1,26 @@
 """Upconvert check: out-of-scope files are skipped, real failures are reported."""
 
+from types import SimpleNamespace
+
+import pytest
+
 import salmon.checks.upconverts as uc
 from salmon.errors import UpconvertCheckError, UpconvertCheckNotApplicable
+
+
+async def test_16bit_is_classified_out_of_scope_without_spawning_flac(monkeypatch):
+    class FakeFlac:
+        def __init__(self, _filepath):
+            self.info = SimpleNamespace(bits_per_sample=16)
+
+    async def must_not_run(*_args, **_kwargs):
+        raise AssertionError("flac was spawned for a file the check does not apply to")
+
+    monkeypatch.setattr(uc.flac, "FLAC", FakeFlac)
+    monkeypatch.setattr(uc.anyio, "run_process", must_not_run)
+
+    with pytest.raises(UpconvertCheckNotApplicable):
+        await uc.check_upconvert("/music/album/01.flac")
 
 
 async def test_16bit_is_skipped_without_a_warning(monkeypatch, capsys):
