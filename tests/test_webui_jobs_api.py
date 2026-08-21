@@ -20,6 +20,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from salmon import cfg
 from salmon.common.progress import report_progress
+from salmon.uploader.spectrals import get_spectrals_path
 from salmon.webui.app import create_app
 from salmon.webui.jobs import (
     MAX_FINISHED_JOBS,
@@ -91,7 +92,13 @@ async def wait_running(job: Job) -> None:
 
 
 @pytest.fixture
-def spectral_stubs(monkeypatch, tmp_path):
+def specs_requests() -> list[str | None]:
+    """Records the destination the router asks create_specs_folder to build."""
+    return []
+
+
+@pytest.fixture
+def spectral_stubs(monkeypatch, tmp_path, specs_requests):
     """Stub audio probing and spectral generation; returns the specs dir."""
     specs_dir = tmp_path / "specs-out"
 
@@ -99,6 +106,7 @@ def spectral_stubs(monkeypatch, tmp_path):
         return {"01. Intro.flac": {"duration": 60}}
 
     def fake_create_specs_folder(path, spectrals_path=None):
+        specs_requests.append(spectrals_path)
         specs_dir.mkdir(exist_ok=True)
         return str(specs_dir)
 
@@ -501,10 +509,14 @@ def library_album(tmp_path, monkeypatch):
     return album
 
 
-def test_spectrals_generate_allowed_for_a_library_album(client, library_album, spectral_stubs):
+def test_spectrals_generate_allowed_for_a_library_album(client, library_album, spectral_stubs, specs_requests):
     # The images go to tmp_dir, so the album being read-only is irrelevant.
     resp = client.post("/api/spectrals/generate", json={"path": str(library_album)})
     assert resp.status_code == 200
+    assert join_job(client, resp.json()["id"])["status"] == "done"
+    # The vetted destination is the one handed to create_specs_folder, and it is outside the library.
+    assert specs_requests == [get_spectrals_path(str(library_album))]
+    assert not cfg.directory.is_library_path(specs_requests[0])
 
 
 def test_spectrals_generate_refused_when_it_would_write_into_the_library(client, library_album, monkeypatch):

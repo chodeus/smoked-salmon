@@ -88,10 +88,13 @@ async def _upconvert_check_handler(filepath: str, _: int | None = None) -> Upcon
         _: Unused index parameter for process_files compatibility.
 
     Returns:
-        UpconvertCheckResult on success, None if the file cannot be analyzed.
+        UpconvertCheckResult on success, None if the file is out of scope or cannot be analyzed.
     """
     try:
         return await check_upconvert(filepath)
+    except UpconvertCheckNotApplicable:
+        # 16bit is out of scope, so it is not worth a line of warning per track.
+        return None
     except UpconvertCheckError as e:
         click.secho(f"{os.path.basename(filepath)}: {e}", fg="yellow")
         return None
