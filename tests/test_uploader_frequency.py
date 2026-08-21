@@ -119,3 +119,22 @@ def test_a_file_too_short_to_average_reports_no_measurement(tmp_path):
 def test_a_silent_track_does_not_fake_a_disagreement():
     verdict = fq.assess([_result("01.flac", 21_800), _result("02.flac", 0.0)])
     assert verdict["level"] == "ok"
+
+
+def test_silence_measures_no_cutoff_rather_than_the_whole_spectrum(tmp_path):
+    """A flat spectrum sits within any floor of its own maximum, so silence
+    would otherwise be reported as carrying energy to Nyquist."""
+    src = tmp_path / "silent.wav"
+    with wave.open(str(src), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(44100)
+        w.writeframes(np.zeros(fq.FFT_SIZE * 4, dtype="<i2").tobytes())
+
+    freqs, db, _rate, windows = fq.average_spectrum(str(src))
+
+    assert windows > 0, "the file is long enough to average; this is not the no-windows case"
+    assert fq.find_cutoff(freqs, db) == 0.0
+
+    result = fq._analyse_one(str(tmp_path), "silent.wav", str(tmp_path), 0)
+    assert fq.assess([result])["notes"] == ["No track carried enough signal to measure."]

@@ -22,6 +22,9 @@ _PAD_L, _PAD_R, _PAD_T, _PAD_B = 70, 20, 34, 46
 _DB_MIN, _DB_MAX = -140.0, 0.0
 # A cutoff is only meaningful relative to the track's own level.
 CUTOFF_FLOOR_DB = 60.0
+# Digital silence averages to the epsilon floor (-300 dB). Any real audio, even
+# a single LSB of dither, lands far above this.
+SILENCE_DB = -250.0
 
 _BG = (16, 16, 20)
 _GRID = (48, 48, 56)
@@ -84,7 +87,14 @@ def average_spectrum(path: str) -> tuple[np.ndarray, np.ndarray, int, int]:
 
 
 def find_cutoff(freqs: np.ndarray, db: np.ndarray) -> float:
-    """Highest frequency still within CUTOFF_FLOOR_DB of the track's peak."""
+    """Highest frequency still within CUTOFF_FLOOR_DB of the track's peak.
+
+    Silence has to be caught before that comparison: a flat spectrum sits within
+    any floor of its own maximum, so a silent track would otherwise measure as
+    carrying energy all the way to Nyquist.
+    """
+    if db.max() <= SILENCE_DB:
+        return 0.0
     above = np.nonzero(db > db.max() - CUTOFF_FLOOR_DB)[0]
     return float(freqs[above[-1]]) if len(above) else 0.0
 
