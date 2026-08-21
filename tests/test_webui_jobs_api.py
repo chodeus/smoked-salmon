@@ -895,17 +895,18 @@ def _finished_spectrals_job(specs_dir) -> Job:
     return job
 
 
-def _specs_under(root, name) -> "pathlib.Path":
+def _specs_under(root, name) -> pathlib.Path:
     folder = pathlib.Path(os.path.realpath(root)) / name
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "01 Full.png").write_bytes(b"PNG")
     return folder
 
 
-def test_discarding_removes_the_generated_images(tmp_path):
+def test_discarding_removes_the_generated_images(tmp_path, monkeypatch):
     from salmon.webui.routers.spectrals import _discard_spectrals
 
-    specs = _specs_under(cfg.directory.tmp_dir, f"spectrals_{tmp_path.name}")
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_path))
+    specs = _specs_under(tmp_path, "spectrals_x")
     _discard_spectrals(_finished_spectrals_job(specs))
     assert not specs.exists()
 
@@ -918,8 +919,9 @@ def test_discarding_refuses_a_path_outside_the_configured_directories(tmp_path):
     assert outside.exists(), "rmtree must not follow a result path that has left the roots"
 
 
-def test_discard_endpoint_empties_the_job_result(client, tmp_path):
-    specs = _specs_under(cfg.directory.tmp_dir, f"spectrals_ep_{tmp_path.name}")
+def test_discard_endpoint_empties_the_job_result(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_path))
+    specs = _specs_under(tmp_path, "spectrals_ep")
     job = _finished_spectrals_job(specs)
     manager.jobs[job.id] = job
 

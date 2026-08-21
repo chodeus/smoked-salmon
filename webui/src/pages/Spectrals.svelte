@@ -52,7 +52,13 @@
     if (!activeJobId) return
     error = ''
     try {
-      await apiDelete(`/spectrals/${activeJobId}`)
+      const id = activeJobId
+      await apiDelete(`/spectrals/${id}`)
+      // The endpoint marks the server's copy and broadcasts nothing, so the
+      // store still holds a job the effect below would re-attach to — pointing
+      // the page at images that have just been deleted.
+      const stored = jobStore.get(id)
+      if (stored) stored.result = { ...stored.result, files: [], frequency: [], discarded: true }
       activeJobId = null
       uploadJobId = null
     } catch (e) {
@@ -62,7 +68,12 @@
 
   async function copyReport() {
     const report = activeJob?.result?.report
-    if (report) await navigator.clipboard.writeText(report)
+    if (!report) return
+    try {
+      await navigator.clipboard.writeText(report)
+    } catch (e) {
+      error = `Could not copy the report: ${e}`
+    }
   }
 
   function imageUrl(jobId: string, file: string): string {
@@ -123,7 +134,7 @@
         {/if}
       {/if}
       <div class="gallery">
-        {#each [...activeJob.result.files, ...activeJob.result.frequency.filter((f: { image: string }) => f.image).map((f: { image: string }) => f.image)] as file}
+        {#each [...(activeJob.result.files ?? []), ...(activeJob.result.frequency ?? []).filter((f: { image: string }) => f.image).map((f: { image: string }) => f.image)] as file}
           <figure>
             <button onclick={() => (lightbox = imageUrl(activeJob!.id, file))}>
               <img src={imageUrl(activeJob.id, file)} alt={file} loading="lazy" />

@@ -67,6 +67,13 @@ def average_spectrum(path: str) -> tuple[np.ndarray, np.ndarray, int, int]:
                     buf = buf[FFT_SIZE // 2 :]  # 50% overlap
             if windows >= MAX_WINDOWS:
                 break
+        # The resampler buffers; without a flush its last partial frame is lost.
+        for resampled in resampler.resample(None):
+            buf = np.concatenate([buf, resampled.to_ndarray().reshape(-1)])
+        while len(buf) >= FFT_SIZE and windows < MAX_WINDOWS:
+            acc += np.abs(np.fft.rfft(buf[:FFT_SIZE] * window)) ** 2
+            windows += 1
+            buf = buf[FFT_SIZE // 2 :]
     finally:
         container.close()
 
@@ -131,6 +138,17 @@ def _analyse_one(album_path: str, filename: str, out_dir: str, index: int) -> Sp
     except Exception as e:
         # One unreadable file must not cost the spectrograms that did generate.
         return SpectrumResult(file=filename, image="", sample_rate=0, cutoff_hz=0.0, windows=0, error=str(e))
+    if not windows:
+        # An all-zero spectrum is flat, so every bin sits within the floor of the
+        # maximum and find_cutoff would report Nyquist for audio never measured.
+        return SpectrumResult(
+            file=filename,
+            image="",
+            sample_rate=sample_rate,
+            cutoff_hz=0.0,
+            windows=0,
+            error="too little audio to average a spectrum",
+        )
     image = f"{index + 1:02d} Frequency.png"
     render_plot(freqs, db, sample_rate, os.path.join(out_dir, image), filename)
     cutoff = find_cutoff(freqs, db)
@@ -169,12 +187,15 @@ def assess(results: list[SpectrumResult]) -> dict:
 
     notes: list[str] = []
     level = "ok"
-    cutoffs = [r.cutoff_hz for r in analysed]
+    # A silent track measures 0 Hz; counting it would fake a disagreement.
+    cutoffs = [r.cutoff_hz for r in analysed if r.cutoff_hz > 0]
+    if not cutoffs:
+        return {"level": "ok", "notes": ["No track carried enough signal to measure."]}
     spread = max(cutoffs) - min(cutoffs)
 
     for result in analysed:
         nyquist = result.sample_rate / 2
-        if result.cutoff_hz >= nyquist * _LOOK_RATIO:
+        if not result.cutoff_hz or result.cutoff_hz >= nyquist * _LOOK_RATIO:
             continue
         if result.drop_db >= _CLIFF_DB:
             level = "look"

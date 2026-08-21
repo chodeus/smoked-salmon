@@ -16,7 +16,12 @@ def _format_line(info: dict) -> str:
     depth = f"{precision}-bit" if precision else "unknown depth"
     khz = f"{rate / 1000:g} kHz" if rate else "unknown rate"
     channel_count = info.get("channels")
-    channels = "mono" if channel_count == 1 else "stereo" if channel_count == 2 else f"{channel_count}ch"
+    if channel_count == 1:
+        channels = "mono"
+    elif channel_count == 2:
+        channels = "stereo"
+    else:
+        channels = f"{channel_count}ch" if channel_count else "unknown channels"
     bitrate = info.get("bit rate")
     kbps = f"{bitrate / 1000:.0f} kbps" if bitrate else "unknown bitrate"
     return f"{depth} / {khz} {channels}, {kbps}"
