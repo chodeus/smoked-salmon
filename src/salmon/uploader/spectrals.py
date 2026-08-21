@@ -308,9 +308,15 @@ def get_spectrals_path(path):
     return os.path.join(path, "Spectrals")
 
 
-def create_specs_folder(path):
-    """Create the spectrals folder."""
-    spectrals_path = get_spectrals_path(path)
+def create_specs_folder(path, spectrals_path=None):
+    """Create the spectrals folder, emptying it first.
+
+    Callers that must vet the destination first pass it in, so the folder that
+    gets cleared is the one they checked — get_spectrals_path falls back to the
+    album itself when tmp_dir has gone missing.
+    """
+    if spectrals_path is None:
+        spectrals_path = get_spectrals_path(path)
     if os.path.isdir(spectrals_path):
         shutil.rmtree(spectrals_path)
     os.mkdir(spectrals_path)

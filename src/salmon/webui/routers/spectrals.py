@@ -10,9 +10,9 @@ from pydantic import BaseModel
 from salmon import cfg
 from salmon.images import HOSTS, upload_images
 from salmon.tagger.audio_info import gather_audio_info
-from salmon.uploader.spectrals import create_specs_folder, generate_spectrals_all
+from salmon.uploader.spectrals import create_specs_folder, generate_spectrals_all, get_spectrals_path
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
-from salmon.webui.validation import validate_writable_album_dir
+from salmon.webui.validation import refuse_library_output, validate_album_dir
 
 router = APIRouter(tags=["spectrals"])
 
@@ -28,16 +28,20 @@ class UploadRequest(BaseModel):
 
 @router.post("/spectrals/generate")
 async def generate(req: GenerateRequest) -> dict:
-    path = validate_writable_album_dir(req.path)
+    path = validate_album_dir(req.path)
+    # Spectrals go to tmp_dir, so a library album is fine; only the no-tmp_dir
+    # fallback writes into the album, and that is what must be refused.
+    spectrals_path = get_spectrals_path(path)
+    refuse_library_output(spectrals_path, "Spectrals")
 
     async def run(job: Job) -> dict:
         audio_info = await asyncio.to_thread(gather_audio_info, path, True)
-        spectrals_path = await asyncio.to_thread(create_specs_folder, path)
-        spectral_ids = await generate_spectrals_all(path, spectrals_path, audio_info)
-        files = sorted(f for f in os.listdir(spectrals_path) if f.lower().endswith(".png"))
+        created = await asyncio.to_thread(create_specs_folder, path, spectrals_path)
+        spectral_ids = await generate_spectrals_all(path, created, audio_info)
+        files = sorted(f for f in os.listdir(created) if f.lower().endswith(".png"))
         return {
             "album_path": path,
-            "spectrals_path": spectrals_path,
+            "spectrals_path": created,
             "spectral_ids": {str(k): v for k, v in spectral_ids.items()},
             "files": files,
         }

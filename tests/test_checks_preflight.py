@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from salmon.checks import preflight as pf
@@ -34,6 +36,36 @@ def test_upconvert_errors_warn_rather_than_pass():
 
 def test_upconvert_with_no_flacs_is_skipped():
     assert pf._upconvert_verdict({"files": []}, {})[0] == pf.SKIP
+
+
+def test_upconvert_16bit_is_out_of_scope_rather_than_a_failed_test():
+    result = {"files": [{"file": f"0{i}.flac", "not_applicable": "This is a 16bit FLAC file."} for i in (1, 2)]}
+    row = pf._upconvert_verdict(result, {})
+    assert row[0] == pf.SKIP
+    assert "16bit" in row[1]
+
+
+def test_upconvert_warning_names_the_reason_and_counts_only_testable_files():
+    result = {
+        "files": [
+            {"file": "01.flac", "not_applicable": "This is a 16bit FLAC file."},
+            {"file": "02.flac", "error": "File appears to be corrupt: bad frame"},
+        ]
+    }
+    row = pf._upconvert_verdict(result, {})
+    assert row[0] == pf.WARN
+    assert "1 of 1" in row[1]
+    assert "bad frame" in row[1]
+
+
+def test_upconvert_still_blocks_when_a_deeper_file_is_upconverted():
+    result = {
+        "files": [
+            {"file": "01.flac", "not_applicable": "This is a 16bit FLAC file."},
+            {"file": "02.flac", "is_upconverted": True},
+        ]
+    }
+    assert pf._upconvert_verdict(result, {})[0] == pf.BLOCK
 
 
 @pytest.mark.parametrize("source", ["WEB", "Vinyl", "Cassette"])
@@ -153,6 +185,49 @@ async def test_run_checks_reports_a_tracker_search_failure_as_a_warning(album_di
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED"])
     assert "dupe:RED" in result["warnings"]
     assert result["blocking"] == []
+
+
+async def test_run_checks_exposes_every_dupe_match_not_just_the_two_it_names(album_dir, monkeypatch):
+    class FakeSite:
+        base_url = "https://redacted.sh"
+
+    async def three_matches(_site, _searchstrs):
+        return [
+            {
+                "groupId": 42,
+                "groupName": "Album",
+                "artist": "X",
+                "groupYear": 2008,
+                "releaseType": "Single",
+                "downloadUrl": "https://redacted.sh/action=download&torrent_pass=SECRET",
+                "torrents": [
+                    {"torrentId": 7, "format": "FLAC", "encoding": "Lossless", "media": "CD", "logScore": 100},
+                    {"torrentId": 8, "format": "MP3", "encoding": "320", "media": "WEB", "seeders": 0},
+                ],
+            },
+            {"groupId": 43, "groupName": "Second", "torrents": []},
+            {"groupId": 44, "groupName": "Third", "torrents": []},
+        ]
+
+    monkeypatch.setattr(
+        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+    )
+    monkeypatch.setattr(
+        pf, "_release_identity", lambda _p: {"artists": [("X", "main")], "title": "Y", "label": None, "catno": None}
+    )
+    monkeypatch.setattr(pf.salmon.trackers, "get_class", lambda _code: FakeSite)
+    monkeypatch.setattr(pf, "get_search_results", three_matches)
+
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED"])
+
+    detail = result["raw"]["dupe:RED"]
+    assert len(detail["matches"]) == 3, "the row names two; the raw payload must carry them all"
+    first = detail["matches"][0]
+    assert first["url"] == "https://redacted.sh/torrents.php?id=42"
+    assert first["torrents"][0]["logScore"] == 100
+    assert first["torrents"][1]["seeders"] == 0
+    # An allowlist, so a download URL carrying the torrent pass cannot ride along.
+    assert "SECRET" not in json.dumps(detail)
 
 
 def test_every_check_is_declared_once_in_the_table():
