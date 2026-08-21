@@ -5,6 +5,7 @@ exists so an album can be seen green before anything is staged or uploaded.
 """
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable
 from typing import Literal
 
@@ -14,6 +15,8 @@ import salmon.trackers
 from salmon.checks import album, provenance
 from salmon.checks.blacklist import red_blacklist_reason
 from salmon.checks.source import detect_source
+from salmon.checks.tag_rules import collect_upload_warnings
+from salmon.tagger.audio_info import gather_audio_info
 from salmon.tagger.pre_data import construct_artists_li, parse_title
 from salmon.tagger.tags import gather_tags
 from salmon.uploader.dupe_checker import generate_dupe_check_searchstrs, get_search_results
@@ -189,6 +192,21 @@ def dupe_matches(base_url: str, results: list[dict]) -> list[dict]:
     ]
 
 
+def rules_row(tracker: str, folder_name: str, track_data: dict) -> Row:
+    """Path-length and sample-rate rules, which used to surface mid-upload.
+
+    A 180-char path is a trump reason on RED and worth knowing before an album
+    is staged, not after.
+    """
+    label = f"{tracker} rules"
+    if not track_data:
+        return Row(f"rules:{tracker}", label, SKIP, "The audio could not be read, so these rules were not checked.")
+    warnings = collect_upload_warnings(tracker, folder_name, track_data)
+    if not warnings:
+        return Row(f"rules:{tracker}", label, OK, "Path lengths and sample rates are within the rules.")
+    return Row(f"rules:{tracker}", label, WARN, " ".join(warnings[:2]))
+
+
 def blacklist_row(tracker: str, reason: str | None) -> Row:
     label = f"{tracker} blacklist"
     if reason:
@@ -213,7 +231,19 @@ def _release_identity(path: str) -> dict:
         return {}
 
 
-async def _tracker_rows(tracker: str, identity: dict) -> tuple[list[Row], dict]:
+def _audio_info(path: str) -> dict:
+    """Per-track audio properties, or {} when a file will not parse.
+
+    Mirrors _release_identity: one unreadable file must not cost the whole
+    pre-flight, which is the only reason any of the other rows get to run.
+    """
+    try:
+        return gather_audio_info(path, True)
+    except Exception:
+        return {}
+
+
+async def _tracker_rows(tracker: str, identity: dict, folder: str, track_data: dict) -> tuple[list[Row], dict]:
     """Verdict rows for one tracker, plus the matches behind them for the UI to list."""
     rows: list[Row] = []
     raw: dict[str, dict] = {}
@@ -226,6 +256,7 @@ async def _tracker_rows(tracker: str, identity: dict) -> tuple[list[Row], dict]:
     else:
         rows.append(dupe_row(tracker, results))
         raw[f"dupe:{tracker}"] = {"searchstrs": searchstrs, "matches": dupe_matches(site.base_url, results)}
+    rows.append(rules_row(tracker, folder, track_data))
     if tracker == "RED":
         try:
             reason = red_blacklist_reason(identity["artists"], identity["title"], identity["label"])
@@ -264,9 +295,11 @@ async def run_checks(
 
     if trackers:
         identity = await asyncio.to_thread(_release_identity, path)
+        track_data = await asyncio.to_thread(_audio_info, path)
+        folder = os.path.basename(path)
         if identity.get("title"):
             for tracker in trackers:
-                tracker_rows, tracker_raw = await _tracker_rows(tracker, identity)
+                tracker_rows, tracker_raw = await _tracker_rows(tracker, identity, folder, track_data)
                 rows.extend(tracker_rows)
                 raw.update(tracker_raw)
         else:

@@ -384,10 +384,15 @@ async def _transcode_audio_files(
     if not items:
         return
 
-    async def _transcode_one(file: str, idx: int) -> None:
-        item = items[idx]
+    # Checked before any encoding starts: finding this on track 7 leaves a
+    # half-written folder behind, and a lossy transcode of a multichannel source
+    # is not allowed anywhere (RED 2.7.4), so nothing here was ever going to ship.
+    for item in items:
         if item.flac_obj.info.channels > 2:
             raise ValueError(f"{item.src} has {item.flac_obj.info.channels} channels. Cannot convert to MP3.")
+
+    async def _transcode_one(file: str, idx: int) -> None:
+        item = items[idx]
         await _flac_to_mp3(bitrate, item.src, item.dst)
         _copy_tags(item.tags, item.flac_obj, Path(item.dst))
 
