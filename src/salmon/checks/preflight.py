@@ -11,7 +11,7 @@ from typing import Literal
 import msgspec
 
 import salmon.trackers
-from salmon.checks import album
+from salmon.checks import album, provenance
 from salmon.checks.blacklist import red_blacklist_reason
 from salmon.checks.source import detect_source
 from salmon.tagger.pre_data import construct_artists_li, parse_title
@@ -72,6 +72,20 @@ def _upconvert_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
     return OK, f"Genuine bit depth across {len(testable)} file(s)."
 
 
+def _provenance_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
+    """Report what the tags say about the files' origin.
+
+    Markers alone only warn when the audio contradicts them — an 'EAC' or
+    'QOBUZ' comment is ordinary, and warning on every one of them would train
+    the acknowledgement checkbox to mean nothing.
+    """
+    if not result["files"]:
+        return SKIP, "No tags could be read."
+    if result["contradictions"]:
+        return WARN, "; ".join(result["contradictions"][:2]) + "."
+    return OK, provenance.describe(result)
+
+
 def _log_verdict(result: dict, ctx: dict) -> tuple[Verdict, str]:
     """Only CD rips are expected to carry a log."""
     source = ctx.get("source")
@@ -95,6 +109,7 @@ def _log_verdict(result: dict, ctx: dict) -> tuple[Verdict, str]:
 
 
 CHECKS: tuple[CheckSpec, ...] = (
+    CheckSpec("provenance", "Provenance", album.run_provenance_check, _provenance_verdict),
     CheckSpec("integrity", "File integrity", album.run_integrity_check, _integrity_verdict),
     CheckSpec("upconvert", "Upconvert", album.run_upconvert_check, _upconvert_verdict),
     CheckSpec("mqa", "MQA", album.run_mqa_check, _mqa_verdict),

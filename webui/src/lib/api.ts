@@ -29,6 +29,10 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return handle<T>(res)
 }
 
+export async function apiDelete<T>(path: string): Promise<T> {
+  return handle<T>(await fetch(BASE + path, { method: 'DELETE' }))
+}
+
 async function errorDetail(res: Response): Promise<string> {
   try {
     const data = await res.json()

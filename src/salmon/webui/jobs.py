@@ -21,6 +21,7 @@ import itertools
 import threading
 import time
 import traceback
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -99,6 +100,9 @@ class Job:
         self.log_lines: list[str] = []
         self.interaction: WebInteraction | None = None
         self.thread: threading.Thread | None = None
+        # Run when the job is dropped from the list, so a job that left files
+        # behind can take them with it. Set by whoever created those files.
+        self.on_evict: Callable[[Job], None] | None = None
         self._thread_loop: asyncio.AbstractEventLoop | None = None
         self._thread_task: asyncio.Task | None = None
 
@@ -357,6 +361,10 @@ class JobManager:
         if len(finished) <= MAX_FINISHED_JOBS:
             return
         for job in finished[: len(finished) - MAX_FINISHED_JOBS]:
+            if job.on_evict is not None:
+                # Never let housekeeping take the manager down with it.
+                with contextlib.suppress(Exception):
+                    job.on_evict(job)
             del self.jobs[job.id]
 
 

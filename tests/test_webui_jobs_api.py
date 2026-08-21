@@ -20,6 +20,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from salmon import cfg
 from salmon.common.progress import report_progress
+from salmon.uploader.frequency import SpectrumResult
 from salmon.uploader.spectrals import get_spectrals_path
 from salmon.webui.app import create_app
 from salmon.webui.jobs import (
@@ -116,9 +117,18 @@ def spectral_stubs(monkeypatch, tmp_path, specs_requests):
         (specs_dir / "notes.txt").write_text("not an image")
         return {1: "01-intro.png", 2: "02-mittelteil.png"}
 
+    async def fake_generate_frequency_plots(path, files, out_dir):
+        (specs_dir / "01 Frequency.png").write_bytes(b"PNGF")
+        return [
+            SpectrumResult(
+                file="01. Intro.flac", image="01 Frequency.png", sample_rate=44100, cutoff_hz=21800.0, windows=9
+            )
+        ]
+
     monkeypatch.setattr("salmon.webui.routers.spectrals.gather_audio_info", fake_gather_audio_info)
     monkeypatch.setattr("salmon.webui.routers.spectrals.create_specs_folder", fake_create_specs_folder)
     monkeypatch.setattr("salmon.webui.routers.spectrals.generate_spectrals_all", fake_generate_spectrals_all)
+    monkeypatch.setattr("salmon.webui.routers.spectrals.generate_frequency_plots", fake_generate_frequency_plots)
     return specs_dir
 
 
@@ -542,7 +552,36 @@ def test_spectrals_generate_happy_path(client, album_dir, spectral_stubs):
     assert data["result"]["spectrals_path"] == str(spectral_stubs)
     # keys are stringified for JSON, non-png files are excluded, list sorted
     assert data["result"]["spectral_ids"] == {"1": "01-intro.png", "2": "02-mittelteil.png"}
+    # Frequency plots are shown but never posted, so they stay out of "files".
     assert data["result"]["files"] == ["01-intro.png", "02-mittelteil.png"]
+    assert data["result"]["frequency"][0]["image"] == "01 Frequency.png"
+
+
+def test_only_the_spectrograms_are_sent_to_the_image_host(client, album_dir, spectral_stubs, monkeypatch):
+    uploaded: list[str] = []
+
+    async def fake_upload_images(files, host):
+        uploaded.extend(files)
+        return ["https://host/x.png" for _ in files]
+
+    monkeypatch.setattr("salmon.webui.routers.spectrals.upload_images", fake_upload_images)
+    job_id = client.post("/api/spectrals/generate", json={"path": str(album_dir)}).json()["id"]
+    join_job(client, job_id)
+
+    upload = client.post("/api/spectrals/upload", json={"job_id": job_id, "host": "catbox"})
+    join_job(client, upload.json()["id"])
+
+    assert [os.path.basename(f) for f in uploaded] == ["01-intro.png", "02-mittelteil.png"]
+
+
+def test_a_frequency_plot_is_still_served_even_though_it_is_not_uploaded(client, album_dir, spectral_stubs):
+    job_id = client.post("/api/spectrals/generate", json={"path": str(album_dir)}).json()["id"]
+    join_job(client, job_id)
+
+    resp = client.get(f"/api/spectrals/{job_id}/image/01%20Frequency.png")
+
+    assert resp.status_code == 200
+    assert resp.content == b"PNGF"
 
 
 def test_spectrals_generate_second_post_on_same_path_conflicts(client, album_dir, hanging_spectral_stubs):
@@ -842,3 +881,91 @@ def test_ws_cross_site_origin_is_rejected_with_1008(client):
     ):
         pass  # pragma: no cover - connection is refused before entry
     assert exc_info.value.code == 1008
+
+
+# ---------------------------------------------------------------------------
+# Spectrals housekeeping
+# ---------------------------------------------------------------------------
+
+
+def _finished_spectrals_job(specs_dir) -> Job:
+    job = Job("spectrals", "Spectrals: x", {})
+    job.status = "done"
+    job.result = {"album_path": "/x", "spectrals_path": str(specs_dir), "files": ["01 Full.png"], "frequency": []}
+    return job
+
+
+def _specs_under(root, name) -> pathlib.Path:
+    folder = pathlib.Path(os.path.realpath(root)) / name
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "01 Full.png").write_bytes(b"PNG")
+    return folder
+
+
+def test_discarding_removes_the_generated_images(tmp_path, monkeypatch):
+    from salmon.webui.routers.spectrals import _discard_spectrals
+
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_path))
+    specs = _specs_under(tmp_path, "spectrals_x")
+    _discard_spectrals(_finished_spectrals_job(specs))
+    assert not specs.exists()
+
+
+def test_discarding_refuses_a_path_outside_the_configured_directories(tmp_path):
+    from salmon.webui.routers.spectrals import _discard_spectrals
+
+    outside = _specs_under(tmp_path, "spectrals_elsewhere")
+    _discard_spectrals(_finished_spectrals_job(outside))
+    assert outside.exists(), "rmtree must not follow a result path that has left the roots"
+
+
+def test_discard_endpoint_empties_the_job_result(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_path))
+    specs = _specs_under(tmp_path, "spectrals_ep")
+    job = _finished_spectrals_job(specs)
+    manager.jobs[job.id] = job
+
+    resp = client.delete(f"/api/spectrals/{job.id}")
+
+    assert resp.status_code == 200
+    assert not specs.exists()
+    assert manager.jobs[job.id].result["files"] == []
+    assert manager.jobs[job.id].result["discarded"] is True
+
+
+def test_discard_endpoint_404s_for_an_unknown_job(client):
+    assert client.delete("/api/spectrals/job-does-not-exist").status_code == 404
+
+
+def test_evicting_a_finished_job_runs_its_cleanup(monkeypatch, tmp_path):
+    from salmon.webui import jobs as jobs_module
+
+    monkeypatch.setattr(jobs_module, "MAX_FINISHED_JOBS", 0)
+    local = JobManager()
+    job = _finished_spectrals_job(tmp_path)
+    evicted: list[str] = []
+    job.on_evict = lambda j: evicted.append(j.id)
+    local.jobs[job.id] = job
+
+    local._prune_finished()
+
+    assert evicted == [job.id], "a job that left files behind must be told when it is dropped"
+    assert job.id not in local.jobs
+
+
+def test_a_failing_cleanup_does_not_stop_the_eviction(monkeypatch, tmp_path):
+    from salmon.webui import jobs as jobs_module
+
+    monkeypatch.setattr(jobs_module, "MAX_FINISHED_JOBS", 0)
+    local = JobManager()
+    job = _finished_spectrals_job(tmp_path)
+
+    def boom(_job):
+        raise OSError("disk gone")
+
+    job.on_evict = boom
+    local.jobs[job.id] = job
+
+    local._prune_finished()
+
+    assert job.id not in local.jobs

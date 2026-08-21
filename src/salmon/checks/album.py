@@ -14,6 +14,7 @@ import msgspec
 
 from salmon.checks.integrity import check_integrity
 from salmon.checks.mqa import check_mqa
+from salmon.checks.provenance import gather_provenance
 from salmon.checks.upconverts import check_upconvert
 from salmon.common.files import get_audio_files
 from salmon.common.progress import report_progress
@@ -46,6 +47,10 @@ def _parse_logs(path: str) -> dict:
 
 async def run_log_check(path: str) -> dict:
     return await asyncio.to_thread(_parse_logs, path)
+
+
+async def run_provenance_check(path: str) -> dict:
+    return await asyncio.to_thread(gather_provenance, path)
 
 
 async def run_integrity_check(path: str) -> dict:

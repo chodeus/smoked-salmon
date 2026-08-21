@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { apiPost } from '../lib/api'
+  import { apiDelete, apiPost } from '../lib/api'
   import FolderPicker from '../lib/FolderPicker.svelte'
   import JobStatus from '../lib/JobStatus.svelte'
   import { jobStore, type Job } from '../lib/jobs.svelte'
@@ -12,6 +12,17 @@
 
   const activeJob = $derived(activeJobId ? jobStore.get(activeJobId) : undefined)
   const uploadJob = $derived(uploadJobId ? jobStore.get(uploadJobId) : undefined)
+  // The images outlive the page: leaving and coming back should find them again
+  // rather than silently stranding a folder in tmp_dir. Newest job first.
+  const restorable = $derived(
+    jobStore.jobs.find((j) => j.type === 'spectrals' && j.status === 'done' && !j.result?.discarded),
+  )
+  const assessment = $derived(activeJob?.result?.assessment as { level: string; notes: string[] } | undefined)
+  const ASSESSMENT_CHIP: Record<string, string> = { ok: 'ok', look: 'warn', suspect: 'err' }
+
+  $effect(() => {
+    if (!activeJobId && restorable) activeJobId = restorable.id
+  })
 
   async function generate() {
     error = ''
@@ -34,6 +45,34 @@
       uploadJobId = job.id
     } catch (e) {
       error = String(e)
+    }
+  }
+
+  async function discard() {
+    if (!activeJobId) return
+    error = ''
+    try {
+      const id = activeJobId
+      await apiDelete(`/spectrals/${id}`)
+      // The endpoint marks the server's copy and broadcasts nothing, so the
+      // store still holds a job the effect below would re-attach to — pointing
+      // the page at images that have just been deleted.
+      const stored = jobStore.get(id)
+      if (stored) stored.result = { ...stored.result, files: [], frequency: [], discarded: true }
+      activeJobId = null
+      uploadJobId = null
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
+  async function copyReport() {
+    const report = activeJob?.result?.report
+    if (!report) return
+    try {
+      await navigator.clipboard.writeText(report)
+    } catch (e) {
+      error = `Could not copy the report: ${e}`
     }
   }
 
@@ -65,7 +104,25 @@
         <button class="btn secondary" onclick={upload} disabled={uploadJob?.status === 'running'}>
           Upload to image host
         </button>
+        <button class="btn small secondary" onclick={discard}>Delete these spectrals</button>
       </div>
+
+      {#if assessment}
+        <div class="assessment">
+          <span class="chip {ASSESSMENT_CHIP[assessment.level] ?? ''}">{assessment.level}</span>
+          <ul>
+            {#each assessment.notes as note}<li class="muted">{note}</li>{/each}
+          </ul>
+        </div>
+      {/if}
+
+      {#if activeJob.result.report}
+        <details class="report">
+          <summary>Report</summary>
+          <pre class="mono">{activeJob.result.report}</pre>
+          <button class="btn small secondary" onclick={copyReport}>Copy report</button>
+        </details>
+      {/if}
       {#if uploadJob}
         <JobStatus job={uploadJob} />
         {#if uploadJob.status === 'done' && uploadJob.result}
@@ -77,7 +134,7 @@
         {/if}
       {/if}
       <div class="gallery">
-        {#each activeJob.result.files as file}
+        {#each [...(activeJob.result.files ?? []), ...(activeJob.result.frequency ?? []).filter((f: { image: string }) => f.image).map((f: { image: string }) => f.image)] as file}
           <figure>
             <button onclick={() => (lightbox = imageUrl(activeJob!.id, file))}>
               <img src={imageUrl(activeJob.id, file)} alt={file} loading="lazy" />
@@ -97,6 +154,31 @@
 {/if}
 
 <style>
+  .assessment {
+    margin: 0.6rem 0;
+    display: flex;
+    gap: 0.6rem;
+    align-items: baseline;
+  }
+  .assessment ul {
+    margin: 0;
+    padding-left: 1rem;
+    font-size: 0.85rem;
+  }
+  .report {
+    margin: 0.6rem 0;
+  }
+  .report summary {
+    cursor: pointer;
+    color: var(--text-dim);
+  }
+  .report pre {
+    white-space: pre-wrap;
+    background: var(--bg);
+    border-radius: 8px;
+    padding: 0.7rem;
+    font-size: 0.78rem;
+  }
   .gallery {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
