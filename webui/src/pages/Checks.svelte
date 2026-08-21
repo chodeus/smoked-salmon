@@ -70,6 +70,13 @@
           <p><span class="chip warn">{note}</span></p>
         {/each}
         <table>
+          <thead>
+            <tr>
+              <th>File</th>
+              <th title="The FLAC vendor string — who wrote the file's tag block">Encoder</th>
+              <th title="Ripper, store and reseller markers left in the tags">Markers</th>
+            </tr>
+          </thead>
           <tbody>
             {#each job.result.raw.provenance.files as f}
               <tr>
