@@ -7,6 +7,7 @@
   import { jobStore, type Job } from '../lib/jobs.svelte'
 
   const ALL_CHECKS = [
+    { key: 'provenance', label: 'Provenance (encoder & source tags)' },
     { key: 'log', label: 'Rip-Log (Score & Checksum)' },
     { key: 'integrity', label: 'File integrity' },
     { key: 'mqa', label: 'MQA detection' },
@@ -14,7 +15,7 @@
   ]
 
   let path = $state('')
-  let selected = $state<string[]>(['log', 'integrity', 'mqa', 'upconvert'])
+  let selected = $state<string[]>(['provenance', 'log', 'integrity', 'mqa', 'upconvert'])
   let jobId = $state<string | null>(null)
   let error = $state('')
 
@@ -37,7 +38,7 @@
 </script>
 
 <h1>Checks</h1>
-<p class="lead">Run the quality checks on any folder without uploading it — rip-log score, file integrity, MQA markers and upconversion.</p>
+<p class="lead">Run the quality checks on any folder without uploading it — encoder and source tags, rip-log score, file integrity, MQA markers and upconversion.</p>
 
 <div class="card">
   <FolderPicker bind:value={path} />
@@ -62,6 +63,28 @@
 
     {#if job.status === 'done' && job.result}
       <VerdictRows rows={job.result.rows} />
+
+      {#if job.result.raw.provenance?.files?.length}
+        <h3>Provenance</h3>
+        {#each job.result.raw.provenance.contradictions as note}
+          <p><span class="chip warn">{note}</span></p>
+        {/each}
+        <table>
+          <tbody>
+            {#each job.result.raw.provenance.files as f}
+              <tr>
+                <td class="mono">{f.file}</td>
+                <td class="muted">{f.vendor ?? '–'}</td>
+                <td class="muted">
+                  {Object.entries(f.markers ?? {})
+                    .map(([k, v]) => `${k}: ${v}`)
+                    .join(' · ') || '–'}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
 
       {#if job.result.raw.log}
         <h3>Rip-Logs</h3>

@@ -158,7 +158,7 @@ async def test_run_checks_blocks_until_a_source_is_chosen(album_dir, monkeypatch
     )
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, None, [])
     assert result["blocking"] == ["source"]
-    assert [r["verdict"] for r in result["rows"] if r["id"] != "source"] == [pf.SKIP] * 4
+    assert [r["verdict"] for r in result["rows"] if r["id"] != "source"] == [pf.SKIP] * 5
 
 
 async def test_run_checks_clears_when_everything_passes(album_dir, monkeypatch):
