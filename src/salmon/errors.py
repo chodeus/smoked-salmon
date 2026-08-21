@@ -54,6 +54,12 @@ class UpconvertCheckError(Exception):
     pass
 
 
+class UpconvertCheckNotApplicable(UpconvertCheckError):
+    """Raised when a file is out of scope for the upconvert check, not broken."""
+
+    pass
+
+
 class NoncompliantFolderStructure(Exception):
     pass
 

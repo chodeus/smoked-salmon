@@ -1,8 +1,9 @@
 <script lang="ts">
   import { apiPost } from './api'
+  import DupeMatches from './DupeMatches.svelte'
   import VerdictRows from './VerdictRows.svelte'
   import { jobStore, type Job } from './jobs.svelte'
-  import type { ChecksResult } from './verdicts'
+  import type { ChecksResult, DupeDetail, Row } from './verdicts'
 
   let {
     path,
@@ -61,6 +62,12 @@
   function toggleAck(id: string) {
     acked = acked.includes(id) ? acked.filter((a) => a !== id) : [...acked, id]
   }
+
+  // The dupe row names two matches; raw['dupe:<tracker>'] carries the rest.
+  function dupeDetail(row: Row): DupeDetail | null {
+    const detail = result?.raw?.[row.id] as DupeDetail | undefined
+    return detail?.matches?.length ? detail : null
+  }
 </script>
 
 <div class="preflight">
@@ -91,7 +98,11 @@
         <button class="btn small secondary" onclick={() => onUseSource(detected)}>Use {detected}</button>
       </p>
     {/if}
-    <VerdictRows rows={result.rows} {acked} onToggleAck={toggleAck} />
+    {#snippet dupeRowDetail(row: Row)}
+      {@const detail = dupeDetail(row)}
+      {#if detail}<DupeMatches {detail} />{/if}
+    {/snippet}
+    <VerdictRows rows={result.rows} {acked} onToggleAck={toggleAck} rowDetail={dupeRowDetail} />
   {:else}
     <p class="muted">Verify the album to check its source, integrity, rip log and duplicates before uploading.</p>
   {/if}

@@ -8,7 +8,7 @@ import msgspec
 from mutagen import MutagenError, flac
 
 from salmon.common.files import process_files
-from salmon.errors import UpconvertCheckError
+from salmon.errors import UpconvertCheckError, UpconvertCheckNotApplicable
 
 
 class UpconvertCheckResult(msgspec.Struct, frozen=True):
@@ -88,10 +88,13 @@ async def _upconvert_check_handler(filepath: str, _: int | None = None) -> Upcon
         _: Unused index parameter for process_files compatibility.
 
     Returns:
-        UpconvertCheckResult on success, None if the file cannot be analyzed.
+        UpconvertCheckResult on success, None if the file is out of scope or cannot be analyzed.
     """
     try:
         return await check_upconvert(filepath)
+    except UpconvertCheckNotApplicable:
+        # 16bit is out of scope, so it is not worth a line of warning per track.
+        return None
     except UpconvertCheckError as e:
         click.secho(f"{os.path.basename(filepath)}: {e}", fg="yellow")
         return None
@@ -108,6 +111,7 @@ async def check_upconvert(filepath: str) -> UpconvertCheckResult:
 
     Raises:
         UpconvertCheckError: If the file cannot be analyzed.
+        UpconvertCheckNotApplicable: If the file is out of scope for the check.
     """
     try:
         mut = flac.FLAC(filepath)
@@ -115,8 +119,9 @@ async def check_upconvert(filepath: str) -> UpconvertCheckResult:
     except MutagenError as e:
         raise UpconvertCheckError("This is not a FLAC file.") from e
 
+    # Wasted bits only reveal an upconvert above 16bit; 16bit is out of scope, not a failure.
     if bitdepth == 16:
-        raise UpconvertCheckError("This is a 16bit FLAC file.")
+        raise UpconvertCheckNotApplicable("This is a 16bit FLAC file.")
 
     try:
         response = await anyio.run_process(["flac", "-ac", filepath], check=False)

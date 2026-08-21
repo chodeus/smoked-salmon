@@ -59,13 +59,17 @@ def _upconvert_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
     files = result["files"]
     if not files:
         return SKIP, "No FLAC files to test."
-    upconverted = [f["file"] for f in files if f.get("is_upconverted")]
+    # 16bit files are out of scope for the check, not failures — they must not warn.
+    testable = [f for f in files if not f.get("not_applicable")]
+    upconverted = [f["file"] for f in testable if f.get("is_upconverted")]
     if upconverted:
         return BLOCK, f"Upconverted from a lower bit depth: {', '.join(upconverted[:3])}."
-    errored = [f["file"] for f in files if f.get("error")]
+    if not testable:
+        return SKIP, f"Not applicable to {len(files)} file(s): {files[0]['not_applicable']}"
+    errored = [f for f in testable if f.get("error")]
     if errored:
-        return WARN, f"Could not test {len(errored)} file(s)."
-    return OK, f"Genuine bit depth across {len(files)} file(s)."
+        return WARN, f"Could not test {len(errored)} of {len(testable)} file(s): {errored[0]['error']}"
+    return OK, f"Genuine bit depth across {len(testable)} file(s)."
 
 
 def _log_verdict(result: dict, ctx: dict) -> tuple[Verdict, str]:
@@ -123,6 +127,40 @@ def dupe_row(tracker: str, results: list[dict]) -> Row:
     return Row(f"dupe:{tracker}", label, WARN, detail)
 
 
+def dupe_matches(base_url: str, results: list[dict]) -> list[dict]:
+    """Trim browse results to the fields the UI lists, so every match can be inspected.
+
+    An allowlist, not a passthrough: the raw result carries download URLs that
+    embed the torrent pass.
+    """
+    return [
+        {
+            "groupId": r.get("groupId"),
+            "groupName": r.get("groupName"),
+            "artist": r.get("artist"),
+            "groupYear": r.get("groupYear"),
+            "releaseType": r.get("releaseType"),
+            "url": f"{base_url}/torrents.php?id={r.get('groupId')}",
+            "torrents": [
+                {
+                    "torrentId": t.get("torrentId"),
+                    "format": t.get("format"),
+                    "encoding": t.get("encoding"),
+                    "media": t.get("media"),
+                    "hasLog": t.get("hasLog"),
+                    "logScore": t.get("logScore"),
+                    "remasterTitle": t.get("remasterTitle"),
+                    "remasterYear": t.get("remasterYear"),
+                    "remasterRecordLabel": t.get("remasterRecordLabel"),
+                    "seeders": t.get("seeders"),
+                }
+                for t in r.get("torrents", [])
+            ],
+        }
+        for r in results
+    ]
+
+
 def blacklist_row(tracker: str, reason: str | None) -> Row:
     label = f"{tracker} blacklist"
     if reason:
@@ -147,14 +185,19 @@ def _release_identity(path: str) -> dict:
         return {}
 
 
-async def _tracker_rows(tracker: str, identity: dict) -> list[Row]:
+async def _tracker_rows(tracker: str, identity: dict) -> tuple[list[Row], dict]:
+    """Verdict rows for one tracker, plus the matches behind them for the UI to list."""
     rows: list[Row] = []
+    raw: dict[str, dict] = {}
     searchstrs = generate_dupe_check_searchstrs(identity["artists"], identity["title"], identity["catno"])
     try:
-        results = await get_search_results(salmon.trackers.get_class(tracker)(), searchstrs) if searchstrs else []
-        rows.append(dupe_row(tracker, results))
+        site = salmon.trackers.get_class(tracker)()
+        results = await get_search_results(site, searchstrs) if searchstrs else []
     except Exception as e:
         rows.append(Row(f"dupe:{tracker}", f"Duplicate ({tracker})", WARN, f"Could not search {tracker}: {e}"))
+    else:
+        rows.append(dupe_row(tracker, results))
+        raw[f"dupe:{tracker}"] = {"searchstrs": searchstrs, "matches": dupe_matches(site.base_url, results)}
     if tracker == "RED":
         try:
             reason = red_blacklist_reason(identity["artists"], identity["title"], identity["label"])
@@ -163,7 +206,7 @@ async def _tracker_rows(tracker: str, identity: dict) -> list[Row]:
             rows.append(Row("blacklist:RED", "RED blacklist", BLOCK, f"Could not check the blacklist: {e}"))
         else:
             rows.append(blacklist_row(tracker, reason))
-    return rows
+    return rows, raw
 
 
 async def run_checks(
@@ -195,7 +238,9 @@ async def run_checks(
         identity = await asyncio.to_thread(_release_identity, path)
         if identity.get("title"):
             for tracker in trackers:
-                rows.extend(await _tracker_rows(tracker, identity))
+                tracker_rows, tracker_raw = await _tracker_rows(tracker, identity)
+                rows.extend(tracker_rows)
+                raw.update(tracker_raw)
         else:
             rows.append(Row("dupe", "Duplicate", WARN, "Tags could not be read, so no duplicate search could be run."))
 

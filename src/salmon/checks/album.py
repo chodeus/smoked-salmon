@@ -17,6 +17,7 @@ from salmon.checks.mqa import check_mqa
 from salmon.checks.upconverts import check_upconvert
 from salmon.common.files import get_audio_files
 from salmon.common.progress import report_progress
+from salmon.errors import UpconvertCheckNotApplicable
 
 
 def _parse_logs(path: str) -> dict:
@@ -84,6 +85,9 @@ async def run_upconvert_check(path: str) -> dict:
     async def one(f: str) -> dict:
         try:
             return msgspec.to_builtins(await check_upconvert(os.path.join(path, f))) | {"file": f}
+        except UpconvertCheckNotApplicable as e:
+            # Out of scope (16bit), not a failure — kept distinct so it reads as "skipped".
+            return {"file": f, "not_applicable": str(e)}
         except Exception as e:
             return {"file": f, "error": str(e)}
 
