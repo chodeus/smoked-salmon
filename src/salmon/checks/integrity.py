@@ -16,12 +16,12 @@ FLAC_IMPORTANT_REGEXES = [
 
 FLAC_MD5_UNSET_RE = re.compile(r"WARNING.*MD5 signature.*STREAMINFO", re.IGNORECASE)
 
-MP3_IMPORTANT_REGEXES = [
-    re.compile(r"WARNING: .*"),
-    re.compile(r"INFO: .*"),
-]
-MP3_ERROR_RE = re.compile(r"^ERROR: .*", re.MULTILINE)
-MP3_WARNING_RE = re.compile(r"^WARNING: .*", re.MULTILINE)
+# mp3val prefixes every line it cares about. Each prefix has exactly one home:
+# INFO and ERROR describe the file and belong in details, WARNING is a concern
+# the UI chips separately — putting a line in both shows it to the reader twice.
+MP3_INFO_PREFIX = "INFO:"
+MP3_ERROR_PREFIX = "ERROR:"
+MP3_WARNING_PREFIX = "WARNING:"
 
 
 class IntegrityResult(msgspec.Struct, frozen=True):
@@ -174,19 +174,21 @@ async def _check_mp3_integrity(path: str) -> IntegrityResult:
     try:
         result = await anyio.run_process(["mp3val", path], check=False)
         result_text = result.stdout.decode() if result.stdout else ""
-        important_lines: list[str] = []
-        for line in result_text.split("\n"):
-            for important_lines_re in MP3_IMPORTANT_REGEXES:
-                if important_lines_re.match(line):
-                    important_lines.append(line)
-        # mp3val exits 0 with the damage described in its output, so the text is
-        # the verdict: an ERROR means the file is broken, a WARNING means it
-        # plays but something is wrong with it and a green tick would be a lie.
         name = os.path.basename(path)
-        errors = [f"{name}: {line}" for line in MP3_ERROR_RE.findall(result_text)]
-        warnings = [f"{name}: {line}" for line in MP3_WARNING_RE.findall(result_text)]
-        passed = result.returncode == 0 and not errors
-        return IntegrityResult(passed, "\n".join(important_lines), tuple(warnings))
+        lines = [line.strip() for line in result_text.splitlines() if line.strip()]
+
+        info = [line for line in lines if line.startswith(MP3_INFO_PREFIX)]
+        errors = [line for line in lines if line.startswith(MP3_ERROR_PREFIX)]
+        warnings = [line for line in lines if line.startswith(MP3_WARNING_PREFIX)]
+
+        # mp3val exits 0 with the damage described in its output, so the text is
+        # the verdict. An unreadable or empty file gets no prefix at all — just
+        # "Cannot open input file" — and a run that produced no analysis proves
+        # nothing, so it must not count as a pass either.
+        passed = result.returncode == 0 and not errors and bool(info)
+        described = info + errors
+        details = "\n".join(f"{name}: {line}" for line in described) or f"{name}: {result_text.strip()}"
+        return IntegrityResult(passed, details, tuple(f"{name}: {line}" for line in warnings))
     except Exception:
         return IntegrityResult(False, click.style(f"{os.path.basename(path)}: Failed integrity", fg="red", bold=True))
 

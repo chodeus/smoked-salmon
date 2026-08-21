@@ -78,6 +78,7 @@ def test_an_mp3val_error_fails_the_check(monkeypatch):
     result = asyncio.run(ig._check_mp3_integrity("/music/a.mp3"))
 
     assert not result.passed
+    assert "Unable to open file" in result.details, "a failure must carry its reason to the caller"
 
 
 def test_a_clean_mp3_passes_with_nothing_to_report(monkeypatch):
@@ -95,3 +96,66 @@ def test_a_clean_mp3_passes_with_nothing_to_report(monkeypatch):
 
     assert result.passed
     assert result.concerns == ()
+
+
+def test_a_file_mp3val_could_not_open_is_not_a_pass(monkeypatch):
+    """mp3val exits 0 and prints no ERROR: prefix for an unreadable or empty
+    file, so a run that produced no analysis must not read as clean."""
+    import asyncio
+    import importlib
+    from types import SimpleNamespace
+
+    ig = importlib.import_module("salmon.checks.integrity")
+
+    async def fake_run(_cmd, check=False):
+        return SimpleNamespace(returncode=0, stdout=b'Cannot open input file "a.mp3" or it is empty\nDone!\n')
+
+    monkeypatch.setattr(ig.anyio, "run_process", fake_run)
+    result = asyncio.run(ig._check_mp3_integrity("/music/a.mp3"))
+
+    assert not result.passed
+    assert "Cannot open input file" in result.details, "the reason must reach the details, not vanish"
+
+
+def test_a_warning_is_not_repeated_in_the_details(monkeypatch):
+    """A line in both details and concerns is rendered to the reader twice."""
+    import asyncio
+    import importlib
+    from types import SimpleNamespace
+
+    ig = importlib.import_module("salmon.checks.integrity")
+
+    async def fake_run(_cmd, check=False):
+        return SimpleNamespace(
+            returncode=0,
+            stdout=b'INFO: "a.mp3": 100 MPEG frames\nWARNING: "a.mp3": It seems that file is truncated\n',
+        )
+
+    monkeypatch.setattr(ig.anyio, "run_process", fake_run)
+    result = asyncio.run(ig._check_mp3_integrity("/music/a.mp3"))
+
+    assert "truncated" in result.concerns[0]
+    assert "truncated" not in result.details
+    assert "100 MPEG frames" in result.details
+
+
+def test_an_error_alongside_an_analysis_still_reaches_the_details(monkeypatch):
+    """The empty-details fallback hides this: with an INFO line present the
+    fallback never fires, so an ERROR must be carried explicitly."""
+    import asyncio
+    import importlib
+    from types import SimpleNamespace
+
+    ig = importlib.import_module("salmon.checks.integrity")
+
+    async def fake_run(_cmd, check=False):
+        return SimpleNamespace(
+            returncode=0,
+            stdout=b'INFO: "a.mp3": 100 MPEG frames\nERROR: "a.mp3": Unknown file format\n',
+        )
+
+    monkeypatch.setattr(ig.anyio, "run_process", fake_run)
+    result = asyncio.run(ig._check_mp3_integrity("/music/a.mp3"))
+
+    assert not result.passed
+    assert "Unknown file format" in result.details
