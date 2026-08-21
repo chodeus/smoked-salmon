@@ -91,3 +91,16 @@ def test_a_depth_inside_a_domain_is_a_name_not_a_claim():
 def test_a_real_claim_beside_a_domain_is_still_caught():
     files = [pv._file_provenance("01.flac", tagfile(comment="24bit master from hd24bit.com", bitdepth=16))]
     assert len(pv._contradictions(files)) == 1
+
+
+def test_a_domain_with_a_path_is_consumed_whole():
+    """Stripping only the domain left "/24bit" behind, which read as a claim."""
+    for marker in ("hd24bit.com/24bit", "hd24bit.com:8080/24bit", "from hd24bit.com/releases/24bit-master"):
+        files = [pv._file_provenance("01.flac", tagfile(comment=marker, bitdepth=16))]
+        assert pv._contradictions(files) == [], marker
+
+
+def test_consuming_the_url_does_not_swallow_the_text_after_it():
+    # A comma is not part of a path, so a claim following a domain still counts.
+    files = [pv._file_provenance("01.flac", tagfile(comment="hd24bit.com, 24bit master", bitdepth=16))]
+    assert len(pv._contradictions(files)) == 1

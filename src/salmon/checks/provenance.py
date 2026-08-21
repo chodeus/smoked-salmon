@@ -24,7 +24,13 @@ MARKER_FIELDS = (
     "url",
 )
 
-_URL_RE = re.compile(r"(?:https?://|www\.)\S+|\b[\w-]+\.(?:com|net|org|io|co|me|ru|to|cc|sh)\b", re.IGNORECASE)
+# A bare domain has to swallow its port and path too, or "hd24bit.com/24bit"
+# leaves "/24bit" behind and the leftover reads as a claim about the audio.
+_URL_RE = re.compile(
+    r"(?:https?://|www\.)\S+"
+    r"|\b[\w-]+\.(?:com|net|org|io|co|me|ru|to|cc|sh)\b(?::\d+)?(?:[/?#]\S*)?",
+    re.IGNORECASE,
+)
 _DEPTH_CLAIM_RE = re.compile(r"(\d{2})\s*-?\s*bit", re.IGNORECASE)
 
 
