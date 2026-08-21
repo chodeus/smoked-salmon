@@ -54,8 +54,12 @@ async def run_provenance_check(path: str) -> dict:
 
 
 async def run_integrity_check(path: str) -> dict:
-    passed, details = await check_integrity(path)
-    return {"passed": passed, "details": click.unstyle(details)}
+    result = await check_integrity(path)
+    return {
+        "passed": result.passed,
+        "details": click.unstyle(result.details),
+        "concerns": [click.unstyle(c) for c in result.concerns],
+    }
 
 
 # flac and sox are spawned per file; keep a lid on how many run at once.

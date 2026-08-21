@@ -4,6 +4,7 @@ from contextlib import suppress
 
 import anyio
 import asyncclick as click
+import msgspec
 
 from salmon import cfg
 from salmon.common.files import process_files
@@ -15,23 +16,37 @@ FLAC_IMPORTANT_REGEXES = [
 
 FLAC_MD5_UNSET_RE = re.compile(r"WARNING.*MD5 signature.*STREAMINFO", re.IGNORECASE)
 
-MP3_IMPORTANT_REGEXES = [
-    re.compile(r"WARNING: .*"),
-    re.compile(r"INFO: .*"),
-]
+# mp3val prefixes every line it cares about. Each prefix has exactly one home:
+# INFO and ERROR describe the file and belong in details, WARNING is a concern
+# the UI chips separately — putting a line in both shows it to the reader twice.
+MP3_INFO_PREFIX = "INFO:"
+MP3_ERROR_PREFIX = "ERROR:"
+MP3_WARNING_PREFIX = "WARNING:"
 
 
-def format_integrity(result: tuple[bool, str]) -> str:
-    """Format the integrity check result for display.
+class IntegrityResult(msgspec.Struct, frozen=True):
+    """Whether the files decoded, and anything the tools said short of failing.
 
-    Args:
-        result: Tuple of (passed, details_output).
-
-    Returns:
-        Styled string indicating pass or fail with optional details.
+    The two are separate on purpose: a file that will not decode is a different
+    state from one that decodes with a complaint, and reporting the second as
+    "decodes cleanly" is how an unearned green tick happens.
     """
-    integrities, integrities_out = result
+
+    passed: bool
+    details: str = ""
+    concerns: tuple[str, ...] = ()
+
+
+def format_integrity(result: IntegrityResult) -> str:
+    """Format the integrity check result for display."""
+    integrities, integrities_out = result.passed, result.details
     if integrities:
+        if result.concerns:
+            return click.style(
+                f"Passed integrity check, with {len(result.concerns)} warning(s):\n"
+                + "\n".join(result.concerns),
+                fg="yellow",
+            )
         return click.style("Passed integrity check", fg="green")
     else:
         output = click.style("Failed integrity check", fg="red", bold=True)
@@ -58,7 +73,7 @@ async def handle_integrity_check(path: str) -> None:
         click.echo(format_integrity(result))
 
         if (
-            not result[0]
+            not result.passed
             and path.lower().endswith(".flac")
             and click.confirm(click.style("\nWould you like to sanitize the file?", fg="magenta"))
         ):
@@ -71,7 +86,7 @@ async def handle_integrity_check(path: str) -> None:
         result = await check_integrity(path)
         click.echo(format_integrity(result))
 
-        if not result[0] and click.confirm(
+        if not result.passed and click.confirm(
             click.style("\nWould you like to sanitize the failed FLAC files?", fg="magenta")
         ):
             click.secho("\nSanitizing FLAC files...", fg="cyan", bold=True)
@@ -83,7 +98,7 @@ async def handle_integrity_check(path: str) -> None:
         raise click.Abort
 
 
-async def check_integrity(path: str, _: int | None = None) -> tuple[bool, str]:
+async def check_integrity(path: str, _: int | None = None) -> IntegrityResult:
     """Check the integrity of audio files at the given path.
 
     Args:
@@ -91,7 +106,7 @@ async def check_integrity(path: str, _: int | None = None) -> tuple[bool, str]:
         _: Unused index parameter for process_files compatibility.
 
     Returns:
-        Tuple of (all_passed, details_output).
+        An IntegrityResult: whether everything decoded, plus anything worth reading.
 
     Raises:
         click.Abort: If no audio files found or path is invalid.
@@ -112,21 +127,23 @@ async def check_integrity(path: str, _: int | None = None) -> tuple[bool, str]:
             click.secho("No audio files found in directory", fg="red", bold=True)
             raise click.Abort
         results = await process_files(audio_files, check_integrity, "Checking audio files")
-        for integrity, integrity_out in results:
-            integrities = integrities and integrity
-            integrities_out.append(integrity_out)
-        return integrities, "\n".join(integrities_out)
+        concerns: list[str] = []
+        for result in results:
+            integrities = integrities and result.passed
+            integrities_out.append(result.details)
+            concerns.extend(result.concerns)
+        return IntegrityResult(integrities, "\n".join(integrities_out), tuple(concerns))
     raise click.Abort
 
 
-async def _check_flac_integrity(path: str) -> tuple[bool, str]:
+async def _check_flac_integrity(path: str) -> IntegrityResult:
     """Check the integrity of a single FLAC file using the flac CLI.
 
     Args:
         path: Path to the FLAC file.
 
     Returns:
-        Tuple of (passed, important_output_lines).
+        An IntegrityResult built from the tool's output.
     """
     try:
         result = await anyio.run_process(["flac", "-wt", path], check=False)
@@ -140,31 +157,40 @@ async def _check_flac_integrity(path: str) -> tuple[bool, str]:
         if md5_unset:
             important_matches.append(f"{os.path.basename(path)}: MD5 signature unset in STREAMINFO — sanitize to fix")
         passed = result.returncode == 0 and not md5_unset
-        return passed, "\n".join(important_matches)
+        return IntegrityResult(passed, "\n".join(important_matches))
     except Exception:
-        return False, click.style(f"{os.path.basename(path)}: Failed integrity", fg="red", bold=True)
+        return IntegrityResult(False, click.style(f"{os.path.basename(path)}: Failed integrity", fg="red", bold=True))
 
 
-async def _check_mp3_integrity(path: str) -> tuple[bool, str]:
+async def _check_mp3_integrity(path: str) -> IntegrityResult:
     """Check the integrity of a single MP3 file using mp3val.
 
     Args:
         path: Path to the MP3 file.
 
     Returns:
-        Tuple of (passed, important_output_lines).
+        An IntegrityResult built from the tool's output.
     """
     try:
         result = await anyio.run_process(["mp3val", path], check=False)
         result_text = result.stdout.decode() if result.stdout else ""
-        important_lines: list[str] = []
-        for line in result_text.split("\n"):
-            for important_lines_re in MP3_IMPORTANT_REGEXES:
-                if important_lines_re.match(line):
-                    important_lines.append(line)
-        return True, "\n".join(important_lines)
+        name = os.path.basename(path)
+        lines = [line.strip() for line in result_text.splitlines() if line.strip()]
+
+        info = [line for line in lines if line.startswith(MP3_INFO_PREFIX)]
+        errors = [line for line in lines if line.startswith(MP3_ERROR_PREFIX)]
+        warnings = [line for line in lines if line.startswith(MP3_WARNING_PREFIX)]
+
+        # mp3val exits 0 with the damage described in its output, so the text is
+        # the verdict. An unreadable or empty file gets no prefix at all — just
+        # "Cannot open input file" — and a run that produced no analysis proves
+        # nothing, so it must not count as a pass either.
+        passed = result.returncode == 0 and not errors and bool(info)
+        described = info + errors
+        details = "\n".join(f"{name}: {line}" for line in described) or f"{name}: {result_text.strip()}"
+        return IntegrityResult(passed, details, tuple(f"{name}: {line}" for line in warnings))
     except Exception:
-        return False, click.style(f"{os.path.basename(path)}: Failed integrity", fg="red", bold=True)
+        return IntegrityResult(False, click.style(f"{os.path.basename(path)}: Failed integrity", fg="red", bold=True))
 
 
 async def sanitize_integrity(path: str, _: int | None = None) -> bool:

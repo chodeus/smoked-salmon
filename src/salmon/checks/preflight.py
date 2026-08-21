@@ -43,9 +43,14 @@ class CheckSpec(msgspec.Struct, frozen=True):
 
 
 def _integrity_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
-    if result["passed"]:
-        return OK, "Every file decodes cleanly."
-    return BLOCK, result["details"] or "One or more files failed to decode."
+    if not result["passed"]:
+        return BLOCK, result["details"] or "One or more files failed to decode."
+    # Decoding is not the same as being sound: mp3val exits 0 while describing
+    # the damage, so a file that plays with a complaint must not read as clean.
+    concerns = result.get("concerns") or []
+    if concerns:
+        return WARN, f"Decodes, but {len(concerns)} warning(s) from the checker: {concerns[0]}"
+    return OK, "Every file decodes cleanly."
 
 
 def _mqa_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
@@ -100,9 +105,17 @@ def _log_verdict(result: dict, ctx: dict) -> tuple[Verdict, str]:
     if broken:
         return WARN, f"Could not parse {len(broken)} of {len(logs)} log(s)."
     worst = min(scored, key=lambda x: x["score"])
-    mismatched = [x for x in scored if x["checksum_integrity"] != "Match"]
-    if mismatched:
-        return WARN, f"Log checksum does not match the audio ({mismatched[0]['file']})."
+    # A log with no checksum and a log whose checksum fails are different states:
+    # one cannot be verified, the other has been altered. Enumerate rather than negate.
+    altered = [x for x in scored if x["checksum_integrity"] == "Mismatch"]
+    if altered:
+        return WARN, f"Log checksum does not match the audio ({altered[0]['file']}) — the log has been altered."
+    unverifiable = [x for x in scored if x["checksum_integrity"] != "Match"]
+    if unverifiable:
+        return WARN, (
+            f"No log checksum ({unverifiable[0]['file']}), so the rip cannot be verified — "
+            f"EAC only began signing logs in 1.0 beta 3. RED marks such uploads trumpable."
+        )
     if worst["score"] < 100:
         return WARN, f"Score {worst['score']}/100 ({worst['file']})."
     return OK, f"Score 100/100 across {len(scored)} log(s)."
