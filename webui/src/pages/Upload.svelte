@@ -67,6 +67,7 @@
   const activeJob = $derived(activeJobId ? jobStore.get(activeJobId) : undefined)
   // Verify exactly what the upload will check, so the two cannot disagree.
   const checks = $derived([
+    'provenance',
     ...(skipIntegrityCheck ? [] : ['integrity']),
     ...(skipUp ? [] : ['upconvert']),
     ...(skipMqa ? [] : ['mqa']),
