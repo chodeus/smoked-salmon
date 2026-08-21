@@ -59,7 +59,10 @@ def _contradictions(files: list[dict]) -> list[str]:
         if not depth:
             continue
         for field, text in entry["markers"].items():
-            for claim in _DEPTH_CLAIM_RE.findall(text):
+            # A depth inside a domain is part of the name of whoever ripped it
+            # ("hd24bit.com"), not an assertion about this file. The URL still
+            # shows up as a marker, so nothing is hidden — it just isn't a claim.
+            for claim in _DEPTH_CLAIM_RE.findall(_URL_RE.sub(" ", text)):
                 if int(claim) != depth:
                     found.append(f"{entry['file']}: {field} claims {claim}bit, the audio is {depth}bit")
     return found

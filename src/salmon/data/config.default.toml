@@ -27,9 +27,10 @@ dottorrents_dir = '.torrents'
 # and be cleaned up up before upload. Useful if you want to generate the spectral on a fast disk for instance.
 # tmp_dir = 'path to tmp dir'
 
-# If True, clean the temporary directory at startup to prevent leftover files from accumulating
-# Only files inside the TMP_DIR (and subdirectories) will be cleaned, preserving the TMP_DIR itself
-# WARNING: use this feature with caution, as it will delete all files in the TMP_DIR
+# If True, clear stale scratch from the temporary directory at startup, so leftovers do not accumulate
+# Only entries inside the TMP_DIR are removed, and only those untouched for 24 hours: every salmon
+# command runs this, including one started while `salmon web` is serving, so anything recent may
+# belong to that other process and is left alone
 # clean_tmp_dir = true
 
 # ===============================

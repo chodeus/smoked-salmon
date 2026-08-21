@@ -33,7 +33,7 @@ def test_a_file_without_tags_reads_as_empty_rather_than_raising():
 
 
 def test_a_bit_depth_claim_the_audio_contradicts_is_reported():
-    files = [pv._file_provenance("01.flac", tagfile(comment="hd24bit.com", bitdepth=16))]
+    files = [pv._file_provenance("01.flac", tagfile(comment="24bit remaster", bitdepth=16))]
     found = pv._contradictions(files)
     assert len(found) == 1
     assert "claims 24bit" in found[0]
@@ -79,3 +79,15 @@ def test_ordinary_markers_report_without_demanding_an_acknowledgement():
 def test_unreadable_tags_are_skipped_not_failed():
     empty = {"files": [], "vendors": [], "markers": [], "urls": [], "contradictions": []}
     assert pf._provenance_verdict(empty, {})[0] == pf.SKIP
+
+
+def test_a_depth_inside_a_domain_is_a_name_not_a_claim():
+    # "hd24bit.com" is who ripped it. Reading that as a 24bit claim warned on
+    # every file from that ripper, which teaches you to ignore the row.
+    files = [pv._file_provenance("01.flac", tagfile(comment="hd24bit.com", bitdepth=16))]
+    assert pv._contradictions(files) == []
+
+
+def test_a_real_claim_beside_a_domain_is_still_caught():
+    files = [pv._file_provenance("01.flac", tagfile(comment="24bit master from hd24bit.com", bitdepth=16))]
+    assert len(pv._contradictions(files)) == 1

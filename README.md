@@ -22,12 +22,15 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 - **Interactive Uploading** – Supports **multiple trackers** (RED / OPS / DIC), from the CLI or the web interface.
 - **Web Interface** – `salmon web` exposes every CLI command in a browser: uploads (with the full option set, including dry runs), checks, transcode/downconvert/recompress, tagging, cross-upload, description generation, image uploads, metadata search, spectral review and tracker connection tests — gated by a shared-secret token.
 - **Log Checking** – Calculates log scores, verifies log checksum integrity, and validates log-to-FLAC file matching.
-- **Upconvert Detection** – Checks 24-bit flac files for potential upconverts.
+- **Upconvert Detection** – Checks 24-bit flac files for potential upconverts. 16-bit files are reported as out of scope rather than as a failed test, since wasted-bit analysis only says anything above 16-bit.
 - **MQA Detection** – Checks files for common MQA markers.
-- **Duplicate Upload Detection** – Prevents redundant uploads.  
+- **Duplicate Upload Detection** – Prevents redundant uploads. Every match is listed with each existing torrent's format, encoding, media, edition and log score, so you can see what a group already holds without leaving the page.  
 - **Blacklist Enforcement** – A release on RED's do-not-upload list is blocked before anything is sent to RED; other trackers in the same run continue.  
 - **Dry Run** – `--dry-run` builds and validates a complete upload without posting it.  
-- **Spectral Analysis** – Generates, compresses, and verifies spectrals, shown inline in the web interface.  
+- **Spectral Analysis** – Generates, compresses, and verifies spectrals, shown inline in the web interface, alongside an averaged frequency plot per track.  
+- **Frequency Analysis** – One averaged-spectrum curve per track, where a lossy cutoff is a cliff rather than a pattern to spot in a spectrogram. It reports what it measured and never classifies a file: the cutoff alone raises nothing, because honest masters roll off early too — it is the fall across the kHz above it that separates a filter from a fade, and tracks that stop at different frequencies is the stronger signal, since one master does not do that.  
+- **Provenance** – Reports the encoder and any ripper, store or reseller markers left in the tags, and warns when the audio contradicts one of them, such as a `24bit` claim on a 16-bit file.  
+- **Release Report** – A plain-text summary of what a release is — its claim, encoder, real numbers and measured cutoffs — laid out the way tracker help threads ask for it, ready to paste.  
 - **Spectral Upload** – Can generate spectrals for an existing upload (based on local files), and update the release description.  
 - **Lossy Master Report Generation** – Supports lossy master reports during upload.
 - **Metadata Retrieval** – Fetches metadata from:
@@ -362,7 +365,7 @@ Every CLI command has a web equivalent, so nothing is terminal-only:
 | Page | Covers |
 | --- | --- |
 | Upload | `up`, with every flag the CLI takes including `--dry-run`, behind pre-flight verification |
-| Checks | `check all` and its subcommands (log, integrity, MQA, upconvert) |
+| Checks | `check all` (provenance, log, integrity, MQA, upconvert) and the individual `log`, `integrity`, `mqa`, `upconv` subcommands |
 | Spectrals | `specs`, `checkspecs` |
 | Convert | `transcode`, `downconv`, `compress` |
 | Search | `metas`, `meta` |
@@ -371,13 +374,25 @@ Every CLI command has a web equivalent, so nothing is terminal-only:
 
 #### Pre-flight verification
 
-The Upload page verifies an album before anything is staged. It runs the same checks the upload itself runs — rip log, file integrity, MQA, upconversion — plus a duplicate search on every tracker you select and, for RED, its Do-Not-Upload list. The duplicate search needs a readable album tag; if the title cannot be read it is reported as skipped rather than passed. Each comes back as a row you can read at a glance.
+The Upload page verifies an album before anything is staged. It runs the same checks the upload itself runs — provenance, rip log, file integrity, MQA, upconversion — plus a duplicate search on every tracker you select and, for RED, its Do-Not-Upload list. The duplicate search needs a readable album tag; if the title cannot be read it is reported as skipped rather than passed. Each comes back as a row you can read at a glance, and a duplicate row expands to every match it found rather than naming the first two.
 
-A failed integrity check, MQA, upconversion or a blacklisted release **blocks** the upload and cannot be overridden. Softer signals — an imperfect rip log, a missing log, a possible duplicate — need an explicit acknowledgement instead. Changing the path, source, trackers or any skip box invalidates the verdict, so a stale green cannot let something through. Dry runs post nothing and skip the gate.
+A failed integrity check, MQA, upconversion or a blacklisted release **blocks** the upload and cannot be overridden. Softer signals — an imperfect rip log, a missing log, a possible duplicate, a tag whose claim the audio contradicts — need an explicit acknowledgement instead. Ordinary tag markers such as an `EAC` or `QOBUZ` comment are reported without warning: warning on every one of them would teach you to tick the box without reading it. Changing the path, source, trackers or any skip box invalidates the verdict, so a stale green cannot let something through. Dry runs post nothing and skip the gate.
 
 #### Source detection
 
 Pre-flight infers the media source from the files: a rip log proves CD, store tags (Amazon, iTunes, Bandcamp) prove WEB, side numbering suggests vinyl, and anything above 16bit/44.1kHz rules out a CD rip. A plain 16/44 release with no log is reported as **undecidable** rather than guessed — it is equally consistent with a logless CD rip and a WEB download, and naming the wrong source is a mislabelled upload.
+
+#### Spectrals and frequency plots
+
+The Spectrals page generates a full-track spectrogram and a 2-second zoom per track, plus an **averaged frequency plot** — the whole track collapsed into one curve. A spectrogram shows every moment and asks you to spot a pattern; the average turns a lossy lowpass into a step you cannot miss.
+
+What it tells you is a measurement, never a verdict. Automated transcode classifiers exist and the trackers explicitly do not trust them, so one is not offered here. Instead it reports where the energy stops, how steeply it falls there, and whether the tracks agree with each other — a folder whose tracks cut off at different frequencies was assembled from more than one source, which is worth more than any single number.
+
+A **report** collects the same run into plain text — what the release claims to be, how it was encoded, its real bit depth, sample rate and bitrates, and the measured cutoffs — laid out the way tracker help threads ask for it, with a copy button.
+
+The images are written to `tmp_dir`, not into the album, so an album in a read-only `library_dirs` source can be analysed. They are kept until you delete them, and the page reattaches to the most recent finished job when you return to it, so leaving the page no longer strands a folder with nothing pointing at it. Anything left behind is swept once it is a day old.
+
+Spectrals are uploaded to your configured `specs_uploader`; the frequency plots are a reading aid and stay local.
 
 #### Reading the interface
 
