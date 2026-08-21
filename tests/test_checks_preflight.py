@@ -306,3 +306,14 @@ def test_a_failing_checksum_still_says_the_log_was_altered():
     assert verdict == pf.WARN
     assert "does not match" in detail
     assert "altered" in detail
+
+
+def test_integrity_warnings_are_not_reported_as_clean():
+    result = {"passed": True, "details": "", "concerns": ["a.mp3: WARNING: file is truncated"]}
+    verdict, detail = pf._integrity_verdict(result, {})
+    assert verdict == pf.WARN
+    assert "truncated" in detail
+
+
+def test_integrity_with_nothing_to_report_is_green():
+    assert pf._integrity_verdict({"passed": True, "details": "", "concerns": []}, {})[0] == pf.OK

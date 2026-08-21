@@ -37,7 +37,7 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
   - Apple Music, Bandcamp, Beatport, Deezer, Discogs, MusicBrainz, Qobuz, Tidal.
 - **File Management** –  
   - Retags and renames files to standard formats (based on metadata).
-  - Checks file integrity and sanitizes if needed.  
+  - Checks file integrity and sanitizes if needed. `mp3val` exits successfully while describing the damage it found, so its warnings are reported rather than taken as a pass.  
 - **Request Filling** – Scans for matching requests on trackers.
 - **Description generation** – Edition description generation (tracklist, sources, available streaming platforms, encoding details...).
 - **Down-convert and Transcode** – Can downconvert 24-bit flac files to 16-bit, and transcode to mp3.

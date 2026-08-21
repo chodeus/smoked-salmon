@@ -43,9 +43,14 @@ class CheckSpec(msgspec.Struct, frozen=True):
 
 
 def _integrity_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
-    if result["passed"]:
-        return OK, "Every file decodes cleanly."
-    return BLOCK, result["details"] or "One or more files failed to decode."
+    if not result["passed"]:
+        return BLOCK, result["details"] or "One or more files failed to decode."
+    # Decoding is not the same as being sound: mp3val exits 0 while describing
+    # the damage, so a file that plays with a complaint must not read as clean.
+    concerns = result.get("concerns") or []
+    if concerns:
+        return WARN, f"Decodes, but {len(concerns)} warning(s) from the checker: {concerns[0]}"
+    return OK, "Every file decodes cleanly."
 
 
 def _mqa_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:

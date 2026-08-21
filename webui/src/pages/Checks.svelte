@@ -120,8 +120,11 @@
         {/if}
       {/if}
 
-      {#if job.result.raw.integrity?.details}
+      {#if job.result.raw.integrity?.details || job.result.raw.integrity?.concerns?.length}
         <h3>Integrity</h3>
+        {#each job.result.raw.integrity.concerns ?? [] as concern}
+          <p><span class="chip warn">{concern}</span></p>
+        {/each}
         <pre class="mono muted">{job.result.raw.integrity.details}</pre>
       {/if}
 

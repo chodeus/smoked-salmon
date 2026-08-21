@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from salmon import cfg
+from salmon.checks.integrity import IntegrityResult
 from salmon.common.progress import report_progress
 from salmon.uploader.frequency import SpectrumResult
 from salmon.uploader.spectrals import get_spectrals_path
@@ -156,7 +157,7 @@ def hanging_spectral_stubs(monkeypatch, tmp_path):
 @pytest.fixture
 def integrity_stub(monkeypatch):
     async def fake_check_integrity(path):
-        return True, "\x1b[32mok\x1b[0m"
+        return IntegrityResult(True, "\x1b[32mok\x1b[0m")
 
     monkeypatch.setattr("salmon.checks.album.check_integrity", fake_check_integrity)
 
@@ -818,7 +819,7 @@ def test_checks_run_integrity_and_log_happy_path(client, album_dir, integrity_st
     data = join_job(client, job["id"])
     assert data["status"] == "done"
     # ANSI styling from the integrity checker is stripped for the API
-    assert data["result"]["raw"]["integrity"] == {"passed": True, "details": "ok"}
+    assert data["result"]["raw"]["integrity"] == {"passed": True, "details": "ok", "concerns": []}
     verdicts = {r["id"]: r["verdict"] for r in data["result"]["rows"]}
     assert verdicts["integrity"] == "ok"
     logs = {entry["file"]: entry for entry in data["result"]["raw"]["log"]["logs"]}
