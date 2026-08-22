@@ -317,3 +317,63 @@ def test_integrity_warnings_are_not_reported_as_clean():
 
 def test_integrity_with_nothing_to_report_is_green():
     assert pf._integrity_verdict({"passed": True, "details": "", "concerns": []}, {})[0] == pf.OK
+
+
+def test_rules_row_reports_a_path_that_would_be_trumped():
+    long_name = "x" * 200
+    row = pf.rules_row("RED", "Folder", {f"{long_name}.flac": {"sample rate": 44100, "precision": 16}})
+    assert row.verdict == pf.WARN
+    assert "180" in row.detail
+
+
+def test_rules_row_is_green_when_nothing_breaks_a_rule():
+    row = pf.rules_row("RED", "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}})
+    assert row.verdict == pf.OK
+
+
+def test_rules_row_is_skipped_when_the_audio_could_not_be_read():
+    # One unreadable file used to raise out of run_checks and cost every other row.
+    row = pf.rules_row("RED", "Folder", {})
+    assert row.verdict == pf.SKIP
+
+
+def test_unreadable_audio_does_not_take_the_whole_preflight_down(tmp_path):
+    broken = tmp_path / "notaudio.flac"
+    broken.write_bytes(b"fLaC" + bytes(10))
+    assert pf._audio_info(str(tmp_path)) == {}
+
+
+async def test_run_checks_still_returns_rows_when_the_audio_will_not_parse(album_dir, monkeypatch):
+    """The fixtures are dummy FLAC bytes, so this is the unreadable case end to
+    end: an unparseable file used to raise straight out of run_checks."""
+    monkeypatch.setattr(
+        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+    )
+    monkeypatch.setattr(
+        pf, "_release_identity", lambda _p: {"artists": [("X", "main")], "title": "Y", "label": None, "catno": None}
+    )
+    monkeypatch.setattr(pf, "get_search_results", lambda _site, _s: (_ for _ in ()).throw(RuntimeError("offline")))
+
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED"])
+
+    rules = next(r for r in result["rows"] if r["id"] == "rules:RED")
+    assert rules["verdict"] == pf.SKIP
+
+
+async def test_the_rules_row_runs_even_when_the_tags_cannot_be_read(album_dir, monkeypatch):
+    # Path length depends on the filenames, not on readable tags.
+    monkeypatch.setattr(
+        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+    )
+    monkeypatch.setattr(pf, "_release_identity", lambda _p: {})
+
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED"])
+
+    assert any(r["id"] == "rules:RED" for r in result["rows"]), "no tags must not mean no rule check"
+
+
+def test_a_trailing_separator_does_not_drop_the_folder_from_the_path_length():
+    import os as _os
+
+    assert _os.path.basename("/music/Album/") == "", "the case the normpath guards against"
+    assert _os.path.basename(_os.path.normpath("/music/Album/")) == "Album"

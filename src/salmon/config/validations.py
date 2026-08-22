@@ -58,6 +58,9 @@ class Directory(BaseStruct):
 
 
 ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "red"]
+# RED's host is for its own covers; its rules forbid spectrals there, and images
+# uploaded to it only render for logged-in RED users.
+SPECS_FORBIDDEN_HOSTS = frozenset({"red"})
 SpectralSelectionLiteral = Literal["*", "+", "0"]
 
 
@@ -105,13 +108,13 @@ class ImageUploader(BaseStruct):
         if "imgbb" in uploader_selections and self.imgbb_key is None:
             raise ValueError("imgbb key not specified")
         # RED's rules forbid uploading spectrals to its image host.
-        if self.specs_uploader == "red":
+        if self.specs_uploader in SPECS_FORBIDDEN_HOSTS:
             raise ValueError("RED's image host does not allow spectral uploads")
         for code in ("red", "ops", "dic"):
             override = getattr(self, code)
             if override is None:
                 continue
-            if override.specs_uploader == "red":
+            if override.specs_uploader in SPECS_FORBIDDEN_HOSTS:
                 raise ValueError(f"[image.{code}]: RED's image host does not allow spectral uploads")
             if code != "red" and "red" in (override.cover_uploader, override.image_uploader):
                 raise ValueError(

@@ -970,3 +970,14 @@ def test_a_failing_cleanup_does_not_stop_the_eviction(monkeypatch, tmp_path):
     local._prune_finished()
 
     assert job.id not in local.jobs
+
+
+def test_spectrals_cannot_be_pushed_to_reds_image_host(client, album_dir, spectral_stubs):
+    """The config refuses to load with this set; a request must not reach around it."""
+    job_id = client.post("/api/spectrals/generate", json={"path": str(album_dir)}).json()["id"]
+    join_job(client, job_id)
+
+    resp = client.post("/api/spectrals/upload", json={"job_id": job_id, "host": "red"})
+
+    assert resp.status_code == 422
+    assert "does not allow spectral uploads" in resp.json()["detail"]
