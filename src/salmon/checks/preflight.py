@@ -243,7 +243,7 @@ def _audio_info(path: str) -> dict:
         return {}
 
 
-async def _tracker_rows(tracker: str, identity: dict, folder: str, track_data: dict) -> tuple[list[Row], dict]:
+async def _tracker_rows(tracker: str, identity: dict) -> tuple[list[Row], dict]:
     """Verdict rows for one tracker, plus the matches behind them for the UI to list."""
     rows: list[Row] = []
     raw: dict[str, dict] = {}
@@ -256,7 +256,6 @@ async def _tracker_rows(tracker: str, identity: dict, folder: str, track_data: d
     else:
         rows.append(dupe_row(tracker, results))
         raw[f"dupe:{tracker}"] = {"searchstrs": searchstrs, "matches": dupe_matches(site.base_url, results)}
-    rows.append(rules_row(tracker, folder, track_data))
     if tracker == "RED":
         try:
             reason = red_blacklist_reason(identity["artists"], identity["title"], identity["label"])
@@ -296,10 +295,16 @@ async def run_checks(
     if trackers:
         identity = await asyncio.to_thread(_release_identity, path)
         track_data = await asyncio.to_thread(_audio_info, path)
-        folder = os.path.basename(path)
+        # normpath first: basename("/album/") is "", which would drop the folder
+        # out of the path-length sum and under-report it.
+        folder = os.path.basename(os.path.normpath(path))
+        # Path length and sample rate depend on the files, not on readable tags,
+        # so they are checked even when the duplicate search cannot run.
+        for tracker in trackers:
+            rows.append(rules_row(tracker, folder, track_data))
         if identity.get("title"):
             for tracker in trackers:
-                tracker_rows, tracker_raw = await _tracker_rows(tracker, identity, folder, track_data)
+                tracker_rows, tracker_raw = await _tracker_rows(tracker, identity)
                 rows.extend(tracker_rows)
                 raw.update(tracker_raw)
         else:

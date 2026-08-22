@@ -267,6 +267,18 @@ def _copy_tags(tag_dict: dict[str, list[str]], flac_obj: flac.FLAC, mp3_path: Pa
     mp3_thing.save(v1=0, v2_version=4)
 
 
+def _validate_channel_count(items: list[TranscodeItem]) -> None:
+    """Refuse a multichannel source before anything is deleted or written.
+
+    A lossy transcode of a multichannel source is not allowed (RED 2.7.4), so
+    this can never produce something shippable — and finding out on track 7, or
+    after the overwrite branch has removed a prior output, costs real work.
+    """
+    for item in items:
+        if item.flac_obj.info.channels > 2:
+            raise ValueError(f"{item.src} has {item.flac_obj.info.channels} channels. Cannot convert to MP3.")
+
+
 def _copy_extra_files(path: str, new_path: str, *, essential_only: bool = False) -> None:
     """Copy non-audio files to the output directory.
 
@@ -384,13 +396,6 @@ async def _transcode_audio_files(
     if not items:
         return
 
-    # Checked before any encoding starts: finding this on track 7 leaves a
-    # half-written folder behind, and a lossy transcode of a multichannel source
-    # is not allowed anywhere (RED 2.7.4), so nothing here was ever going to ship.
-    for item in items:
-        if item.flac_obj.info.channels > 2:
-            raise ValueError(f"{item.src} has {item.flac_obj.info.channels} channels. Cannot convert to MP3.")
-
     async def _transcode_one(file: str, idx: int) -> None:
         item = items[idx]
         await _flac_to_mp3(bitrate, item.src, item.dst)
@@ -419,12 +424,17 @@ async def transcode_folder(path: str, bitrate: Bitrate, essential_only: bool = F
     """
     _validate_lossless(path)
     new_path = _build_output_path(path, bitrate)
+    # Collected before the overwrite branch so the channel check can run ahead of
+    # the rmtree below: discovering the source cannot be transcoded after a prior
+    # output has been deleted costs the thing that was already there.
+    items = _collect_transcode_items(path, new_path)
+    _validate_channel_count(items)
 
     if os.path.isdir(new_path):
         # Compare relative paths, not basenames — multi-disc output nests MP3s in disc
         # subfolders, and basenames would both miss those and let a same-named top-level
         # file mask a missing nested one.
-        expected_mp3s = {os.path.relpath(item.dst, new_path) for item in _collect_transcode_items(path, new_path)}
+        expected_mp3s = {os.path.relpath(item.dst, new_path) for item in items}
         existing_files = {
             os.path.relpath(os.path.join(root, f), new_path)
             for root, _dirs, files in os.walk(new_path)
@@ -451,7 +461,6 @@ async def transcode_folder(path: str, bitrate: Bitrate, essential_only: bool = F
         click.secho(f"{new_path} exists but appears incomplete, re-transcoding...", fg="yellow")
         shutil.rmtree(new_path)
 
-    items = _collect_transcode_items(path, new_path)
     _copy_extra_files(path, new_path, essential_only=essential_only)
     await _transcode_audio_files(items, bitrate)
 
