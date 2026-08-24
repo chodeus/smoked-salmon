@@ -38,14 +38,11 @@ def collect_upload_warnings(site_code: str, folder_name: str, track_data: dict) 
         if sample_rate and sample_rate not in STANDARD_SAMPLE_RATES:
             warnings.append(f"Non-standard sample rate {sample_rate} Hz may be rejected: {filename}")
         elif precision == 16 and sample_rate and sample_rate > 48000:
-            # OPS 2.1.23.3.3 forbids it outright; RED 2.5.5.1 only makes it trumpable.
+            # OPS forbids it outright; RED only makes it trumpable.
             if site_code == "OPS":
                 warnings.append(
-                    f"16-bit above 48 kHz is not permitted on OPS (2.1.23.3.3) — "
-                    f"downsample to 16/44.1 or 16/48: {filename}"
+                    f"16-bit above 48 kHz is not permitted on OPS — downsample to 16/44.1 or 16/48: {filename}"
                 )
             else:
-                warnings.append(
-                    f"16-bit above 48 kHz is trumpable (RED 2.5.5.1) — downsample to 16/44.1 or 16/48: {filename}"
-                )
+                warnings.append(f"16-bit above 48 kHz is trumpable on RED — downsample to 16/44.1 or 16/48: {filename}")
     return warnings
