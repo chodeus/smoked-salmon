@@ -777,6 +777,13 @@ async def edit_metadata(
                 # the release description will claim the MD5 was set. A half-sanitized
                 # folder must not upload silently on the back of that claim.
                 result = await sanitize_and_verify(path)
+                if result.decode_failures:
+                    # Never negotiable, and not subject to yes_all: that means "take the
+                    # default answer", not "upload files that will not decode".
+                    click.secho(
+                        f"{len(result.decode_failures)} file(s) still do not decode. Aborting.", fg="red", bold=True
+                    )
+                    raise click.Abort
                 if (
                     not result.passed
                     and not cfg.upload.yes_all

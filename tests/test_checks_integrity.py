@@ -266,3 +266,25 @@ async def test_sanitize_and_verify_rechecks_instead_of_trusting_the_return(monke
 
     assert calls == ["sanitize", "check"], "the re-check must run after sanitizing"
     assert not result.passed, "the re-check's verdict is returned, not sanitize's return value"
+
+
+def test_yes_all_does_not_wave_through_a_file_that_will_not_decode():
+    """yes_all means "take the default answer", not "ignore corruption".
+
+    The negotiable path reads `not cfg.upload.yes_all`, which short-circuits the
+    whole condition under yes_all — so the decode-failure abort has to come first
+    and must not be gated on it.
+    """
+    import pathlib
+
+    import salmon.uploader as up
+
+    # up.upload is the uploader.upload *submodule*, not the function it shadows,
+    # so read the package source rather than inspect.getsource.
+    src = pathlib.Path(up.__file__).read_text()
+
+    assert src.index("if result.decode_failures:") < src.index("Continue the upload anyway?"), (
+        "decode failures must abort before the yes_all-skippable confirm"
+    )
+    abort_line = next(line for line in src.splitlines() if "if result.decode_failures:" in line)
+    assert "yes_all" not in abort_line, "the decode-failure abort must not be gated on yes_all"
