@@ -5,7 +5,8 @@ but folderstructure's blocking check measures the same way — two measurements 
 disagree is how a folder passed one gate and failed the other.
 """
 
-# Max full in-torrent path length (main folder + subfolders + filename): RED 2.3.12 = 180, OPS 2.3.12 = 255.
+# Max full in-torrent path: the top-level torrent folder, any subfolders, and the
+# filename — nested folders and long classical filenames all count against it.
 MAX_PATH_LENGTH = {"RED": 180, "OPS": 255}
 # The folder is prepared once, before a tracker is chosen, so it has to satisfy the
 # strictest destination it might go to.
