@@ -270,7 +270,7 @@ def _copy_tags(tag_dict: dict[str, list[str]], flac_obj: flac.FLAC, mp3_path: Pa
 def _validate_channel_count(items: list[TranscodeItem]) -> None:
     """Refuse a multichannel source before anything is deleted or written.
 
-    A lossy transcode of a multichannel source is not allowed (RED 2.7.4), so
+    A lossy transcode of a multichannel source is not allowed on RED, so
     this can never produce something shippable — and finding out on track 7, or
     after the overwrite branch has removed a prior output, costs real work.
     """
