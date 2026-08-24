@@ -702,10 +702,14 @@ class BaseGazelleApi:
         return await self.site_page_upload(data, files)
 
     async def dry_run_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
-        """Validate an upload without sending it. Base trackers have no server-side dryrun."""
+        """Build the upload locally and send nothing.
+
+        Never call a tracker-side dryrun here: posting the form to validate it is
+        still posting it, which is not what --dry-run promises.
+        """
         click.secho(
-            f"\n[DRY RUN] {self.site_string}: prepared the torrent and upload form but did NOT upload "
-            f"({self.site_string} has no server-side dry run).",
+            f"\n[DRY RUN] {self.site_string}: prepared the torrent and upload form locally. "
+            f"Nothing was sent to {self.site_string}.",
             fg="cyan",
             bold=True,
         )

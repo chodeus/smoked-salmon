@@ -819,7 +819,14 @@ def test_checks_run_integrity_and_log_happy_path(client, album_dir, integrity_st
     data = join_job(client, job["id"])
     assert data["status"] == "done"
     # ANSI styling from the integrity checker is stripped for the API
-    assert data["result"]["raw"]["integrity"] == {"passed": True, "details": "ok", "concerns": []}
+    assert data["result"]["raw"]["integrity"] == {
+        "passed": True,
+        "details": "ok",
+        "concerns": [],
+        "md5_unset": [],
+        "decode_failures": [],
+        "checked": 0,
+    }
     verdicts = {r["id"]: r["verdict"] for r in data["result"]["rows"]}
     assert verdicts["integrity"] == "ok"
     logs = {entry["file"]: entry for entry in data["result"]["raw"]["log"]["logs"]}

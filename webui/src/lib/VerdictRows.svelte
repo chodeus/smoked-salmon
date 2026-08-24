@@ -61,6 +61,8 @@
   }
   .detail {
     color: var(--text-dim);
+    /* A detail that arrives with newlines must not collapse into one run-on line. */
+    white-space: pre-line;
   }
   .verdict-skip .label,
   .verdict-skip .detail {

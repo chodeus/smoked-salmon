@@ -120,12 +120,36 @@
         {/if}
       {/if}
 
-      {#if job.result.raw.integrity?.details || job.result.raw.integrity?.concerns?.length}
+      {#if job.result.raw.integrity?.details || job.result.raw.integrity?.concerns?.length || job.result.raw.integrity?.md5_unset?.length}
         <h3>Integrity</h3>
         {#each job.result.raw.integrity.concerns ?? [] as concern}
           <p><span class="chip warn">{concern}</span></p>
         {/each}
-        <pre class="mono muted">{job.result.raw.integrity.details}</pre>
+        {#if job.result.raw.integrity.md5_unset?.length}
+          <p>
+            <span class="chip warn">
+              {job.result.raw.integrity.md5_unset.length} of {job.result.raw.integrity.checked} file(s)
+              with no stored MD5 signature
+            </span>
+          </p>
+          <p class="muted">
+            The audio decodes cleanly; there is just no checksum stored to verify it against.
+            Normal for WEB / web-store downloads. Sanitize re-encodes the album losslessly to set
+            the MD5 (this also strips embedded art); note it in the release description —
+            e.g. “WEB download, re-encoded to set MD5”.
+          </p>
+          <details>
+            <summary class="muted">Show the {job.result.raw.integrity.md5_unset.length} file(s)</summary>
+            <ul class="mono">
+              {#each job.result.raw.integrity.md5_unset as name}
+                <li>{name}</li>
+              {/each}
+            </ul>
+          </details>
+        {/if}
+        {#if job.result.raw.integrity.details}
+          <pre class="mono muted">{job.result.raw.integrity.details}</pre>
+        {/if}
       {/if}
 
       {#if job.result.raw.mqa?.detected}
