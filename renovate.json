@@ -1,5 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>chodeus/chodeus-ops"],
-  "forkProcessing": "enabled"
+  "forkProcessing": "enabled",
+  "packageRules": [
+    {
+      "description": "Hold the Python runtime below 3.14: pyoxipng ships no cp314 wheel, so uv falls back to a maturin source build and the slim image has no Rust toolchain. Lift once pyoxipng publishes cp314.",
+      "matchDepNames": ["python"],
+      "allowedVersions": "<3.14"
+    }
+  ]
 }
