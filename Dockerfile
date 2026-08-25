@@ -1,7 +1,7 @@
 # ===========================================
 # Stage 0: Web UI builder - build the Svelte SPA into salmon/webui/static
 # ===========================================
-FROM node:22-alpine AS webui-builder
+FROM node:22.23.2-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS webui-builder
 WORKDIR /build/webui
 COPY webui/package.json webui/package-lock.json ./
 RUN npm ci
@@ -12,7 +12,7 @@ RUN npm run build
 # ===========================================
 # Stage 1: Builder - Install dependencies and build the project
 # ===========================================
-FROM python:3.13-slim-trixie AS builder
+FROM python:3.14-slim-trixie@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS builder
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Set working directory
@@ -50,7 +50,7 @@ RUN --mount=type=cache,target=/opt/uv-cache \
 # ===========================================
 # Stage 2: Runtime - Minimal Python slim image
 # ===========================================
-FROM python:3.13-slim-trixie
+FROM python:3.14-slim-trixie@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4
 
 # Set working directory
 WORKDIR /app
