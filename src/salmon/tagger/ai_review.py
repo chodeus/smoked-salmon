@@ -445,8 +445,12 @@ def _extract_reasoning_summary(response: Response) -> str | None:
 
 def _describe_web_search_action(item: ResponseFunctionWebSearch) -> str:
     action = item.action
-    if action.type == "search" and action.query.strip():
-        return f"search | {action.query.strip()}"
+    if action.type == "search":
+        # openai 3.x moved the singular query to a queries list and made both optional.
+        queries = action.queries or ([action.query] if action.query else [])
+        joined = ", ".join(q.strip() for q in queries if q and q.strip())
+        if joined:
+            return f"search | {joined}"
     if action.type == "open_page" and action.url and action.url.strip():
         return f"open page | {action.url.strip()}"
     return ""
