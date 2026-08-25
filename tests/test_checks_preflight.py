@@ -377,3 +377,64 @@ def test_a_trailing_separator_does_not_drop_the_folder_from_the_path_length():
 
     assert _os.path.basename("/music/Album/") == "", "the case the normpath guards against"
     assert _os.path.basename(_os.path.normpath("/music/Album/")) == "Album"
+
+
+def test_unset_md5_alone_can_be_acknowledged_rather_than_blocking():
+    """A missing checksum is not a broken file: flac decodes it and prints "ok"."""
+    from salmon.checks.preflight import WARN, _integrity_verdict
+
+    verdict, detail = _integrity_verdict(
+        {
+            "passed": False,
+            "details": "",
+            "concerns": [],
+            "md5_unset": ["a.flac"] * 17,
+            "decode_failures": [],
+            "checked": 17,
+        },
+        {},
+    )
+
+    assert verdict == WARN
+    assert "17 of 17" in detail
+    assert "re-encode" in detail, "the row must say the album can be fixed before uploading"
+
+
+def test_a_decode_failure_beside_unset_md5s_still_blocks():
+    """The fail-open shape: one broken file in an album of MD5-less ones must not
+    ride their downgrade out of the blocking verdict."""
+    from salmon.checks.preflight import BLOCK, _integrity_verdict
+
+    verdict, _detail = _integrity_verdict(
+        {
+            "passed": False,
+            "details": "",
+            "concerns": [],
+            "md5_unset": ["a.flac", "b.flac"],
+            "decode_failures": ["c.flac"],
+            "checked": 3,
+        },
+        {},
+    )
+
+    assert verdict == BLOCK
+
+
+def test_a_part_web_album_says_how_many():
+    """ "3 of 17" and "17 of 17" are different situations and must not read alike."""
+    from salmon.checks.preflight import WARN, _integrity_verdict
+
+    verdict, detail = _integrity_verdict(
+        {
+            "passed": False,
+            "details": "",
+            "concerns": [],
+            "md5_unset": ["a.flac"] * 3,
+            "decode_failures": [],
+            "checked": 17,
+        },
+        {},
+    )
+
+    assert verdict == WARN
+    assert "3 of 17" in detail

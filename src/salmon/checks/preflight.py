@@ -14,6 +14,10 @@ import msgspec
 import salmon.trackers
 from salmon.checks import album, provenance
 from salmon.checks.blacklist import red_blacklist_reason
+
+# Not `from salmon.checks import integrity` — the click Command of that name in
+# checks/__init__.py shadows the module.
+from salmon.checks.integrity import md5_unset_summary
 from salmon.checks.source import detect_source
 from salmon.checks.tag_rules import collect_upload_warnings
 from salmon.tagger.audio_info import gather_audio_info
@@ -47,6 +51,22 @@ class CheckSpec(msgspec.Struct, frozen=True):
 
 def _integrity_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
     if not result["passed"]:
+        # A missing checksum and a file that will not decode both fail the check, but
+        # only the first is safe to wave through. decode_failures is the fail-closed
+        # half: anything flac did not confirm as decoded lands there and still blocks.
+        failures = result.get("decode_failures") or []
+        md5_unset = result.get("md5_unset") or []
+        if failures:
+            return BLOCK, result["details"] or f"{len(failures)} file(s) failed to decode."
+        if md5_unset:
+            # One line, not a per-file dump: the row renders inline, so a 17-track album
+            # used to arrive here as 34 lines of near-identical text. Names go to raw.
+            summary = md5_unset_summary(len(md5_unset), result.get("checked") or 0)
+            return WARN, (
+                f"{summary} — decodes cleanly, there is just no checksum stored. Normal for WEB / "
+                "web-store downloads. The upload will offer to re-encode (sanitize) the album to set "
+                'the MD5; note "WEB download, re-encoded to set MD5" in the description.'
+            )
         return BLOCK, result["details"] or "One or more files failed to decode."
     # Decoding is not the same as being sound: mp3val exits 0 while describing
     # the damage, so a file that plays with a complaint must not read as clean.

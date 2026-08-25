@@ -41,10 +41,10 @@
     {#if job.question.kind === 'confirm'}
       <div class="row">
         <button class="btn" disabled={sending} onclick={() => send(true)}>
-          Ja{job.question.default === true ? ' (Default)' : ''}
+          Yes{job.question.default === true ? ' (Default)' : ''}
         </button>
         <button class="btn secondary" disabled={sending} onclick={() => send(false)}>
-          Nein{job.question.default === false ? ' (Default)' : ''}
+          No{job.question.default === false ? ' (Default)' : ''}
         </button>
       </div>
     {:else if job.question.kind === 'edit'}
