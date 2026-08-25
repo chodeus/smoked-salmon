@@ -12,12 +12,7 @@ import salmon.trackers
 from salmon import cfg
 from salmon.checks import mqa_test
 from salmon.checks.blacklist import red_blacklist_reason
-from salmon.checks.integrity import (
-    check_integrity,
-    format_integrity,
-    sanitize_and_verify,
-    sanitize_prompt,
-)
+from salmon.checks.integrity import resolve_integrity_for_upload
 from salmon.checks.logs import check_log_cambia
 from salmon.checks.tag_rules import collect_upload_warnings
 from salmon.checks.upconverts import upload_upconvert_test
@@ -754,42 +749,7 @@ async def edit_metadata(
         await check_folder_structure(path, metadata["scene"], essential_only=essential_only)
 
         if not skip_integrity_check:
-            click.secho("\nChecking integrity of audio files...", fg="cyan", bold=True)
-            result = await check_integrity(path)
-            click.echo(format_integrity(result))
-
-            if not result.passed and metadata["scene"]:
-                click.secho(
-                    "Some files failed sanitization, and this a scene release. "
-                    "You need to sanitize and de-scene before uploading. Aborting.",
-                    fg="red",
-                    bold=True,
-                )
-                raise click.Abort()
-            if not result.passed and (
-                cfg.upload.yes_all
-                or click.confirm(
-                    click.style(f"\n{sanitize_prompt(result)}", fg="magenta"),
-                    default=True,
-                )
-            ):
-                # sanitize_and_verify re-checks rather than trusting the return value:
-                # the release description will claim the MD5 was set. A half-sanitized
-                # folder must not upload silently on the back of that claim.
-                result = await sanitize_and_verify(path)
-                if result.decode_failures:
-                    # Never negotiable, and not subject to yes_all: that means "take the
-                    # default answer", not "upload files that will not decode".
-                    click.secho(
-                        f"{len(result.decode_failures)} file(s) still do not decode. Aborting.", fg="red", bold=True
-                    )
-                    raise click.Abort
-                if (
-                    not result.passed
-                    and not cfg.upload.yes_all
-                    and not click.confirm(click.style("Continue the upload anyway?", fg="magenta"), default=False)
-                ):
-                    raise click.Abort
+            await resolve_integrity_for_upload(path, scene=metadata["scene"], assume_yes=cfg.upload.yes_all)
 
         if cfg.upload.yes_all or click.confirm(
             click.style("\nWould you like to upload the torrent? (No to re-run metadata section)", fg="magenta"),

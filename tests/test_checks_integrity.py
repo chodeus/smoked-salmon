@@ -1,6 +1,7 @@
 """Backup-path reservation and restore behavior in salmon.checks.integrity."""
 
 import anyio
+import asyncclick as click
 import pytest
 
 from salmon.checks.integrity import _reserve_backup_path, _sanitize_flac
@@ -268,23 +269,80 @@ async def test_sanitize_and_verify_rechecks_instead_of_trusting_the_return(monke
     assert not result.passed, "the re-check's verdict is returned, not sanitize's return value"
 
 
-def test_yes_all_does_not_wave_through_a_file_that_will_not_decode():
-    """yes_all means "take the default answer", not "ignore corruption".
+@pytest.fixture
+def integrity_gate(monkeypatch):
+    """Drive resolve_integrity_for_upload with a scripted check result and answer."""
+    import importlib
 
-    The negotiable path reads `not cfg.upload.yes_all`, which short-circuits the
-    whole condition under yes_all — so the decode-failure abort has to come first
-    and must not be gated on it.
-    """
-    import pathlib
+    ig = importlib.import_module("salmon.checks.integrity")
 
-    import salmon.uploader as up
+    def _setup(first, *, sanitized=None, confirm=True):
+        checks = iter([first, sanitized if sanitized is not None else first])
+        calls: list[str] = []
 
-    # up.upload is the uploader.upload *submodule*, not the function it shadows,
-    # so read the package source rather than inspect.getsource.
-    src = pathlib.Path(up.__file__).read_text()
+        async def fake_check(_path, _i=None):
+            calls.append("check")
+            return next(checks)
 
-    assert src.index("if result.decode_failures:") < src.index("Continue the upload anyway?"), (
-        "decode failures must abort before the yes_all-skippable confirm"
-    )
-    abort_line = next(line for line in src.splitlines() if "if result.decode_failures:" in line)
-    assert "yes_all" not in abort_line, "the decode-failure abort must not be gated on yes_all"
+        async def fake_sanitize(_path, _i=None):
+            calls.append("sanitize")
+            return True
+
+        monkeypatch.setattr(ig, "check_integrity", fake_check)
+        monkeypatch.setattr(ig, "sanitize_integrity", fake_sanitize)
+        monkeypatch.setattr(click, "confirm", lambda *a, **k: calls.append("confirm") or confirm)
+        return calls, ig
+
+    return _setup
+
+
+async def test_declining_to_sanitize_still_aborts_on_a_file_that_will_not_decode(integrity_gate):
+    """Declining the sanitize offer is not consent to upload corrupt audio."""
+    from salmon.checks.integrity import IntegrityResult, resolve_integrity_for_upload
+
+    broken = IntegrityResult(False, "a.flac: FAILED", (), decode_failures=("a.flac",), checked=1)
+    calls, _ = integrity_gate(broken, confirm=False)
+
+    with pytest.raises(click.Abort):
+        await resolve_integrity_for_upload("/music", scene=False, assume_yes=False)
+
+    assert "sanitize" not in calls, "the user declined; nothing should have been re-encoded"
+
+
+async def test_yes_all_does_not_wave_through_a_file_that_will_not_decode(integrity_gate):
+    """yes_all means "take the default answer", not "ignore corruption"."""
+    from salmon.checks.integrity import IntegrityResult, resolve_integrity_for_upload
+
+    broken = IntegrityResult(False, "a.flac: FAILED", (), decode_failures=("a.flac",), checked=1)
+    calls, _ = integrity_gate(broken, sanitized=broken, confirm=False)
+
+    with pytest.raises(click.Abort):
+        await resolve_integrity_for_upload("/music", scene=False, assume_yes=True)
+
+    assert "confirm" not in calls, "yes_all answers the sanitize offer without asking"
+    assert "sanitize" in calls, "yes_all takes the default answer, which is to sanitize"
+
+
+async def test_unset_md5_uploads_after_declining_to_sanitize(integrity_gate):
+    """A WEB album with no stored MD5 decodes fine — it must stay uploadable."""
+    from salmon.checks.integrity import IntegrityResult, resolve_integrity_for_upload
+
+    no_md5 = IntegrityResult(False, "", (), md5_unset=("a.flac",), checked=1)
+    integrity_gate(no_md5, confirm=False)
+
+    result = await resolve_integrity_for_upload("/music", scene=False, assume_yes=False)
+
+    assert result.md5_unset == ("a.flac",), "the unsanitized result is what the caller gets back"
+
+
+async def test_scene_release_aborts_before_offering_to_sanitize(integrity_gate):
+    """Sanitizing a scene release de-scenes it, so the offer must never appear."""
+    from salmon.checks.integrity import IntegrityResult, resolve_integrity_for_upload
+
+    no_md5 = IntegrityResult(False, "", (), md5_unset=("a.flac",), checked=1)
+    calls, _ = integrity_gate(no_md5)
+
+    with pytest.raises(click.Abort):
+        await resolve_integrity_for_upload("/music", scene=True, assume_yes=False)
+
+    assert calls == ["check"], "no confirm, no sanitize"

@@ -175,6 +175,39 @@ async def handle_integrity_check(path: str) -> None:
         raise click.Abort
 
 
+async def resolve_integrity_for_upload(path: str, *, scene: bool, assume_yes: bool) -> IntegrityResult:
+    """Check the folder, offer to sanitize, and abort if anything still will not decode.
+
+    Owns the whole "is this folder fit to upload?" decision so the CLI has one gate
+    rather than a condition the caller can accidentally re-order.
+    """
+    click.secho("\nChecking integrity of audio files...", fg="cyan", bold=True)
+    result = await check_integrity(path)
+    click.echo(format_integrity(result))
+    if result.passed:
+        return result
+
+    if scene:
+        click.secho(
+            "Some files failed sanitization, and this a scene release. "
+            "You need to sanitize and de-scene before uploading. Aborting.",
+            fg="red",
+            bold=True,
+        )
+        raise click.Abort()
+
+    if assume_yes or click.confirm(click.style(f"\n{sanitize_prompt(result)}", fg="magenta"), default=True):
+        result = await sanitize_and_verify(path)
+
+    # Outside the sanitize branch: declining to sanitize is not consent to upload files
+    # that will not decode. Ungated by assume_yes too — that means "take the default
+    # answer", not "upload anything".
+    if result.decode_failures:
+        click.secho(f"{len(result.decode_failures)} file(s) do not decode. Aborting.", fg="red", bold=True)
+        raise click.Abort()
+    return result
+
+
 async def sanitize_and_verify(path: str) -> IntegrityResult:
     """Sanitize, then re-check, and report what the re-check found.
 
