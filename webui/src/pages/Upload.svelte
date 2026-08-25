@@ -57,7 +57,7 @@
     overwrite: "Ignore the artists, year, label, catalogue number and genres already in the file tags and take them from the scraped sources instead.",
     skipInitialReview: "Skip the manual metadata review that runs before the AI review. Only does anything when upload.ai_review.enabled is set.",
     applyAiSuggestions: "Runs the AI metadata review without asking, applies its edits, and skips your manual check of what it changed. Needs upload.ai_review.enabled and an API key in config; does nothing otherwise.",
-    dryRun: "Run everything — checks, spectrals, torrent creation — but do not post it. RED validates server-side; OPS builds locally only.",
+    dryRun: "Run everything — checks, spectrals, torrent creation — but build it locally and send nothing to the tracker.",
   }
 
   let activeJobId = $state<string | null>(null)

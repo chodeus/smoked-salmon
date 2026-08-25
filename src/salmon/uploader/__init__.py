@@ -12,11 +12,7 @@ import salmon.trackers
 from salmon import cfg
 from salmon.checks import mqa_test
 from salmon.checks.blacklist import red_blacklist_reason
-from salmon.checks.integrity import (
-    check_integrity,
-    format_integrity,
-    sanitize_integrity,
-)
+from salmon.checks.integrity import resolve_integrity_for_upload
 from salmon.checks.logs import check_log_cambia
 from salmon.checks.tag_rules import collect_upload_warnings
 from salmon.checks.upconverts import upload_upconvert_test
@@ -175,12 +171,12 @@ if TYPE_CHECKING:
 @click.option(
     "--dry-run",
     is_flag=True,
-    help="Validate the upload without sending it (RED does a server-side dry run; OPS builds locally only).",
+    help="Build and validate the upload locally without sending anything to the tracker.",
 )
 @click.option(
     "--skip-mqa",
     is_flag=True,
-    help="Skip check for MQA marker (on first file only)",
+    help="Skip check for MQA marker",
 )
 @click.option(
     "--skip-log-check",
@@ -387,7 +383,7 @@ async def upload(
 
     try:
         if not skip_mqa:
-            click.secho("Checking for MQA release (first file only)", fg="cyan", bold=True)
+            click.secho("Checking for MQA release (every file)", fg="cyan", bold=True)
             await mqa_test(path)
             click.secho("No MQA release detected", fg="green")
 
@@ -753,30 +749,7 @@ async def edit_metadata(
         await check_folder_structure(path, metadata["scene"], essential_only=essential_only)
 
         if not skip_integrity_check:
-            click.secho("\nChecking integrity of audio files...", fg="cyan", bold=True)
-            result = await check_integrity(path)
-            click.echo(format_integrity(result))
-
-            if not result.passed and metadata["scene"]:
-                click.secho(
-                    "Some files failed sanitization, and this a scene release. "
-                    "You need to sanitize and de-scene before uploading. Aborting.",
-                    fg="red",
-                    bold=True,
-                )
-                raise click.Abort()
-            if not result.passed and (
-                cfg.upload.yes_all
-                or click.confirm(
-                    click.style("\nDo you want to sanitize this upload?", fg="magenta"),
-                    default=True,
-                )
-            ):
-                click.secho("\nSanitizing files...", fg="cyan", bold=True)
-                if await sanitize_integrity(path):
-                    click.secho("Sanitization complete", fg="green")
-                else:
-                    click.secho("Some files failed sanitization", fg="red", bold=True)
+            await resolve_integrity_for_upload(path, scene=metadata["scene"], assume_yes=cfg.upload.yes_all)
 
         if cfg.upload.yes_all or click.confirm(
             click.style("\nWould you like to upload the torrent? (No to re-run metadata section)", fg="magenta"),

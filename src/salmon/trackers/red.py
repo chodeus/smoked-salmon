@@ -1,10 +1,8 @@
-import asyncclick as click
-import msgspec
 from bs4 import BeautifulSoup
 
 from salmon import cfg
 from salmon.common import UploadFiles
-from salmon.trackers.base import BaseGazelleApi, _compose_form_data
+from salmon.trackers.base import BaseGazelleApi
 
 
 def _get_input_value(soup: BeautifulSoup, name: str) -> str | None:
@@ -146,27 +144,9 @@ class RedApi(BaseGazelleApi):
 
         return await super().upload(data, files)
 
-    async def dry_run_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
-        """Validate against RED's server-side dryrun (API-key path only)."""
-        # RED's dryrun is API-key only; log uploads go via upload.php, which has none.
-        if not self.api_key or files.log_files:
-            return await super().dry_run_upload(data, files)
-        await self.ensure_authenticated()
-        dry_data = {**data, "auth": self.authkey, "dryrun": True}
-        url = self.base_url + "/ajax.php?action=upload"
-        response = await self._request(
-            "POST", url, data=_compose_form_data(files, dry_data), timeout_secs=30, prefer_api_key=True
-        )
-        try:
-            resp = msgspec.json.decode(response.text)
-        except (msgspec.DecodeError, ValueError):
-            resp = {"status": "error", "error": response.text}
-        if isinstance(resp, dict) and resp.get("status") == "success":
-            click.secho("\n[DRY RUN] RED accepted the upload (dryrun) — no torrent was created.", fg="green", bold=True)
-        else:
-            error = resp.get("error") if isinstance(resp, dict) else response.text
-            click.secho(f"\n[DRY RUN] RED rejected the upload: {error}", fg="red", bold=True)
-        return 0, 0
+    # No dry_run_upload override: RED's server-side dryrun POSTs the whole upload
+    # form to the tracker, which is not what a dry run promises. The base
+    # implementation builds everything locally and sends nothing.
 
     async def site_page_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Upload torrent via upload.php with group data enrichment.

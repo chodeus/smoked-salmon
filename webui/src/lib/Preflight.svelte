@@ -35,6 +35,7 @@
   const unacked = $derived(result ? result.warnings.filter((w) => !acked.includes(w)) : [])
   const ok = $derived(!!result && !stale && result.blocking.length === 0 && unacked.length === 0)
   const detected = $derived(result?.raw?.source?.source ?? null)
+  const md5Unset = $derived<string[]>(result?.raw?.integrity?.md5_unset ?? [])
 
   $effect(() => {
     cleared = ok
@@ -98,11 +99,21 @@
         <button class="btn small secondary" onclick={() => onUseSource(detected)}>Use {detected}</button>
       </p>
     {/if}
-    {#snippet dupeRowDetail(row: Row)}
+    {#snippet rowDetail(row: Row)}
       {@const detail = dupeDetail(row)}
       {#if detail}<DupeMatches {detail} />{/if}
+      {#if row.id === 'integrity' && md5Unset.length}
+        <details class="files">
+          <summary>Show the {md5Unset.length} file(s)</summary>
+          <ul class="mono">
+            {#each md5Unset as name}
+              <li>{name}</li>
+            {/each}
+          </ul>
+        </details>
+      {/if}
     {/snippet}
-    <VerdictRows rows={result.rows} {acked} onToggleAck={toggleAck} rowDetail={dupeRowDetail} />
+    <VerdictRows rows={result.rows} {acked} onToggleAck={toggleAck} {rowDetail} />
   {:else}
     <p class="muted">Verify the album to check its source, integrity, rip log and duplicates before uploading.</p>
   {/if}

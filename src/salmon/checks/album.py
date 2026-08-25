@@ -59,6 +59,9 @@ async def run_integrity_check(path: str) -> dict:
         "passed": result.passed,
         "details": click.unstyle(result.details),
         "concerns": [click.unstyle(c) for c in result.concerns],
+        "md5_unset": list(result.md5_unset),
+        "decode_failures": list(result.decode_failures),
+        "checked": result.checked,
     }
 
 
