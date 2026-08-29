@@ -1748,7 +1748,7 @@ requires-dist = [
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "anyio", specifier = ">=4.14.2" },
     { name = "asyncclick", specifier = ">=8.4.2.1" },
-    { name = "av", specifier = ">=17.1.0" },
+    { name = "av", specifier = ">=18.1.0" },
     { name = "beautifulsoup4", extras = ["lxml"], specifier = ">=4.15.0" },
     { name = "deluge-client", specifier = ">=1.10.2" },
     { name = "fastapi", specifier = ">=0.141.1" },
