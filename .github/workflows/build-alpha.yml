@@ -1,9 +1,11 @@
 name: Build Alpha Image
 
+# pull_request builds without publishing — Dockerfile and webui/ have no other CI cover.
 on:
   push:
     branches:
       - master
+  pull_request:
 
 jobs:
   build-alpha-image:
@@ -22,6 +24,7 @@ jobs:
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Login to GitHub Container Registry
+        if: github.event_name == 'push'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
@@ -45,7 +48,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
-          push: true
+          push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
