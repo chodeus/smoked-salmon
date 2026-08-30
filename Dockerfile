@@ -12,8 +12,8 @@ RUN npm run build
 # ===========================================
 # Stage 1: Builder - Install dependencies and build the project
 # ===========================================
-FROM python:3.13-slim-trixie AS builder
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+FROM python:3.13-slim-trixie@sha256:7ce4b6dfe35e55397b7cda544f8a13f191b7ae28dc5aad71fe664dbc9bc2623f AS builder
+COPY --from=ghcr.io/astral-sh/uv:latest@sha256:95f2aa1fe59274951cfe9b0cbc7972e879ff1004bc8945d130a32eb0dbd85945 /uv /uvx /bin/
 
 # Set working directory
 WORKDIR /app
@@ -50,7 +50,7 @@ RUN --mount=type=cache,target=/opt/uv-cache \
 # ===========================================
 # Stage 2: Runtime - Minimal Python slim image
 # ===========================================
-FROM python:3.13-slim-trixie
+FROM python:3.13-slim-trixie@sha256:7ce4b6dfe35e55397b7cda544f8a13f191b7ae28dc5aad71fe664dbc9bc2623f
 
 # Set working directory
 WORKDIR /app
