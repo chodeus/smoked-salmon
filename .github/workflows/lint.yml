@@ -40,3 +40,29 @@ jobs:
 
       - name: Run Pyright Type Check
         run: uv run basedpyright
+
+  svelte-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          # Keep in step with the webui-builder stage in Dockerfile.
+          node-version: 24
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: webui
+
+      - name: Run svelte-check and tsc
+        run: npm run check
+        working-directory: webui
