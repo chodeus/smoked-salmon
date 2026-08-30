@@ -2,11 +2,19 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>chodeus/chodeus-ops"],
   "forkProcessing": "enabled",
+  "dockerfile": {
+    "pinDigests": false
+  },
   "packageRules": [
     {
       "description": "Hold the Python runtime below 3.14: pyoxipng ships no cp314 wheel, so uv falls back to a maturin source build and the slim image has no Rust toolchain. Lift once pyoxipng publishes cp314.",
       "matchDepNames": ["python"],
       "allowedVersions": "<3.14"
+    },
+    {
+      "description": "Hold TypeScript below 7: svelte-check refuses to start against TS7 unless both TS7 and TS6 are installed and it is passed --tsgo. Lift once svelte-check ships a release that supports TS7 on its own (latest is 4.7.6).",
+      "matchDepNames": ["typescript"],
+      "allowedVersions": "<7"
     }
   ]
 }
