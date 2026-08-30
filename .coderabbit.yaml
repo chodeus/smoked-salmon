@@ -21,8 +21,52 @@ reviews:
     - "!uv.lock"
     - "!**/package-lock.json"
     - "!webui/node_modules/**"
-    - "!src/salmon/webui/static/**"
+    # webui/static is the gitignored Vite build; web/static is 23 tracked binaries.
+    - "!src/salmon/web*/static/**"
     - "!src/salmon/data/version.toml"
+
+  path_instructions:
+    - path: "src/salmon/webui/**/*.py"
+      instructions: |-
+        Web UI — it holds the account's tracker cookies and can trigger real uploads and deletes:
+        - The no-token no-op in auth.py is intentional for a loopback/dev bind ONLY. Flag anything that widens reachability without a token: a non-loopback default host, a new 0.0.0.0 bind, a container that exposes the port, or a new entry in EXEMPT_API_PATHS. /api/health is deliberately NOT exempt because it discloses config, directories, binary paths and trackers — keep it that way.
+        - Compare tokens with hmac.compare_digest, never ==. Never log, echo or return the token, the session cookie, or tracker cookies on any read path, including error bodies and tracebacks.
+        - Fail closed: if config or the token cannot be resolved, reject (401/503) — never fall through to the app. An `except: token = None` branch must deny, not disable the gate.
+        - A long-lived token must not travel in a URL (query string, EventSource, <img>) — browser history, referrers and proxy logs retain it.
+        - Job state mutated from a request handler needs a lock or an atomic DB write; two concurrent job actions must not interleave into a half-applied state.
+    - path: "src/salmon/trackers/**/*.py"
+      instructions: |-
+        Tracker clients (RED/OPS/DIC) — a mistake here gets the account IP-banned, not just an error:
+        - Respect the per-user request budget (RED is 10 requests / 10 seconds) on EVERY new call path, including retries, batch loops and concurrency added in this diff. A new call inside an existing loop silently multiplies the rate.
+        - Back off on 429/5xx with the server's Retry-After; never retry immediately in a tight loop, and cap total attempts.
+        - Never put an api key, cookie or passkey in a log line, an exception message or a URL that gets logged — HTTP client exceptions embed the full request URL in the traceback.
+        - Treat upload/delete as irreversible: confirm the destructive call is gated on an explicit user action, and that a dry-run path cannot fall through to a real POST.
+    - path: "src/salmon/sources/**/*.py"
+      instructions: |-
+        Metadata scrapers (qobuz, tidal, deezer, bandcamp, discogs, musicbrainz, ...):
+        - A parser must fail soft: a missing or renamed field returns None and is handled, never raises into the caller mid-upload or writes a partial tag set.
+        - Don't cache a transient failure (network/5xx/timeout/rate-limit) as a genuine "not found" — a blip must not suppress a valid answer later.
+        - Credentials and region/account entitlements differ per source; never hardcode a token or assume a storefront.
+    - path: "Dockerfile"
+      instructions: |-
+        Container build:
+        - Pin the base image by digest and pin apt/pip/uv versions — an unpinned tag silently changes the runtime between builds.
+        - Never bake a secret into ARG/ENV or a RUN argv: both persist in image history, and /proc/<pid>/cmdline is world-readable in-container. Inject SALMON_WEB_TOKEN and tracker credentials at runtime.
+        - A recursive chown/chmod over a tree a previous COPY wrote re-materialises every file in a new layer, duplicating it in the image — use COPY --chown instead.
+        - The runtime stage must not inherit compilers, headers or -dev packages from the builder.
+    - path: "pyproject.toml"
+      instructions: |-
+        Dependency manifest:
+        - An extra ([all], [composite], [security]) pulls that extra's whole transitive set — confirm the code path needing it still exists. Deleting a feature must drop its dependency in the same change.
+        - A pin whose only justification is dodging a CVE in a transitive dep is a smell: check the consumer is still reachable, then remove the dependency rather than maintain the pin.
+        - Build- and test-only packages must not land in the runtime dependency set the image installs.
+    - path: "tests/**/*.py"
+      instructions: |-
+        Test suite:
+        - No side-effecting call inside an assert — python -O strips assert statements and the call with them. Bind to a local first, then assert on the local.
+        - A guard that cannot fail is worse than none: an assertion reachable only when a list is non-empty, or keyed on a symbol that may be renamed, passes vacuously. Pair it with a control that fails when the defect is injected.
+        - Never let a test hit a live tracker or upload endpoint; network must be stubbed. A test that can POST to RED/OPS is an account risk.
+
   tools:
     # Lint/format/type is already enforced by our CI (ruff + basedpyright); skip here to avoid duplicate noise.
     ruff:
