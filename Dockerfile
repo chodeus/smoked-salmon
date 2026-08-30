@@ -1,7 +1,7 @@
 # ===========================================
 # Stage 0: Web UI builder - build the Svelte SPA into salmon/webui/static
 # ===========================================
-FROM node:22.23.2-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS webui-builder
+FROM node:24.20.0-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS webui-builder
 WORKDIR /build/webui
 COPY webui/package.json webui/package-lock.json ./
 RUN npm ci
