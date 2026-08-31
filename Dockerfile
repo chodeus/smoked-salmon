@@ -69,6 +69,7 @@ COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 # Single-mount container layout: config.toml, rclone.conf and tmp_dir all live in /config.
 ENV SALMON_CONFIG_DIR=/config
+ENV PYTHONDONTWRITEBYTECODE=1
 
 # Only these two need writing by an arbitrary uid; a recursive chmod would
 # re-materialise the whole venv in a second layer and leave it world-writable.
