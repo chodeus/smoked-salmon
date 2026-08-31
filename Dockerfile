@@ -69,9 +69,14 @@ COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 # Single-mount container layout: config.toml, rclone.conf and tmp_dir all live in /config.
 ENV SALMON_CONFIG_DIR=/config
+ENV PYTHONDONTWRITEBYTECODE=1
 
-# Ensure app directory and its contents are writable by any user
-RUN mkdir -p /app/.music /app/.torrents && chmod -R 777 /app
+# Sticky+writable so a configured relative dir can still be created but one uid
+# cannot remove another's files; recursing would re-materialise the venv.
+RUN mkdir -p /app/.music /app/.torrents && \
+    chmod 1777 /app /app/.music /app/.torrents && \
+    unreadable="$(find /app \( -type f ! -perm -0004 \) -o \( -type d ! -perm -0005 \) | head -20)"; \
+    if [ -n "$unreadable" ]; then echo "not world-readable:"; echo "$unreadable"; exit 1; fi
 
 # 55155: `salmon web`. The legacy spectral viewer binds loopback inside the
 # container, so publishing its port could never work.
