@@ -71,10 +71,10 @@ ENV PATH="/app/.venv/bin:$PATH"
 ENV SALMON_CONFIG_DIR=/config
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Only these two need writing by an arbitrary uid; a recursive chmod would
-# re-materialise the whole venv in a second layer and leave it world-writable.
+# /app itself is writable so a configured relative download/torrent dir can still
+# be created; recursing would re-materialise the venv in a layer and expose it.
 RUN mkdir -p /app/.music /app/.torrents && \
-    chmod 777 /app/.music /app/.torrents && \
+    chmod 777 /app /app/.music /app/.torrents && \
     unreadable="$(find /app \( -type f ! -perm -0004 \) -o \( -type d ! -perm -0005 \) | head -20)"; \
     if [ -n "$unreadable" ]; then echo "not world-readable:"; echo "$unreadable"; exit 1; fi
 
