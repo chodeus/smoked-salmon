@@ -73,8 +73,9 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 # Sticky+writable so a configured relative dir can still be created but one uid
 # cannot remove another's files; recursing would re-materialise the venv.
-RUN mkdir -p /app/.music /app/.torrents && \
-    chmod 1777 /app /app/.music /app/.torrents && \
+RUN set -e; \
+    mkdir -p /app/.music /app/.torrents; \
+    chmod 1777 /app /app/.music /app/.torrents; \
     unreadable="$(find /app \( -type f ! -perm -0004 \) -o \( -type d ! -perm -0005 \) | head -20)"; \
     if [ -n "$unreadable" ]; then echo "not world-readable:"; echo "$unreadable"; exit 1; fi
 
