@@ -23,6 +23,7 @@ from salmon.errors import (
     UploadError,
 )
 from salmon.images import upload_spectrals as upload_spectral_imgs
+from salmon.uploader.frequency import assess, generate_frequency_plots
 from salmon.web import create_app_async, spectrals
 
 if TYPE_CHECKING:
@@ -64,19 +65,23 @@ async def check_spectrals(
     click.secho("\nChecking lossy master / spectrals...", fg="cyan", bold=True)
     spectrals_path = create_specs_folder(path)
     all_spectral_ids: dict[int, str] = {}
+    measured = "ok"
     if not spectral_ids:
         all_spectral_ids = await generate_spectrals_all(path, spectrals_path, audio_info)
+        if lossy_master is None:
+            measured = await print_frequency_guidance(path, spectrals_path)
         while True:
             await view_spectrals(spectrals_path, all_spectral_ids)
             if lossy_master is None and check_lma:
-                lossy_master = await prompt_lossy_master(force_prompt_lossy_master)
+                lossy_master = await prompt_lossy_master(force_prompt_lossy_master or measured == "suspect")
                 if lossy_master is not None:
                     break
             else:
                 break
     else:
         if lossy_master is None:
-            lossy_master = await prompt_lossy_master(force_prompt_lossy_master)
+            measured = await print_frequency_guidance(path, spectrals_path)
+            lossy_master = await prompt_lossy_master(force_prompt_lossy_master or measured == "suspect")
 
     if not spectral_ids:
         spectral_ids = await prompt_spectrals(
@@ -89,6 +94,27 @@ async def check_spectrals(
         spectral_ids = await generate_spectrals_ids(path, spectral_ids, spectrals_path, audio_info)
 
     return lossy_master, spectral_ids
+
+
+async def print_frequency_guidance(path: str, spectrals_path: str) -> str:
+    """Print what the frequency analysis measured, and return the folder's level.
+
+    Guidance only: the trackers want a person to read the spectrals, so nothing
+    here answers the lossy-master question. The plots land beside the spectrograms.
+    """
+    try:
+        spectra = await generate_frequency_plots(path, get_audio_files(path, True), spectrals_path)
+        verdict = assess(spectra)
+    except Exception as e:
+        # Advisory output must never cost an upload.
+        click.secho(f"\nFrequency analysis skipped: {e}", fg="yellow")
+        return "ok"
+    colour = {"suspect": "red", "look": "yellow"}.get(verdict["level"], "green")
+    click.secho(f"\nFrequency analysis: {verdict['level']}", fg=colour, bold=True)
+    for note in verdict["notes"]:
+        click.secho(f"  {note}")
+    click.secho("  A measurement, not a verdict: read the spectrals before answering.", fg="cyan")
+    return verdict["level"]
 
 
 async def handle_spectrals_upload_and_deletion(

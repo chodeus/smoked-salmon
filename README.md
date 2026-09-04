@@ -398,6 +398,8 @@ The images are written to `tmp_dir`, not into the album, so an album in a read-o
 
 Spectrals are uploaded to your configured `specs_uploader`; the frequency plots are a reading aid and stay local.
 
+During an upload the same measurements are printed, and the plots shown, before the lossy-master question. That is guidance: the question, its default and your answer are unchanged, because the trackers want a person to read the spectrals. The one exception is `yes_all`, which normally answers that question with "no" unattended; when the folder measures suspect it asks instead.
+
 #### Reading the interface
 
 Every page says what it is for under its heading. The Upload page's options carry hover tooltips and an **Explain these options** toggle that shows the same text inline, so the help does not need a mouse. The Dashboard opens with tiles for trackers connected, required tools present and jobs in flight, and shows free space per configured directory — the disk filling up is what stops an upload mid-job.

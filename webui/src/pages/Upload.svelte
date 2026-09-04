@@ -39,7 +39,7 @@
   const HELP: Record<string, string> = {
     tracker: "Which site to upload to. While upload.multi_tracker_upload is on (the default), the remaining trackers are offered after the first upload completes.",
     source: "Media the files came from. Leave as ask to be prompted during the upload.",
-    lossy: "Whether the master itself is lossy-sourced. Check automatically inspects the spectrals and asks if unsure.",
+    lossy: "Whether the master itself is lossy-sourced. Check automatically prints the frequency analysis next to the spectrals and asks you; yes and no skip the question.",
     groupId: "Add to an existing torrent group instead of creating a new one. Accepts an ID or a torrents.php?id= URL.",
     request: "Fill a request when the upload completes. Accepts a request URL or ID.",
     sourceUrl: "For WEB uploads: the store or streaming URL the files came from, added to the release description.",

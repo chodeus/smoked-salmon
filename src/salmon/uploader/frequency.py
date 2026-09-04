@@ -470,12 +470,12 @@ def summarize(results: list[SpectrumResult]) -> tuple[str, list[str]]:
     if lossy:
         if len(lossy) == len(measured):
             return "suspect", [
-                "Every track carries the marks of a lossy encoder: this is a transcode, or a lossy master — "
-                "the trackers want an approval before one of those is uploaded."
+                "Every track carries the marks of a lossy encoder. Read the spectrals with that in mind: if it "
+                "holds, this is a transcode or a lossy master, and the trackers want an approval before upload."
             ]
         carry = "carries" if len(lossy) == 1 else "carry"
         rest = (
-            f"; the other {len(clean)} measure clean, so the folder was not all sourced the same way."
+            f"; the other {len(clean)} measure clean, which is what a folder with mixed sources looks like."
             if clean and not look
             else "."
         )
