@@ -48,10 +48,12 @@ _WALL_MIN_DEPTH_DB = 20.0
 _WALL_MIN_SLOPE_DB_PER_KHZ = 20.0
 # Where MP3 and AAC encoders put their lowpass. A wall that ends above this is
 # what sample-rate conversion leaves, and every 44.1 kHz master has one.
-_LOSSY_WALL_HZ = (15_000.0, 20_600.0)
+_LOSSY_WALL_HZ = (10_000.0, 20_600.0)
 _ENCODER_LOWPASSES = (
+    ("MP3 at ~80 kbps", 12_800.0, 13_600.0),
+    ("MP3 at 96–112 kbps", 14_900.0, 15_600.0),
     ("MP3 at 128 kbps", 16_300.0, 16_900.0),
-    ("MP3 at ~160 kbps or AAC at ~128 kbps", 17_300.0, 18_300.0),
+    ("MP3 at ~160 kbps or AAC at ~128 kbps", 17_200.0, 18_300.0),
     ("MP3 at 192 kbps or V2", 18_500.0, 19_000.0),
     ("MP3 at 224–256 kbps or V0", 19_050.0, 19_750.0),
     ("MP3 at 320 kbps", 19_950.0, 20_600.0),
@@ -435,10 +437,17 @@ def describe(result: SpectrumResult) -> str:
                 f"{result.floor_hz - result.knee_hz:.0f} Hz{where}), but the highs are not gated. A high-bitrate "
                 f"transcode looks like this, and so does a mastering lowpass; read the zoom."
             )
-        return f"{result.file}: {gate} with no lowpass. A lossy source can do this; so can a very clean production."
+        return (
+            f"{result.file}: {gate} with no lowpass in the encoder range. "
+            f"A lossy source can do this; so can a very clean production."
+        )
     reach = f"energy to {result.reach_hz / 1000:.1f} kHz"
-    if result.cutoff_hz > 0:
+    if result.cutoff_hz > 0 and result.floor_hz > _LOSSY_WALL_HZ[1]:
         return f"{result.file}: {reach}, then a steep fall at {khz} as sample-rate conversion leaves; not a lossy mark."
+    if result.cutoff_hz > 0:
+        return (
+            f"{result.file}: {reach}, then a steep fall at {khz} outside the band where encoders cut; not a lossy mark."
+        )
     return f"{result.file}: {reach}; no lossy signature."
 
 

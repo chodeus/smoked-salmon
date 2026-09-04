@@ -203,7 +203,16 @@ def _mp3_transcode(tmp_path, samples, bit_rate):
     return name
 
 
-_needs_lame = pytest.mark.skipif("libmp3lame" not in av.codecs_available, reason="PyAV build has no MP3 encoder")
+def _has_mp3_encoder() -> bool:
+    # codecs_available lists names regardless of direction; probe the encoder itself.
+    try:
+        av.Codec("libmp3lame", "w")
+    except Exception:
+        return False
+    return True
+
+
+_needs_lame = pytest.mark.skipif(not _has_mp3_encoder(), reason="PyAV build has no MP3 encoder")
 
 
 @_needs_lame
@@ -329,11 +338,14 @@ def test_a_corrupt_spectrum_never_yields_a_non_finite_measurement():
     wall = fq.measure_wall(freqs, np.full(len(freqs), np.nan))
     assert not wall.found and wall.reach_hz == 0.0
     assert all(math.isfinite(v) for v in wall)
-    json.dumps({"drop_db": fq._finite(float("nan"))})
+    json.dumps({"drop_db": fq._finite(float("nan"))}, allow_nan=False)
 
 
 def test_a_failed_plot_costs_only_its_own_file(tmp_path, monkeypatch):
-    def boom(*_args, **_kwargs):
+    def boom(_freqs, _db, _rate, out_path, *_args, **_kwargs):
+        # A half-written file is what a real failure leaves; the cleanup has to remove it.
+        with open(out_path, "wb") as partial:
+            partial.write(b"\x89PNG\r\n\x1a\n")
         raise OSError("no space left on device")
 
     monkeypatch.setattr(fq, "render_plot", boom)
