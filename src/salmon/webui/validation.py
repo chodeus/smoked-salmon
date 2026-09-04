@@ -38,6 +38,14 @@ def is_within_roots(path: str, roots: list[str] | None = None) -> bool:
     return False
 
 
+def validate_confined_path(raw_path: str) -> str:
+    """Resolve a user-supplied path and require it to sit within a configured root; no probe."""
+    path = os.path.realpath(os.path.expanduser(raw_path))
+    if not is_within_roots(path):
+        raise HTTPException(status_code=403, detail="Refusing to read outside the configured directories.")
+    return path
+
+
 def validate_album_dir(raw_path: str) -> str:
     """Resolve a user-supplied directory and confine it to salmon's directories.
 

@@ -49,6 +49,13 @@ def test_single_and_batch_inputs(tmp_path: Path) -> None:
     assert source.params == ("torrent", {"hash": torrent.infohash.upper()})
 
 
+def test_a_numeric_id_is_an_id_even_when_a_folder_of_that_name_exists(tmp_path: Path, monkeypatch) -> None:
+    """The web UI skips path confinement for references, so a reference must never become a path."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "42").mkdir()
+    assert _input_items("42", cast("Any", SourceSite())) == [42]
+
+
 def test_cross_upload_data_maps_source_to_target() -> None:
     response = {
         "group": {

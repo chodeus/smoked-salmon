@@ -222,20 +222,41 @@ def test_cross_upload_refuses_an_outside_path_whether_or_not_it_exists(client, t
     """Confinement must not depend on an existence probe, which would say what is on the host."""
     source, target = two_trackers
     body = {"path": "/nonexistent-salmon-zzz/album", "source": source, "target": target}
-    assert client.post("/api/cross-upload", json=body).status_code == 403
+    response = client.post("/api/cross-upload", json=body)
+    assert response.status_code == 403
 
 
 def test_cross_upload_still_accepts_a_source_url(client, two_trackers) -> None:
     source, target = two_trackers
     body = {"path": "https://example.com/album/1", "source": source, "target": target}
-    assert client.post("/api/cross-upload", json=body).status_code != 403
+    response = client.post("/api/cross-upload", json=body)
+    assert response.status_code == 200, response.text
 
 
 def test_cross_upload_still_accepts_a_torrent_id(client, two_trackers) -> None:
     # IDs and URLs are not filesystem paths and must pass the confinement check.
     source, target = two_trackers
     r = client.post("/api/cross-upload", json={"path": "12345", "source": source, "target": target})
-    assert r.status_code != 403
+    assert r.status_code == 200, r.text
+
+
+def test_cross_upload_reconfines_the_path_when_the_job_starts(client, two_trackers, album, monkeypatch) -> None:
+    """A path that passed at request time must be checked again when the worker is about to read it."""
+    source, target = two_trackers
+    calls: list[dict] = []
+
+    async def fake_cross_upload(**kwargs):
+        calls.append(kwargs)
+
+    verdicts = iter([True, False])  # request-time check passes, job-start check fails
+    monkeypatch.setattr("salmon.webui.routers.tools._CROSS_UPLOAD", fake_cross_upload)
+    monkeypatch.setattr("salmon.webui.validation.is_within_roots", lambda path, roots=None: next(verdicts))
+    r = client.post("/api/cross-upload", json={"path": album, "source": source, "target": target})
+    assert r.status_code == 200, r.text
+    body = _wait(client, r.json()["id"])
+    assert body["status"] == "error"
+    assert "Refusing" in (body.get("error") or "")
+    assert calls == [], "the command must not run once the path fails confinement"
 
 
 @pytest.mark.parametrize("bad", [0, -1])

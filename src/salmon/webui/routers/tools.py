@@ -23,7 +23,7 @@ from salmon.uploader.description import build_tracklist_description
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
 from salmon.webui.validation import (
     assert_public_url,
-    is_within_roots,
+    validate_confined_path,
     validate_writable_album_dir,
 )
 
@@ -111,10 +111,8 @@ async def images_upload(req: ImageUploadRequest) -> dict:
 
     resolved = []
     for raw in req.paths:
-        path = os.path.realpath(os.path.expanduser(raw))
         # Same confinement as album jobs: never read arbitrary files off the host.
-        if not is_within_roots(path):
-            raise HTTPException(status_code=403, detail="Refusing to read outside the configured directories.")
+        path = validate_confined_path(raw)
         if not os.path.isfile(path):
             raise HTTPException(status_code=404, detail=f"Not a file: {raw}")
         resolved.append(path)
@@ -163,17 +161,16 @@ async def cross_upload(req: CrossUploadRequest) -> dict:
     for bitrate in req.transcodes:
         if bitrate not in ("320", "V0"):
             raise HTTPException(status_code=422, detail=f"Unknown transcode: {bitrate}")
-    # The command accepts a directory, a .torrent file, a torrent ID or a source URL.
-    # IDs and URLs pass through; anything else is a path and is confined before any
-    # filesystem probe, so the response never says whether an outside path exists.
+    # Confine a path before any filesystem probe, so the response never says whether an
+    # outside path exists. Torrent IDs and URLs are not paths.
     if not is_torrent_reference(req.path):
-        local = os.path.realpath(os.path.expanduser(req.path))
-        if not is_within_roots(local):
-            raise HTTPException(status_code=403, detail="Refusing to read outside the configured directories.")
+        validate_confined_path(req.path)
 
     async def run(job: Job) -> dict:
+        # The job runs later: re-confine so a path swapped since the request cannot be read.
+        source_input = req.path if is_torrent_reference(req.path) else validate_confined_path(req.path)
         await _CROSS_UPLOAD(
-            torrent_or_directory=req.path,
+            torrent_or_directory=source_input,
             source=req.source,
             target=req.target,
             downconvert=req.downconvert,
