@@ -7,7 +7,7 @@ changes how a spectrogram should be read — so it can be pasted straight in.
 
 import os
 
-from salmon.uploader.frequency import SpectrumResult
+from salmon.uploader.frequency import SpectrumResult, describe, summarize
 
 
 def _format_line(info: dict) -> str:
@@ -64,11 +64,8 @@ def build_report(
         lines.append(f"   Plots below display 0 to {top / 2000:g} kHz, the full range for {top / 1000:g} kHz audio.")
 
     lines += ["", "4. Plots"]
-    for result in spectra:
-        if result.error:
-            lines.append(f"   {result.file}: could not be analysed ({result.error})")
-        else:
-            lines.append(f"   {result.file}: energy to {result.cutoff_hz / 1000:.1f} kHz")
+    lines += [f"   {describe(result)}" for result in spectra]
+    lines += [f"   {note}" for note in summarize(spectra)[1]]
     if image_urls:
         lines += [f"   {url}" for url in image_urls]
     else:
