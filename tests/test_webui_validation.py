@@ -49,3 +49,16 @@ def test_metadata_endpoint_rejects_internal_and_bad_scheme():
         ):
             resp = c.get("/api/metadata", params={"url": bad})
             assert resp.status_code == 422, f"{bad} should be rejected, got {resp.status_code}"
+
+
+def test_validate_confined_path_refuses_outside_without_probing(monkeypatch) -> None:
+    from salmon.webui import validation
+
+    probes: list[str] = []
+    monkeypatch.setattr(validation.os.path, "isdir", lambda p: probes.append(p) or True)
+    with pytest.raises(HTTPException) as excinfo:
+        validation.validate_confined_path("/nonexistent-salmon-zzz/file.png")
+    assert excinfo.value.status_code == 403
+    assert probes == []
+    inside = os.path.join(os.path.realpath(cfg.directory.download_directory), "x.png")
+    assert validation.validate_confined_path(inside) == inside

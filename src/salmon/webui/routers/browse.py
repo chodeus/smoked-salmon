@@ -22,10 +22,11 @@ def browse(path: str | None = None) -> dict:
     if not path:
         path = cfg.directory.download_directory
     path = os.path.realpath(os.path.expanduser(path))
-    if not os.path.isdir(path):
-        raise HTTPException(status_code=404, detail=f"Not a directory: {path}")
+    # Confinement before the isdir probe: a 404 on an out-of-root path would say whether it exists.
     if not is_within_roots(path):
         raise HTTPException(status_code=403, detail="Refusing to browse outside the configured directories.")
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=404, detail=f"Not a directory: {path}")
 
     dirs = []
     audio_files = []
