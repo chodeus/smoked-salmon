@@ -140,6 +140,9 @@ async def cross_upload(
 
 
 def _input_items(value: str, source_site: "BaseGazelleApi") -> list[int | Path]:
+    # A reference is never looked up on disk: "42" is torrent 42 even if a folder "42" exists.
+    if is_torrent_reference(value):
+        return [_torrent_id(value, source_site)]
     path = Path(value).expanduser()
     if path.is_dir():
         torrents = sorted(path.glob("*.torrent"))
@@ -150,6 +153,12 @@ def _input_items(value: str, source_site: "BaseGazelleApi") -> list[int | Path]:
     if path.is_file():
         return [path]
     return [_torrent_id(value, source_site)]
+
+
+def is_torrent_reference(value: str) -> bool:
+    """A torrent ID or an http(s) URL, as opposed to a local path — decided without touching the filesystem."""
+    value = value.strip()
+    return value.isdigit() or urlparse(value).scheme in ("http", "https")
 
 
 def _torrent_id(value: str, source_site: "BaseGazelleApi") -> int:
