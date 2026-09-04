@@ -6,8 +6,13 @@
 # pass. base_branches must list it or CodeRabbit only auto-reviews the default branch.
 language: en-US
 reviews:
-  profile: chill
+  # assertive: chill passed a diff clean that assertive flagged with two Major findings (2026-09-03); the "**" rule keeps style nits out
+  profile: assertive
   request_changes_workflow: false
+  pre_merge_checks:
+    # off: the 80% docstring-coverage warning contradicts the one-line-docstring rule under "**"
+    docstrings:
+      mode: "off"
   high_level_summary: true
   poem: false
   review_status: true
@@ -66,6 +71,56 @@ reviews:
         - No side-effecting call inside an assert — python -O strips assert statements and the call with them. Bind to a local first, then assert on the local.
         - A guard that cannot fail is worse than none: an assertion reachable only when a list is non-empty, or keyed on a symbol that may be renamed, passes vacuously. Pair it with a control that fails when the defect is injected.
         - Never let a test hit a live tracker or upload endpoint; network must be stubbed. A test that can POST to RED/OPS is an account risk.
+    - path: "src/salmon/uploader/**/*.py"
+      instructions: |-
+        Upload orchestration — the tracker POST is the point of no return:
+        - The --dry-run gate (gazelle_site.dry_run -> dry_run_upload + raise
+          DryRunComplete) must stay IMMEDIATELY before gazelle_site.upload();
+          flag any new code path that reaches upload() without passing it, and
+          remember RED's server-side dryrun still POSTs the full upload.
+        - shutil.rmtree / send2trash on abort must only ever target the staged
+          copy, never a library_dirs source. copytree must keep refusing an
+          existing dest and stay a real copy (no hardlinks) so tag writes never
+          touch library files.
+        - --essential-only and --scene stay mutually exclusive.
+    - path: "src/salmon/**/*.py"
+      instructions: |-
+        Everything else under src/salmon (checks, tagger, converter, images, search, config):
+        - Distinguish a genuine not-found from a transient failure (network,
+          5xx, timeout, rate limit) — never cache or report a transient as
+          "no result", and never let one greenlight an upload.
+        - Fail closed on config: a missing or unparseable setting on an upload
+          or delete path is an error, not a default.
+        - 0 and "" are legitimate values (track numbers, bit depth, disc 0,
+          empty tag) — use explicit None checks, not truthiness.
+        - Never log or format tracker cookies, API keys, passkeys or session
+          tokens, including inside exception messages and URLs.
+    - path: "webui/src/**/*.{svelte,ts}"
+      instructions: |-
+        Svelte web UI:
+        - The token is posted once as a JSON body to /api/login and auth then
+          rides the session cookie — never put it in a URL, query string,
+          WebSocket URL or header on later calls, and never persist it in
+          localStorage.
+        - checkAuth() fails OPEN on a fetch error by design (loopback/dev); the
+          SERVER is the gate. Flag a change that hides a destructive action
+          behind that client-side flag alone.
+        - 0 and "" are falsy: use ?? / Number.isFinite / explicit null checks
+          for counts, sizes and indices.
+        - Close WebSockets and clear timers on component destroy.
+    - path: ".github/workflows/**"
+      instructions: |-
+        CI and the GHCR publish:
+        - build-pr.yml is the ONLY cover for Dockerfile and webui/ on PRs. A
+          green ruff/pyright/pytest set does not prove the image builds (a
+          runtime bump once passed every check and broke the image) — keep the
+          image build a PR gate.
+        - Never add packages: write or registry login to a pull_request workflow;
+          a same-repo PR can edit the workflow it runs under. Keep
+          persist-credentials: false.
+        - Enumerate allowed states positively (== 'success' || == 'skipped'),
+          never by negation; pin third-party actions by commit SHA; never
+          interpolate untrusted input into `run:` — pass it via env.
     - path: "**"
       instructions: |-
         Applies to every file, whatever the language:
@@ -73,9 +128,16 @@ reviews:
           what a non-obvious block does, or the gotcha it guards. No why/history
           essays, no before/after narrative, no restating the code, no section
           banners. Docstrings: one line unless the signature genuinely cannot
-          carry it.
+          carry it. Never ask for a docstring to be added; a missing docstring
+          is not a finding.
         - The 1-2 line cap wins even inside an already heavily-commented file —
           matching local density is not licence to exceed it.
+        - A comment, docstring, help text, column header, log message or UI label
+          that disagrees with what the code does is a correctness finding, not a
+          stale-comment nit: report it and say which side is wrong.
+        - Do not flag stylistic preferences that are consistent across the file
+          (naming, quoting, import order, formatting, line length). Report
+          correctness, security, data-loss and the classes named above.
 
   tools:
     # Lint/format/type is already enforced by our CI (ruff + basedpyright); skip here to avoid duplicate noise.
