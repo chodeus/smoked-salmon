@@ -141,10 +141,11 @@ def test_a_wall_above_the_encoder_range_is_read_as_sample_rate_conversion():
     assert "sample-rate conversion" in fq.describe(result)
 
 
-def test_the_encoder_whose_lowpass_lands_there_is_named():
-    assert "128 kbps" in fq.encoder_hint(16_600)
-    assert "320 kbps" in fq.encoder_hint(20_150)
+def test_the_encoder_whose_lowpass_floors_out_there_is_named():
+    assert "128 kbps" in fq.encoder_hint(16_800)
+    assert "320 kbps" in fq.encoder_hint(20_300)
     assert fq.encoder_hint(21_000) == ""
+    assert fq.encoder_hint(fq._LOSSY_WALL_HZ[0]), "the accepted range must start on a named setting"
 
 
 # ---------------------------------------------------------------------------

@@ -46,18 +46,17 @@ _REACH_FLOOR_DB = -100.0
 _TOP_MARGIN_DB = 10.0
 _WALL_MIN_DEPTH_DB = 20.0
 _WALL_MIN_SLOPE_DB_PER_KHZ = 20.0
-# Where MP3 and AAC encoders put their lowpass; the low end is the lowest setting
-# measured for the hint table. A wall ending above it is typical of sample-rate
-# conversion or an anti-alias filter, common on 44.1 kHz masters.
+# Where a wall's floor lands for MP3/AAC lowpasses; 20.6 kHz keeps LAME 320 (≤20.4)
+# apart from sample-rate-conversion walls (≥20.9). Both tables key on floor_hz.
 _LOSSY_WALL_HZ = (12_800.0, 20_600.0)
 _ENCODER_LOWPASSES = (
-    ("MP3 at ~80 kbps", 12_800.0, 13_600.0),
-    ("MP3 at 96–112 kbps", 14_900.0, 15_600.0),
-    ("MP3 at 128 kbps", 16_300.0, 16_900.0),
-    ("MP3 at ~160 kbps or AAC at ~128 kbps", 17_200.0, 18_300.0),
-    ("MP3 at 192 kbps or V2", 18_500.0, 19_000.0),
-    ("MP3 at 224–256 kbps or V0", 19_050.0, 19_750.0),
-    ("MP3 at 320 kbps", 19_950.0, 20_600.0),
+    ("MP3 at ~80 kbps", 12_800.0, 13_700.0),
+    ("MP3 at 96–112 kbps", 15_000.0, 15_600.0),
+    ("MP3 at 128 kbps", 16_500.0, 17_100.0),
+    ("MP3 at ~160 kbps or AAC at ~128 kbps", 17_200.0, 18_700.0),
+    ("MP3 at 192 kbps or V2", 18_750.0, 19_100.0),
+    ("MP3 at 224–256 kbps or V0", 19_300.0, 19_800.0),
+    ("MP3 at 320 kbps", 20_100.0, 20_600.0),
 )
 _TEXTURE_BANDS = (
     (16_000.0, 17_000.0),
@@ -286,10 +285,10 @@ def _abruptness(on: np.ndarray, off: np.ndarray) -> float:
     return abrupt / switches if switches else 0.0
 
 
-def encoder_hint(cutoff_hz: float) -> str:
-    """Name the encoder setting whose lowpass lands here, if one does."""
+def encoder_hint(floor_hz: float) -> str:
+    """Name the encoder setting whose lowpass floors out here, if one does."""
     for name, lo, hi in _ENCODER_LOWPASSES:
-        if lo <= cutoff_hz <= hi:
+        if lo <= floor_hz <= hi:
             return name
     return ""
 
@@ -413,7 +412,7 @@ def describe(result: SpectrumResult) -> str:
     if verdict == "silent":
         return f"{result.file}: too quiet to measure."
     khz = f"{result.cutoff_hz / 1000:.1f} kHz"
-    hint = encoder_hint(result.cutoff_hz)
+    hint = encoder_hint(result.floor_hz)
     where = f", where {hint} cuts" if hint else ""
     gate = (
         f"the {result.gated_band} band drops to the bit-depth floor in {result.gating:.0%} of loud frames"
@@ -445,12 +444,13 @@ def describe(result: SpectrumResult) -> str:
     reach = f"energy to {result.reach_hz / 1000:.1f} kHz"
     if result.cutoff_hz > 0 and result.floor_hz > _LOSSY_WALL_HZ[1]:
         return (
-            f"{result.file}: {reach}, then a steep fall at {khz} above the band where encoders cut, "
+            f"{result.file}: {reach}, then a steep fall at {khz} ending above the band where encoders cut, "
             f"typical of sample-rate conversion; not a lossy mark."
         )
     if result.cutoff_hz > 0:
         return (
-            f"{result.file}: {reach}, then a steep fall at {khz} outside the band where encoders cut; not a lossy mark."
+            f"{result.file}: {reach}, then a steep fall at {khz} ending below the band where encoders cut; "
+            f"not a lossy mark."
         )
     return f"{result.file}: {reach}; no lossy signature."
 
