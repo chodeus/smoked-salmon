@@ -13,8 +13,9 @@ def test_generate_source_links_excludes_source_url() -> None:
     links = generate_source_links(metadata_urls, source_url)
 
     assert "Bandcamp" not in links
-    assert "juno.co.uk" in links
-    assert "wordandsound.net" in links
+    assert f"[url={source_url}]" not in links
+    assert f"[url={metadata_urls[1]}]" in links
+    assert f"[url={metadata_urls[2]}]" in links
 
 
 def test_generate_t_description_omits_empty_more_info_after_source_filter() -> None:

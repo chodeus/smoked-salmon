@@ -152,6 +152,12 @@ def _input_items(value: str, source_site: "BaseGazelleApi") -> list[int | Path]:
     return [_torrent_id(value, source_site)]
 
 
+def is_torrent_reference(value: str) -> bool:
+    """A torrent ID or an http(s) URL, as opposed to a local path — decided without touching the filesystem."""
+    value = value.strip()
+    return value.isdigit() or urlparse(value).scheme in ("http", "https")
+
+
 def _torrent_id(value: str, source_site: "BaseGazelleApi") -> int:
     if value.strip().isdigit():
         return int(value)

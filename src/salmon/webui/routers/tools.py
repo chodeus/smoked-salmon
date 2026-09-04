@@ -16,6 +16,7 @@ from salmon import cfg
 from salmon.constants import SOURCES as SOURCE_CODES
 from salmon.constants import TAG_ENCODINGS
 from salmon.cross_upload import cross_upload as cross_upload_command
+from salmon.cross_upload import is_torrent_reference
 from salmon.images import HOSTS, upload_images
 from salmon.tagger import tag as tag_command
 from salmon.uploader.description import build_tracklist_description
@@ -163,10 +164,12 @@ async def cross_upload(req: CrossUploadRequest) -> dict:
         if bitrate not in ("320", "V0"):
             raise HTTPException(status_code=422, detail=f"Unknown transcode: {bitrate}")
     # The command accepts a directory, a .torrent file, a torrent ID or a source URL.
-    # Anything that resolves to a real path must be confined; IDs and URLs pass through.
-    local = os.path.realpath(os.path.expanduser(req.path))
-    if os.path.exists(local) and not is_within_roots(local):
-        raise HTTPException(status_code=403, detail="Refusing to read outside the configured directories.")
+    # IDs and URLs pass through; anything else is a path and is confined before any
+    # filesystem probe, so the response never says whether an outside path exists.
+    if not is_torrent_reference(req.path):
+        local = os.path.realpath(os.path.expanduser(req.path))
+        if not is_within_roots(local):
+            raise HTTPException(status_code=403, detail="Refusing to read outside the configured directories.")
 
     async def run(job: Job) -> dict:
         await _CROSS_UPLOAD(

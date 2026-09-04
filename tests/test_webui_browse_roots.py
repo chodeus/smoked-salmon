@@ -45,3 +45,8 @@ def test_the_default_view_is_still_the_download_directory(client) -> None:
 @pytest.mark.parametrize("where", ["/", "/etc"])
 def test_browsing_outside_the_roots_is_still_refused(client, where) -> None:
     assert client.get(f"/api/browse?path={where}").status_code == 403
+
+
+def test_an_outside_path_is_refused_before_it_is_probed(client) -> None:
+    """A 404 for a missing path outside the roots would say the path does not exist."""
+    assert client.get("/api/browse?path=/nonexistent-salmon-zzz").status_code == 403

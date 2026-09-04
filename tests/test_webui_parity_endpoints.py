@@ -218,6 +218,19 @@ def test_cross_upload_refuses_a_local_path_outside_the_roots(client, two_tracker
     assert r.status_code == 403
 
 
+def test_cross_upload_refuses_an_outside_path_whether_or_not_it_exists(client, two_trackers) -> None:
+    """Confinement must not depend on an existence probe, which would say what is on the host."""
+    source, target = two_trackers
+    body = {"path": "/nonexistent-salmon-zzz/album", "source": source, "target": target}
+    assert client.post("/api/cross-upload", json=body).status_code == 403
+
+
+def test_cross_upload_still_accepts_a_source_url(client, two_trackers) -> None:
+    source, target = two_trackers
+    body = {"path": "https://example.com/album/1", "source": source, "target": target}
+    assert client.post("/api/cross-upload", json=body).status_code != 403
+
+
 def test_cross_upload_still_accepts_a_torrent_id(client, two_trackers) -> None:
     # IDs and URLs are not filesystem paths and must pass the confinement check.
     source, target = two_trackers
