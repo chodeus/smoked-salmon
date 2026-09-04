@@ -255,7 +255,7 @@ def test_both_marks_make_the_folder_suspect_and_name_the_setting():
     joined = " ".join(verdict["notes"])
     assert "192 kbps" in joined
     assert "1 of 2 tracks carries" in joined
-    assert "not all sourced the same way" in joined
+    assert "mixed sources" in joined
 
 
 def test_every_track_lossy_says_transcode_or_lossy_master():
