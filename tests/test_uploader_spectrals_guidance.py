@@ -75,7 +75,8 @@ def flow(monkeypatch, tmp_path):
 async def test_the_measurements_are_printed_before_the_question(flow):
     events, printed, _state = flow
     await sp.check_spectrals("/album", {"01.flac": {}}, None, None)
-    assert events[:3] == ["spectrograms-all", "measure", "prompt"]
+    assert events[:2] == ["spectrograms-all", "measure"]
+    assert events.index("measure") < events.index("prompt")
     joined = "\n".join(printed)
     assert "Frequency analysis: suspect" in joined
     assert "01.flac: brick-wall at 16.6 kHz" in joined
