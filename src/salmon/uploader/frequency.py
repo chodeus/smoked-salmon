@@ -1,14 +1,16 @@
-"""Average-spectrum plots — the view where a lossy cutoff is a cliff, not a guess.
+"""Average-spectrum plots, and the two marks a lossy encoder leaves that a master does not.
 
-A spectrogram shows every moment and asks you to spot a pattern; averaging the
-whole track into one curve turns a 16 kHz lowpass into an unmissable drop. Uses
-PyAV, numpy and Pillow, all already dependencies — no ffmpeg binary needed.
+A brick-wall lowpass where MP3 and AAC encoders cut, and highs that flip between
+content and the bit-depth floor as the encoder runs short of bits. A master rolls
+off gently or cuts only where sample-rate conversion does, and its quiet is noise,
+never digital silence. PyAV decodes, numpy measures, Pillow draws.
 """
 
 import asyncio
 import contextlib
 import math
 import os
+from typing import NamedTuple
 
 import av
 import msgspec
@@ -18,107 +20,281 @@ from PIL import Image, ImageDraw
 from salmon.common.progress import report_progress
 
 FFT_SIZE = 8192
+HOP = FFT_SIZE // 2
 MAX_WINDOWS = 6000  # ~9 min at 44.1 kHz with 50% overlap; plenty for an average
-_WIDTH, _HEIGHT = 1400, 620
-_PAD_L, _PAD_R, _PAD_T, _PAD_B = 70, 20, 34, 46
-_DB_MIN, _DB_MAX = -140.0, 0.0
-# A cutoff is only meaningful relative to the track's own level.
-CUTOFF_FLOOR_DB = 60.0
+MAX_SAMPLES = MAX_WINDOWS * HOP
+TEXTURE_FFT = 2048  # 46 ms frames: short enough to see an encoder gate the highs
+TEXTURE_HOP = TEXTURE_FFT // 2
 # Digital silence averages to the epsilon floor (-300 dB). Any real audio, even
 # a single LSB of dither, lands far above this.
 SILENCE_DB = -250.0
 
+_WIDTH, _HEIGHT = 1400, 620
+_PAD_L, _PAD_R, _PAD_T, _PAD_B = 70, 20, 34, 46
+_DB_MIN, _DB_MAX = -140.0, 0.0
 _BG = (16, 16, 20)
 _GRID = (48, 48, 56)
 _AXIS = (90, 90, 100)
 _LABEL = (150, 150, 160)
 _CURVE = (255, 170, 60)
+_MARK = (90, 200, 255)
+
+# Energy "reaches" as far as the average stays above -100 dB, about where a
+# spectrogram goes dark. A wall is a step down to the band under Nyquist, so it
+# is searched from where the curve last clears that band by a margin.
+_REACH_FLOOR_DB = -100.0
+_TOP_MARGIN_DB = 10.0
+_WALL_MIN_DEPTH_DB = 20.0
+_WALL_MIN_SLOPE_DB_PER_KHZ = 20.0
+# Where MP3 and AAC encoders put their lowpass. A wall that ends above this is
+# what sample-rate conversion leaves, and every 44.1 kHz master has one.
+_LOSSY_WALL_HZ = (15_000.0, 20_600.0)
+_ENCODER_LOWPASSES = (
+    ("MP3 at 128 kbps", 16_300.0, 16_900.0),
+    ("MP3 at ~160 kbps or AAC at ~128 kbps", 17_300.0, 18_300.0),
+    ("MP3 at 192 kbps or V2", 18_500.0, 19_000.0),
+    ("MP3 at 224–256 kbps or V0", 19_050.0, 19_750.0),
+    ("MP3 at 320 kbps", 19_950.0, 20_600.0),
+)
+_TEXTURE_BANDS = (
+    (16_000.0, 17_000.0),
+    (17_000.0, 18_000.0),
+    (18_000.0, 19_000.0),
+    (19_000.0, 20_000.0),
+    (20_000.0, 21_000.0),
+)
+_LOUD_WINDOW_DB = 20.0
+_MIN_LOUD_FRAMES = 40
+# 16-bit rounding noise averages -132 dB per bin at TEXTURE_FFT, TPDF dither
+# -128. A quiet band that sits here was empty, not merely quiet.
+_DIGITAL_FLOOR_DB = -126.5
+_OFF_MARGIN_DB = 6.0
+_ON_MARGIN_DB = 20.0
+_GATED_WITH_WALL = 0.08
+_GATED_LOOK, _GATED_LOOK_ABRUPT = 0.12, 0.25
+_GATED_STRONG, _GATED_STRONG_ABRUPT = 0.25, 0.40
+_MAX_TRACK_NOTES = 8
 
 
 class SpectrumResult(msgspec.Struct, frozen=True):
-    """One track's averaged spectrum, reduced to what the UI reports."""
+    """One track's measurements, reduced to what the UI and the report show."""
 
     file: str
     image: str
     sample_rate: int
-    cutoff_hz: float
     windows: int
-    drop_db: float = 0.0
+    reach_hz: float = 0.0  # highest frequency still carrying energy
+    cutoff_hz: float = 0.0  # brick-wall midpoint; 0 when there is no wall
+    knee_hz: float = 0.0
+    floor_hz: float = 0.0
+    drop_db: float = 0.0  # how far the band above the wall sits below the band under it
+    slope_db_per_khz: float = 0.0
+    floor_db: float = 0.0  # level of the band above the wall
+    gating: float = 0.0  # share of loud frames with a high band at its floor, given it carries content in others
+    gated_band: str = ""
+    gating_abrupt: float = 0.0  # share of on/off switches that happen between adjacent frames
+    digital_floor: bool = False  # the quiet state of that band is the bit-depth floor, not noise
     error: str | None = None
 
 
-def average_spectrum(path: str) -> tuple[np.ndarray, np.ndarray, int, int]:
-    """Welch-average the whole track into one magnitude curve.
+class Wall(NamedTuple):
+    reach_hz: float
+    knee_hz: float
+    floor_hz: float
+    depth_db: float
+    slope_db_per_khz: float
+    floor_db: float
 
-    Returns (frequencies, dB, sample_rate, windows_averaged).
-    """
+    @property
+    def found(self) -> bool:
+        return self.floor_hz > 0
+
+    @property
+    def cutoff_hz(self) -> float:
+        return (self.knee_hz + self.floor_hz) / 2 if self.found else 0.0
+
+
+class Gating(NamedTuple):
+    share: float
+    band: str
+    abrupt: float
+    off_level_db: float
+
+    @property
+    def digital(self) -> bool:
+        return self.band != "" and self.off_level_db <= _DIGITAL_FLOOR_DB
+
+
+_NO_GATING = Gating(0.0, "", 0.0, 0.0)
+
+
+def decode_mono(path: str) -> tuple[np.ndarray, int]:
+    """Decode up to MAX_SAMPLES of the track, downmixed to mono float32."""
     container = av.open(path)
     try:
         stream = container.streams.audio[0]
         sample_rate = stream.rate or 44100
         # Downmix: a cutoff that exists in one channel only still shows here.
         resampler = av.AudioResampler(format="fltp", layout="mono", rate=sample_rate)
-        window = np.hanning(FFT_SIZE).astype(np.float32)
-        acc = np.zeros(FFT_SIZE // 2 + 1, dtype=np.float64)
-        windows = 0
-        buf = np.zeros(0, dtype=np.float32)
-
+        chunks: list[np.ndarray] = []
+        total = 0
         for frame in container.decode(stream):
             for resampled in resampler.resample(frame):
-                buf = np.concatenate([buf, resampled.to_ndarray().reshape(-1)])
-                while len(buf) >= FFT_SIZE and windows < MAX_WINDOWS:
-                    acc += np.abs(np.fft.rfft(buf[:FFT_SIZE] * window)) ** 2
-                    windows += 1
-                    buf = buf[FFT_SIZE // 2 :]  # 50% overlap
-            if windows >= MAX_WINDOWS:
+                chunk = resampled.to_ndarray().reshape(-1)
+                chunks.append(chunk)
+                total += len(chunk)
+            if total >= MAX_SAMPLES:
                 break
         # The resampler buffers; without a flush its last partial frame is lost.
         for resampled in resampler.resample(None):
-            buf = np.concatenate([buf, resampled.to_ndarray().reshape(-1)])
-        while len(buf) >= FFT_SIZE and windows < MAX_WINDOWS:
-            acc += np.abs(np.fft.rfft(buf[:FFT_SIZE] * window)) ** 2
-            windows += 1
-            buf = buf[FFT_SIZE // 2 :]
+            chunks.append(resampled.to_ndarray().reshape(-1))
     finally:
         container.close()
-
-    power = acc / max(windows, 1)
-    # Hann coherent gain is 0.5, so a full-scale sine lands at ~0 dBFS.
-    db = 10 * np.log10(power / (FFT_SIZE * 0.5) ** 2 + 1e-30)
-    return np.fft.rfftfreq(FFT_SIZE, 1 / sample_rate), db, sample_rate, windows
+    samples = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+    return samples[:MAX_SAMPLES].astype(np.float32, copy=False), sample_rate
 
 
-def find_cutoff(freqs: np.ndarray, db: np.ndarray) -> float:
-    """Highest frequency still within CUTOFF_FLOOR_DB of the track's peak.
+def _frame_powers(samples: np.ndarray, size: int, hop: int, chunk: int = 256):
+    """Yield Hann-windowed power spectra in blocks; a full-scale sine reads ~0 dB."""
+    window = np.hanning(size).astype(np.float32)
+    scale = (size * 0.5) ** 2
+    count = (len(samples) - size) // hop + 1
+    for start in range(0, max(count, 0), chunk):
+        stop = min(start + chunk, count)
+        index = np.arange(size)[None, :] + hop * np.arange(start, stop)[:, None]
+        yield np.abs(np.fft.rfft(samples[index] * window, axis=1)) ** 2 / scale
 
-    Silence has to be caught before that comparison: a flat spectrum sits within
-    any floor of its own maximum, so a silent track would otherwise measure as
-    carrying energy all the way to Nyquist.
+
+def _db(power: np.ndarray) -> np.ndarray:
+    return 10 * np.log10(np.maximum(power, 1e-30))
+
+
+def average_spectrum(samples: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray, int]:
+    """Welch-average the track into one magnitude curve: (frequencies, dB, windows)."""
+    acc = np.zeros(FFT_SIZE // 2 + 1, dtype=np.float64)
+    windows = 0
+    for power in _frame_powers(samples, FFT_SIZE, HOP):
+        acc += power.sum(axis=0)
+        windows += len(power)
+    return np.fft.rfftfreq(FFT_SIZE, 1 / sample_rate), _db(acc / max(windows, 1)), windows
+
+
+def _smooth(values: np.ndarray, bins: int = 21) -> np.ndarray:
+    # Edge padding: zero padding would drag the last bins towards 0 dB.
+    padded = np.pad(values, bins // 2, mode="edge")
+    return np.convolve(padded, np.ones(bins) / bins, mode="valid")
+
+
+def measure_wall(freqs: np.ndarray, db: np.ndarray) -> Wall:
+    """Where the energy stops, and whether it stops at a wall or slides away.
+
+    Everything is measured against the band under Nyquist, never the peak: a
+    peak-relative cutoff moves with tonal balance and made dark masters look filtered.
     """
-    if db.max() <= SILENCE_DB:
-        return 0.0
-    above = np.nonzero(db > db.max() - CUTOFF_FLOOR_DB)[0]
-    return float(freqs[above[-1]]) if len(above) else 0.0
+    if not np.isfinite(db).all() or db.max() <= SILENCE_DB:
+        return Wall(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    nyquist = float(freqs[-1])
+    curve = _smooth(db)
+    top_band = (freqs >= nyquist - 600) & (freqs <= nyquist - 100)
+    if not top_band.any():
+        top_band = freqs >= nyquist * 0.95
+    top = float(np.median(curve[top_band]))
+    visible = np.nonzero(curve >= _REACH_FLOOR_DB)[0]
+    if not len(visible):
+        # Nothing clears the floor: silence, or so quiet the plot is dark throughout.
+        return Wall(0.0, 0.0, 0.0, 0.0, 0.0, top)
+    reach = float(freqs[visible[-1]])
+    above = np.nonzero(curve >= top + _TOP_MARGIN_DB)[0]
+    # A curve that never rises above its own top is flat to Nyquist: no wall.
+    edge = float(freqs[above[-1]]) if len(above) else nyquist
+    if edge >= nyquist - 800:
+        return Wall(reach, 0.0, 0.0, 0.0, 0.0, top)
+    under = (freqs >= edge - 1500) & (freqs <= edge - 500)
+    if not under.any():
+        return Wall(reach, 0.0, 0.0, 0.0, 0.0, top)
+    level_under = float(np.median(curve[under]))
+    depth = level_under - top
+    if depth < 15:
+        return Wall(reach, 0.0, 0.0, depth, 0.0, top)
+    knee = float(freqs[np.nonzero(curve >= level_under - 6)[0][-1]])
+    floored = np.nonzero((freqs > knee) & (curve <= top + 3))[0]
+    floor_hz = float(freqs[floored[0]]) if len(floored) else nyquist
+    width = max(floor_hz - knee, 40.0)
+    return Wall(reach, knee, floor_hz, depth, depth / (width / 1000), top)
 
 
-def cutoff_drop(freqs: np.ndarray, db: np.ndarray, cutoff_hz: float, span_hz: float = 1000.0) -> float:
-    """How hard the level falls across the kHz above the cutoff.
+def measure_gating(samples: np.ndarray, sample_rate: int) -> Gating:
+    """How often a high band sits at its floor while the music is loud.
 
-    This is the measurement that separates the two innocent-looking cases: a
-    lossy encoder drops off a cliff, a mastering fade slopes away.
+    The floor is the quietest the bands ever get; whether that quiet is digital
+    silence is decided separately, since a clean production falls to its own noise too.
     """
-    below = db[(freqs >= cutoff_hz - span_hz) & (freqs <= cutoff_hz)]
-    above = db[(freqs > cutoff_hz) & (freqs <= cutoff_hz + span_hz)]
-    if not len(below) or not len(above):
-        return 0.0
-    drop = float(below.mean() - above.mean())
-    # A corrupt decode gives a NaN spectrum, and NaN serialises to a literal the
-    # browser's JSON.parse rejects — it would take the whole job list with it.
-    return drop if math.isfinite(drop) else 0.0
+    freqs = np.fft.rfftfreq(TEXTURE_FFT, 1 / sample_rate)
+    nyquist = sample_rate / 2
+    mid_mask = (freqs >= 2000) & (freqs < 8000)
+    bands = [(lo, hi) for lo, hi in _TEXTURE_BANDS if hi <= nyquist]
+    if not bands or not mid_mask.any():
+        return _NO_GATING
+    masks = [(freqs >= lo) & (freqs < hi) for lo, hi in bands]
+    mids: list[np.ndarray] = []
+    levels: list[list[np.ndarray]] = [[] for _ in bands]
+    for power in _frame_powers(samples, TEXTURE_FFT, TEXTURE_HOP):
+        mids.append(power[:, mid_mask].mean(axis=1))
+        for i, mask in enumerate(masks):
+            levels[i].append(power[:, mask].mean(axis=1))
+    if not mids:
+        return _NO_GATING
+    mid = _db(np.concatenate(mids))
+    loud = mid >= np.percentile(mid, 90) - _LOUD_WINDOW_DB
+    if loud.sum() < _MIN_LOUD_FRAMES:
+        return _NO_GATING
+    stacked = np.stack([_db(np.concatenate(level))[loud] for level in levels])
+    finite = stacked[stacked > SILENCE_DB]
+    if not len(finite):
+        return _NO_GATING
+    floor = float(np.percentile(finite, 0.5))
+    best = _NO_GATING
+    for (lo, hi), band in zip(bands, stacked, strict=True):
+        off = band <= floor + _OFF_MARGIN_DB
+        on = band >= floor + _ON_MARGIN_DB
+        share = float(min(off.mean(), on.mean()))
+        if share <= best.share:
+            continue
+        label = f"{lo / 1000:g}–{hi / 1000:g} kHz"
+        best = Gating(share, label, _abruptness(on, off), float(np.median(band[off])))
+    return best
 
 
-def render_plot(freqs: np.ndarray, db: np.ndarray, sample_rate: int, out_path: str, title: str) -> None:
-    """Draw the curve with a labelled kHz/dB grid."""
+def _abruptness(on: np.ndarray, off: np.ndarray) -> float:
+    """Share of on/off switches with no in-between frame — an encoder gates, a decay slides."""
+    state = np.full(len(on), -1)
+    state[on] = 1
+    state[off] = 0
+    switches = abrupt = 0
+    previous, gap = -1, 0
+    for current in state:
+        if current == -1:
+            gap += 1
+            continue
+        if previous != -1 and current != previous:
+            switches += 1
+            abrupt += gap == 0
+        previous, gap = current, 0
+    return abrupt / switches if switches else 0.0
+
+
+def encoder_hint(cutoff_hz: float) -> str:
+    """Name the encoder setting whose lowpass lands here, if one does."""
+    for name, lo, hi in _ENCODER_LOWPASSES:
+        if lo <= cutoff_hz <= hi:
+            return name
+    return ""
+
+
+def render_plot(
+    freqs: np.ndarray, db: np.ndarray, sample_rate: int, out_path: str, title: str, wall: Wall | None = None
+) -> None:
+    """Draw the curve with a labelled kHz/dB grid, and mark the wall the notes talk about."""
     if sample_rate <= 0:
         raise ValueError(f"cannot plot a spectrum at {sample_rate} Hz")
     img = Image.new("RGB", (_WIDTH, _HEIGHT), _BG)
@@ -146,108 +322,178 @@ def render_plot(freqs: np.ndarray, db: np.ndarray, sample_rate: int, out_path: s
     draw.rectangle([_PAD_L, _PAD_T, _PAD_L + plot_w, _PAD_T + plot_h], outline=_AXIS)
 
     draw.line([(x_of(f), y_of(v)) for f, v in zip(freqs, db, strict=True)], fill=_CURVE, width=2)
+    if wall is not None and wall.found:
+        x = x_of(wall.cutoff_hz)
+        draw.line([(x, _PAD_T), (x, _PAD_T + plot_h)], fill=_MARK, width=1)
+        draw.text((x + 4, _PAD_T + 4), f"wall {wall.cutoff_hz / 1000:.1f}k", fill=_MARK)
+        y = y_of(wall.floor_db)
+        draw.line([(x, y), (_PAD_L + plot_w, y)], fill=_MARK, width=1)
     img.save(out_path)
 
 
 def _analyse_one(album_path: str, filename: str, out_dir: str, index: int) -> SpectrumResult:
     try:
-        freqs, db, sample_rate, windows = average_spectrum(os.path.join(album_path, filename))
+        samples, sample_rate = decode_mono(os.path.join(album_path, filename))
+        freqs, db, windows = average_spectrum(samples, sample_rate)
     except Exception as e:
         # One unreadable file must not cost the spectrograms that did generate.
-        return SpectrumResult(file=filename, image="", sample_rate=0, cutoff_hz=0.0, windows=0, error=str(e))
+        return SpectrumResult(file=filename, image="", sample_rate=0, windows=0, error=str(e))
     if not windows:
-        # An all-zero spectrum is flat, so every bin sits within the floor of the
-        # maximum and find_cutoff would report Nyquist for audio never measured.
         return SpectrumResult(
-            file=filename,
-            image="",
-            sample_rate=sample_rate,
-            cutoff_hz=0.0,
-            windows=0,
-            error="too little audio to average a spectrum",
+            file=filename, image="", sample_rate=sample_rate, windows=0, error="too little audio to average a spectrum"
         )
+    wall = measure_wall(freqs, db)
+    gating = measure_gating(samples, sample_rate)
     image = f"{index + 1:02d} Frequency.png"
     out_path = os.path.join(out_dir, image)
     try:
-        render_plot(freqs, db, sample_rate, out_path, filename)
+        render_plot(freqs, db, sample_rate, out_path, filename, wall)
     except Exception as e:
         # A half-written PNG owned by no result would still be listed and posted.
         with contextlib.suppress(OSError):
             os.remove(out_path)
-        return SpectrumResult(
-            file=filename, image="", sample_rate=sample_rate, cutoff_hz=0.0, windows=windows, error=str(e)
-        )
-    cutoff = find_cutoff(freqs, db)
+        return SpectrumResult(file=filename, image="", sample_rate=sample_rate, windows=windows, error=str(e))
     return SpectrumResult(
         file=filename,
         image=image,
         sample_rate=sample_rate,
-        cutoff_hz=cutoff,
         windows=windows,
-        drop_db=cutoff_drop(freqs, db, cutoff),
+        reach_hz=wall.reach_hz,
+        cutoff_hz=wall.cutoff_hz,
+        knee_hz=wall.knee_hz,
+        floor_hz=wall.floor_hz,
+        drop_db=_finite(wall.depth_db),
+        slope_db_per_khz=_finite(wall.slope_db_per_khz),
+        floor_db=_finite(wall.floor_db),
+        gating=gating.share,
+        gated_band=gating.band,
+        gating_abrupt=gating.abrupt,
+        digital_floor=gating.digital,
     )
 
 
-# Below this much of Nyquist, the roll-off is worth a second look.
-_LOOK_RATIO = 0.91
-# A fall this steep over 1 kHz is a filter, not a fade. Plenty of honest masters
-# roll off early, so the cutoff alone must not raise a flag.
-_CLIFF_DB = 25.0
-# Two tracks off the same master do not stop at frequencies this far apart.
-_DISAGREEMENT_HZ = 1500.0
+def _finite(value: float) -> float:
+    # NaN serialises to a literal the browser's JSON.parse rejects.
+    return value if math.isfinite(value) else 0.0
+
+
+def has_lossy_wall(result: SpectrumResult) -> bool:
+    """A steep, deep step that ends inside the band where encoders cut."""
+    return (
+        result.cutoff_hz > 0
+        and _LOSSY_WALL_HZ[0] <= result.floor_hz <= _LOSSY_WALL_HZ[1]
+        and result.drop_db >= _WALL_MIN_DEPTH_DB
+        and result.slope_db_per_khz >= _WALL_MIN_SLOPE_DB_PER_KHZ
+    )
+
+
+def classify(result: SpectrumResult) -> str:
+    """One of silent, clean, look, lossy — from the two marks, never from the cutoff alone."""
+    if result.error or result.sample_rate <= 0 or not result.reach_hz:
+        return "silent"
+    wall = has_lossy_wall(result)
+    gated = result.digital_floor and result.gating >= _GATED_WITH_WALL
+    strong = result.digital_floor and result.gating >= _GATED_STRONG and result.gating_abrupt >= _GATED_STRONG_ABRUPT
+    if (wall and gated) or strong:
+        return "lossy"
+    look = result.digital_floor and result.gating >= _GATED_LOOK and result.gating_abrupt >= _GATED_LOOK_ABRUPT
+    if wall or look:
+        return "look"
+    return "clean"
+
+
+def describe(result: SpectrumResult) -> str:
+    """One sentence of measurements for a track, in the words the notes and the report share."""
+    if result.error:
+        return f"{result.file}: could not be analysed ({result.error})"
+    verdict = classify(result)
+    if verdict == "silent":
+        return f"{result.file}: too quiet to measure."
+    khz = f"{result.cutoff_hz / 1000:.1f} kHz"
+    hint = encoder_hint(result.cutoff_hz)
+    where = f", where {hint} cuts" if hint else ""
+    gate = (
+        f"the {result.gated_band} band drops to the bit-depth floor in {result.gating:.0%} of loud frames"
+        if result.digital_floor
+        else ""
+    )
+    hires = f" in a {result.sample_rate / 1000:g} kHz file" if result.sample_rate > 50_000 else ""
+    if verdict == "lossy":
+        if has_lossy_wall(result):
+            return (
+                f"{result.file}: brick-wall at {khz}{hires} ({result.drop_db:.0f} dB down over "
+                f"{result.floor_hz - result.knee_hz:.0f} Hz{where}) and {gate} — both marks of a lossy encoder."
+            )
+        return (
+            f"{result.file}: no lowpass in the encoder range, but {gate}, switching abruptly — "
+            f"a lossy encoder running short of bits does this."
+        )
+    if verdict == "look":
+        if has_lossy_wall(result):
+            return (
+                f"{result.file}: brick-wall at {khz}{hires} ({result.drop_db:.0f} dB down over "
+                f"{result.floor_hz - result.knee_hz:.0f} Hz{where}), but the highs are not gated. A high-bitrate "
+                f"transcode looks like this, and so does a mastering lowpass; read the zoom."
+            )
+        return f"{result.file}: {gate} with no lowpass. A lossy source can do this; so can a very clean production."
+    reach = f"energy to {result.reach_hz / 1000:.1f} kHz"
+    if result.cutoff_hz > 0:
+        return f"{result.file}: {reach}, then a steep fall at {khz} as sample-rate conversion leaves; not a lossy mark."
+    return f"{result.file}: {reach}; no lossy signature."
+
+
+def summarize(results: list[SpectrumResult]) -> tuple[str, list[str]]:
+    """The folder's level and the lines that speak for it as a whole, per-track lines aside."""
+    analysed = [r for r in results if not r.error and r.sample_rate > 0]
+    if not analysed:
+        return "ok", ["No file could be analysed."] if results else []
+    verdicts = {r.file: classify(r) for r in analysed}
+    measured = [r for r in analysed if verdicts[r.file] != "silent"]
+    if not measured:
+        return "ok", ["No track carried enough signal to measure."]
+    lossy = [r for r in measured if verdicts[r.file] == "lossy"]
+    look = [r for r in measured if verdicts[r.file] == "look"]
+    clean = [r for r in measured if verdicts[r.file] == "clean"]
+    if lossy:
+        if len(lossy) == len(measured):
+            return "suspect", [
+                "Every track carries the marks of a lossy encoder: this is a transcode, or a lossy master — "
+                "the trackers want an approval before one of those is uploaded."
+            ]
+        carry = "carries" if len(lossy) == 1 else "carry"
+        rest = (
+            f"; the other {len(clean)} measure clean, so the folder was not all sourced the same way."
+            if clean and not look
+            else "."
+        )
+        return "suspect", [f"{len(lossy)} of {len(measured)} tracks {carry} the marks of a lossy encoder{rest}"]
+    if look:
+        return "look", [
+            f"{len(look)} of {len(measured)} tracks show one of the two marks, not both. "
+            "Read the spectrogram and the zoom before deciding."
+        ]
+    reaches = [r.reach_hz for r in measured]
+    low, high = min(reaches) / 1000, max(reaches) / 1000
+    span = f"{low:.1f} kHz" if high - low < 0.5 else f"{low:.1f}–{high:.1f} kHz"
+    notes = [f"Nothing here has the shape of a lossy encoder. Energy reaches {span} across the tracks."]
+    if high - low >= 1.5:
+        notes.append(
+            "Cutoffs that differ between tracks are normal for compilations and for masters made in "
+            "different sessions; they say nothing about where the files came from."
+        )
+    return "ok", notes
 
 
 def assess(results: list[SpectrumResult]) -> dict:
-    """Say what the numbers show, never whether a file is a transcode.
-
-    Automated transcode verdicts are not trusted by the trackers and should not
-    be offered here; a measured cutoff and a disagreement between tracks are
-    facts, and they are what a human wants pointed at.
-    """
+    """What the numbers show per flagged track, then what they add up to for the folder."""
     if not results:
         return {"level": "ok", "notes": []}
-
-    analysed = [r for r in results if not r.error and r.sample_rate > 0]
-    if not analysed:
-        return {"level": "ok", "notes": ["No file could be analysed."]}
-
-    notes: list[str] = []
-    level = "ok"
-    # A silent track measures 0 Hz; counting it would fake a disagreement.
-    cutoffs = [r.cutoff_hz for r in analysed if r.cutoff_hz > 0]
-    if not cutoffs:
-        return {"level": "ok", "notes": ["No track carried enough signal to measure."]}
-    spread = max(cutoffs) - min(cutoffs)
-
-    for result in analysed:
-        nyquist = result.sample_rate / 2
-        if not result.cutoff_hz or result.cutoff_hz >= nyquist * _LOOK_RATIO:
-            continue
-        if result.drop_db >= _CLIFF_DB:
-            level = "look"
-            notes.append(
-                f"{result.file}: level falls {result.drop_db:.0f} dB in the kHz above "
-                f"{result.cutoff_hz / 1000:.1f} kHz. That is the shape a lossy encoder leaves, "
-                f"so read the curve before trusting the file."
-            )
-        else:
-            notes.append(
-                f"{result.file}: rolls off from {result.cutoff_hz / 1000:.1f} kHz, gently "
-                f"({result.drop_db:.0f} dB across the next kHz) — that is a mastering choice, not a filter."
-            )
-
-    if spread > _DISAGREEMENT_HZ:
-        level = "suspect"
-        notes.append(
-            f"Tracks stop at different frequencies ({min(cutoffs) / 1000:.1f}–{max(cutoffs) / 1000:.1f} kHz). "
-            f"One master does not do that, so this folder was probably assembled from more than one source."
-        )
-
-    if not notes:
-        notes.append(f"Every track carries energy to {min(cutoffs) / 1000:.1f} kHz or above.")
-    if level == "ok" and len(notes) > 1:
-        notes.insert(0, "Nothing here has the shape of a lossy cutoff.")
-    return {"level": level, "notes": notes}
+    flagged = [r for r in results if classify(r) in ("lossy", "look")]
+    notes = [describe(r) for r in flagged[:_MAX_TRACK_NOTES]]
+    if len(flagged) > _MAX_TRACK_NOTES:
+        notes.append(f"… and {len(flagged) - _MAX_TRACK_NOTES} more tracks like these.")
+    level, summary = summarize(results)
+    return {"level": level, "notes": notes + summary}
 
 
 async def generate_frequency_plots(album_path: str, files: list[str], out_dir: str) -> list[SpectrumResult]:
