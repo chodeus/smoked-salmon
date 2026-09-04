@@ -188,7 +188,8 @@ session = 'get-from-site-cookie'
 # update_notification = true
 # update_notification_verbose = true
 
-# # answers yes to all questions during upload. risky!
+# # answers yes to all questions during upload. risky! the lossy-master question is
+# # still asked when the frequency analysis measures the folder as suspect.
 # yes_all = false
 
 # # enable seedbox uploading
