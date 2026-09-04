@@ -56,8 +56,13 @@ def flow(monkeypatch, tmp_path):
     async def prompt_spectrals(*_a, **_k):
         return {}
 
+    async def generate_ids(path, track_ids, spectrals_path, audio_info):
+        events.append("spectrograms")
+        return {i: f"{i:02d}.flac" for i in track_ids}
+
     monkeypatch.setattr(sp, "create_specs_folder", lambda path, spectrals_path=None: str(tmp_path))
     monkeypatch.setattr(sp, "generate_spectrals_all", generate_all)
+    monkeypatch.setattr(sp, "generate_spectrals_ids", generate_ids)
     monkeypatch.setattr(sp, "generate_frequency_plots", frequency)
     monkeypatch.setattr(sp, "get_audio_files", lambda path, *_a: ["01.flac"])
     monkeypatch.setattr(sp, "view_spectrals", view)
@@ -75,6 +80,14 @@ async def test_the_measurements_are_printed_before_the_question(flow):
     assert "Frequency analysis: suspect" in joined
     assert "01.flac: brick-wall at 16.6 kHz" in joined
     assert "A measurement, not a verdict" in joined
+
+
+async def test_preselected_ids_are_generated_before_the_guidance_and_the_question(flow):
+    events, _printed, _state = flow
+    lossy, ids = await sp.check_spectrals("/album", {"01.flac": {}}, None, (1,))
+    assert events == ["spectrograms", "measure", "prompt"]
+    assert lossy is False
+    assert ids == {1: "01.flac"}
 
 
 async def test_the_answer_is_the_persons_not_the_measurements(flow):

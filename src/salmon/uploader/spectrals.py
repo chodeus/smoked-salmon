@@ -78,12 +78,6 @@ async def check_spectrals(
                     break
             else:
                 break
-    else:
-        if lossy_master is None and check_lma:
-            measured = await print_frequency_guidance(path, spectrals_path)
-            lossy_master = await prompt_lossy_master(force_prompt_lossy_master or measured == "suspect")
-
-    if not spectral_ids:
         spectral_ids = await prompt_spectrals(
             all_spectral_ids,
             lossy_master,
@@ -92,6 +86,9 @@ async def check_spectrals(
         )
     else:
         spectral_ids = await generate_spectrals_ids(path, spectral_ids, spectrals_path, audio_info)
+        if lossy_master is None and check_lma:
+            measured = await print_frequency_guidance(path, spectrals_path)
+            lossy_master = await prompt_lossy_master(force_prompt_lossy_master or measured == "suspect")
 
     return lossy_master, spectral_ids
 
