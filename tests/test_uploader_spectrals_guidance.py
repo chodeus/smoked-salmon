@@ -91,6 +91,14 @@ async def test_a_clean_folder_leaves_yes_all_alone(flow):
     assert state["forced"] is False
 
 
+async def test_no_lossy_check_means_no_measurement_and_no_question(flow):
+    events, _printed, _state = flow
+    lossy, _ids = await sp.check_spectrals("/album", {"01.flac": {}}, None, None, check_lma=False)
+    assert lossy is None
+    assert "measure" not in events
+    assert "prompt" not in events
+
+
 async def test_a_pre_answered_question_skips_the_measurement(flow):
     events, _printed, _state = flow
     lossy, _ids = await sp.check_spectrals("/album", {"01.flac": {}}, True, None)
@@ -123,9 +131,11 @@ async def test_yes_all_asks_the_question_only_when_told_to(monkeypatch):
     original = cfg.upload.yes_all
     cfg.upload.yes_all = True
     try:
-        assert await sp.prompt_lossy_master() is False, "yes_all answers no without asking"
+        answer = await sp.prompt_lossy_master()
+        assert answer is False, "yes_all answers no without asking"
         assert asked == []
-        assert await sp.prompt_lossy_master(force_prompt_lossy_master=True) is True
+        forced_answer = await sp.prompt_lossy_master(force_prompt_lossy_master=True)
+        assert forced_answer is True
         assert asked == ["asked"]
     finally:
         cfg.upload.yes_all = original

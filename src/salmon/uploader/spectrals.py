@@ -68,7 +68,7 @@ async def check_spectrals(
     measured = "ok"
     if not spectral_ids:
         all_spectral_ids = await generate_spectrals_all(path, spectrals_path, audio_info)
-        if lossy_master is None:
+        if lossy_master is None and check_lma:
             measured = await print_frequency_guidance(path, spectrals_path)
         while True:
             await view_spectrals(spectrals_path, all_spectral_ids)
@@ -79,7 +79,7 @@ async def check_spectrals(
             else:
                 break
     else:
-        if lossy_master is None:
+        if lossy_master is None and check_lma:
             measured = await print_frequency_guidance(path, spectrals_path)
             lossy_master = await prompt_lossy_master(force_prompt_lossy_master or measured == "suspect")
 
@@ -97,11 +97,7 @@ async def check_spectrals(
 
 
 async def print_frequency_guidance(path: str, spectrals_path: str) -> str:
-    """Print what the frequency analysis measured, and return the folder's level.
-
-    Guidance only: the trackers want a person to read the spectrals, so nothing
-    here answers the lossy-master question. The plots land beside the spectrograms.
-    """
+    """Print the frequency analysis as guidance for the lossy-master question; returns the folder level."""
     try:
         spectra = await generate_frequency_plots(path, get_audio_files(path, True), spectrals_path)
         verdict = assess(spectra)
