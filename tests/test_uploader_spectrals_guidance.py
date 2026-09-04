@@ -38,7 +38,7 @@ def flow(monkeypatch, tmp_path):
     state = {"spectra": [_lossy("01.flac")], "forced": None, "answer": False}
 
     async def generate_all(path, spectrals_path, audio_info):
-        events.append("spectrograms")
+        events.append("spectrograms-all")
         return {1: "01.flac"}
 
     async def frequency(path, files, out_dir):
@@ -57,7 +57,7 @@ def flow(monkeypatch, tmp_path):
         return {}
 
     async def generate_ids(path, track_ids, spectrals_path, audio_info):
-        events.append("spectrograms")
+        events.append("spectrograms-ids")
         return {i: f"{i:02d}.flac" for i in track_ids}
 
     monkeypatch.setattr(sp, "create_specs_folder", lambda path, spectrals_path=None: str(tmp_path))
@@ -75,7 +75,7 @@ def flow(monkeypatch, tmp_path):
 async def test_the_measurements_are_printed_before_the_question(flow):
     events, printed, _state = flow
     await sp.check_spectrals("/album", {"01.flac": {}}, None, None)
-    assert events.index("measure") < events.index("prompt")
+    assert events[:3] == ["spectrograms-all", "measure", "prompt"]
     joined = "\n".join(printed)
     assert "Frequency analysis: suspect" in joined
     assert "01.flac: brick-wall at 16.6 kHz" in joined
@@ -85,7 +85,7 @@ async def test_the_measurements_are_printed_before_the_question(flow):
 async def test_preselected_ids_are_generated_before_the_guidance_and_the_question(flow):
     events, _printed, _state = flow
     lossy, ids = await sp.check_spectrals("/album", {"01.flac": {}}, None, (1,))
-    assert events == ["spectrograms", "measure", "prompt"]
+    assert events == ["spectrograms-ids", "measure", "prompt"]
     assert lossy is False
     assert ids == {1: "01.flac"}
 
