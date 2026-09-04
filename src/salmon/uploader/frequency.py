@@ -2,8 +2,8 @@
 
 A brick-wall lowpass where MP3 and AAC encoders cut, and highs that flip between
 content and the bit-depth floor as the encoder runs short of bits. A master rolls
-off gently or cuts only where sample-rate conversion does, and its quiet is noise,
-never digital silence. PyAV decodes, numpy measures, Pillow draws.
+off gently or cuts hard only near Nyquist, as sample-rate conversion does, and its
+quiet is noise, never digital silence. PyAV decodes, numpy measures, Pillow draws.
 """
 
 import asyncio
@@ -46,9 +46,10 @@ _REACH_FLOOR_DB = -100.0
 _TOP_MARGIN_DB = 10.0
 _WALL_MIN_DEPTH_DB = 20.0
 _WALL_MIN_SLOPE_DB_PER_KHZ = 20.0
-# Where MP3 and AAC encoders put their lowpass. A wall that ends above this is
-# what sample-rate conversion leaves, and every 44.1 kHz master has one.
-_LOSSY_WALL_HZ = (10_000.0, 20_600.0)
+# Where MP3 and AAC encoders put their lowpass; the low end is the lowest setting
+# measured for the hint table. A wall ending above it is typical of sample-rate
+# conversion or an anti-alias filter, common on 44.1 kHz masters.
+_LOSSY_WALL_HZ = (12_800.0, 20_600.0)
 _ENCODER_LOWPASSES = (
     ("MP3 at ~80 kbps", 12_800.0, 13_600.0),
     ("MP3 at 96–112 kbps", 14_900.0, 15_600.0),
@@ -443,7 +444,10 @@ def describe(result: SpectrumResult) -> str:
         )
     reach = f"energy to {result.reach_hz / 1000:.1f} kHz"
     if result.cutoff_hz > 0 and result.floor_hz > _LOSSY_WALL_HZ[1]:
-        return f"{result.file}: {reach}, then a steep fall at {khz} as sample-rate conversion leaves; not a lossy mark."
+        return (
+            f"{result.file}: {reach}, then a steep fall at {khz} above the band where encoders cut, "
+            f"typical of sample-rate conversion; not a lossy mark."
+        )
     if result.cutoff_hz > 0:
         return (
             f"{result.file}: {reach}, then a steep fall at {khz} outside the band where encoders cut; not a lossy mark."
