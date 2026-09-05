@@ -10,7 +10,7 @@ dependencies = [
     "aiohttp-jinja2>=1.6",
     "aiohttp[speedups]>=3.14.3; sys_platform != 'win32'",
     "aiolimiter>=1.2.1",
-    "anyio>=4.15.0",
+    "anyio>=4.15.1",
     "asyncclick>=8.4.2.1",
     "av>=18.1.0",
     "beautifulsoup4[lxml]>=4.15.0",
@@ -24,7 +24,7 @@ dependencies = [
     "numpy>=2.5.2",
     "openai>=3.8.0",
     "pillow>=12.3.0",
-    "platformdirs>=4.11.5",
+    "platformdirs>=4.11.7",
     "pycambia>=0.2.0",
     "pyimgbox>=1.0.7",
     "pyoxipng>=9.1.1",
@@ -44,7 +44,7 @@ dependencies = [
 salmon = "salmon.run:main"
 
 [build-system]
-requires = ["uv_build>=0.12.7,<0.12.8"]
+requires = ["uv_build>=0.12.10,<0.12.11"]
 build-backend = "uv_build"
 
 [dependency-groups]
@@ -52,7 +52,7 @@ dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
-    "ruff>=0.16.5",
+    "ruff>=0.16.6",
 ]
 
 [tool.pytest.ini_options]
