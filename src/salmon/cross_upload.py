@@ -17,6 +17,7 @@ from salmon.constants import ARTIST_IMPORTANCES
 from salmon.converter.downconverting import convert_folder, generate_conversion_description
 from salmon.converter.transcoding import Bitrate, generate_transcode_description, transcode_folder
 from salmon.images import HOSTS
+from salmon.images.red import bare_image_url
 from salmon.uploader.dupe_checker import check_existing_group, generate_dupe_check_searchstrs
 from salmon.uploader.upload import compile_files, generate_torrent
 
@@ -393,19 +394,30 @@ async def _upload_conversions(
 _RED_IMAGE_PROXY_TARGETS = frozenset({"OPS"})
 
 
+_RED_IMAGE_FIELDS = ("image", "album_desc", "release_desc")
+
+
+def _bare_red_image_urls(data: dict[str, Any]) -> dict[str, Any]:
+    """Strip RED's per-viewer credentials from every RED image URL the target will store."""
+    rewritten = data.copy()
+    for field in _RED_IMAGE_FIELDS:
+        value = str(rewritten.get(field) or "")
+        rewritten[field] = _RED_IMAGE_URL.sub(lambda match: bare_image_url(match.group(0)), value)
+    return rewritten
+
+
 async def _rehost_red_images(
     data: dict[str, Any], source_site: "BaseGazelleApi", target_site: "BaseGazelleApi"
 ) -> dict[str, Any]:
-    if source_site.site_code != "RED" or target_site.site_code in _RED_IMAGE_PROXY_TARGETS:
+    if source_site.site_code != "RED":
         return data
+    if target_site.site_code in _RED_IMAGE_PROXY_TARGETS:
+        return _bare_red_image_urls(data)
 
     # Config validation keeps "red" out of every non-RED slot, so these hosts can display the copies.
+    cover_host = cfg.image.resolve(target_site.site_code, "cover_uploader")
     desc_host = cfg.image.resolve(target_site.site_code, "image_uploader")
-    fields = {
-        "image": cfg.image.resolve(target_site.site_code, "cover_uploader"),
-        "album_desc": desc_host,
-        "release_desc": desc_host,
-    }
+    fields = {field: cover_host if field == "image" else desc_host for field in _RED_IMAGE_FIELDS}
     rewritten = data.copy()
     replacements: dict[tuple[str, str], str] = {}
     for field, image_host in fields.items():
@@ -415,7 +427,7 @@ async def _rehost_red_images(
         for url in sorted(dict.fromkeys(_RED_IMAGE_URL.findall(value)), key=len, reverse=True):
             key = image_host, url
             if key not in replacements:
-                click.secho(f"Rehosting RED image to {image_host}: {url}", fg="yellow")
+                click.secho(f"Rehosting RED image to {image_host}: {bare_image_url(url)}", fg="yellow")
                 replacements[key] = await _rehost_red_image(url, source_site, image_host)
             value = value.replace(url, replacements[key])
         rewritten[field] = value
@@ -423,6 +435,7 @@ async def _rehost_red_images(
 
 
 async def _rehost_red_image(url: str, source_site: "BaseGazelleApi", image_host: str) -> str:
+    shown = bare_image_url(url)  # the stored URL may carry RED's per-viewer signature; never print it
     suffix = Path(urlparse(url).path).suffix or ".jpg"
     timeout = aiohttp.ClientTimeout(total=30)
     headers = {**source_site.headers, "Referer": f"{source_site.base_url}/"}
@@ -438,16 +451,17 @@ async def _rehost_red_image(url: str, source_site: "BaseGazelleApi", image_host:
             session.get(url, allow_redirects=False) as response,
         ):
             if response.status >= 400 or not response.content_type.startswith("image/"):
-                raise click.ClickException(f"Could not download RED image {url} (HTTP {response.status}).")
+                raise click.ClickException(f"Could not download RED image {shown} (HTTP {response.status}).")
             # Cap the fetch so tracker-supplied metadata can't make us buffer a huge body.
             max_bytes = 25 * 1024 * 1024  # RED accepts up to 20 MiB
             if response.content_length is not None and response.content_length > max_bytes:
-                raise click.ClickException(f"RED image {url} is too large ({response.content_length} bytes).")
+                raise click.ClickException(f"RED image {shown} is too large ({response.content_length} bytes).")
             content = await response.content.read(max_bytes + 1)
             if len(content) > max_bytes:
-                raise click.ClickException(f"RED image {url} exceeds the {max_bytes}-byte limit.")
+                raise click.ClickException(f"RED image {shown} exceeds the {max_bytes}-byte limit.")
     except (aiohttp.ClientError, TimeoutError) as error:
-        raise click.ClickException(f"Could not download RED image {url}: {error}") from error
+        # aiohttp's error text repeats the request URL, signature included; name the type only.
+        raise click.ClickException(f"Could not download RED image {shown} ({type(error).__name__}).") from error
 
     with TemporaryDirectory() as directory:
         image_path = Path(directory) / f"image{suffix}"
@@ -551,7 +565,7 @@ def _compile_data(
         "vbr": "VBR" in torrent["encoding"],
         "media": media,
         "tags": ",".join(group.get("tags") or []),
-        "image": group.get("wikiImage") or "",
+        "image": html.unescape(group.get("wikiImage") or ""),
         "album_desc": group.get("bbBody") or group.get("wikiBBcode") or "",
         "release_desc": f"{cross_post}\n\n{description}",
         **({"scene": True} if torrent.get("scene") else {}),
