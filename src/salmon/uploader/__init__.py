@@ -131,8 +131,9 @@ if TYPE_CHECKING:
 @click.option(
     "--tracker",
     "-t",
+    "trackers",
     multiple=True,
-    callback=salmon.trackers.validate_tracker,
+    callback=salmon.trackers.validate_trackers,
     help=f"Uploading Choices: ({'/'.join(salmon.trackers.tracker_list)}); repeat to upload to several in that order",
 )
 @click.option("--request", "-r", default=None, help="Pass a request URL or ID")
@@ -206,7 +207,7 @@ async def up(
     overwrite: bool,
     encoding: str | None,
     compress: bool,
-    tracker: str | tuple[str, ...],
+    trackers: tuple[str, ...],
     request: str | None,
     spectrals_after: bool,
     auto_rename: bool,
@@ -227,8 +228,7 @@ async def up(
         raise click.UsageError("--essential-only and --scene cannot be used together.")
     if yyy:
         cfg.upload.yes_all = True
-    tracker_codes = (tracker,) if isinstance(tracker, str) else tuple(tracker)
-    gazelle_site = salmon.trackers.get_class(tracker_codes[0])()
+    gazelle_site = salmon.trackers.get_class(trackers[0])()
     gazelle_site.dry_run = dry_run
     if dry_run:
         click.secho("\n=== DRY RUN — validating only, nothing will be uploaded ===", fg="cyan", bold=True)
@@ -272,7 +272,7 @@ async def up(
             essential_only=essential_only,
             skip_initial_review=skip_initial_review,
             apply_ai_suggestions=apply_ai_suggestions,
-            trackers=list(tracker_codes) if len(tracker_codes) > 1 else None,
+            trackers=list(trackers) if len(trackers) > 1 else None,
         )
     except DryRunComplete as tracker_name:
         click.secho(f"\nDry run complete ({tracker_name}). No torrents were uploaded.", fg="cyan", bold=True)

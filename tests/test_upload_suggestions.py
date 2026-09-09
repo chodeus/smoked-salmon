@@ -186,13 +186,13 @@ def test_next_tracker_asks_when_nothing_was_preselected(monkeypatch) -> None:
     assert asked == [["OPS", "DIC"]]
 
 
-def test_validate_tracker_accepts_the_flag_repeated(monkeypatch) -> None:
+def test_validate_trackers_accepts_the_flag_repeated(monkeypatch) -> None:
     monkeypatch.setattr(trackers, "tracker_list", ["RED", "OPS"])
 
-    assert anyio.run(trackers.validate_tracker, None, "tracker", ("red", "OPS", "red")) == ("RED", "OPS")
+    assert anyio.run(trackers.validate_trackers, None, "tracker", ("red", "OPS", "red")) == ("RED", "OPS")
 
 
-def test_validate_tracker_empty_tuple_uses_the_first_time_flow(monkeypatch) -> None:
+def test_validate_trackers_empty_flag_uses_the_first_time_flow(monkeypatch) -> None:
     monkeypatch.setattr(trackers, "tracker_list", ["RED"])
 
-    assert anyio.run(trackers.validate_tracker, None, "tracker", ()) == "RED"
+    assert anyio.run(trackers.validate_trackers, None, "tracker", ()) == ("RED",)

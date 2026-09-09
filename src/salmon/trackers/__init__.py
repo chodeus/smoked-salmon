@@ -65,13 +65,8 @@ async def choose_tracker_first_time(question="Which tracker would you like to up
 
 async def validate_tracker(ctx, param, value):
     """Only allow trackers in the config tracker dict.
-    If it isn't there. Prompt to choose. A tuple (repeated -t) validates each entry, in order.
+    If it isn't there. Prompt to choose.
     """
-    if isinstance(value, tuple):
-        if not value:
-            return await choose_tracker_first_time()
-        codes = [await validate_tracker(ctx, param, entry) for entry in value]
-        return tuple(dict.fromkeys(codes))
     try:
         if value is None:
             return await choose_tracker_first_time()
@@ -85,6 +80,14 @@ async def validate_tracker(ctx, param, value):
         raise click.BadParameter(
             "This flag requires a tracker. Possible sources are: " + ", ".join(tracker_list)
         ) from None
+
+
+async def validate_trackers(ctx, param, value):
+    """Validate each entry of a repeated -t flag in order; an empty flag runs the first-time flow."""
+    if not value:
+        return (await choose_tracker_first_time(),)
+    codes = [await validate_tracker(ctx, param, entry) for entry in value]
+    return tuple(dict.fromkeys(codes))
 
 
 def validate_request(gazelle_site, request):
