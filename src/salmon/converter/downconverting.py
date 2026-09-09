@@ -10,6 +10,7 @@ import msgspec
 
 from salmon.common.constants import IMAGE_EXTENSIONS, LOSSY_EXTENSIONS
 from salmon.common.files import process_files
+from salmon.converter.conversions import record_conversion
 from salmon.errors import InvalidSampleRate
 from salmon.release_notification import get_version
 from salmon.tagger.audio_info import gather_audio_info
@@ -252,6 +253,9 @@ async def convert_folder(
     await _convert_audio_files(items, bit_depth)
 
     final_rate = items[-1].target_rate if items else None
+    record_conversion(
+        new_path, source=path, kind="downconvert", bit_depth=bit_depth, sample_rate=final_rate or sample_rate
+    )
     return final_rate or sample_rate, new_path
 
 
