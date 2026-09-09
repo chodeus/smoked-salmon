@@ -101,11 +101,40 @@ def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkey
 
 
 @pytest.mark.parametrize(
-    "text",
-    ["key_pem=hunter2", "--session hunter2", "--sftp-key-pem=hunter2", "token=hunter2", "sftp://dean:hunter2@box/x"],
+    ("text", "expected"),
+    [
+        ("key_pem=hunter2", "key_pem=[REDACTED]"),
+        ("--session hunter2", "--session [REDACTED]"),
+        ("--sftp-key-pem=hunter2", "--sftp-key-pem=[REDACTED]"),
+        ("token=hunter2", "token=[REDACTED]"),
+        ("sftp://dean:hunter2@box/x", "sftp://[REDACTED]@box/x"),
+        ("copy /music sbox:storage/red --transfers 4", "copy /music sbox:storage/red --transfers 4"),
+    ],
 )
-def test_redact_masks_suffixed_option_names_and_sessions(text: str) -> None:
-    assert "hunter2" not in seedbox._redact(text)
+def test_redact_masks_suffixed_option_names_and_sessions(text: str, expected: str) -> None:
+    assert seedbox._redact(text) == expected
+
+
+def test_a_credential_bearing_remote_never_reaches_the_log(monkeypatch) -> None:
+    # rclone accepts connection strings as remotes, so the "url" itself can carry a password.
+    messages: list[str] = []
+
+    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(commands, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
+    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
+
+    ok = anyio.run(
+        seedbox._rclone_upload_folder,
+        Seedbox(url=":ftp,host=box.example,user=dean,pass=hunter2"),
+        "/music",
+        "/tmp/Artist - Album",
+    )
+
+    assert ok is True
+    assert len(messages) == 3
+    assert not any("hunter2" in message for message in messages)
 
 
 def _manager(monkeypatch, seedboxes):

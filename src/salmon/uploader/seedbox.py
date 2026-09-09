@@ -50,7 +50,7 @@ async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str)
     """Upload a local folder to the rclone remote and return whether rclone succeeded."""
     remote_path = posixpath.join(remote_folder, os.path.basename(path))
     commands = ["rclone", "copy", path, f"{seedbox.url}:{remote_path}", *seedbox.extra_args]
-    click.secho(f"Starting Rclone upload to {seedbox.url}:{remote_folder}", fg="cyan")
+    click.secho(_redact(f"Starting Rclone upload to {seedbox.url}:{remote_folder}"), fg="cyan")
     click.secho(f"Executing: {_redact(' '.join(commands))}", fg="yellow")
     # Captured rather than passed to the terminal: the job log is where a failure has to be readable.
     try:
@@ -59,7 +59,7 @@ async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str)
         click.secho(f"rclone could not start: {_redact(str(error))}", fg="red")
         return False
     if result.returncode == 0:
-        click.secho(f"Rclone upload successful: {path} to {seedbox.url}:{remote_path}", fg="green")
+        click.secho(_redact(f"Rclone upload successful: {path} to {seedbox.url}:{remote_path}"), fg="green")
         return True
     click.secho(f"Rclone upload failed with exit code {result.returncode}", fg="red")
     for line in _output_tail(result.stderr) or _output_tail(result.stdout):
