@@ -32,8 +32,8 @@ def _resolve_shell_path(remote_folder: str, extra_args: list[str]) -> str:
     return override
 
 
-async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str) -> None:
-    """Upload a local folder to a rclone remote.
+async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str) -> bool:
+    """Upload a local folder to a rclone remote and return whether rclone succeeded.
 
     Args:
         seedbox: Seedbox config providing the rclone remote URL and extra args.
@@ -44,12 +44,21 @@ async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str)
     commands = ["rclone", "copy", path, f"{seedbox.url}:{remote_path}", *seedbox.extra_args]
     click.secho(f"Starting Rclone upload to {seedbox.url}:{remote_folder}", fg="cyan")
     click.secho(f"Executing: {' '.join(commands)}", fg="yellow")
-    # Let rclone write directly to the terminal so flags like -P can render live progress output.
-    result = await anyio.run_process(commands, stdout=None, stderr=None, check=False)
+    # Captured rather than passed to the terminal: the job log is where a failure has to be readable.
+    result = await anyio.run_process(commands, check=False)
     if result.returncode == 0:
         click.secho(f"Rclone upload successful: {path} to {seedbox.url}:{remote_path}", fg="green")
-    else:
-        click.secho(f"Rclone upload failed with exit code {result.returncode}", fg="red")
+        return True
+    click.secho(f"Rclone upload failed with exit code {result.returncode}", fg="red")
+    for line in _output_tail(result.stderr) or _output_tail(result.stdout):
+        click.secho(f"  rclone: {line}", fg="red")
+    return False
+
+
+def _output_tail(output: bytes | None, lines: int = 12) -> list[str]:
+    """Last non-empty lines of a captured stream, so rclone's own error reaches the log."""
+    text = (output or b"").decode(errors="replace")
+    return [line for line in text.splitlines() if line.strip()][-lines:]
 
 
 async def _add_to_downloader(
@@ -160,6 +169,7 @@ class UploadManager:
             return
 
         click.secho(f"Executing {len(self.tasks)} upload tasks", fg="cyan")
+        failed_copies: set[str] = set()
         for i, (seedbox, local_path, task_type) in enumerate(self.tasks, 1):
             click.secho(
                 f"\nTask {i}/{len(self.tasks)}: {task_type.upper()} - {os.path.basename(local_path)}",
@@ -167,17 +177,27 @@ class UploadManager:
             )
             try:
                 if task_type == "folder":
-                    if seedbox.type == "rclone":
-                        await _rclone_upload_folder(seedbox, seedbox.directory, local_path)
+                    if seedbox.type == "rclone" and not await _rclone_upload_folder(
+                        seedbox, seedbox.directory, local_path
+                    ):
+                        failed_copies.add(seedbox.name)
                 elif task_type == "seed":
                     client = self._client(seedbox)
                     if seedbox.type == "rclone":
                         shell_path = _resolve_shell_path(seedbox.directory, seedbox.extra_args)
                     else:
                         shell_path = seedbox.directory or os.path.abspath(cfg.directory.download_directory)
-                    success = await _add_to_downloader(
-                        client, shell_path, local_path, seedbox.label, seedbox.add_paused
-                    )
+                    add_paused = seedbox.add_paused
+                    if seedbox.name in failed_copies:
+                        # Nothing is behind the torrent yet; paused, it never announces an empty seed.
+                        click.secho(
+                            f"Folder copy to {seedbox.name} failed; adding the torrent paused. "
+                            "Copy the folder by hand, then recheck and resume it.",
+                            fg="red",
+                            bold=True,
+                        )
+                        add_paused = True
+                    success = await _add_to_downloader(client, shell_path, local_path, seedbox.label, add_paused)
                     if not success:
                         click.secho(f"Seed task failed for seedbox: {seedbox.name}", fg="red")
             except Exception as e:

@@ -7,50 +7,57 @@ from salmon.config.validations import Seedbox
 from salmon.uploader import seedbox
 
 
-def test_rclone_upload_folder_streams_progress_output(monkeypatch) -> None:
+def test_rclone_upload_folder_reports_success(monkeypatch) -> None:
     run_process_calls: list[tuple[list[str], dict[str, object]]] = []
     messages: list[str] = []
 
     async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         run_process_calls.append((commands, kwargs))
-        return subprocess.CompletedProcess(commands, 0)
+        return subprocess.CompletedProcess(commands, 0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
     monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
 
-    anyio.run(
+    ok = anyio.run(
         seedbox._rclone_upload_folder,
-        Seedbox(url="seedbox", extra_args=["--checksum", "-P"]),
+        Seedbox(url="seedbox", extra_args=["--checksum"]),
         "/music",
         "/tmp/Artist - Album",
     )
 
+    assert ok is True
     assert run_process_calls == [
         (
-            ["rclone", "copy", "/tmp/Artist - Album", "seedbox:/music/Artist - Album", "--checksum", "-P"],
-            {"stdout": None, "stderr": None, "check": False},
+            ["rclone", "copy", "/tmp/Artist - Album", "seedbox:/music/Artist - Album", "--checksum"],
+            {"check": False},
         )
     ]
     assert any("Rclone upload successful" in message for message in messages)
 
 
-def test_rclone_upload_folder_reports_nonzero_exit_code(monkeypatch) -> None:
+def test_rclone_upload_folder_reports_the_failure_and_rclones_own_error(monkeypatch) -> None:
     messages: list[str] = []
+    stderr = (
+        b"2026/09/09 15:52:18 ERROR : 01. track.flac: Failed to copy: update stor: 1 error occurred:\n"
+        b"\t* 426 Failure reading network stream.\n"
+    )
 
     async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(commands, 7)
+        return subprocess.CompletedProcess(commands, 7, stdout=b"", stderr=stderr)
 
     monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
     monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
 
-    anyio.run(
+    ok = anyio.run(
         seedbox._rclone_upload_folder,
-        Seedbox(url="seedbox", extra_args=["-P"]),
+        Seedbox(url="seedbox"),
         "/music",
         "/tmp/Artist - Album",
     )
 
+    assert ok is False
     assert "Rclone upload failed with exit code 7" in messages
+    assert any("426 Failure reading network stream" in message for message in messages)
 
 
 def _manager(monkeypatch, seedboxes):
@@ -106,6 +113,42 @@ def test_add_upload_task_with_no_site_code_skips_pinned_seedboxes(monkeypatch) -
     manager.add_upload_task("/tmp/Artist - Album", "folder", True)
 
     assert [sb.name for sb, _, _ in manager.tasks] == ["all"]
+
+
+def _run_folder_then_seed(monkeypatch, copy_ok: bool) -> tuple[list[bool], list[str]]:
+    """Execute a folder task followed by its seed task; return the paused flags and log lines."""
+    messages: list[str] = []
+    paused_flags: list[bool] = []
+    manager = _manager(monkeypatch, [_sb("red", ["RED"], "storage/red")])
+    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
+
+    async def fake_copy(_seedbox, _remote_folder, _path) -> bool:
+        return copy_ok
+
+    async def fake_add(_client, _shell_path, _torrent_path, _label, add_paused) -> bool:
+        paused_flags.append(add_paused)
+        return True
+
+    monkeypatch.setattr(seedbox, "_rclone_upload_folder", fake_copy)
+    monkeypatch.setattr(seedbox, "_add_to_downloader", fake_add)
+    manager.add_upload_task("/tmp/Artist - Album", "folder", True, site_code="RED")
+    manager.add_upload_task("/tmp/Artist - Album - RED.torrent", "seed", True, site_code="RED")
+    anyio.run(manager.execute_upload)
+    return paused_flags, messages
+
+
+def test_seed_task_is_added_paused_when_its_folder_copy_failed(monkeypatch) -> None:
+    paused_flags, messages = _run_folder_then_seed(monkeypatch, copy_ok=False)
+
+    assert paused_flags == [True]
+    assert any("adding the torrent paused" in message for message in messages)
+
+
+def test_seed_task_stays_active_when_the_folder_copy_succeeded(monkeypatch) -> None:
+    paused_flags, messages = _run_folder_then_seed(monkeypatch, copy_ok=True)
+
+    assert paused_flags == [False]
+    assert not any("paused" in message for message in messages)
 
 
 def test_seedbox_trackers_are_uppercased() -> None:
