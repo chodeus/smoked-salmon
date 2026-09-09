@@ -42,7 +42,7 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 - **Description generation** – Edition description generation (tracklist, sources, available streaming platforms, encoding details...).
 - **Down-convert and Transcode** – Can downconvert 24-bit flac files to 16-bit, and transcode to mp3.
 - **Multi-Format Upload** – Automatically transcodes and uploads multiple formats (FLAC 16-bit, MP3, etc.) in a single workflow.
-- **Per-Tracker Image Hosts** – RED covers go to RED's own image host, which is for album artwork only; everything else uses a neutral host, and spectrals never go to RED's host. Cross-uploads to OPS keep RED-hosted covers, since OPS proxies and caches them.
+- **Per-Tracker Image Hosts** – RED covers go to RED's own image host, which is for album artwork only; everything else uses a neutral host, and spectrals never go to RED's host. RED to OPS cross-uploads keep RED-hosted images in the cover and both descriptions, since OPS proxies and caches them.
 - **Site-Aware Rules** – Path-length limits and bit-depth/sample-rate policy applied per tracker, since RED and OPS differ.
 - **Cross-Upload** – Copy an existing upload from one tracker to another, rehosting images where the target requires it.
 - **Torrent Client Injection** – Can inject generated torrent files into torrent clients (qBittorrent, Transmission, Deluge, ruTorrent).
