@@ -60,6 +60,43 @@ def test_rclone_upload_folder_reports_the_failure_and_rclones_own_error(monkeypa
     assert any("426 Failure reading network stream" in message for message in messages)
 
 
+def test_rclone_upload_folder_treats_a_launch_failure_as_a_failed_copy(monkeypatch) -> None:
+    messages: list[str] = []
+
+    async def missing_binary(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise FileNotFoundError(2, "No such file or directory", "rclone")
+
+    monkeypatch.setattr(seedbox.anyio, "run_process", missing_binary)
+    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
+
+    ok = anyio.run(seedbox._rclone_upload_folder, Seedbox(url="seedbox"), "/music", "/tmp/Artist - Album")
+
+    assert ok is False
+    assert any("rclone could not start" in message for message in messages)
+
+
+def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkeypatch) -> None:
+    messages: list[str] = []
+    stderr = b"2026/09/09 15:52:18 ERROR : ftp://dean:hunter2@box.example/music: 530 Login incorrect\n"
+
+    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(commands, 1, stdout=b"", stderr=stderr)
+
+    monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
+    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
+
+    ok = anyio.run(
+        seedbox._rclone_upload_folder,
+        Seedbox(url="seedbox", extra_args=["--ftp-pass", "hunter2", "--sftp-pass=hunter2"]),
+        "/music",
+        "/tmp/Artist - Album",
+    )
+
+    assert ok is False
+    assert not any("hunter2" in message for message in messages)
+    assert any("[REDACTED]" in message for message in messages)
+
+
 def _manager(monkeypatch, seedboxes):
     """UploadManager whose torrent clients are stubbed out (no network)."""
     monkeypatch.setattr(seedbox.cfg, "seedbox", seedboxes)
@@ -68,12 +105,12 @@ def _manager(monkeypatch, seedboxes):
     return seedbox.UploadManager()
 
 
-def _sb(name, trackers, directory):
+def _sb(name, trackers, directory, url="sbox"):
     return Seedbox(
         name=name,
         enabled=True,
         type="rclone",
-        url="sbox",
+        url=url,
         directory=directory,
         torrent_client="qbittorrent+http://u:p@host:10086/",
         trackers=trackers,
@@ -149,6 +186,29 @@ def test_seed_task_stays_active_when_the_folder_copy_succeeded(monkeypatch) -> N
 
     assert paused_flags == [False]
     assert not any("paused" in message for message in messages)
+
+
+def test_a_failed_copy_pauses_only_its_own_seedbox_even_when_names_repeat(monkeypatch) -> None:
+    # Two destinations with the default empty name: only the one whose copy failed is paused.
+    manager = _manager(
+        monkeypatch, [_sb("", ["RED"], "storage/a", url="boxa"), _sb("", ["RED"], "storage/b", url="boxb")]
+    )
+    paused: dict[str, bool] = {}
+
+    async def fake_copy(sb, _remote_folder, _path) -> bool:
+        return sb.url != "boxa"
+
+    async def fake_add(_client, shell_path, _torrent_path, _label, add_paused) -> bool:
+        paused[shell_path] = add_paused
+        return True
+
+    monkeypatch.setattr(seedbox, "_rclone_upload_folder", fake_copy)
+    monkeypatch.setattr(seedbox, "_add_to_downloader", fake_add)
+    manager.add_upload_task("/tmp/Artist - Album", "folder", True, site_code="RED")
+    manager.add_upload_task("/tmp/Artist - Album - RED.torrent", "seed", True, site_code="RED")
+    anyio.run(manager.execute_upload)
+
+    assert {path.split("/")[-1]: flag for path, flag in paused.items()} == {"a": True, "b": False}
 
 
 def test_seedbox_trackers_are_uppercased() -> None:

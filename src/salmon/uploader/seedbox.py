@@ -2,6 +2,7 @@ import argparse
 import collections
 import os
 import posixpath
+import re
 
 import anyio
 import asyncclick as click
@@ -32,20 +33,36 @@ def _resolve_shell_path(remote_folder: str, extra_args: list[str]) -> str:
     return override
 
 
+_URL_USERINFO = re.compile(r"(://)[^/\s@]+@")
+_SECRET_FLAG = re.compile(r"(--?[\w-]*(?:pass|password|token|secret|key)\b[= ]\s*)\S+", re.IGNORECASE)
+_SECRET_ASSIGNMENT = re.compile(r"\b(pass|password|token|secret|api_key)=\S+", re.IGNORECASE)
+
+
+def _redact(text: str) -> str:
+    """Mask URL userinfo and password/token flags before rclone's command line or output reaches a log."""
+    text = _URL_USERINFO.sub(r"\1[REDACTED]@", text)
+    text = _SECRET_FLAG.sub(r"\1[REDACTED]", text)
+    return _SECRET_ASSIGNMENT.sub(r"\1=[REDACTED]", text)
+
+
 async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str) -> bool:
     """Upload a local folder to the rclone remote and return whether rclone succeeded."""
     remote_path = posixpath.join(remote_folder, os.path.basename(path))
     commands = ["rclone", "copy", path, f"{seedbox.url}:{remote_path}", *seedbox.extra_args]
     click.secho(f"Starting Rclone upload to {seedbox.url}:{remote_folder}", fg="cyan")
-    click.secho(f"Executing: {' '.join(commands)}", fg="yellow")
+    click.secho(f"Executing: {_redact(' '.join(commands))}", fg="yellow")
     # Captured rather than passed to the terminal: the job log is where a failure has to be readable.
-    result = await anyio.run_process(commands, check=False)
+    try:
+        result = await anyio.run_process(commands, check=False)
+    except OSError as error:
+        click.secho(f"rclone could not start: {_redact(str(error))}", fg="red")
+        return False
     if result.returncode == 0:
         click.secho(f"Rclone upload successful: {path} to {seedbox.url}:{remote_path}", fg="green")
         return True
     click.secho(f"Rclone upload failed with exit code {result.returncode}", fg="red")
     for line in _output_tail(result.stderr) or _output_tail(result.stdout):
-        click.secho(f"  rclone: {line}", fg="red")
+        click.secho(f"  rclone: {_redact(line)}", fg="red")
     return False
 
 
@@ -163,7 +180,7 @@ class UploadManager:
             return
 
         click.secho(f"Executing {len(self.tasks)} upload tasks", fg="cyan")
-        failed_copies: set[str] = set()
+        failed_copies: set[int] = set()  # id(seedbox): names are optional and need not be unique
         for i, (seedbox, local_path, task_type) in enumerate(self.tasks, 1):
             click.secho(
                 f"\nTask {i}/{len(self.tasks)}: {task_type.upper()} - {os.path.basename(local_path)}",
@@ -174,7 +191,7 @@ class UploadManager:
                     if seedbox.type == "rclone" and not await _rclone_upload_folder(
                         seedbox, seedbox.directory, local_path
                     ):
-                        failed_copies.add(seedbox.name)
+                        failed_copies.add(id(seedbox))
                 elif task_type == "seed":
                     client = self._client(seedbox)
                     if seedbox.type == "rclone":
@@ -182,7 +199,7 @@ class UploadManager:
                     else:
                         shell_path = seedbox.directory or os.path.abspath(cfg.directory.download_directory)
                     add_paused = seedbox.add_paused
-                    if seedbox.name in failed_copies:
+                    if id(seedbox) in failed_copies:
                         # Nothing is behind the torrent yet; paused, it never announces an empty seed.
                         click.secho(
                             f"Folder copy to {seedbox.name} failed; adding the torrent paused. "

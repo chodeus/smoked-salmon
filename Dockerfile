@@ -62,7 +62,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Debian's rclone is years old; pin the official amd64 release and verify its checksum.
+# Keep rclone from its official release, not apt: Debian's is years old. Checksum-verified.
 ARG RCLONE_VERSION=1.72.0
 ARG RCLONE_SHA256=f3757aa829828c0f3359301bea25eef4d4fd62de735c47546ee6866c5b5545e2
 RUN curl -fsSL -o /tmp/rclone.zip \
@@ -71,7 +71,7 @@ RUN curl -fsSL -o /tmp/rclone.zip \
     && python3 -c "import zipfile; zipfile.ZipFile('/tmp/rclone.zip').extract('rclone-v${RCLONE_VERSION}-linux-amd64/rclone', '/tmp')" \
     && install -m 0755 "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone \
     && rm -rf /tmp/rclone.zip "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64" \
-    && rclone version | head -1
+    && rclone version
 
 # Copy the virtual environment from builder stage
 COPY --from=builder /app/.venv /app/.venv
