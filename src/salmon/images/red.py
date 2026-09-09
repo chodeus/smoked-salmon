@@ -1,9 +1,4 @@
-"""RED image hosting support.
-
-RED signs its image URLs per viewer when it renders a page, so the bare ``/i/``
-URL is what belongs in a group. The per-viewer credentials RED hands the
-uploader are never attached to it.
-"""
+"""RED image hosting: a group gets the bare ``/i/`` URL, never RED's per-viewer signed one."""
 
 import html
 from pathlib import Path
@@ -100,7 +95,7 @@ class ImageUploader(BaseImageUploader):
 
     @staticmethod
     async def _upload_image(session: aiohttp.ClientSession, form: aiohttp.FormData) -> str:
-        """Upload an image and return RED's unauthenticated image URL."""
+        """Upload an image and return the URL exactly as RED's response gives it."""
         async with session.post(
             AJAX_URL, params={"action": "upload_image"}, data=form, allow_redirects=False
         ) as response:
