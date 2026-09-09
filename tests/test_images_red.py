@@ -70,10 +70,7 @@ class _Session:
 
 
 def _patch_red_env(monkeypatch):
-    """Reset RED uploader class caches and stub config/time for a test."""
-    monkeypatch.setattr(red.ImageUploader, "_image_auth", None)
-    monkeypatch.setattr(red.ImageUploader, "_image_auth_expires_at", 0.0)
-    monkeypatch.setattr(red.ImageUploader, "_image_auth_session", None)
+    """Reset RED uploader class caches and stub config for a test."""
     monkeypatch.setattr(red.ImageUploader, "_authkey", None)
     monkeypatch.setattr(red.ImageUploader, "_authkey_session", None)
     monkeypatch.setattr(
@@ -91,7 +88,8 @@ def test_red_is_registered_as_an_image_uploader() -> None:
     assert issubclass(red.ImageUploader, BaseImageUploader)
 
 
-def test_red_reuses_image_auth_until_expired(monkeypatch, tmp_path) -> None:
+def test_red_returns_the_bare_image_url(monkeypatch, tmp_path) -> None:
+    # RED signs image URLs per viewer itself; the uploader's credentials must never be stored.
     sessions: list[_Session] = []
 
     def session_factory(**kwargs):
@@ -101,32 +99,24 @@ def test_red_reuses_image_auth_until_expired(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(red.aiohttp, "ClientSession", session_factory)
     _patch_red_env(monkeypatch)
-    current_time = 100.0
-    monkeypatch.setattr(red.time, "time", lambda: current_time)
     image = tmp_path / "image.png"
     image.write_bytes(b"png-data")
 
-    async def upload_three_times() -> tuple[tuple[str, None], tuple[str, None], tuple[str, None]]:
+    async def upload_twice() -> tuple[tuple[str, None], tuple[str, None]]:
         first = await red.ImageUploader().upload_file(str(image))
         second = await red.ImageUploader().upload_file(str(image))
-        nonlocal current_time
-        current_time = 123458.0
-        third = await red.ImageUploader().upload_file(str(image))
-        return first, second, third
+        return first, second
 
-    first, second, third = anyio.run(upload_three_times)
+    first, second = anyio.run(upload_twice)
 
-    assert first == ("https://redacted.sh/i/image-1.png?h=key-1&e=123457&u=1", None)
-    assert second == ("https://redacted.sh/i/image-2.png?h=key-1&e=123457&u=1", None)
-    assert third == ("https://redacted.sh/i/image-3.png?h=key-3&e=123459&u=3", None)
-    expected_calls = [
+    assert first == ("https://redacted.sh/i/image-1.png", None)
+    assert second == ("https://redacted.sh/i/image-2.png", None)
+    # The authkey is fetched once and reused; image-access credentials are never requested.
+    assert sessions[0].calls == [
         ("get", red.AJAX_URL, {"action": "index"}),
         ("post", red.AJAX_URL, {"action": "upload_image"}),
-        ("get", red.AJAX_URL, {"action": "imgauth"}),
     ]
-    assert sessions[0].calls == expected_calls
-    assert sessions[1].calls == expected_calls[1:2]
-    assert sessions[2].calls == expected_calls[1:]
+    assert sessions[1].calls == [("post", red.AJAX_URL, {"action": "upload_image"})]
     # Cookies are jar-scoped to RED (not session-wide) so redirects can't leak them.
     assert all("cookies" not in session.kwargs for session in sessions)
     assert all(
@@ -136,9 +126,22 @@ def test_red_reuses_image_auth_until_expired(monkeypatch, tmp_path) -> None:
     assert all(flag is False for session in sessions for flag in session.redirect_flags)
 
 
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://redacted.sh/i/a.jpg?h=hash&e=1788939917&u=66114", "https://redacted.sh/i/a.jpg"),
+        ("https://redacted.sh/i/a.jpg?h=hash&amp;e=1788939917&amp;u=66114", "https://redacted.sh/i/a.jpg"),
+        ("https://redacted.sh/t/thumb.jpg", "https://redacted.sh/t/thumb.jpg"),
+        ("https://files.catbox.moe/x.jpg?keep=1", "https://files.catbox.moe/x.jpg?keep=1"),
+        ("not a url", "not a url"),
+    ],
+)
+def test_bare_image_url_strips_only_red_credentials(url, expected) -> None:
+    assert red.bare_image_url(url) == expected
+
+
 def test_red_refuses_off_origin_image_url(monkeypatch, tmp_path) -> None:
-    # The image URL is server-controlled; h/e/u credentials must never be
-    # appended to a URL on any origin but RED's.
+    # The image URL is server-controlled; only a RED-origin URL may become a cover.
     class _OffOriginSession(_Session):
         def post(self, url: str, *, params: dict, data, allow_redirects=True):
             return _Response({"status": "success", "response": {"url": "https://evil.example/i/x.png"}})
