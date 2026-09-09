@@ -2,7 +2,6 @@ import re
 from collections import defaultdict
 from html import unescape
 from typing import Any
-from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
@@ -112,13 +111,8 @@ _RELEASED_ON = re.compile(r"Released on\s+(\d{1,2})/(\d{1,2})/(\d{2,4})", re.IGN
 _DISC_HEADING = re.compile(r"^\s*Disc\s+(\d+)\s*$", re.IGNORECASE)
 _TRACK_COUNT = re.compile(r"(\d+)\s+track", re.IGNORECASE)
 _COVER_SIZE = re.compile(r"_\d+\.jpg$", re.IGNORECASE)
-# Qobuz prints "Released on" month-first on its US locale and day-first everywhere else.
-_MONTH_FIRST_LOCALES = {"us-en"}
-
-
-def _day_first(url: str) -> bool:
-    locale = urlparse(url).path.strip("/").split("/")[0].lower()
-    return locale not in _MONTH_FIRST_LOCALES
+# Every locale serves every album; gb-en pins the labels to English and the date to day-first.
+PUBLIC_PAGE = "https://www.qobuz.com/gb-en/album/-/{album_id}"
 
 
 def _text(element) -> str:
@@ -133,12 +127,11 @@ def _meta_item(soup: BeautifulSoup, prefix: str, selector: str = ".album-meta__i
     return None
 
 
-def _released_on(text: str, day_first: bool = True) -> str | None:
+def _released_on(text: str) -> str | None:
     match = _RELEASED_ON.search(text)
     if not match:
         return None
-    first, second, year = (int(part) for part in match.groups())
-    day, month = (first, second) if day_first else (second, first)
+    day, month, year = (int(part) for part in match.groups())
     if year < 100:
         year += 2000
     return f"{year:04d}-{month:02d}-{day:02d}"
@@ -181,7 +174,7 @@ def _page_tracks(soup: BeautifulSoup) -> list[dict[str, Any]]:
     return tracks
 
 
-def page_to_api_shape(soup: BeautifulSoup, day_first: bool = True) -> dict[str, Any]:
+def page_to_api_shape(soup: BeautifulSoup) -> dict[str, Any]:
     """Read Qobuz's public album page into the dict shape the API returns, as far as the page carries it."""
     released = _meta_item(soup, "Released on")
     label_link = released.find("a") if released else None
@@ -204,7 +197,7 @@ def page_to_api_shape(soup: BeautifulSoup, day_first: bool = True) -> dict[str, 
             for link in (main_artists.select("a") if main_artists else [])
         ],
         "label": {"name": _text(label_link)} if label_link else {},
-        "release_date_original": _released_on(_text(released), day_first) if released else None,
+        "release_date_original": _released_on(_text(released)) if released else None,
         "copyright": next((track["copyright"] for track in tracks if track.get("copyright")), None),
         "genres_list": list(dict.fromkeys(_text(link) for link in (genre_item.select("a") if genre_item else []))),
         "tracks_count": int(count_match.group(1)) if count_match else len(tracks),
@@ -265,7 +258,7 @@ class Scraper(QobuzBase, MetadataMixin):
 
         if not self.configured():
             # The API needs an account; the public album page does not.
-            return await self._fetch_public_page(url)
+            return await self._fetch_public_page(rls_id)
 
         try:
             response = await self.get_json(self.release_format.format(rls_id=rls_id), headers=self.headers)
@@ -281,10 +274,11 @@ class Scraper(QobuzBase, MetadataMixin):
 
         return response
 
-    async def _fetch_public_page(self, url: str) -> dict[str, Any]:
+    async def _fetch_public_page(self, album_id: str) -> dict[str, Any]:
         """Album facts from the public web page, shaped like the API answer so the same parsers read them."""
+        url = PUBLIC_PAGE.format(album_id=album_id)
         soup = await self.fetch_page(url)
-        data = page_to_api_shape(soup, day_first=_day_first(url))
+        data = page_to_api_shape(soup)
         if not data.get("title"):
             raise ScrapeError(f"Qobuz page holds no album data (is it an album URL?): {url}")
         return data
