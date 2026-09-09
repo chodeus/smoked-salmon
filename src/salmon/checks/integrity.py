@@ -396,6 +396,10 @@ async def sanitize_integrity(path: str, _: int | None = None) -> bool:
                     audio_files.append(os.path.join(root, f))
         if not audio_files:
             return True
+        # The re-encode drops embedded pictures; keep the artwork as a cover file first.
+        from salmon.tagger.cover import extract_embedded_cover  # local: tagger imports checks at package init
+
+        extract_embedded_cover(path)
         results = await process_files(audio_files, sanitize_integrity, "Sanitizing audio files")
         for integrity in results:
             integrities = integrities and integrity

@@ -14,16 +14,50 @@ from PIL import Image
 from salmon import cfg
 from salmon.common import get_audio_files
 
+_COVER_FILE = re.compile(r"^(cover|folder)\.(jpe?g|png)$", re.IGNORECASE)
+
+
+def _existing_cover(path: str) -> str | None:
+    for filename in os.listdir(path):
+        if _COVER_FILE.match(filename):
+            return os.path.join(path, filename)
+    return None
+
 
 def get_cover_from_path(path):
-    """
-    Search a folder for a cover image, return its path.
-    """
-    for filename in os.listdir(path):
-        if re.match(r"^(cover|folder)\.(jpe?g|png)$", filename, flags=re.IGNORECASE):
-            fpath = os.path.join(path, filename)
-            return fpath
-    click.secho(f"Did not find a cover in path {path}", fg="red")
+    """Search a folder for a cover image, return its path."""
+    cover = _existing_cover(path)
+    if cover is None:
+        click.secho(f"Did not find a cover in path {path}", fg="red")
+    return cover
+
+
+def _write_picture(path: str, picture) -> str:
+    """Write an embedded picture out as the folder's cover file and return its path."""
+    stem = "cover" if cfg.upload.formatting.lowercase_cover else "Cover"
+    extension = "png" if picture.mime == "image/png" else "jpg"
+    cover_path = os.path.join(path, f"{stem}.{extension}")
+    with open(cover_path, "wb") as img:
+        img.write(picture.data)
+    click.secho(f"Extracted cover to: {cover_path}", fg="green")
+    return cover_path
+
+
+def extract_embedded_cover(path: str) -> str | None:
+    """Save the first embedded front cover as the folder's cover file; an existing cover file wins."""
+    existing = _existing_cover(path)
+    if existing:
+        return existing
+    for filename in get_audio_files(path):
+        if not filename.lower().endswith(".flac"):
+            continue
+        try:
+            pictures = FLAC(os.path.join(path, filename)).pictures
+        except Exception:
+            continue
+        for picture in pictures:
+            if picture.type == PictureType.COVER_FRONT and picture.data:
+                return _write_picture(path, picture)
     return None
 
 
@@ -42,6 +76,11 @@ async def download_cover_if_nonexistent(path: str, cover_url: str | None) -> tup
     if cover_path:
         click.secho(f"\nUsing existing cover image found: {cover_path}...", fg="yellow")
         return cover_path, False
+    # the files usually carry the store's artwork already
+    cover_path = extract_embedded_cover(path)
+    if cover_path:
+        click.secho(f"\nUsing the cover embedded in the files: {cover_path}...", fg="yellow")
+        return cover_path, True
     # use url provided
     if cover_url:
         click.secho("\nDownloading Cover Image...", fg="yellow")
@@ -162,19 +201,8 @@ def compress_pictures(path):
             )
 
             for picture in audio.pictures:
-                if picture.type == PictureType.COVER_FRONT:
-                    if picture.mime == "image/jpeg":
-                        extension = "jpg"
-                    elif picture.mime == "image/png":
-                        extension = "png"
-                    else:
-                        extension = "jpg"  # Default fallback
-
-                    if not cover_file:
-                        cover_file = os.path.join(path, f"cover.{extension}")
-                        with open(cover_file, "wb") as img:
-                            img.write(picture.data)
-                        click.secho(f"Extracted cover to: {cover_file}", fg="green")
+                if picture.type == PictureType.COVER_FRONT and not cover_file:
+                    cover_file = _write_picture(path, picture)
 
             audio.clear_pictures()
             audio.save(padding=get_8kib_padding)
