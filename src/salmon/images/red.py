@@ -66,9 +66,9 @@ class ImageUploader(BaseImageUploader):
                 try:
                     image_origin = URL(image_url).origin()
                 except ValueError as error:
-                    raise ImageUploadFailed(f"RED returned an unusable image URL: {image_url!r}") from error
+                    raise ImageUploadFailed("RED returned an unusable image URL") from error
                 if image_origin != URL(BASE_URL).origin():
-                    raise ImageUploadFailed(f"RED returned an off-origin image URL; refusing: {image_url!r}")
+                    raise ImageUploadFailed(f"RED returned an image URL on {image_origin.host}; refusing it")
         except (aiohttp.ClientError, TimeoutError) as error:
             raise ImageUploadFailed(f"Network error: {error}") from error
 

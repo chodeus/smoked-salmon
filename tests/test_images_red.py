@@ -151,5 +151,5 @@ def test_red_refuses_off_origin_image_url(monkeypatch, tmp_path) -> None:
     image = tmp_path / "image.png"
     image.write_bytes(b"png-data")
 
-    with pytest.raises(ImageUploadFailed, match="off-origin"):
+    with pytest.raises(ImageUploadFailed, match="evil.example"):
         anyio.run(red.ImageUploader().upload_file, str(image))

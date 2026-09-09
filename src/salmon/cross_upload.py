@@ -427,7 +427,7 @@ async def _rehost_red_images(
         for url in sorted(dict.fromkeys(_RED_IMAGE_URL.findall(value)), key=len, reverse=True):
             key = image_host, url
             if key not in replacements:
-                click.secho(f"Rehosting RED image to {image_host}: {url}", fg="yellow")
+                click.secho(f"Rehosting RED image to {image_host}: {bare_image_url(url)}", fg="yellow")
                 replacements[key] = await _rehost_red_image(url, source_site, image_host)
             value = value.replace(url, replacements[key])
         rewritten[field] = value
@@ -435,6 +435,7 @@ async def _rehost_red_images(
 
 
 async def _rehost_red_image(url: str, source_site: "BaseGazelleApi", image_host: str) -> str:
+    shown = bare_image_url(url)  # the stored URL may carry RED's per-viewer signature; never print it
     suffix = Path(urlparse(url).path).suffix or ".jpg"
     timeout = aiohttp.ClientTimeout(total=30)
     headers = {**source_site.headers, "Referer": f"{source_site.base_url}/"}
@@ -450,16 +451,16 @@ async def _rehost_red_image(url: str, source_site: "BaseGazelleApi", image_host:
             session.get(url, allow_redirects=False) as response,
         ):
             if response.status >= 400 or not response.content_type.startswith("image/"):
-                raise click.ClickException(f"Could not download RED image {url} (HTTP {response.status}).")
+                raise click.ClickException(f"Could not download RED image {shown} (HTTP {response.status}).")
             # Cap the fetch so tracker-supplied metadata can't make us buffer a huge body.
             max_bytes = 25 * 1024 * 1024  # RED accepts up to 20 MiB
             if response.content_length is not None and response.content_length > max_bytes:
-                raise click.ClickException(f"RED image {url} is too large ({response.content_length} bytes).")
+                raise click.ClickException(f"RED image {shown} is too large ({response.content_length} bytes).")
             content = await response.content.read(max_bytes + 1)
             if len(content) > max_bytes:
-                raise click.ClickException(f"RED image {url} exceeds the {max_bytes}-byte limit.")
+                raise click.ClickException(f"RED image {shown} exceeds the {max_bytes}-byte limit.")
     except (aiohttp.ClientError, TimeoutError) as error:
-        raise click.ClickException(f"Could not download RED image {url}: {error}") from error
+        raise click.ClickException(f"Could not download RED image {shown}: {error}") from error
 
     with TemporaryDirectory() as directory:
         image_path = Path(directory) / f"image{suffix}"
