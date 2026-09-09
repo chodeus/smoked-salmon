@@ -33,13 +33,7 @@ def _resolve_shell_path(remote_folder: str, extra_args: list[str]) -> str:
 
 
 async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str) -> bool:
-    """Upload a local folder to a rclone remote and return whether rclone succeeded.
-
-    Args:
-        seedbox: Seedbox config providing the rclone remote URL and extra args.
-        remote_folder: Destination directory on the remote.
-        path: Local folder path to upload.
-    """
+    """Upload a local folder to the rclone remote and return whether rclone succeeded."""
     remote_path = posixpath.join(remote_folder, os.path.basename(path))
     commands = ["rclone", "copy", path, f"{seedbox.url}:{remote_path}", *seedbox.extra_args]
     click.secho(f"Starting Rclone upload to {seedbox.url}:{remote_folder}", fg="cyan")
