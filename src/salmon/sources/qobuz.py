@@ -19,8 +19,8 @@ class QobuzBase(BaseScraper):
 
     @staticmethod
     def configured() -> bool:
-        """Qobuz refuses every API call without an app id, so no app id means the source is inactive."""
-        return bool(cfg.metadata.qobuz.app_id)
+        """Qobuz refuses every API call without both an app id and a user token, so either missing means inactive."""
+        return bool(cfg.metadata.qobuz.app_id and cfg.metadata.qobuz.user_auth_token)
 
     @property
     def headers(self) -> dict[str, str]:
