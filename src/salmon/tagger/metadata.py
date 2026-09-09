@@ -8,7 +8,9 @@ import asyncclick as click
 import msgspec
 
 from salmon import cfg
+from salmon.checks.source import store_url
 from salmon.common import handle_scrape_errors, make_searchstrs, re_strip
+from salmon.common.strings import comparable
 from salmon.search import SEARCHSOURCES, run_metasearch
 from salmon.tagger.combine import combine_metadatas
 from salmon.tagger.sources import METASOURCES
@@ -39,7 +41,8 @@ async def get_metadata(path: str, tags: dict[str, Any], rls_data: dict[str, Any]
         searchstrs, filter=False, track_count=len(tags), artists=artists_list, album=album_title
     )
     choices = _print_search_results(search_results, rls_data)
-    metadata, source_url = await _select_choice(choices, rls_data)
+    default = suggest_choice(choices, search_results, rls_data, len(tags), store_url(path))
+    metadata, source_url = await _select_choice(choices, rls_data, default=default)
     remove_various_artists(metadata["tracks"])
     metadata = fix_hardcore_genre(metadata)
     return metadata, source_url
@@ -85,8 +88,42 @@ def _print_search_results(results, rls_data=None):
     return choices
 
 
+def suggest_choice(
+    choices: dict[int, tuple[str, str]],
+    search_results: dict[str, Any],
+    rls_data: dict[str, Any],
+    track_count: int,
+    url: str | None,
+) -> str | None:
+    """Pre-typed metadata answer: the files' store URL starred as the source, plus the first result matching them."""
+    url_source = next((name for name, meta in METASOURCES.items() if url and meta.Scraper.regex.match(url)), None)
+    parts = [f"*{url}"] if url else []
+    match = _matching_choice(choices, search_results, rls_data, track_count)
+    if match is not None and choices[match][0] != url_source:
+        parts.append(str(match))
+    return " ".join(parts) or None
+
+
+def _matching_choice(
+    choices: dict[int, tuple[str, str]], search_results: dict[str, Any], rls_data: dict[str, Any], track_count: int
+) -> int | None:
+    """First search result whose artist, title and track count agree with the files' own tags."""
+    title = comparable(rls_data.get("title"))
+    artists = {comparable(name) for name, _importance in rls_data.get("artists") or []}
+    for choice_id, (source, rls_id) in choices.items():
+        ident = (search_results.get(source) or {}).get(rls_id, (None,))[0]
+        if ident is None:
+            continue
+        if comparable(ident.album) != title or comparable(ident.artist) not in artists:
+            continue
+        if ident.track_count not in (None, track_count):
+            continue
+        return choice_id
+    return None
+
+
 async def _select_choice(
-    choices: dict[int, tuple[str, str]], rls_data: dict[str, Any] | None
+    choices: dict[int, tuple[str, str]], rls_data: dict[str, Any] | None, default: str | None = None
 ) -> tuple[dict[str, Any], str | None]:
     """Allow the user to select a metadata choice.
 
@@ -114,6 +151,7 @@ async def _select_choice(
                     fg="magenta",
                 ),
                 type=click.STRING,
+                default=default,
             )
         else:
             res = await click.prompt(
@@ -123,6 +161,7 @@ async def _select_choice(
                     fg="magenta",
                 ),
                 type=click.STRING,
+                default=default,
             )
 
         if res.lower().startswith("m"):

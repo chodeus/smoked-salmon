@@ -6,6 +6,12 @@ from salmon.constants import GENRE_LIST
 from salmon.errors import GenreNotInWhitelist
 
 
+def comparable(text: object) -> str:
+    """Casefolded, accent-stripped alphanumerics only, for loose equality of titles and names."""
+    plain = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "", plain.casefold())
+
+
 def make_searchstrs(artists, album, normalize=False) -> list[str]:
     """Generate search strings from artists and album name.
 

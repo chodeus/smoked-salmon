@@ -65,8 +65,13 @@ async def choose_tracker_first_time(question="Which tracker would you like to up
 
 async def validate_tracker(ctx, param, value):
     """Only allow trackers in the config tracker dict.
-    If it isn't there. Prompt to choose.
+    If it isn't there. Prompt to choose. A tuple (repeated -t) validates each entry, in order.
     """
+    if isinstance(value, tuple):
+        if not value:
+            return await choose_tracker_first_time()
+        codes = [await validate_tracker(ctx, param, entry) for entry in value]
+        return tuple(dict.fromkeys(codes))
     try:
         if value is None:
             return await choose_tracker_first_time()

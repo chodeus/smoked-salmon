@@ -73,7 +73,10 @@ async def check_spectrals(
         while True:
             await view_spectrals(spectrals_path, all_spectral_ids)
             if lossy_master is None and check_lma:
-                lossy_master = await prompt_lossy_master(force_prompt_lossy_master or measured == "suspect")
+                lossy_master = await prompt_lossy_master(
+                force_prompt_lossy_master or measured == "suspect",
+                suggested="y" if measured == "suspect" else "n",
+            )
                 if lossy_master is not None:
                     break
             else:
@@ -88,7 +91,10 @@ async def check_spectrals(
         spectral_ids = await generate_spectrals_ids(path, spectral_ids, spectrals_path, audio_info)
         if lossy_master is None and check_lma:
             measured = await print_frequency_guidance(path, spectrals_path)
-            lossy_master = await prompt_lossy_master(force_prompt_lossy_master or measured == "suspect")
+            lossy_master = await prompt_lossy_master(
+                force_prompt_lossy_master or measured == "suspect",
+                suggested="y" if measured == "suspect" else "n",
+            )
 
     return lossy_master, spectral_ids
 
@@ -549,7 +555,8 @@ async def prompt_spectrals(spectral_ids, lossy_master, check_lma, force_prompt_l
         )
 
 
-async def prompt_lossy_master(force_prompt_lossy_master=False):
+async def prompt_lossy_master(force_prompt_lossy_master=False, suggested: str = "n"):
+    """Ask the lossy-master question; `suggested` is the pre-typed answer from the frequency analysis."""
     while True:
         flush_stdin()
         r = (
@@ -563,7 +570,7 @@ async def prompt_lossy_master(force_prompt_lossy_master=False):
                         fg="magenta",
                     ),
                     type=click.STRING,
-                    default="n",
+                    default=suggested,
                 )
             )[0].lower()
         )
