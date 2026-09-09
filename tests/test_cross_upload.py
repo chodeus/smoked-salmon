@@ -65,7 +65,7 @@ def test_cross_upload_data_maps_source_to_target() -> None:
             "recordLabel": "Label",
             "catalogueNumber": "CAT-1",
             "tags": ["rock", "demo"],
-            "wikiImage": "https://img.example/cover.jpg",
+            "wikiImage": "https://img.example/cover.jpg?a=1&amp;b=2",
             "wikiBBcode": "Group notes",
             "musicInfo": {
                 "artists": [{"name": "Main &amp; Artist"}],
@@ -96,6 +96,7 @@ def test_cross_upload_data_maps_source_to_target() -> None:
     data = _compile_data(response, cast("Any", SourceSite()), target)
 
     assert data["title"] == "Album & More"
+    assert data["image"] == "https://img.example/cover.jpg?a=1&b=2"
     assert data["artists[]"] == ["Main & Artist", "Guest"]
     assert data["importance[]"] == [1, 2]
     assert data["releasetype"] == 10
@@ -311,6 +312,34 @@ def test_red_images_pass_through_to_ops(monkeypatch) -> None:
     )
 
     assert result == data
+
+
+def test_red_image_urls_lose_their_credentials_on_the_way_to_ops(monkeypatch) -> None:
+    # RED stores the uploader's per-viewer credentials, including their user id, in the
+    # URL it hands back through the API; OPS must only ever receive the bare image URL.
+    async def fake_rehost(*_args):
+        raise AssertionError("no RED image may be rehosted for an OPS target")
+
+    monkeypatch.setattr(cross_upload_module, "_rehost_red_image", fake_rehost)
+    signed = "https://redacted.sh/i/cover.jpg?h=aG759uCOPI54C-Ak_-BRgQ&e=1788939917&u=66114"
+    data = {
+        "image": signed,
+        "album_desc": f"[img]{signed}[/img] [img]https://files.catbox.moe/keep.jpg?x=1[/img]",
+        "release_desc": "[img]https://redacted.sh/t/thumb.jpg?h=a&e=1&u=2[/img]",
+    }
+
+    result = anyio.run(
+        cross_upload_module._rehost_red_images,
+        data,
+        cast("Any", SimpleNamespace(site_code="RED")),
+        cast("Any", SimpleNamespace(site_code="OPS")),
+    )
+
+    assert result == {
+        "image": "https://redacted.sh/i/cover.jpg",
+        "album_desc": "[img]https://redacted.sh/i/cover.jpg[/img] [img]https://files.catbox.moe/keep.jpg?x=1[/img]",
+        "release_desc": "[img]https://redacted.sh/t/thumb.jpg[/img]",
+    }
 
 
 def test_verify_release_files_passes_on_exact_match(tmp_path: Path) -> None:
