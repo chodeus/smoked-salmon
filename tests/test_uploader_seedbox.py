@@ -87,7 +87,10 @@ def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkey
 
     ok = anyio.run(
         seedbox._rclone_upload_folder,
-        Seedbox(url="seedbox", extra_args=["--ftp-pass", "hunter2", "--sftp-pass=hunter2"]),
+        Seedbox(
+            url="seedbox",
+            extra_args=["--ftp-pass", "hunter2", "--sftp-pass=hunter2", "--sftp-key-pem", "-----BEGIN-hunter2"],
+        ),
         "/music",
         "/tmp/Artist - Album",
     )
@@ -95,6 +98,14 @@ def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkey
     assert ok is False
     assert not any("hunter2" in message for message in messages)
     assert any("[REDACTED]" in message for message in messages)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["key_pem=hunter2", "--session hunter2", "--sftp-key-pem=hunter2", "token=hunter2", "sftp://dean:hunter2@box/x"],
+)
+def test_redact_masks_suffixed_option_names_and_sessions(text: str) -> None:
+    assert "hunter2" not in seedbox._redact(text)
 
 
 def _manager(monkeypatch, seedboxes):

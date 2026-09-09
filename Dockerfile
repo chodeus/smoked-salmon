@@ -63,14 +63,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean
 
 # Keep rclone from its official release, not apt: Debian's is years old. Checksum-verified.
-ARG RCLONE_VERSION=1.72.0
-ARG RCLONE_SHA256=f3757aa829828c0f3359301bea25eef4d4fd62de735c47546ee6866c5b5545e2
+# No RCLONE_ prefix on these: rclone reads every RCLONE_* variable as a flag.
+ARG VERSION_RCLONE=1.72.0
+ARG SHA256_RCLONE=f3757aa829828c0f3359301bea25eef4d4fd62de735c47546ee6866c5b5545e2
 RUN curl -fsSL -o /tmp/rclone.zip \
-        "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" \
-    && echo "${RCLONE_SHA256}  /tmp/rclone.zip" | sha256sum -c - \
-    && python3 -c "import zipfile; zipfile.ZipFile('/tmp/rclone.zip').extract('rclone-v${RCLONE_VERSION}-linux-amd64/rclone', '/tmp')" \
-    && install -m 0755 "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone \
-    && rm -rf /tmp/rclone.zip "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64" \
+        "https://downloads.rclone.org/v${VERSION_RCLONE}/rclone-v${VERSION_RCLONE}-linux-amd64.zip" \
+    && echo "${SHA256_RCLONE}  /tmp/rclone.zip" | sha256sum -c - \
+    && python3 -c "import zipfile; zipfile.ZipFile('/tmp/rclone.zip').extract('rclone-v${VERSION_RCLONE}-linux-amd64/rclone', '/tmp')" \
+    && install -m 0755 "/tmp/rclone-v${VERSION_RCLONE}-linux-amd64/rclone" /usr/local/bin/rclone \
+    && rm -rf /tmp/rclone.zip "/tmp/rclone-v${VERSION_RCLONE}-linux-amd64" \
     && rclone version
 
 # Copy the virtual environment from builder stage

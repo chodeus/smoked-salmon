@@ -34,8 +34,9 @@ def _resolve_shell_path(remote_folder: str, extra_args: list[str]) -> str:
 
 
 _URL_USERINFO = re.compile(r"(://)[^/\s@]+@")
-_SECRET_FLAG = re.compile(r"(--?[\w-]*(?:pass|password|token|secret|key)\b[= ]\s*)\S+", re.IGNORECASE)
-_SECRET_ASSIGNMENT = re.compile(r"\b(pass|password|token|secret|api_key)=\S+", re.IGNORECASE)
+_SECRET_WORDS = r"(?:pass|password|token|secret|key|session)"
+_SECRET_FLAG = re.compile(rf"(--?[\w-]*{_SECRET_WORDS}[\w-]*(?:=|[ \t]+))\S+", re.IGNORECASE)
+_SECRET_ASSIGNMENT = re.compile(rf"\b([\w-]*{_SECRET_WORDS}[\w-]*)=\S+", re.IGNORECASE)
 
 
 def _redact(text: str) -> str:
