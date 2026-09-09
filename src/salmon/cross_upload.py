@@ -389,35 +389,25 @@ async def _upload_conversions(
         click.secho(f"Uploaded {label}: {target_site.base_url}/torrents.php?torrentid={torrent_id}", fg="green")
 
 
+# OPS proxies and caches RED-hosted images itself, so a RED → OPS cross-upload keeps them.
+_RED_IMAGE_PROXY_TARGETS = frozenset({"OPS"})
+
+
 async def _rehost_red_images(
     data: dict[str, Any], source_site: "BaseGazelleApi", target_site: "BaseGazelleApi"
 ) -> dict[str, Any]:
-    if source_site.site_code != "RED":
+    if source_site.site_code != "RED" or target_site.site_code in _RED_IMAGE_PROXY_TARGETS:
         return data
 
-    # Rehosting exists to move RED-hosted images onto a host the TARGET can display.
-    # If the configured host is 'red' but the target isn't RED, that would rehost
-    # RED->RED and leave the target with an image its users can't see — fall back to catbox.
-    cover_host = cfg.image.resolve(target_site.site_code, "cover_uploader")
+    # Config validation keeps "red" out of every non-RED slot, so these hosts can display the copies.
     desc_host = cfg.image.resolve(target_site.site_code, "image_uploader")
-
-    def _host_for(configured: str) -> str:
-        return "catbox" if (configured == "red" and target_site.site_code != "RED") else configured
-
-    if target_site.site_code != "RED" and "red" in {cover_host, desc_host}:
-        click.secho(
-            f"Image host is 'red' but the target is {target_site.site_code}; rehosting those images "
-            "to catbox so they render on the target.",
-            fg="yellow",
-        )
-
+    fields = {
+        "image": cfg.image.resolve(target_site.site_code, "cover_uploader"),
+        "album_desc": desc_host,
+        "release_desc": desc_host,
+    }
     rewritten = data.copy()
     replacements: dict[tuple[str, str], str] = {}
-    fields = {
-        "image": _host_for(cover_host),
-        "album_desc": _host_for(desc_host),
-        "release_desc": _host_for(desc_host),
-    }
     for field, image_host in fields.items():
         value = str(rewritten.get(field) or "")
         # Longest first: if one URL is a prefix of another, replacing the short one first
