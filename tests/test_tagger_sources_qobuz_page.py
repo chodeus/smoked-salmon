@@ -106,6 +106,21 @@ def test_page_to_api_shape_reads_the_album_facts() -> None:
     ]
 
 
+def test_the_us_locale_prints_the_date_month_first() -> None:
+    soup = BeautifulSoup(SINGLE_DISC.replace("Released on 24/5/22", "Released on 5/24/22"), "lxml")
+
+    assert page_to_api_shape(soup, day_first=False)["release_date_original"] == "2022-05-24"
+    assert qobuz._day_first("https://www.qobuz.com/us-en/album/journaling-illy/ul39e7xjbuqrb") is False
+    assert qobuz._day_first("https://www.qobuz.com/gb-en/album/journaling-illy/ul39e7xjbuqrb") is True
+    assert qobuz._day_first("https://open.qobuz.com/album/ul39e7xjbuqrb") is True
+
+
+def test_smaller_cover_sizes_are_lifted_to_the_maximum() -> None:
+    soup = BeautifulSoup(SINGLE_DISC.replace("_600.jpg", "_230.jpg"), "lxml")
+
+    assert page_to_api_shape(soup)["image"] == {"large": "https://static.qobuz.com/images/covers/rb/uq/ul39e7xjbuqrb_max.jpg"}
+
+
 def test_a_disc_heading_moves_the_following_tracks_to_that_disc() -> None:
     html = _page(
         _track(1, "one", "00:01:00", PERFORMERS, COPYRIGHT)
@@ -159,11 +174,16 @@ def test_fetch_data_uses_the_public_page_without_credentials(monkeypatch) -> Non
 
 def test_fetch_data_rejects_a_page_without_album_data(monkeypatch) -> None:
     monkeypatch.setattr(cfg.metadata.qobuz, "app_id", None)
+    monkeypatch.setattr(cfg.metadata.qobuz, "user_auth_token", None)
 
     async def empty_page(_self, _url, *_args, **_kwargs):
         return BeautifulSoup("<html><body><p>Not an album</p></body></html>", "lxml")
 
+    async def no_api(*_args, **_kwargs):
+        raise AssertionError("the API must not be called without credentials")
+
     monkeypatch.setattr(qobuz_base.QobuzBase, "fetch_page", empty_page)
+    monkeypatch.setattr(qobuz_base.QobuzBase, "get_json", no_api)
 
     with pytest.raises(qobuz.ScrapeError, match="no album data"):
         anyio.run(Scraper().fetch_data, QOBUZ_URL)
@@ -182,4 +202,6 @@ def test_fetch_data_still_uses_the_api_when_configured(monkeypatch) -> None:
     monkeypatch.setattr(qobuz_base.QobuzBase, "get_json", api)
     monkeypatch.setattr(qobuz_base.QobuzBase, "fetch_page", no_page)
 
-    assert anyio.run(Scraper().fetch_data, QOBUZ_URL) == {"title": "from the api"}
+    data = anyio.run(Scraper().fetch_data, QOBUZ_URL)
+
+    assert data == {"title": "from the api"}
