@@ -259,7 +259,7 @@ def test_existing_conversions_are_filtered_before_processing() -> None:
     assert anyio.run(_missing_conversions, cast("Any", Target()), 9, data, True, ("V0", "320")) == (False, ("320",))
 
 
-def test_red_images_are_rehosted_to_configured_hosts(monkeypatch) -> None:
+def test_red_images_are_rehosted_for_a_target_without_a_proxy(monkeypatch) -> None:
     cover = "https://redacted.sh/t/cover.jpg"
     inline = "https://redacted.sh/t/inline"
     calls = []
@@ -279,7 +279,7 @@ def test_red_images_are_rehosted_to_configured_hosts(monkeypatch) -> None:
         cross_upload_module._rehost_red_images,
         data,
         cast("Any", SimpleNamespace(site_code="RED")),
-        cast("Any", SimpleNamespace(site_code="OPS")),
+        cast("Any", SimpleNamespace(site_code="DIC")),
     )
 
     assert all("redacted.sh/t/" not in result[field] for field in ("image", "album_desc", "release_desc"))
@@ -290,20 +290,18 @@ def test_red_images_are_rehosted_to_configured_hosts(monkeypatch) -> None:
     }
 
 
-def test_red_image_host_falls_back_to_catbox_for_non_red_target(monkeypatch) -> None:
-    # cover/image uploader is 'red' but target is OPS: must rehost to catbox (a host
-    # OPS can display), not back to RED. Also exercises the /i/ URL form.
-    cover = "https://redacted.sh/i/cover.jpg"
-    calls = []
-
-    async def fake_rehost(url, _source_site, image_host):
-        calls.append((image_host, url))
-        return f"https://{image_host}.example/{Path(url).name}"
+def test_red_images_pass_through_to_ops(monkeypatch) -> None:
+    # OPS proxies and caches RED-hosted images, so nothing is downloaded or rehosted.
+    async def fake_rehost(*_args):
+        raise AssertionError("no RED image may be rehosted for an OPS target")
 
     monkeypatch.setattr(cross_upload_module, "_rehost_red_image", fake_rehost)
-    monkeypatch.setattr(cross_upload_module.cfg.image, "cover_uploader", "red")
-    monkeypatch.setattr(cross_upload_module.cfg.image, "image_uploader", "red")
-    data = {"image": cover, "album_desc": "", "release_desc": ""}
+    cover = "https://redacted.sh/i/cover.jpg"
+    data = {
+        "image": cover,
+        "album_desc": f"[img]{cover}[/img]",
+        "release_desc": "[img]https://redacted.sh/t/inline[/img]",
+    }
 
     result = anyio.run(
         cross_upload_module._rehost_red_images,
@@ -312,8 +310,7 @@ def test_red_image_host_falls_back_to_catbox_for_non_red_target(monkeypatch) -> 
         cast("Any", SimpleNamespace(site_code="OPS")),
     )
 
-    assert calls == [("catbox", cover)]
-    assert "redacted.sh" not in result["image"]
+    assert result == data
 
 
 def test_verify_release_files_passes_on_exact_match(tmp_path: Path) -> None:

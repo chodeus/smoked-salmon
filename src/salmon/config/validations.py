@@ -58,9 +58,12 @@ class Directory(BaseStruct):
 
 
 ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "red"]
-# RED's host is for its own covers; its rules forbid spectrals there, and images
-# uploaded to it only render for logged-in RED users.
-SPECS_FORBIDDEN_HOSTS = frozenset({"red"})
+_HOST_KINDS = ("image_uploader", "cover_uploader", "specs_uploader")
+_TRACKER_CODES = ("red", "ops", "dic")
+# A tracker's own image host is for its album artwork only: it is that tracker's default cover
+# host and is refused in every other slot (description images, spectrals, other trackers' covers).
+_OWN_COVER_HOSTS = {"red": "red"}
+ARTWORK_ONLY_HOSTS = frozenset(_OWN_COVER_HOSTS.values())
 SpectralSelectionLiteral = Literal["*", "+", "0"]
 
 
@@ -86,41 +89,50 @@ class ImageUploader(BaseStruct):
     dic: ImageHostOverride | None = None
 
     def resolve(self, site_code: str | None, kind: str) -> str:
-        """Return the host for a tracker + kind (image/cover/specs_uploader), honoring per-tracker overrides."""
-        if site_code:
-            override = getattr(self, site_code.lower(), None)
+        """Host for a tracker + kind: per-tracker override, else the tracker's cover default, else global."""
+        code = site_code.lower() if site_code else None
+        if code:
+            override = getattr(self, code, None)
             if override is not None and getattr(override, kind) is not None:
                 return getattr(override, kind)
+            if kind == "cover_uploader" and code in _OWN_COVER_HOSTS:
+                return _OWN_COVER_HOSTS[code]
         return getattr(self, kind)
 
-    def __post_init__(self):
-        uploader_selections = {self.image_uploader, self.cover_uploader, self.specs_uploader}
-        for _code in ("red", "ops", "dic"):
-            _ov = getattr(self, _code)
-            if _ov is not None:
-                uploader_selections.update(v for v in (_ov.image_uploader, _ov.cover_uploader, _ov.specs_uploader) if v)
-        if ("ptpimg" in uploader_selections) and self.ptpimg_key is None:
-            raise ValueError("ptpimg key not specified")
-        if "ptscreens" in uploader_selections and self.ptscreens_key is None:
-            raise ValueError("PTScreens key not specified")
-        if "oeimg" in uploader_selections and self.oeimg_key is None:
-            raise ValueError("oeimage key not specified")
-        if "imgbb" in uploader_selections and self.imgbb_key is None:
-            raise ValueError("imgbb key not specified")
-        # RED's rules forbid uploading spectrals to its image host.
-        if self.specs_uploader in SPECS_FORBIDDEN_HOSTS:
-            raise ValueError("RED's image host does not allow spectral uploads")
-        for code in ("red", "ops", "dic"):
+    def _selections(self) -> list[tuple[str | None, str, str]]:
+        """Every configured (tracker code or None for global, kind, host) triple."""
+        selections: list[tuple[str | None, str, str]] = [(None, kind, getattr(self, kind)) for kind in _HOST_KINDS]
+        for code in _TRACKER_CODES:
             override = getattr(self, code)
             if override is None:
                 continue
-            if override.specs_uploader in SPECS_FORBIDDEN_HOSTS:
-                raise ValueError(f"[image.{code}]: RED's image host does not allow spectral uploads")
-            if code != "red" and "red" in (override.cover_uploader, override.image_uploader):
-                raise ValueError(
-                    f"[image.{code}]: RED's image host only renders for RED users; "
-                    f"use a neutral host for {code.upper()}"
-                )
+            for kind in _HOST_KINDS:
+                host = getattr(override, kind)
+                if host:
+                    selections.append((code, kind, host))
+        return selections
+
+    def __post_init__(self):
+        selections = self._selections()
+        hosts = {host for _, _, host in selections}
+        if "ptpimg" in hosts and self.ptpimg_key is None:
+            raise ValueError("ptpimg key not specified")
+        if "ptscreens" in hosts and self.ptscreens_key is None:
+            raise ValueError("PTScreens key not specified")
+        if "oeimg" in hosts and self.oeimg_key is None:
+            raise ValueError("oeimage key not specified")
+        if "imgbb" in hosts and self.imgbb_key is None:
+            raise ValueError("imgbb key not specified")
+        for code, kind, host in selections:
+            own_slot = kind == "cover_uploader" and code is not None and _OWN_COVER_HOSTS.get(code) == host
+            if host not in ARTWORK_ONLY_HOSTS or own_slot:
+                continue
+            owner = next(tracker for tracker, own in _OWN_COVER_HOSTS.items() if own == host)
+            section = f"[image.{code}]" if code else "[image]"
+            raise ValueError(
+                f'{section} {kind} = "{host}": {owner.upper()}\'s image host is for album artwork only, '
+                f"so it is valid solely as cover_uploader under [image.{owner}]. Use a neutral host here."
+            )
 
 
 class TidalSettings(BaseStruct):

@@ -15,7 +15,7 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 > - `--dry-run`, RED↔OPS cross-upload, and a single-mount (`/config` + `/data`) container layout.
 > - Fixes for upstream issues #353, #356, #358, #429, #430, #432, #433, plus Apple Music / Tidal repairs and multi-disc log handling.
 >
-> **Defaults that differ from upstream:** the recent-uploads check is **off** (#432 — it could flood `login.php` and get an IP firewalled), and image hosts default to keyless **catbox** instead of the defunct ptpimg.
+> **Defaults that differ from upstream:** the recent-uploads check is **off** (#432 — it could flood `login.php` and get an IP firewalled), and image hosts default to keyless **catbox** instead of the defunct ptpimg, except RED covers, which default to RED's own image host.
 
 ## 🌟 Features  
 
@@ -42,7 +42,7 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 - **Description generation** – Edition description generation (tracklist, sources, available streaming platforms, encoding details...).
 - **Down-convert and Transcode** – Can downconvert 24-bit flac files to 16-bit, and transcode to mp3.
 - **Multi-Format Upload** – Automatically transcodes and uploads multiple formats (FLAC 16-bit, MP3, etc.) in a single workflow.
-- **Per-Tracker Image Hosts** – Use a tracker's own image host for its covers and a neutral host elsewhere. Spectrals are never sent to RED's host.
+- **Per-Tracker Image Hosts** – RED covers go to RED's own image host, which is for album artwork only; everything else uses a neutral host, and spectrals never go to RED's host. Cross-uploads to OPS keep RED-hosted covers, since OPS proxies and caches them.
 - **Site-Aware Rules** – Path-length limits and bit-depth/sample-rate policy applied per tracker, since RED and OPS differ.
 - **Cross-Upload** – Copy an existing upload from one tracker to another, rehosting images where the target requires it.
 - **Torrent Client Injection** – Can inject generated torrent files into torrent clients (qBittorrent, Transmission, Deluge, ruTorrent).
