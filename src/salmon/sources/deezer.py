@@ -19,6 +19,19 @@ HEADERS = {
 }
 
 
+async def album_upc(url: str) -> str | None:
+    """The UPC of the Deezer album at `url`; None for any other URL or when Deezer cannot be read."""
+    match = DeezerBase.regex.search(url)
+    if not match or match[1] != "album":
+        return None
+    try:
+        data = await DeezerBase().get_json(f"/album/{match[2]}", headers=HEADERS)
+    except (ScrapeError, aiohttp.ClientError, msgspec.DecodeError, TimeoutError):
+        return None
+    upc = data.get("upc") if isinstance(data, dict) else None
+    return str(upc) if upc else None
+
+
 class DeezerBase(BaseScraper):
     """Base scraper for Deezer metadata."""
 
