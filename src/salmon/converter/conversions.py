@@ -29,14 +29,12 @@ def record_conversion(output: str, **facts: Any) -> None:
 
 
 def conversion_of(folder: str) -> dict[str, Any] | None:
-    """The recorded facts for a folder a converter produced; None when there are none or they are unusable.
-
-    A sidecar that cannot be read at all raises: an upload of a converted folder owes the site a
-    description, so a permission or I/O failure must not read as "this folder was never converted".
-    """
+    """The recorded facts for a folder a converter produced; None when there are none or they are unusable."""
     try:
         with open(_sidecar(folder), encoding="utf-8") as fh:
             data = json.load(fh)
+    # Only these two mean "not converted"; any other OSError must reach the caller, since a folder
+    # whose record cannot be read still owes the site a description.
     except FileNotFoundError:
         return None
     except (json.JSONDecodeError, UnicodeDecodeError):
