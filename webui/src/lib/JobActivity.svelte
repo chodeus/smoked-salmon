@@ -13,6 +13,11 @@
   })
 </script>
 
+<!-- Log first: it sits directly under the question panel, where the answers are typed. -->
+{#if lines.length}
+  <pre class="log" bind:this={logEl}>{lines.join('\n')}</pre>
+{/if}
+
 {#if job.spectrals?.length}
   <div class="gallery">
     {#each job.spectrals as file}
@@ -22,10 +27,6 @@
       </a>
     {/each}
   </div>
-{/if}
-
-{#if lines.length}
-  <pre class="log" bind:this={logEl}>{lines.join('\n')}</pre>
 {/if}
 
 <style>
