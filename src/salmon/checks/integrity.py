@@ -384,6 +384,7 @@ async def sanitize_integrity(path: str, _: int | None = None) -> bool:
         click.Abort: If the path is neither a supported file nor a directory.
     """
     if path.lower().endswith(".flac"):
+        _save_embedded_cover(os.path.dirname(path) or ".")
         return await _sanitize_flac(path)
     elif path.lower().endswith(".mp3"):
         return await _sanitize_mp3(path)
@@ -396,11 +397,19 @@ async def sanitize_integrity(path: str, _: int | None = None) -> bool:
                     audio_files.append(os.path.join(root, f))
         if not audio_files:
             return True
+        _save_embedded_cover(path)
         results = await process_files(audio_files, sanitize_integrity, "Sanitizing audio files")
         for integrity in results:
             integrities = integrities and integrity
         return integrities
     raise click.Abort
+
+
+def _save_embedded_cover(folder: str) -> None:
+    """The re-encode drops embedded pictures; keep the artwork as a cover file first."""
+    from salmon.tagger.cover import extract_embedded_cover  # local: tagger imports checks at package init
+
+    extract_embedded_cover(folder)
 
 
 def _reserve_backup_path(path: str) -> str:
