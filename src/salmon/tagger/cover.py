@@ -15,6 +15,7 @@ from salmon import cfg
 from salmon.common import get_audio_files
 
 _COVER_FILE = re.compile(r"^(cover|folder)\.(jpe?g|png)$", re.IGNORECASE)
+_PICTURE_EXTENSIONS = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png"}
 
 
 def _existing_cover(path: str) -> str | None:
@@ -32,10 +33,12 @@ def get_cover_from_path(path):
     return cover
 
 
-def _write_picture(path: str, picture) -> str:
-    """Write an embedded picture out as the folder's cover file and return its path."""
+def _write_picture(path: str, picture) -> str | None:
+    """Write an embedded JPEG or PNG out as the folder's cover file and return its path; other types are skipped."""
+    extension = _PICTURE_EXTENSIONS.get((picture.mime or "").lower())
+    if extension is None:
+        return None
     stem = "cover" if cfg.upload.formatting.lowercase_cover else "Cover"
-    extension = "png" if picture.mime == "image/png" else "jpg"
     cover_path = os.path.join(path, f"{stem}.{extension}")
     with open(cover_path, "wb") as img:
         img.write(picture.data)
@@ -57,7 +60,9 @@ def extract_embedded_cover(path: str) -> str | None:
             continue
         for picture in pictures:
             if picture.type == PictureType.COVER_FRONT and picture.data:
-                return _write_picture(path, picture)
+                written = _write_picture(path, picture)
+                if written:
+                    return written
     return None
 
 

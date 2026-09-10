@@ -43,21 +43,46 @@ def test_extract_embedded_cover_writes_the_front_picture(album_dir, monkeypatch)
 def test_extract_embedded_cover_names_png_pictures_png(album_dir, monkeypatch) -> None:
     _fake_flac(monkeypatch, [_front(b"png-bytes", "image/png")])
 
-    assert cover.extract_embedded_cover(str(album_dir)) == str(album_dir / "cover.png")
+    result = cover.extract_embedded_cover(str(album_dir))
+
+    assert result == str(album_dir / "cover.png")
 
 
 def test_an_existing_cover_file_wins(album_dir, monkeypatch) -> None:
     _fake_flac(monkeypatch, [_front()])
     (album_dir / "Folder.png").write_bytes(b"already there")
 
-    assert cover.extract_embedded_cover(str(album_dir)) == str(album_dir / "Folder.png")
+    result = cover.extract_embedded_cover(str(album_dir))
+
+    assert result == str(album_dir / "Folder.png")
     assert not (album_dir / "cover.jpg").exists()
 
 
 def test_no_picture_means_no_cover_file(album_dir, monkeypatch) -> None:
     _fake_flac(monkeypatch, [])
 
-    assert cover.extract_embedded_cover(str(album_dir)) is None
+    result = cover.extract_embedded_cover(str(album_dir))
+
+    assert result is None
+    assert not any(Path(album_dir).glob("cover.*"))
+
+
+def test_unsupported_picture_types_are_skipped_in_favour_of_a_supported_one(album_dir, monkeypatch) -> None:
+    _fake_flac(monkeypatch, [_front(b"webp-bytes", "image/webp"), _front(b"png-bytes", "IMAGE/PNG")])
+
+    result = cover.extract_embedded_cover(str(album_dir))
+
+    assert result == str(album_dir / "cover.png")
+    assert (album_dir / "cover.png").read_bytes() == b"png-bytes"
+    assert not (album_dir / "cover.jpg").exists()
+
+
+def test_only_unsupported_pictures_means_no_cover_file(album_dir, monkeypatch) -> None:
+    _fake_flac(monkeypatch, [_front(b"webp-bytes", "image/webp")])
+
+    result = cover.extract_embedded_cover(str(album_dir))
+
+    assert result is None
     assert not any(Path(album_dir).glob("cover.*"))
 
 
@@ -88,5 +113,28 @@ def test_sanitize_saves_the_embedded_cover_before_re_encoding(tmp_path, monkeypa
 
     monkeypatch.setattr(ig, "process_files", fake_process)
 
-    assert anyio.run(ig.sanitize_integrity, str(album)) is True
+    result = anyio.run(ig.sanitize_integrity, str(album))
+
+    assert result is True
     assert order == [f"extract:{album}", "sanitize:1"]
+
+
+def test_sanitizing_a_single_flac_saves_the_embedded_cover_first(tmp_path, monkeypatch) -> None:
+    album = tmp_path / "album"
+    album.mkdir()
+    flac = album / "01.flac"
+    flac.write_bytes(b"not really flac")
+    order: list[str] = []
+
+    monkeypatch.setattr(cover, "extract_embedded_cover", lambda path: order.append(f"extract:{path}"))
+
+    async def fake_sanitize_flac(path):
+        order.append(f"sanitize:{Path(path).name}")
+        return True
+
+    monkeypatch.setattr(ig, "_sanitize_flac", fake_sanitize_flac)
+
+    result = anyio.run(ig.sanitize_integrity, str(flac))
+
+    assert result is True
+    assert order == [f"extract:{album}", "sanitize:01.flac"]
