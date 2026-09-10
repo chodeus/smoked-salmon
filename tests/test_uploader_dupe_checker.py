@@ -19,6 +19,7 @@ from salmon.uploader.dupe_checker import (
     filter_unnecessary_searchstrs,
     generate_dupe_check_searchstrs,
     get_search_results,
+    matching_torrents,
     print_recent_upload_results,
     print_search_results,
     print_torrents,
@@ -599,6 +600,53 @@ async def test_confirm_group_id_fetches_group_when_not_in_results(fake_tracker, 
     fake_tracker.api_responses["torrentgroup"] = make_torrentgroup_response(555)
     assert await _confirm_group_id(fake_tracker, 555, [make_result(100)]) is True
     assert fake_tracker.api_calls == [("torrentgroup", {"id": 555})]
+
+
+WEB_FLAC = {"source": "WEB", "format": "FLAC", "encoding": "Lossless", "year": 2024}
+
+
+def test_matching_torrents_flags_the_same_format_in_the_same_edition():
+    matches = matching_torrents(make_result(100), WEB_FLAC)
+
+    assert matches == [{"media": "WEB", "format": "FLAC", "encoding": "Lossless"}]
+
+
+@pytest.mark.parametrize(
+    "release",
+    [
+        {**WEB_FLAC, "encoding": "24bit Lossless"},
+        {**WEB_FLAC, "source": "CD"},
+        {**WEB_FLAC, "year": 2010},
+        None,
+    ],
+)
+def test_matching_torrents_ignores_other_formats_editions_and_no_release(release):
+    assert matching_torrents(make_result(100), release) == []
+
+
+def test_matching_torrents_uses_the_remaster_year_when_the_torrent_has_one():
+    rset = make_result(100)
+    rset["torrents"] = [{"media": "WEB", "format": "FLAC", "encoding": "Lossless", "remasterYear": 2010}]
+
+    assert matching_torrents(rset, {**WEB_FLAC, "year": 2010}) == rset["torrents"]
+    assert matching_torrents(rset, WEB_FLAC) == []
+
+
+def test_matching_torrents_still_flags_when_the_release_year_is_unknown():
+    assert matching_torrents(make_result(100), {**WEB_FLAC, "year": None}) != []
+
+
+async def test_confirm_group_id_pretypes_abort_when_the_edition_already_has_the_format(fake_tracker, install_prompt):
+    install_prompt(USE_DEFAULT)
+
+    with pytest.raises(click.Abort):
+        await _confirm_group_id(fake_tracker, 100, [make_result(100)], WEB_FLAC)
+
+
+async def test_confirm_group_id_keeps_yes_when_the_format_is_new_to_the_group(fake_tracker, install_prompt):
+    install_prompt(USE_DEFAULT)
+
+    assert await _confirm_group_id(fake_tracker, 100, [make_result(100)], {**WEB_FLAC, "encoding": "24bit Lossless"})
 
 
 async def test_confirm_group_id_unknown_group_aborts(fake_tracker, install_prompt):
