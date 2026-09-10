@@ -1,3 +1,4 @@
+import functools
 import os
 import platform
 import re
@@ -14,6 +15,7 @@ from salmon.checks import mqa_test
 from salmon.checks.blacklist import red_blacklist_reason
 from salmon.checks.integrity import resolve_integrity_for_upload
 from salmon.checks.logs import check_log_cambia
+from salmon.checks.source import detect_source
 from salmon.checks.tag_rules import collect_upload_warnings
 from salmon.checks.upconverts import upload_upconvert_test
 from salmon.common import commandgroup
@@ -56,7 +58,7 @@ from salmon.tagger.folderstructure import check_folder_structure
 from salmon.tagger.metadata import get_metadata
 from salmon.tagger.pre_data import construct_rls_data
 from salmon.tagger.retagger import rename_files, tag_files
-from salmon.tagger.review import review_metadata
+from salmon.tagger.review import release_type_from_folder, review_metadata, suggest_release_type
 from salmon.tagger.tags import check_tags, gather_tags, standardize_tags
 from salmon.uploader.dupe_checker import (
     check_existing_group,
@@ -132,8 +134,10 @@ if TYPE_CHECKING:
 @click.option(
     "--tracker",
     "-t",
-    callback=salmon.trackers.validate_tracker,
-    help=f"Uploading Choices: ({'/'.join(salmon.trackers.tracker_list)})",
+    "trackers",
+    multiple=True,
+    callback=salmon.trackers.validate_trackers,
+    help=f"Uploading Choices: ({'/'.join(salmon.trackers.tracker_list)}); repeat to upload to several in that order",
 )
 @click.option("--request", "-r", default=None, help="Pass a request URL or ID")
 @click.option(
@@ -206,7 +210,7 @@ async def up(
     overwrite: bool,
     encoding: str | None,
     compress: bool,
-    tracker: str,
+    trackers: tuple[str, ...],
     request: str | None,
     spectrals_after: bool,
     auto_rename: bool,
@@ -227,7 +231,7 @@ async def up(
         raise click.UsageError("--essential-only and --scene cannot be used together.")
     if yyy:
         cfg.upload.yes_all = True
-    gazelle_site = salmon.trackers.get_class(tracker)()
+    gazelle_site = salmon.trackers.get_class(trackers[0])()
     gazelle_site.dry_run = dry_run
     if dry_run:
         click.secho("\n=== DRY RUN — validating only, nothing will be uploaded ===", fg="cyan", bold=True)
@@ -271,6 +275,7 @@ async def up(
             essential_only=essential_only,
             skip_initial_review=skip_initial_review,
             apply_ai_suggestions=apply_ai_suggestions,
+            trackers=list(trackers) if len(trackers) > 1 else None,
         )
     except DryRunComplete as tracker_name:
         click.secho(f"\nDry run complete ({tracker_name}). No torrents were uploaded.", fg="cyan", bold=True)
@@ -302,6 +307,15 @@ def conversion_description(conversion: dict[str, Any] | None, url: str | None) -
     return generate_conversion_description(
         url or "", conversion.get("sample_rate"), cast("BitDepth", conversion.get("bit_depth", 16))
     )
+
+
+async def next_tracker(preselected: bool, remaining: list[str]) -> str | None:
+    """Next site to upload to: the next of the ones picked up front, else ask."""
+    if preselected:
+        click.secho(f"\nNext tracker: {remaining[0]}", fg="magenta")
+        return remaining[0]
+    click.secho("\nWould you like to upload to another tracker? ", fg="magenta", nl=False)
+    return await salmon.trackers.choose_tracker(remaining)
 
 
 def follow_up_trackers(trackers: list[str] | None, current: str) -> list[str]:
@@ -375,7 +389,9 @@ async def upload(
             is what the CLI does; an empty list offers none.
     """
     path = os.path.abspath(path)
-    # Looked up before any rename: the registry knows the folder by the name the converter gave it.
+    # Read before staging: the library's Artist/Type/Album layout names the release type.
+    folder_type = release_type_from_folder(path)
+    # Looked up before any rename: the record knows the folder by the name the converter gave it.
     conversion = conversion_of(path)
     # Stage before anything mutates: standardize_tags writes to the source directly,
     # and a hardlinked copy would share the inode with it.
@@ -383,7 +399,7 @@ async def upload(
         path = _stage_library_source(path)
     remove_downloaded_cover_image = scene or cfg.image.remove_auto_downloaded_cover_image
     if not source:
-        source = await _prompt_source()
+        source = await _prompt_source(detect_source(path))
     audio_info = gather_audio_info(path)
     hybrid = check_hybrid(audio_info)
     if not scene:
@@ -443,7 +459,7 @@ async def upload(
         if group_id is None:
             searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
             if len(searchstrs) > 0:
-                group_id = await check_existing_group(gazelle_site, searchstrs)
+                group_id = await check_existing_group(gazelle_site, searchstrs, release=rls_data)
 
         spectral_ids = None
         lossy_master: bool = False
@@ -474,6 +490,7 @@ async def upload(
             essential_only,
             skip_initial_review,
             apply_ai_suggestions,
+            rls_type_hint=suggest_release_type(folder_type, len(tags)),
         )
 
         if not group_id:
@@ -538,8 +555,7 @@ async def upload(
                         gazelle_site, path, torrent_id, None, track_data, source, source_url, format=rls_data["format"]
                     )
                     spectrals_after = False
-                click.secho("\nWould you like to upload to another tracker? ", fg="magenta", nl=False)
-                tracker = await salmon.trackers.choose_tracker(remaining_gazelle_sites)
+                tracker = await next_tracker(bool(trackers), remaining_gazelle_sites)
                 if not tracker:
                     click.secho("\nDone with this release.", fg="green")
                     break
@@ -547,7 +563,8 @@ async def upload(
 
                 click.secho(f"Uploading to {gazelle_site.base_url}", fg="cyan", bold=True)
                 searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
-                group_id = await check_existing_group(gazelle_site, searchstrs)
+                # The reviewed metadata, not the tags: an edit to artist, title or year must move the match with it.
+                group_id = await check_existing_group(gazelle_site, searchstrs, release=metadata)
 
             remaining_gazelle_sites.remove(tracker)
 
@@ -665,9 +682,12 @@ async def upload(
 
                 await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
 
-                if cfg.upload.yes_all or click.confirm(
-                    click.style("\nWould you like to check downconversion options?", fg="magenta"),
-                    default=True,
+                if get_downconversion_options(rls_data, track_data) and (
+                    cfg.upload.yes_all
+                    or click.confirm(
+                        click.style("\nWould you like to check downconversion options?", fg="magenta"),
+                        default=True,
+                    )
                 ):
                     selected_tasks = await prompt_downconversion_choice(rls_data, track_data)
                     if selected_tasks:
@@ -722,6 +742,7 @@ async def edit_metadata(
     essential_only: bool = False,
     skip_initial_review: bool = False,
     apply_ai_suggestions: bool = False,
+    rls_type_hint: str | None = None,
 ) -> tuple[str, dict[str, Any], dict[str, "TagFile"], dict[str, dict[str, Any]]]:
     """Edit release metadata in an interactive loop until the user confirms.
 
@@ -754,7 +775,7 @@ async def edit_metadata(
             rls_data,
             source_url,
             metadata_validator,
-            review_metadata,
+            functools.partial(review_metadata, rls_type_hint=rls_type_hint),
             skip_initial_review=skip_initial_review,
             apply_suggestions=apply_ai_suggestions,
         )
@@ -806,7 +827,7 @@ async def recheck_dupe(gazelle_site, searchstrs, metadata):
             bold=True,
             nl=False,
         )
-        return await check_existing_group(gazelle_site, new_searchstrs)
+        return await check_existing_group(gazelle_site, new_searchstrs, release=metadata)
     return None
 
 
@@ -1235,12 +1256,17 @@ def convert_genres(genres):
     return ",".join(re.sub("[-_ ]", ".", g).strip() for g in genres)
 
 
-async def _prompt_source():
+async def _prompt_source(detected: dict | None = None):
+    """Ask for the source; a confirmed detection from the files is pre-typed and its evidence shown."""
     click.echo(f"\nValid sources: {', '.join(SOURCES.values())}")
+    default = ""
+    if detected and detected.get("confidence") == "confirmed" and detected.get("source") in SOURCES.values():
+        default = str(detected["source"]).lower()
+        click.secho(f"Files suggest {detected['source']}: {' '.join(detected['reasons'])}", fg="cyan")
     while True:
         sauce = await click.prompt(
             click.style("What is the source of this release? [a]bort", fg="magenta"),
-            default="",
+            default=default,
         )
         try:
             return SOURCES[sauce.lower()]
