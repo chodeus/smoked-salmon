@@ -646,7 +646,10 @@ async def test_confirm_group_id_pretypes_abort_when_the_edition_already_has_the_
 async def test_confirm_group_id_keeps_yes_when_the_format_is_new_to_the_group(fake_tracker, install_prompt):
     install_prompt(USE_DEFAULT)
 
-    assert await _confirm_group_id(fake_tracker, 100, [make_result(100)], {**WEB_FLAC, "encoding": "24bit Lossless"})
+    hi_res = {**WEB_FLAC, "encoding": "24bit Lossless"}
+    confirmed = await _confirm_group_id(fake_tracker, 100, [make_result(100)], hi_res)
+
+    assert confirmed
 
 
 async def test_confirm_group_id_unknown_group_aborts(fake_tracker, install_prompt):

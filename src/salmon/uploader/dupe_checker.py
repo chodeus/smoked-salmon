@@ -385,14 +385,7 @@ async def print_torrents(
     rset: dict | None = None,
     highlight_torrent_id: int | None = None,
 ) -> dict:
-    """Print torrents in a torrent group and return the group data that was printed.
-
-    Args:
-        gazelle_site: The tracker API instance.
-        group_id: The group ID.
-        rset: Optional pre-fetched group data.
-        highlight_torrent_id: Torrent ID to highlight.
-    """
+    """Print the torrents in a group, highlighting one, and return the group data that was printed."""
     # If rset is not provided, fetch it from the API
     if rset is None:
         try:
@@ -485,17 +478,7 @@ def matching_torrents(rset: dict, release: dict | None) -> list[dict]:
 async def _confirm_group_id(
     gazelle_site: "BaseGazelleApi", group_id: int, results: list[dict], release: dict | None = None
 ) -> bool:
-    """Confirm upload to a torrent group; when the group already holds this release's format, abort is pre-typed.
-
-    Args:
-        gazelle_site: The tracker API instance.
-        group_id: The group ID.
-        results: Search results.
-        release: Release data (source, format, encoding, year) compared against the group's torrents.
-
-    Returns:
-        True if confirmed, False otherwise.
-    """
+    """Confirm the upload to this group; abort is pre-typed when the group already holds the release's format."""
     rset = None
     for r in results:
         if group_id == r["groupId"]:
