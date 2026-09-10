@@ -465,7 +465,8 @@ async def transcode_folder(path: str, bitrate: Bitrate, essential_only: bool = F
     _copy_extra_files(path, new_path, essential_only=essential_only)
     await _transcode_audio_files(items, bitrate)
 
-    record_conversion(new_path, source=path, kind="transcode", bitrate=bitrate)
+    if items:
+        record_conversion(new_path, source=path, kind="transcode", bitrate=bitrate)
     return new_path
 
 

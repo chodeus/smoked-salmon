@@ -291,10 +291,10 @@ def _stage_library_source(path: str) -> str:
 
 
 def conversion_description(conversion: dict[str, Any] | None, url: str | None) -> str | None:
-    """The transcode note for a folder a converter made, worded exactly as the in-run conversion upload."""
+    """The conversion note for a folder a converter made, worded exactly as the in-run conversion upload."""
     if not conversion:
         return None
-    click.secho(f"\nThis folder was converted from {conversion.get('source')}; describing the transcode.", fg="cyan")
+    click.secho(f"\nThis folder was converted from {conversion.get('source')}; describing the conversion.", fg="cyan")
     if conversion.get("kind") == "transcode":
         return generate_transcode_description(url or "", cast("Bitrate", conversion.get("bitrate")))
     return generate_conversion_description(
