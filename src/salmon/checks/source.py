@@ -107,6 +107,27 @@ def _vinyl_sides(tracknos: list[str]) -> bool:
     return sum(bool(_VINYL_TRACKNO.match(t)) for t in tracknos) >= len(tracknos) * 0.8
 
 
+_STORE_URL_KEYS = ("source", "sourceurl", "www", "website", "url", "purl")
+
+
+def store_url(path: str) -> str | None:
+    """First store URL in the files' tags, case preserved (sleezer writes SOURCE=https://www.qobuz.com/…)."""
+    for filename in get_audio_files(path, True):
+        try:
+            mut = MutagenFile(os.path.join(path, filename))
+        except Exception:
+            continue
+        if mut is None or not mut.tags:
+            continue
+        for key, value in dict(mut.tags).items():
+            if str(key).lower() not in _STORE_URL_KEYS:
+                continue
+            text = str(value[0] if isinstance(value, list) else value).strip()
+            if text.startswith(("http://", "https://")):
+                return text
+    return None
+
+
 def detect_source(path: str) -> dict:
     """Return {source, confidence, reasons} for an album folder.
 

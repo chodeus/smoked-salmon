@@ -1,3 +1,4 @@
+import os
 import re
 from collections import defaultdict
 
@@ -27,13 +28,10 @@ _DEFERRED_PRE_AI_METADATA_ERRORS = {
 }
 
 
-async def review_metadata(metadata, validator, enforce_required_fields: bool = True):
-    """
-    Validate that the metadata is per the user's wishes and then offer the user
-    the ability to edit it.
-    """
+async def review_metadata(metadata, validator, enforce_required_fields: bool = True, rls_type_hint: str | None = None):
+    """Check the metadata, then offer edits; `rls_type_hint` is pre-typed when the release type has to be asked."""
     if enforce_required_fields:
-        await _check_for_empty_release_type(metadata)
+        await _check_for_empty_release_type(metadata, rls_type_hint)
         await _check_for_empty_genre_list(metadata)
 
     break_ = False
@@ -57,9 +55,10 @@ async def review_metadata(metadata, validator, enforce_required_fields: bool = T
                 "artist a[l]iases, [t]itle, [g]enres, [r]elease type, [y]ears, "
                 "[e]dition info, [c]omment, trac[k]s, [u]rls, [n]othing",
                 fg="magenta",
-            )
+            ),
+            default="n",
         )
-        r_let = r[0].lower()
+        r_let = (r or "n")[0].lower()
         try:
             await edit_functions[r_let](metadata)
         except KeyError:
@@ -88,9 +87,9 @@ async def review_metadata(metadata, validator, enforce_required_fields: bool = T
     return metadata
 
 
-async def _check_for_empty_release_type(metadata):
+async def _check_for_empty_release_type(metadata, hint: str | None = None):
     if not metadata["rls_type"]:
-        await _edit_release_type(metadata)
+        await _edit_release_type(metadata, default=hint)
 
 
 async def _check_for_empty_genre_list(metadata):
@@ -263,7 +262,7 @@ async def _alias_artists(metadata):
                     metadata["tracks"][dnum][tnum]["artists"].pop(i)
 
 
-async def _edit_release_type(metadata):
+async def _edit_release_type(metadata, default: str | None = None):
     _print_release_types()
     types = {r.lower(): r for r in RELEASE_TYPES}
     while True:
@@ -272,6 +271,7 @@ async def _edit_release_type(metadata):
                 await click.prompt(
                     click.style("\nWhich release type corresponds to this release? (case insensitive)", fg="magenta"),
                     type=click.STRING,
+                    default=default,
                 )
             )
             .strip()
@@ -281,6 +281,26 @@ async def _edit_release_type(metadata):
             metadata["rls_type"] = types[rtype]
             return
         click.secho(f"{rtype} is not a valid release type.", fg="red")
+
+
+_TYPE_FROM_FOLDER = {name.lower(): name for name in RELEASE_TYPES}
+
+
+def release_type_from_folder(path: str) -> str | None:
+    """Release type named by the album's parent folder, as Lidarr's Artist/Type/Album layout does."""
+    parent = os.path.basename(os.path.dirname(os.path.abspath(path))).lower()
+    return _TYPE_FROM_FOLDER.get(parent)
+
+
+def suggest_release_type(folder_hint: str | None, track_count: int) -> str:
+    """Pre-typed release type: the library folder's word when there is one, else the usual size bands."""
+    if folder_hint:
+        return folder_hint
+    if track_count <= 2:
+        return "Single"
+    if track_count <= 6:
+        return "EP"
+    return "Album"
 
 
 def _print_release_types():

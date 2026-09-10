@@ -48,9 +48,10 @@ def flow(monkeypatch, tmp_path):
     async def view(spectrals_path, ids):
         events.append("view")
 
-    async def prompt(force_prompt_lossy_master=False):
+    async def prompt(force_prompt_lossy_master=False, suggested="n"):
         events.append("prompt")
         state["forced"] = force_prompt_lossy_master
+        state["suggested"] = suggested
         return state["answer"]
 
     async def prompt_spectrals(*_a, **_k):
@@ -96,6 +97,7 @@ async def test_the_answer_is_the_persons_not_the_measurements(flow):
     lossy, _ids = await sp.check_spectrals("/album", {"01.flac": {}}, None, None)
     assert lossy is False, "a suspect measurement must not answer the question"
     assert state["forced"] is True, "a suspect folder is asked about even under yes_all"
+    assert state["suggested"] == "y", "the pre-typed answer follows the measurement"
 
 
 async def test_a_clean_folder_leaves_yes_all_alone(flow):
@@ -103,6 +105,7 @@ async def test_a_clean_folder_leaves_yes_all_alone(flow):
     state["spectra"] = [_clean("01.flac")]
     await sp.check_spectrals("/album", {"01.flac": {}}, None, None)
     assert state["forced"] is False
+    assert state["suggested"] == "n"
 
 
 async def test_no_lossy_check_means_no_measurement_and_no_question(flow):

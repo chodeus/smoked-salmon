@@ -82,6 +82,19 @@ async def validate_tracker(ctx, param, value):
         ) from None
 
 
+async def validate_trackers(ctx, param, value):
+    """Validate each entry of a repeated -t flag in order; an empty flag runs the first-time flow."""
+    if not value:
+        codes = [await choose_tracker_first_time()]
+    else:
+        codes = [await validate_tracker(ctx, param, entry) for entry in value]
+    chosen = tuple(dict.fromkeys(code for code in codes if code))
+    if not chosen:
+        click.secho("No tracker selected.", fg="red")
+        raise click.Abort
+    return chosen
+
+
 def validate_request(gazelle_site, request):
     """Check the request is a request url of this tracker or an id.
     Return the request id.
