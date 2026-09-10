@@ -544,7 +544,8 @@ async def upload(
 
                 click.secho(f"Uploading to {gazelle_site.base_url}", fg="cyan", bold=True)
                 searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
-                group_id = await check_existing_group(gazelle_site, searchstrs, release=rls_data)
+                # The reviewed metadata, not the tags: an edit to artist, title or year must move the match with it.
+                group_id = await check_existing_group(gazelle_site, searchstrs, release=metadata)
 
             remaining_gazelle_sites.remove(tracker)
 
