@@ -15,6 +15,18 @@ from salmon.constants import (
 )
 from salmon.converter.conversions import carry_conversion
 from salmon.errors import UploadError
+from salmon.tagger.audio_info import gather_audio_info
+
+
+def resolution(path: str) -> str:
+    """"24-96"-style bit depth and sample rate of the files; empty for lossy files and for plain 16/44.1."""
+    first = next(iter(gather_audio_info(path).values()), None)
+    if not first or not first.get("precision"):
+        return ""
+    bits, rate = first["precision"], first["sample rate"]
+    if bits == 16 and rate == 44100:
+        return ""
+    return f"{bits}-{rate / 1000:g}"
 
 
 def rename_folder(path, metadata, auto_rename, check=True):
@@ -27,6 +39,8 @@ def rename_folder(path, metadata, auto_rename, check=True):
     the folder is copied to the download folder.
     """
     old_base = os.path.basename(path)
+    if "{resolution}" in cfg.upload.formatting.folder_template:
+        metadata = {**metadata, "resolution": resolution(path)}
     new_base = generate_folder_name(metadata)
     if metadata["scene"]:
         new_base = old_base
