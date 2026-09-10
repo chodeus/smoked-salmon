@@ -18,7 +18,7 @@ from salmon.checks.tag_rules import collect_upload_warnings
 from salmon.checks.upconverts import upload_upconvert_test
 from salmon.common import commandgroup
 from salmon.constants import ENCODINGS, FORMATS, SOURCES, TAG_ENCODINGS
-from salmon.converter.conversions import conversion_of
+from salmon.converter.conversions import carry_conversion, conversion_of
 from salmon.converter.downconverting import (
     BitDepth,
     convert_folder,
@@ -287,6 +287,8 @@ def _stage_library_source(path: str) -> str:
         raise UploadError(f"Cannot stage library source, {dest} already exists.")
     click.secho(f"\nCopying from library to {dest} (library files are never modified)...", fg="cyan")
     shutil.copytree(path, dest)
+    # The record lives beside the album, not in it, so the copy would otherwise leave it behind.
+    carry_conversion(path, dest)
     return dest
 
 

@@ -6,6 +6,7 @@ import anyio
 import pytest
 
 import salmon.uploader as uploader
+from salmon import cfg
 from salmon.converter import conversions
 from salmon.converter import downconverting as dc
 from salmon.converter import transcoding as tc
@@ -214,3 +215,33 @@ def test_a_renamed_folder_can_still_be_uploaded_with_its_note(tmp_path, monkeypa
     assert renamed == str(tmp_path / "Illy - journaling (2022) [WEB FLAC]")
     assert conversions.conversion_of(renamed) == DOWNCONVERT
     assert conversions.conversion_of(str(album)) is None
+
+
+def test_an_unreadable_sidecar_is_not_read_as_no_conversion(tmp_path, monkeypatch) -> None:
+    out = tmp_path / "Album [WEB FLAC]"
+    conversions.record_conversion(str(out), **DOWNCONVERT)
+
+    def denied(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr("builtins.open", denied)
+
+    with pytest.raises(PermissionError):
+        conversions.conversion_of(str(out))
+
+
+def test_staging_a_library_album_takes_its_record_along(tmp_path, monkeypatch) -> None:
+    from salmon.uploader import _stage_library_source
+
+    library, downloads = tmp_path / "library", tmp_path / "downloads"
+    album = library / "Illy" / "journaling [WEB FLAC]"
+    album.mkdir(parents=True)
+    (album / "01.flac").write_bytes(b"x")
+    downloads.mkdir()
+    monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
+    conversions.record_conversion(str(album), **DOWNCONVERT)
+
+    staged = _stage_library_source(str(album))
+
+    assert conversions.conversion_of(staged) == DOWNCONVERT
+    assert conversions.conversion_of(str(album)) == DOWNCONVERT, "the library album keeps its own record"

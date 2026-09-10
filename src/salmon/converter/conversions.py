@@ -6,6 +6,8 @@ import os
 import tempfile
 from typing import Any
 
+import asyncclick as click
+
 # One hidden directory per parent with one file per converted folder: never inside the album, never shared by writers.
 REGISTRY_DIR = ".salmon-conversions"
 KINDS = {"downconvert", "transcode"}
@@ -27,11 +29,18 @@ def record_conversion(output: str, **facts: Any) -> None:
 
 
 def conversion_of(folder: str) -> dict[str, Any] | None:
-    """The recorded facts for a folder a converter produced; None when there are none or they are unusable."""
+    """The recorded facts for a folder a converter produced; None when there are none or they are unusable.
+
+    A sidecar that cannot be read at all raises: an upload of a converted folder owes the site a
+    description, so a permission or I/O failure must not read as "this folder was never converted".
+    """
     try:
         with open(_sidecar(folder), encoding="utf-8") as fh:
             data = json.load(fh)
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        click.secho(f"Ignoring an unreadable conversion record for {os.path.basename(folder)}.", fg="yellow")
         return None
     return data if _usable(data) else None
 
