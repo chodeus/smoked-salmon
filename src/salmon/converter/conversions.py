@@ -1,5 +1,6 @@
 """Remember what each converted folder was made from, so a later upload can describe the conversion."""
 
+import contextlib
 import json
 import os
 import tempfile
@@ -33,6 +34,17 @@ def conversion_of(folder: str) -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     return data if _usable(data) else None
+
+
+def carry_conversion(old: str, new: str) -> None:
+    """Hand a renamed or copied folder's record to its new name; the old record goes once the old folder has."""
+    facts = conversion_of(old)
+    if facts is None or os.path.abspath(old) == os.path.abspath(new):
+        return
+    record_conversion(new, **facts)
+    if not os.path.isdir(old):
+        with contextlib.suppress(OSError):
+            os.remove(_sidecar(old))
 
 
 def _usable(data: Any) -> bool:

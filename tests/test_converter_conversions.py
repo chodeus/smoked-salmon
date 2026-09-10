@@ -9,6 +9,7 @@ import salmon.uploader as uploader
 from salmon.converter import conversions
 from salmon.converter import downconverting as dc
 from salmon.converter import transcoding as tc
+from salmon.tagger import foldername
 
 DOWNCONVERT = {"source": "/x/src", "kind": "downconvert", "bit_depth": 16, "sample_rate": 44100}
 
@@ -163,3 +164,53 @@ def test_a_mixed_family_description_lists_one_sox_command_per_rate() -> None:
     assert "16 bit 44.1 / 48.0 kHz" in description
     assert description.count("sox input.flac") == 2
     assert "rate -v -L 44100 dither\nsox" in description and "rate -v -L 48000 dither" in description
+
+
+def test_carry_conversion_follows_a_moved_folder(tmp_path) -> None:
+    old, new = tmp_path / "old name", tmp_path / "new name"
+    conversions.record_conversion(str(old), **DOWNCONVERT)
+
+    conversions.carry_conversion(str(old), str(new))
+
+    assert conversions.conversion_of(str(new)) == DOWNCONVERT
+    assert conversions.conversion_of(str(old)) is None, "the old folder is gone, so its record is too"
+
+
+def test_carry_conversion_keeps_the_record_while_the_old_folder_remains(tmp_path) -> None:
+    old, new = tmp_path / "old name", tmp_path / "new name"
+    old.mkdir()
+    conversions.record_conversion(str(old), **DOWNCONVERT)
+
+    conversions.carry_conversion(str(old), str(new))
+    conversions.carry_conversion(str(old), str(old))
+
+    assert conversions.conversion_of(str(new)) == DOWNCONVERT
+    assert conversions.conversion_of(str(old)) == DOWNCONVERT
+
+
+def test_a_renamed_folder_can_still_be_uploaded_with_its_note(tmp_path, monkeypatch) -> None:
+    # The upload reads the record, renames the folder, and may abort; the retry must find the record again.
+    monkeypatch.setattr(foldername.cfg.directory, "download_directory", str(tmp_path))
+    monkeypatch.setattr(foldername.cfg.upload.formatting, "remove_source_dir", True)
+    template = "{artists} - {title} ({year}) [{source} {format}]"
+    monkeypatch.setattr(foldername.cfg.upload.formatting, "folder_template", template)
+    album = tmp_path / "(2022) journaling"
+    album.mkdir()
+    (album / "01.flac").write_bytes(b"x")
+    conversions.record_conversion(str(album), **DOWNCONVERT)
+    metadata = {
+        "artists": [("Illy", "main")],
+        "title": "journaling",
+        "year": 2022,
+        "source": "WEB",
+        "format": "FLAC",
+        "encoding": "Lossless",
+        "encoding_vbr": False,
+        "scene": False,
+    }
+
+    renamed = foldername.rename_folder(str(album), metadata, auto_rename=True, check=False)
+
+    assert renamed == str(tmp_path / "Illy - journaling (2022) [WEB FLAC]")
+    assert conversions.conversion_of(renamed) == DOWNCONVERT
+    assert conversions.conversion_of(str(album)) is None
