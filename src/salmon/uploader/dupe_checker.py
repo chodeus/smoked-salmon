@@ -8,6 +8,7 @@ import asyncclick as click
 
 from salmon import cfg
 from salmon.common import RE_FEAT, make_searchstrs
+from salmon.common.strings import comparable
 from salmon.errors import AbortAndDeleteFolder, RequestError
 
 if TYPE_CHECKING:
@@ -165,10 +166,32 @@ async def _prompt_for_recent_upload_results(
             return None
 
 
+def suggest_group(results: list[dict] | None, release: dict | None) -> str:
+    """Pre-typed dupe answer: the listed result whose artist, title and year all match, else a new group."""
+    if not results or not release:
+        return "N"
+    wanted_artists = {comparable(name) for name, _importance in release.get("artists") or []} - {""}
+    title = comparable(release.get("title"))
+    if not title:
+        return "N"
+    year = str(release.get("year") or release.get("group_year") or "")
+    for index, result in enumerate(results, 1):
+        if result.get("groupId") is None:
+            continue
+        if (
+            comparable(result.get("groupName")) == title
+            and str(result.get("groupYear") or "") == year
+            and comparable(result.get("artist")) in wanted_artists
+        ):
+            return str(index)
+    return "N"
+
+
 async def check_existing_group(
     gazelle_site: "BaseGazelleApi",
     searchstrs: list[str],
     offer_deletion: bool = True,
+    release: dict | None = None,
 ) -> int | None:
     """Check for existing group and prompt user for selection.
 
@@ -176,6 +199,7 @@ async def check_existing_group(
         gazelle_site: The tracker API instance.
         searchstrs: Search strings for dupe checking.
         offer_deletion: Whether to offer folder deletion option.
+        release: Release data (artists, title, year) used to pre-type a matching result.
 
     Returns:
         Group ID or None for new group.
@@ -188,7 +212,9 @@ async def check_existing_group(
         )
     else:
         print_search_results(gazelle_site, results, " / ".join(searchstrs))
-        group_id = await _prompt_for_group_id(gazelle_site, results, offer_deletion)
+        group_id = await _prompt_for_group_id(
+            gazelle_site, results, offer_deletion, default=suggest_group(results, release)
+        )
     if group_id is not None:
         confirmation = await _confirm_group_id(gazelle_site, group_id, results)
         if confirmation is True:
@@ -297,6 +323,7 @@ async def _prompt_for_group_id(
     gazelle_site: "BaseGazelleApi",
     results: list[dict],
     offer_deletion: bool,
+    default: str = "N",
 ) -> int | None:
     """Prompt user to choose a group ID.
 
@@ -304,6 +331,7 @@ async def _prompt_for_group_id(
         gazelle_site: The tracker API instance.
         results: Search results to choose from.
         offer_deletion: Whether to offer folder deletion option.
+        default: Pre-typed answer, a result number or "N".
 
     Returns:
         Group ID or None for new group.
@@ -316,7 +344,7 @@ async def _prompt_for_group_id(
                 f"or [N]ew group / [a]bort {'/ [d]elete music folder ' if offer_deletion else ''}",
                 fg="magenta",
             ),
-            default="",
+            default=default,
         )
         if group_id.strip().isdigit():
             raw_input = int(group_id)
