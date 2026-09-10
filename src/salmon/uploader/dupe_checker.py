@@ -478,7 +478,7 @@ def matching_torrents(rset: dict, release: dict | None) -> list[dict]:
 async def _confirm_group_id(
     gazelle_site: "BaseGazelleApi", group_id: int, results: list[dict], release: dict | None = None
 ) -> bool:
-    """Confirm the upload to this group; abort is pre-typed when the group already holds the release's format."""
+    """Confirm the upload; abort is pre-typed when this edition already holds the same media, format and encoding."""
     rset = None
     for r in results:
         if group_id == r["groupId"]:
