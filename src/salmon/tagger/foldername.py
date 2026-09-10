@@ -13,6 +13,7 @@ from salmon.constants import (
     BLACKLISTED_CHARS,
     BLACKLISTED_FULLWIDTH_REPLACEMENTS,
 )
+from salmon.converter.conversions import carry_conversion
 from salmon.errors import UploadError
 
 
@@ -87,6 +88,7 @@ def rename_folder(path, metadata, auto_rename, check=True):
 
         if cfg.upload.formatting.remove_source_dir:
             shutil.rmtree(path)
+    carry_conversion(path, new_path)
 
     # Also rename spectrals folder in TMP_DIR if it exists
     if cfg.directory.tmp_dir and os.path.exists(cfg.directory.tmp_dir):
