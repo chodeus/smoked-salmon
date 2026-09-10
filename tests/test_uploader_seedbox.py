@@ -132,8 +132,11 @@ def test_a_credential_bearing_remote_never_reaches_the_log(monkeypatch) -> None:
         "/tmp/Artist - Album",
     )
 
+    shown = ":ftp,host=box.example,user=dean,pass=[REDACTED]"
     assert ok is True
-    assert len(messages) == 3
+    assert messages[0] == f"Starting Rclone upload to {shown}"
+    assert messages[1].startswith(f"Executing: rclone copy /tmp/Artist - Album {shown}")
+    assert messages[2].startswith(f"Rclone upload successful: /tmp/Artist - Album to {shown}")
     assert not any("hunter2" in message for message in messages)
 
 
