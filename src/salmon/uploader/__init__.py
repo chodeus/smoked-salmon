@@ -52,7 +52,7 @@ from salmon.tagger.audio_info import (
     gather_audio_info,
     recompress_path,
 )
-from salmon.tagger.cover import compress_pictures, download_cover_if_nonexistent
+from salmon.tagger.cover import compress_pictures, download_cover_if_nonexistent, strip_oversized_pictures
 from salmon.tagger.foldername import rename_folder
 from salmon.tagger.folderstructure import check_folder_structure
 from salmon.tagger.metadata import get_metadata
@@ -648,8 +648,10 @@ async def upload(
                             click.secho("Aborting upload due to missing cover image.", fg="red", bold=True)
                             return
 
-            if not scene and cfg.image.auto_compress_cover:
-                compress_pictures(path)
+            if not scene:
+                strip_oversized_pictures(path, track_data)
+                if cfg.image.auto_compress_cover:
+                    compress_pictures(path)
 
             if not request_id and cfg.upload.requests.check_requests:
                 request_id = await check_requests(gazelle_site, searchstrs)

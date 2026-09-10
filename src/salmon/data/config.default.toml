@@ -68,7 +68,9 @@ imgbb_key = 'api_key'
 # Set to true to remove downloaded cover images that are created in source folder, when one does not exist
 # remove_auto_downloaded_cover_image = false
 
-# Set to true to automatically process cover image sizes, including embedded covers in audio files
+# FLACs whose embedded pictures plus padding exceed 1 MiB (a trump reason) always have them removed before upload,
+# with the front cover kept as the folder's cover file. Set to true to also embed the cover file into FLACs that
+# carry no picture, resized to stay under that limit.
 # auto_compress_cover = false
 
 # ===============================

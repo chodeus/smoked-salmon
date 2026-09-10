@@ -14,6 +14,7 @@ from mutagen.id3 import APIC, TXXX, Frames
 from salmon import cfg
 from salmon.common.constants import IMAGE_EXTENSIONS, LOSSY_EXTENSIONS
 from salmon.common.files import process_files
+from salmon.constants import TAG_TRUMP_SIZE
 from salmon.converter.conversions import record_conversion
 from salmon.errors import UploadError
 from salmon.release_notification import get_version
@@ -262,7 +263,12 @@ def _copy_tags(tag_dict: dict[str, list[str]], flac_obj: flac.FLAC, mp3_path: Pa
     for k, v in tag_dict.items():
         mp3_thing.tags.add(_get_id3_frame(k, v))
 
+    embedded = 0
     for pic in flac_obj.pictures:
+        # The MP3's tag has the same trump threshold as the FLAC's; pictures that would cross it stay out.
+        if embedded + len(pic.data) > TAG_TRUMP_SIZE - 8 * 1024:
+            continue
+        embedded += len(pic.data)
         mp3_thing.tags.add(APIC(encoding=3, mime=pic.mime, type=pic.type, desc=pic.desc, data=pic.data))
 
     mp3_thing.save(v1=0, v2_version=4)

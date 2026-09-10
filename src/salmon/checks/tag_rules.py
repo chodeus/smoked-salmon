@@ -5,6 +5,8 @@ but folderstructure's blocking check measures the same way — two measurements 
 disagree is how a folder passed one gate and failed the other.
 """
 
+from salmon.constants import TAG_TRUMP_SIZE
+
 # Max full in-torrent path: the top-level torrent folder, any subfolders, and the
 # filename — nested folders and long classical filenames all count against it.
 MAX_PATH_LENGTH = {"RED": 180, "OPS": 255}
@@ -32,6 +34,11 @@ def collect_upload_warnings(site_code: str, folder_name: str, track_data: dict) 
         if path_limit and len(full_path) > path_limit:
             warnings.append(
                 f"{len(full_path)}-char path exceeds {site_code}'s {path_limit} limit (a trump reason): {full_path}"
+            )
+        tag_size = track.get("tag size")
+        if tag_size and tag_size > TAG_TRUMP_SIZE:
+            warnings.append(
+                f"{tag_size // 1024} KiB of embedded pictures and padding exceeds 1 MiB (a trump reason): {filename}"
             )
         sample_rate = track.get("sample rate")
         precision = track.get("precision")
