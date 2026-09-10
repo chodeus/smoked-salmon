@@ -29,10 +29,7 @@ _DEFERRED_PRE_AI_METADATA_ERRORS = {
 
 
 async def review_metadata(metadata, validator, enforce_required_fields: bool = True, rls_type_hint: str | None = None):
-    """
-    Validate that the metadata is per the user's wishes and then offer the user
-    the ability to edit it. `rls_type_hint` is pre-typed if the release type has to be asked.
-    """
+    """Check the metadata, then offer edits; `rls_type_hint` is pre-typed when the release type has to be asked."""
     if enforce_required_fields:
         await _check_for_empty_release_type(metadata, rls_type_hint)
         await _check_for_empty_genre_list(metadata)

@@ -170,10 +170,14 @@ def suggest_group(results: list[dict] | None, release: dict | None) -> str:
     """Pre-typed dupe answer: the listed result whose artist, title and year all match, else a new group."""
     if not results or not release:
         return "N"
-    wanted_artists = {comparable(name) for name, _importance in release.get("artists") or []}
+    wanted_artists = {comparable(name) for name, _importance in release.get("artists") or []} - {""}
     title = comparable(release.get("title"))
+    if not title:
+        return "N"
     year = str(release.get("year") or release.get("group_year") or "")
     for index, result in enumerate(results, 1):
+        if result.get("groupId") is None:
+            continue
         if (
             comparable(result.get("groupName")) == title
             and str(result.get("groupYear") or "") == year

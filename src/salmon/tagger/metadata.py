@@ -109,7 +109,9 @@ def _matching_choice(
 ) -> int | None:
     """First search result whose artist, title and track count agree with the files' own tags."""
     title = comparable(rls_data.get("title"))
-    artists = {comparable(name) for name, _importance in rls_data.get("artists") or []}
+    artists = {comparable(name) for name, _importance in rls_data.get("artists") or []} - {""}
+    if not title:
+        return None
     for choice_id, (source, rls_id) in choices.items():
         ident = (search_results.get(source) or {}).get(rls_id, (None,))[0]
         if ident is None:
