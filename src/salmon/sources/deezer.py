@@ -37,7 +37,7 @@ class DeezerBase(BaseScraper):
 
     url = "https://api.deezer.com"
     site_url = "https://www.deezer.com"
-    regex = re.compile(r"^https*:\/\/.*?deezer\.com.*?\/(?:[a-z]+\/)?(album|playlist|track)\/([0-9]+)")
+    regex = re.compile(r"^https?:\/\/(?:[a-z0-9-]+\.)*deezer\.com\/(?:[a-z]+\/)?(album|playlist|track)\/([0-9]+)")
     release_format = "/album/{rls_id}"
 
     def __init__(self) -> None:

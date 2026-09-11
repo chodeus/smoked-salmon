@@ -48,6 +48,20 @@ def test_album_upc_swallows_a_failed_request(monkeypatch, failure: Exception) ->
     assert anyio.run(deezer.album_upc, DEEZER_URL) is None
 
 
+def test_the_regex_still_reads_every_real_deezer_form() -> None:
+    forms = [
+        "https://www.deezer.com/album/322064097",
+        "https://deezer.com/album/322064097",
+        "https://www.deezer.com/en/album/322064097",
+        "http://www.deezer.com/fr/album/322064097",
+    ]
+
+    matches = [deezer.DeezerBase.regex.search(url) for url in forms]
+
+    assert all(matches)
+    assert [match[2] for match in matches if match] == ["322064097"] * 4
+
+
 def test_fill_upc_from_store_fills_only_a_missing_upc(monkeypatch) -> None:
     _deezer_answers(monkeypatch, {"upc": "0656465465801"})
     missing = {"upc": None}
