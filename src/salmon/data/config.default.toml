@@ -199,6 +199,7 @@ session = 'get-from-site-cookie'
 # [upload.formatting]
 # # templates for folder and file naming
 # folder_template = "{artists} - {title} ({year}) [{source} {format}]"
+# # {resolution} adds "24-96" / "16-48" for lossless files (blank for lossy and for 16/44.1), e.g. "[{source} FLAC {resolution}]"
 # file_template = "{tracknumber}. {artist} - {title}"
 # remove_source_dir = false
 # split_multi_disc_into_folders = true
