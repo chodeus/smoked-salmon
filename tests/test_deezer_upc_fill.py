@@ -33,11 +33,22 @@ def test_album_upc_reads_the_album_by_its_id(monkeypatch) -> None:
     assert asked == ["/album/322064097"]
 
 
-@pytest.mark.parametrize("url", [QOBUZ_URL, "https://www.deezer.com/track/12345", "not a url"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        QOBUZ_URL,
+        "https://www.deezer.com/track/12345",
+        "not a url",
+        "https://notdeezer.com/album/322064097",
+        "https://deezer.com.evil.test/album/322064097",
+    ],
+)
 def test_album_upc_makes_no_request_for_anything_but_a_deezer_album(monkeypatch, url: str) -> None:
     asked = _deezer_answers(monkeypatch, {"upc": "should not be read"})
 
-    assert anyio.run(deezer.album_upc, url) is None
+    upc = anyio.run(deezer.album_upc, url)
+
+    assert upc is None
     assert asked == []
 
 
@@ -45,7 +56,9 @@ def test_album_upc_makes_no_request_for_anything_but_a_deezer_album(monkeypatch,
 def test_album_upc_swallows_a_failed_request(monkeypatch, failure: Exception) -> None:
     _deezer_answers(monkeypatch, failure)
 
-    assert anyio.run(deezer.album_upc, DEEZER_URL) is None
+    upc = anyio.run(deezer.album_upc, DEEZER_URL)
+
+    assert upc is None
 
 
 def test_the_regex_still_reads_every_real_deezer_form() -> None:
