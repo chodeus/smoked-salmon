@@ -11,6 +11,7 @@ import asyncclick as click
 import msgspec
 
 from salmon import cfg
+from salmon.common.strings import plain_spaces
 from salmon.constants import (
     ARROWS,
     BLACKLISTED_CHARS,
@@ -500,7 +501,7 @@ def generate_file_name(tags, ext, multiple_artists, trackno_or=None, track_digit
     if cfg.upload.description.fullwidth_replacements:
         for char, sub in BLACKLISTED_FULLWIDTH_REPLACEMENTS.items():
             new_base = new_base.replace(char, sub)
-    return re.sub(BLACKLISTED_CHARS, cfg.upload.formatting.blacklisted_substitution, new_base)
+    return re.sub(BLACKLISTED_CHARS, cfg.upload.formatting.blacklisted_substitution, plain_spaces(new_base))
 
 
 def _parse_integer(value, width=2):
