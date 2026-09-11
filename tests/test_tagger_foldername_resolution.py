@@ -19,12 +19,22 @@ def _audio_info(monkeypatch, precision, rate):
 
 @pytest.mark.parametrize(
     ("precision", "rate", "expected"),
-    [(24, 96000, "24-96"), (24, 44100, "24-44.1"), (16, 48000, "16-48"), (16, 44100, ""), (None, 44100, "")],
+    [
+        (24, 96000, "24-96"),
+        (24, 44100, "24-44.1"),
+        (16, 48000, "16-48"),
+        (16, 44100, ""),
+        (None, 44100, ""),
+        (0, 44100, ""),
+        (24, None, ""),
+    ],
 )
 def test_resolution_reads_bit_depth_and_sample_rate(monkeypatch, precision, rate, expected) -> None:
     _audio_info(monkeypatch, precision, rate)
 
-    assert foldername.resolution("/music/album") == expected
+    result = foldername.resolution("/music/album")
+
+    assert result == expected
 
 
 WITH_TOKEN = "{artists} - {title} ({year}) [{source} FLAC {resolution}]"
@@ -63,4 +73,17 @@ def test_the_files_are_not_read_when_the_template_has_no_token(monkeypatch, tmp_
     renamed = foldername.rename_folder(str(album), METADATA, auto_rename=True, check=False)
 
     assert renamed == str(tmp_path / "Illy - journaling (2022) [WEB 24bit FLAC]")
+    assert calls == []
+
+
+def test_an_escaped_token_does_not_read_the_files(monkeypatch, tmp_path) -> None:
+    # "{{resolution}}" is a literal "{resolution}" to str.format, not the token.
+    calls = _audio_info(monkeypatch, 24, 96000)
+    monkeypatch.setattr(cfg.upload.formatting, "folder_template", "{artists} - {title} [{{resolution}}]")
+    monkeypatch.setattr(cfg.directory, "download_directory", str(tmp_path))
+    album = tmp_path / "old name"
+    album.mkdir()
+
+    foldername.rename_folder(str(album), METADATA, auto_rename=True, check=False)
+
     assert calls == []

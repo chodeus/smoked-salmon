@@ -19,12 +19,13 @@ from salmon.tagger.audio_info import gather_audio_info
 
 
 def resolution(path: str) -> str:
-    """"24-96"-style bit depth and sample rate of the files; empty for lossy files and for plain 16/44.1."""
+    """"24-96"-style bit depth and sample rate of the folder's first track; empty for lossy files and for 16/44.1."""
     first = next(iter(gather_audio_info(path).values()), None)
-    if not first or not first.get("precision"):
+    if not first:
         return ""
-    bits, rate = first["precision"], first["sample rate"]
-    if bits == 16 and rate == 44100:
+    bits, rate = first.get("precision"), first.get("sample rate")
+    # Lossy files report no bit depth, and a zero one is not a depth a folder name should claim.
+    if not bits or not rate or (bits == 16 and rate == 44100):
         return ""
     return f"{bits}-{rate / 1000:g}"
 
@@ -39,7 +40,8 @@ def rename_folder(path, metadata, auto_rename, check=True):
     the folder is copied to the download folder.
     """
     old_base = os.path.basename(path)
-    if "{resolution}" in cfg.upload.formatting.folder_template:
+    template_fields = {name for _, name, _, _ in Formatter().parse(cfg.upload.formatting.folder_template) if name}
+    if "resolution" in template_fields:
         metadata = {**metadata, "resolution": resolution(path)}
     new_base = generate_folder_name(metadata)
     if metadata["scene"]:
