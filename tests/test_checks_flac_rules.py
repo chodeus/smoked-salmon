@@ -1,4 +1,4 @@
-"""Rules learned from propolis: ID3 tags inside FLACs, uncompressed FLACs, odd spaces, and rule numbers."""
+"""ID3 tags inside FLACs, uncompressed FLACs, unicode spaces in names, and rule numbers in the warnings."""
 
 import pytest
 
@@ -53,16 +53,21 @@ def test_uncompressed_is_the_raw_pcm_rate() -> None:
     assert is_uncompressed(_flac(**{"bit rate": int(raw * 0.7)})) is False
 
 
-def test_uncompressed_discounts_the_tag_block_and_needs_every_fact() -> None:
+def test_a_huge_picture_neither_hides_nor_invents_an_uncompressed_file() -> None:
+    # mutagen's bit rate already excludes the metadata blocks, so the artwork must not enter the sum either way.
     raw = 44100 * 16 * 2
-    # a 1 MiB picture on a 10-second track inflates the file bit rate well past raw PCM
-    picture_bits_per_second = 1024 * 1024 * 8 // 10
-    picture_heavy = _flac(
-        **{"bit rate": int(raw * 0.7) + picture_bits_per_second, "duration": 10, "tag size": 1024 * 1024}
-    )
+    art = {"tag size": 4 * 1024 * 1024, "duration": 10}
 
-    assert is_uncompressed(picture_heavy) is False
-    assert is_uncompressed(_flac(**{"bit rate": raw, "duration": None})) is False
+    assert is_uncompressed(_flac(**{"bit rate": raw, **art})) is True
+    assert is_uncompressed(_flac(**{"bit rate": int(raw * 0.7), **art})) is False
+
+
+def test_an_incomplete_record_is_never_called_uncompressed() -> None:
+    raw = 44100 * 16 * 2
+
+    assert is_uncompressed(_flac(**{"bit rate": None})) is False
+    assert is_uncompressed(_flac(**{"bit rate": raw, "channels": None})) is False
+    assert is_uncompressed(_flac(**{"bit rate": raw, "precision": None})) is False
 
 
 def test_rules_flag_an_id3_tag_only_inside_a_flac() -> None:

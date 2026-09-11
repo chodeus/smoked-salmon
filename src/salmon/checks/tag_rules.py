@@ -28,13 +28,13 @@ def in_torrent_path(folder_name: str, relative_path: str) -> str:
 
 
 def is_uncompressed(track: dict) -> bool:
-    """True when the file's audio bit rate, less its tag block, is at least the raw PCM rate."""
+    """True when the file's audio bit rate is at least the raw PCM rate for its format."""
     rate, bits, channels = track.get("sample rate"), track.get("precision"), track.get("channels")
-    duration, bit_rate = track.get("duration"), track.get("bit rate")
-    if not (rate and bits and channels and duration and bit_rate):
+    bit_rate = track.get("bit rate")
+    if not (rate and bits and channels and bit_rate):
         return False
-    audio_bit_rate = bit_rate - (track.get("tag size") or 0) * 8 / duration
-    return audio_bit_rate >= UNCOMPRESSED_RATIO * rate * bits * channels
+    # mutagen measures from the end of the metadata blocks, so pictures and padding are already out of it.
+    return bit_rate >= UNCOMPRESSED_RATIO * rate * bits * channels
 
 
 def collect_upload_warnings(site_code: str, folder_name: str, track_data: dict) -> list[str]:
