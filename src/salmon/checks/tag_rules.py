@@ -14,7 +14,7 @@ MAX_PATH_LENGTH = {"RED": 180, "OPS": 255}
 # strictest destination it might go to.
 STRICTEST_PATH_LENGTH = min(MAX_PATH_LENGTH.values())
 STANDARD_SAMPLE_RATES = {44100, 48000, 88200, 96000, 176400, 192000}
-# A FLAC whose audio bit rate is that of raw PCM was stored without compression (verbatim frames).
+# A FLAC storing verbatim frames reaches raw PCM; the margin allows for the frame headers' own overhead.
 UNCOMPRESSED_RATIO = 0.99
 
 
@@ -28,7 +28,7 @@ def in_torrent_path(folder_name: str, relative_path: str) -> str:
 
 
 def is_uncompressed(track: dict) -> bool:
-    """True when the file's audio bit rate is at least the raw PCM rate for its format."""
+    """True when the file's audio bit rate is within a per cent of the raw PCM rate for its format."""
     rate, bits, channels = track.get("sample rate"), track.get("precision"), track.get("channels")
     bit_rate = track.get("bit rate")
     if not (rate and bits and channels and bit_rate):
