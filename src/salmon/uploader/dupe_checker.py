@@ -216,7 +216,7 @@ async def check_existing_group(
             gazelle_site, results, offer_deletion, default=suggest_group(results, release)
         )
     if group_id is not None:
-        confirmation = await _confirm_group_id(gazelle_site, group_id, results)
+        confirmation = await _confirm_group_id(gazelle_site, group_id, results, release)
         if confirmation is True:
             return group_id
         return None
@@ -384,15 +384,8 @@ async def print_torrents(
     group_id: int,
     rset: dict | None = None,
     highlight_torrent_id: int | None = None,
-) -> None:
-    """Print torrents in a torrent group.
-
-    Args:
-        gazelle_site: The tracker API instance.
-        group_id: The group ID.
-        rset: Optional pre-fetched group data.
-        highlight_torrent_id: Torrent ID to highlight.
-    """
+) -> dict:
+    """Print the torrents in a group, highlighting one, and return the group data that was printed."""
     # If rset is not provided, fetch it from the API
     if rset is None:
         try:
@@ -460,26 +453,48 @@ async def print_torrents(
             f"> {prefix}{t['media']} / {t['format']} / {t['encoding']}",
             fg=color,
         )
+    return rset
 
 
-async def _confirm_group_id(gazelle_site: "BaseGazelleApi", group_id: int, results: list[dict]) -> bool:
-    """Confirm upload to a torrent group.
+def matching_torrents(rset: dict, release: dict | None) -> list[dict]:
+    """Group torrents matching the release's media, format, encoding and edition year: uploading it again is a dupe."""
+    if not release:
+        return []
+    wanted = (release.get("source"), release.get("format"), release.get("encoding"))
+    if not all(wanted):
+        return []
+    year = str(release.get("year") or "")
+    matches = []
+    for torrent in rset.get("torrents") or []:
+        if (torrent.get("media"), torrent.get("format"), torrent.get("encoding")) != wanted:
+            continue
+        edition_year = str(torrent.get("remasterYear") or rset.get("groupYear") or "")
+        if year and edition_year and edition_year != year:
+            continue
+        matches.append(torrent)
+    return matches
 
-    Args:
-        gazelle_site: The tracker API instance.
-        group_id: The group ID.
-        results: Search results.
 
-    Returns:
-        True if confirmed, False otherwise.
-    """
+async def _confirm_group_id(
+    gazelle_site: "BaseGazelleApi", group_id: int, results: list[dict], release: dict | None = None
+) -> bool:
+    """Confirm the upload; abort is pre-typed when this edition already holds the same media, format and encoding."""
     rset = None
     for r in results:
         if group_id == r["groupId"]:
             rset = r
             break
 
-    await print_torrents(gazelle_site, group_id, rset)
+    rset = await print_torrents(gazelle_site, group_id, rset)
+    dupes = matching_torrents(rset, release)
+    if dupes:
+        held = dupes[0]
+        click.secho(
+            f"\nDUPE RISK: this edition already has {held['media']} / {held['format']} / {held['encoding']}; "
+            "the site removes exact duplicates.",
+            fg="red",
+            bold=True,
+        )
     while True:
         resp = (
             await click.prompt(
@@ -488,7 +503,7 @@ async def _confirm_group_id(gazelle_site: "BaseGazelleApi", group_id: int, resul
                     "[n]ew group, [a]bort, [d]elete music folder",
                     fg="magenta",
                 ),
-                default="Y",
+                default="a" if dupes else "Y",
             )
         )[0].lower()
         if resp == "a":
