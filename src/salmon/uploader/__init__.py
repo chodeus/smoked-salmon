@@ -52,7 +52,7 @@ from salmon.tagger.audio_info import (
     gather_audio_info,
     recompress_path,
 )
-from salmon.tagger.cover import compress_pictures, download_cover_if_nonexistent
+from salmon.tagger.cover import compress_pictures, download_cover_if_nonexistent, strip_oversized_pictures
 from salmon.tagger.foldername import rename_folder
 from salmon.tagger.folderstructure import check_folder_structure
 from salmon.tagger.metadata import get_metadata
@@ -295,6 +295,11 @@ def _stage_library_source(path: str) -> str:
     # The record lives beside the album, not in it, so the copy would otherwise leave it behind.
     carry_conversion(path, dest)
     return dest
+
+
+def refresh_track_data(path: str, tags: dict[str, Any]) -> dict[str, Any]:
+    """Re-read the audio after the files were rewritten, keeping the tag entry each track carries."""
+    return concat_track_data(tags, gather_audio_info(path))
 
 
 def conversion_description(conversion: dict[str, Any] | None, url: str | None) -> str | None:
@@ -648,8 +653,14 @@ async def upload(
                             click.secho("Aborting upload due to missing cover image.", fg="red", bold=True)
                             return
 
-            if not scene and cfg.image.auto_compress_cover:
-                compress_pictures(path)
+            if not scene:
+                rewritten = bool(strip_oversized_pictures(path, track_data))
+                if cfg.image.auto_compress_cover:
+                    compress_pictures(path)
+                    rewritten = True
+                if rewritten:
+                    # Both steps rewrite metadata in the files; everything below describes what is on disk now.
+                    track_data = refresh_track_data(path, tags)
 
             if not request_id and cfg.upload.requests.check_requests:
                 request_id = await check_requests(gazelle_site, searchstrs)
