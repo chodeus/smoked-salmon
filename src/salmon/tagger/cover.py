@@ -13,6 +13,7 @@ from PIL import Image
 
 from salmon import cfg
 from salmon.common import get_audio_files
+from salmon.constants import TAG_TRUMP_SIZE
 
 _COVER_FILE = re.compile(r"^(cover|folder)\.(jpe?g|png)$", re.IGNORECASE)
 _PICTURE_EXTENSIONS = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png"}
@@ -179,72 +180,81 @@ def get_8kib_padding(info: PaddingInfo):
     return humanfriendly.parse_size("8KiB")
 
 
+def strip_oversized_pictures(path: str, track_data: dict) -> list[str]:
+    """Drop pictures and padding from FLACs whose tag block is a trump reason; returns the files it rewrote."""
+    stripped = []
+    for filename, track in track_data.items():
+        size = track.get("tag size")
+        if not filename.lower().endswith(".flac") or not size or size <= TAG_TRUMP_SIZE:
+            continue
+        try:
+            audio = FLAC(os.path.join(path, filename))
+        except Exception as error:
+            click.secho(f"{filename}: could not read the FLAC metadata ({type(error).__name__}); left as is.", fg="red")
+            continue
+        click.secho(
+            f"{filename}: {humanfriendly.format_size(size, binary=True)} of pictures and padding exceeds 1 MiB "
+            "(a trump reason); removing them.",
+            fg="yellow",
+        )
+        if not _existing_cover(path):
+            for picture in audio.pictures:
+                if picture.type == PictureType.COVER_FRONT and _write_picture(path, picture):
+                    break
+        audio.clear_pictures()
+        audio.save(padding=get_8kib_padding)
+        stripped.append(filename)
+    return stripped
+
+
 def compress_pictures(path):
+    """Embed the folder's cover into FLACs that carry no picture, resized to stay under the trump threshold."""
+    cover_file = get_cover_from_path(path)
     for filename in get_audio_files(path):
         if not filename.lower().endswith(".flac"):
             continue
         click.secho(f"Processing file: {filename}", fg="blue")
         audio = FLAC(os.path.join(path, filename))
+        if audio.pictures:
+            click.secho("Existing covers meet size requirements", fg="bright_white")
+            continue
+        click.secho("Attempting to add external cover...", fg="magenta")
+        if not cover_file:
+            click.secho("No cover file found!", fg="red")
+            continue
 
-        padding_size = sum(block.length for block in audio.metadata_blocks if block.code == 1)
+        with open(cover_file, "rb") as c:
+            data = c.read()
 
-        cover_sizes = sum(len(picture.data) for picture in audio.pictures)
-        click.secho(
-            (
-                f"Padding size: {humanfriendly.format_size(padding_size, binary=True)}, "
-                f"Cover size: {humanfriendly.format_size(cover_sizes, binary=True)}"
-            ),
-            fg="cyan",
-        )
+        max_embedded_image_size = TAG_TRUMP_SIZE - humanfriendly.parse_size("8KiB")
 
-        cover_file = get_cover_from_path(path)
+        picture = Picture()
 
-        if padding_size + cover_sizes > humanfriendly.parse_size("1MiB"):
+        if len(data) < max_embedded_image_size:
             click.secho(
-                f"Total size ({humanfriendly.format_size(padding_size + cover_sizes, binary=True)}) exceeds 1MiB!",
+                f"Cover size ({humanfriendly.format_size(len(data), binary=True)}) within limit",
+                fg="bright_green",
+            )
+            picture.mime = Image.open(cover_file).get_format_mimetype()
+        else:
+            click.secho(
+                f"Resizing oversized cover ({humanfriendly.format_size(len(data), binary=True)})...",
                 fg="yellow",
             )
-
-            for picture in audio.pictures:
-                if picture.type == PictureType.COVER_FRONT and not cover_file:
-                    cover_file = _write_picture(path, picture)
-
-            audio.clear_pictures()
-            audio.save(padding=get_8kib_padding)
-
-        if audio.pictures == []:
-            click.secho("Attempting to add external cover...", fg="magenta")
-            if not cover_file:
-                click.secho("No cover file found!", fg="red")
+            image = Image.open(cover_file)
+            image.thumbnail((1000, 1000))
+            data = compress_to_target_size(image, max_embedded_image_size)
+            if data is None:
+                click.secho(
+                    f"Could not shrink {cover_file} below "
+                    f"{humanfriendly.format_size(max_embedded_image_size, binary=True)}; leaving it unembedded.",
+                    fg="red",
+                )
                 continue
+            picture.mime = "image/jpeg"
 
-            with open(cover_file, "rb") as c:
-                data = c.read()
-
-            max_embedded_image_size = humanfriendly.parse_size("1MiB") - humanfriendly.parse_size("8KiB")
-
-            picture = Picture()
-
-            if len(data) < max_embedded_image_size:
-                click.secho(
-                    f"Cover size ({humanfriendly.format_size(len(data), binary=True)}) within limit",
-                    fg="bright_green",
-                )
-                picture.mime = Image.open(cover_file).get_format_mimetype()
-            else:
-                click.secho(
-                    f"Resizing oversized cover ({humanfriendly.format_size(len(data), binary=True)})...",
-                    fg="yellow",
-                )
-                image = Image.open(cover_file)
-                image.thumbnail((1000, 1000))
-                data = compress_to_target_size(image, max_embedded_image_size)
-                picture.mime = "image/jpeg"
-
-            picture.data = data
-            picture.type = PictureType.COVER_FRONT
-            audio.add_picture(picture)
-            audio.save(padding=get_8kib_padding)
-            click.secho(f"Saved {filename} with optimized cover", fg="bright_green")
-        else:
-            click.secho("Existing covers meet size requirements", fg="bright_white")
+        picture.data = data
+        picture.type = PictureType.COVER_FRONT
+        audio.add_picture(picture)
+        audio.save(padding=get_8kib_padding)
+        click.secho(f"Saved {filename} with optimized cover", fg="bright_green")

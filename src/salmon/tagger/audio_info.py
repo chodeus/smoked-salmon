@@ -21,8 +21,18 @@ def gather_audio_info(path, sort_by_tracknumber=False):
         mut = MutagenFile(os.path.join(path, filename))
         if mut is None:
             raise UploadError(f"Could not read audio file: {filename}")
-        audio_info[filename] = _parse_audio_info(mut.info)
+        audio_info[filename] = {**_parse_audio_info(mut.info), "tag size": metadata_size(mut)}
     return audio_info
+
+
+def metadata_size(mut) -> int | None:
+    """Bytes spent on pictures and padding (FLAC) or on the ID3 tag (MP3); None when the format has no such measure."""
+    pictures = getattr(mut, "pictures", None)
+    blocks = getattr(mut, "metadata_blocks", None)
+    if pictures is not None and blocks is not None:
+        return sum(len(picture.data) for picture in pictures) + sum(block.length for block in blocks if block.code == 1)
+    size = getattr(getattr(mut, "tags", None), "size", None)
+    return size if isinstance(size, int) else None
 
 
 def _parse_audio_info(streaminfo):

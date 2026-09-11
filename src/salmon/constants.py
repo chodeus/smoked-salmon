@@ -419,3 +419,6 @@ ESSENTIAL_EXTENSIONS = {
     ".pdf",
     ".png",
 }
+
+# Embedded pictures plus padding above this is a trump reason on RED (tag size of 1025 KiB and up).
+TAG_TRUMP_SIZE = 1024 * 1024
