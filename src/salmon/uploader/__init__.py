@@ -3,7 +3,7 @@ import os
 import platform
 import re
 import shutil
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import anyio
 import asyncclick as click
@@ -20,11 +20,14 @@ from salmon.checks.tag_rules import collect_upload_warnings
 from salmon.checks.upconverts import upload_upconvert_test
 from salmon.common import commandgroup
 from salmon.constants import ENCODINGS, FORMATS, SOURCES, TAG_ENCODINGS
+from salmon.converter.conversions import carry_conversion, conversion_of
 from salmon.converter.downconverting import (
+    BitDepth,
     convert_folder,
     generate_conversion_description,
 )
 from salmon.converter.transcoding import (
+    Bitrate,
     generate_transcode_description,
     transcode_folder,
 )
@@ -289,7 +292,21 @@ def _stage_library_source(path: str) -> str:
         raise UploadError(f"Cannot stage library source, {dest} already exists.")
     click.secho(f"\nCopying from library to {dest} (library files are never modified)...", fg="cyan")
     shutil.copytree(path, dest)
+    # The record lives beside the album, not in it, so the copy would otherwise leave it behind.
+    carry_conversion(path, dest)
     return dest
+
+
+def conversion_description(conversion: dict[str, Any] | None, url: str | None) -> str | None:
+    """The conversion note for a folder a converter made, worded exactly as the in-run conversion upload."""
+    if not conversion:
+        return None
+    click.secho(f"\nThis folder was converted from {conversion.get('source')}; describing the conversion.", fg="cyan")
+    if conversion.get("kind") == "transcode":
+        return generate_transcode_description(url or "", cast("Bitrate", conversion.get("bitrate")))
+    return generate_conversion_description(
+        url or "", conversion.get("sample_rate"), cast("BitDepth", conversion.get("bit_depth", 16))
+    )
 
 
 async def next_tracker(preselected: bool, remaining: list[str]) -> str | None:
@@ -374,6 +391,8 @@ async def upload(
     path = os.path.abspath(path)
     # Read before staging: the library's Artist/Type/Album layout names the release type.
     folder_type = release_type_from_folder(path)
+    # Looked up before any rename: the record knows the folder by the name the converter gave it.
+    conversion = conversion_of(path)
     # Stage before anything mutates: standardize_tags writes to the source directly,
     # and a hardlinked copy would share the inode with it.
     if cfg.directory.is_library_path(path):
@@ -638,6 +657,7 @@ async def upload(
             for rule_warning in collect_upload_warnings(gazelle_site.site_code, os.path.basename(path), track_data):
                 click.secho(f"⚠ {rule_warning}", fg="yellow", bold=True)
 
+            group_link = f"{gazelle_site.base_url}/torrents.php?id={group_id}" if group_id else source_url
             try:
                 torrent_id, group_id, torrent_path, torrent_content, url = await upload_and_report(
                     gazelle_site,
@@ -655,6 +675,7 @@ async def upload(
                     source_url,
                     seedbox_uploader,
                     source=source,
+                    override_description=conversion_description(conversion, group_link),
                 )
 
                 request_id = None

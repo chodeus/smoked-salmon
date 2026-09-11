@@ -13,7 +13,21 @@ from salmon.constants import (
     BLACKLISTED_CHARS,
     BLACKLISTED_FULLWIDTH_REPLACEMENTS,
 )
+from salmon.converter.conversions import carry_conversion
 from salmon.errors import UploadError
+from salmon.tagger.audio_info import gather_audio_info
+
+
+def resolution(path: str) -> str:
+    """"24-96"-style bit depth and sample rate of the folder's first track; empty for lossy files and for 16/44.1."""
+    first = next(iter(gather_audio_info(path, sort_by_tracknumber=True).values()), None)
+    if not first:
+        return ""
+    bits, rate = first.get("precision"), first.get("sample rate")
+    # Lossy files report no bit depth, and a zero one is not a depth a folder name should claim.
+    if not bits or not rate or (bits == 16 and rate == 44100):
+        return ""
+    return f"{bits}-{rate / 1000:g}"
 
 
 def rename_folder(path, metadata, auto_rename, check=True):
@@ -26,6 +40,9 @@ def rename_folder(path, metadata, auto_rename, check=True):
     the folder is copied to the download folder.
     """
     old_base = os.path.basename(path)
+    template_fields = {name for _, name, _, _ in Formatter().parse(cfg.upload.formatting.folder_template) if name}
+    if "resolution" in template_fields:
+        metadata = {**metadata, "resolution": resolution(path)}
     new_base = generate_folder_name(metadata)
     if metadata["scene"]:
         new_base = old_base
@@ -87,6 +104,7 @@ def rename_folder(path, metadata, auto_rename, check=True):
 
         if cfg.upload.formatting.remove_source_dir:
             shutil.rmtree(path)
+    carry_conversion(path, new_path)
 
     # Also rename spectrals folder in TMP_DIR if it exists
     if cfg.directory.tmp_dir and os.path.exists(cfg.directory.tmp_dir):
