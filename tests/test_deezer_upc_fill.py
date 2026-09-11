@@ -41,6 +41,7 @@ def test_album_upc_reads_the_album_by_its_id(monkeypatch) -> None:
         "not a url",
         "https://notdeezer.com/album/322064097",
         "https://deezer.com.evil.test/album/322064097",
+        "https://www.deezer.com/album/322064097junk",
     ],
 )
 def test_album_upc_makes_no_request_for_anything_but_a_deezer_album(monkeypatch, url: str) -> None:
@@ -67,12 +68,15 @@ def test_the_regex_still_reads_every_real_deezer_form() -> None:
         "https://deezer.com/album/322064097",
         "https://www.deezer.com/en/album/322064097",
         "http://www.deezer.com/fr/album/322064097",
+        "https://www.deezer.com/album/322064097?utm_source=x",
+        "https://www.deezer.com/album/322064097/",
+        "https://www.deezer.com/album/322064097#top",
     ]
 
     matches = [deezer.DeezerBase.regex.search(url) for url in forms]
 
     assert all(matches)
-    assert [match[2] for match in matches if match] == ["322064097"] * 4
+    assert [match[2] for match in matches if match] == ["322064097"] * len(forms)
 
 
 def test_fill_upc_from_store_fills_only_a_missing_upc(monkeypatch) -> None:
