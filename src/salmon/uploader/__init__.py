@@ -649,7 +649,9 @@ async def upload(
                             return
 
             if not scene:
-                strip_oversized_pictures(path, track_data)
+                if strip_oversized_pictures(path, track_data):
+                    # The rewritten files are smaller now; the warnings below must not quote the old sizes.
+                    track_data = gather_audio_info(path)
                 if cfg.image.auto_compress_cover:
                     compress_pictures(path)
 

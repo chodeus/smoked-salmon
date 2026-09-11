@@ -36,9 +36,9 @@ def collect_upload_warnings(site_code: str, folder_name: str, track_data: dict) 
                 f"{len(full_path)}-char path exceeds {site_code}'s {path_limit} limit (a trump reason): {full_path}"
             )
         tag_size = track.get("tag size")
-        if tag_size and tag_size > TAG_TRUMP_SIZE:
+        if tag_size is not None and tag_size > TAG_TRUMP_SIZE:
             warnings.append(
-                f"{tag_size // 1024} KiB of embedded pictures and padding exceeds 1 MiB (a trump reason): {filename}"
+                f"{tag_size} bytes of embedded tag exceeds the {TAG_TRUMP_SIZE}-byte limit (a trump reason): {filename}"
             )
         sample_rate = track.get("sample rate")
         precision = track.get("precision")

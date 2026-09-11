@@ -1,5 +1,6 @@
 """Embedded pictures and padding stay under RED's 1 MiB trump threshold, and the rules say so when they do not."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from mutagen.id3 import PictureType
@@ -36,7 +37,7 @@ def test_rules_flag_a_tag_block_over_one_mib() -> None:
 
     warnings = collect_upload_warnings("RED", "Artist - Album (2020) [WEB FLAC]", tracks)
 
-    assert warnings == ["1024 KiB of embedded pictures and padding exceeds 1 MiB (a trump reason): 01. Song.flac"]
+    assert warnings == [f"{MIB + 1} bytes of embedded tag exceeds the {MIB}-byte limit (a trump reason): 01. Song.flac"]
 
 
 def test_rules_allow_a_tag_block_of_exactly_one_mib() -> None:
@@ -75,9 +76,10 @@ def _album_with_flac(monkeypatch, picture_bytes: int) -> dict:
 def test_strip_removes_oversized_pictures_and_keeps_the_front_cover(album_dir, monkeypatch) -> None:
     track_data = _album_with_flac(monkeypatch, 2 * MIB)
 
-    cover.strip_oversized_pictures(str(album_dir), track_data)
+    stripped = cover.strip_oversized_pictures(str(album_dir), track_data)
 
     flac = _FakeFLAC.instances[0]
+    assert stripped == ["01. Song.flac"]
     assert flac.pictures == []
     assert flac.saved_with == [cover.get_8kib_padding]
     assert (album_dir / "cover.jpg").stat().st_size == 2 * MIB
@@ -86,20 +88,26 @@ def test_strip_removes_oversized_pictures_and_keeps_the_front_cover(album_dir, m
 def test_strip_leaves_pictures_under_the_threshold_alone(album_dir, monkeypatch) -> None:
     track_data = _album_with_flac(monkeypatch, 900 * 1024)
 
-    cover.strip_oversized_pictures(str(album_dir), track_data)
+    stripped = cover.strip_oversized_pictures(str(album_dir), track_data)
 
+    assert stripped == []
     assert _FakeFLAC.instances == []
     assert not (album_dir / "cover.jpg").exists()
 
 
 def test_strip_skips_a_file_it_cannot_read(album_dir, monkeypatch) -> None:
-    def broken(_path):
+    opened: list[str] = []
+
+    def broken(path):
+        opened.append(path)
         raise OSError("file said 2 bytes, read 0 bytes")
 
     monkeypatch.setattr(cover, "FLAC", broken)
 
-    cover.strip_oversized_pictures(str(album_dir), {"01. Song.flac": {"tag size": 2 * MIB}})
+    stripped = cover.strip_oversized_pictures(str(album_dir), {"01. Song.flac": {"tag size": 2 * MIB}})
 
+    assert [Path(path).name for path in opened] == ["01. Song.flac"], "the oversized file must be opened"
+    assert stripped == []
     assert not (album_dir / "cover.jpg").exists()
 
 
@@ -117,3 +125,33 @@ def test_transcode_embeds_only_the_pictures_that_fit(monkeypatch) -> None:
 
     assert [len(frame.data) for frame in added] == [500 * 1024]
     assert TAG_TRUMP_SIZE == MIB
+
+
+def test_a_failed_compression_is_not_embedded(album_dir, monkeypatch) -> None:
+    # compress_to_target_size returns None when quality 75 is still too big; Picture.data must not become None.
+    saved: list = []
+
+    class _NoPictures:
+        pictures: list = []
+
+        def __init__(self, _path):
+            pass
+
+        def add_picture(self, picture):
+            saved.append(picture)
+
+        def save(self, padding=None):
+            saved.append("saved")
+
+    monkeypatch.setattr(cover, "get_audio_files", lambda path, *a, **k: ["01. Song.flac"])
+    monkeypatch.setattr(cover, "FLAC", _NoPictures)
+    monkeypatch.setattr(cover, "compress_to_target_size", lambda *_a: None)
+    monkeypatch.setattr(cover.Image, "open", lambda *_a: SimpleNamespace(thumbnail=lambda *_x: None))
+    said: list[str] = []
+    monkeypatch.setattr(cover.click, "secho", lambda message, **_kwargs: said.append(str(message)))
+    (album_dir / "cover.jpg").write_bytes(b"x" * (2 * MIB))
+
+    cover.compress_pictures(str(album_dir))
+
+    assert saved == [], "nothing may be embedded or saved when the cover could not be shrunk"
+    assert any("leaving it unembedded" in message for message in said)

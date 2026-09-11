@@ -180,8 +180,9 @@ def get_8kib_padding(info: PaddingInfo):
     return humanfriendly.parse_size("8KiB")
 
 
-def strip_oversized_pictures(path: str, track_data: dict) -> None:
-    """Drop pictures and padding from FLACs whose tag block is a trump reason, keeping the front cover as a file."""
+def strip_oversized_pictures(path: str, track_data: dict) -> list[str]:
+    """Drop pictures and padding from FLACs whose tag block is a trump reason; returns the files it rewrote."""
+    stripped = []
     for filename, track in track_data.items():
         size = track.get("tag size")
         if not filename.lower().endswith(".flac") or not size or size <= TAG_TRUMP_SIZE:
@@ -202,6 +203,8 @@ def strip_oversized_pictures(path: str, track_data: dict) -> None:
                     break
         audio.clear_pictures()
         audio.save(padding=get_8kib_padding)
+        stripped.append(filename)
+    return stripped
 
 
 def compress_pictures(path):
@@ -241,6 +244,13 @@ def compress_pictures(path):
             image = Image.open(cover_file)
             image.thumbnail((1000, 1000))
             data = compress_to_target_size(image, max_embedded_image_size)
+            if data is None:
+                click.secho(
+                    f"Could not shrink {cover_file} below "
+                    f"{humanfriendly.format_size(max_embedded_image_size, binary=True)}; leaving it unembedded.",
+                    fg="red",
+                )
+                continue
             picture.mime = "image/jpeg"
 
         picture.data = data
