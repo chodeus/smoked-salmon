@@ -54,12 +54,27 @@ def test_album_upc_makes_no_request_for_anything_but_a_deezer_album(monkeypatch,
 
 
 @pytest.mark.parametrize("failure", [ScrapeError("down"), TimeoutError()])
-def test_album_upc_swallows_a_failed_request(monkeypatch, failure: Exception) -> None:
+def test_a_failed_request_leaves_the_barcode_blank_and_says_so(monkeypatch, failure: Exception) -> None:
+    # The barcode is optional, so an outage must not abort the upload; it must not pass for "no barcode" either.
     _deezer_answers(monkeypatch, failure)
+    said: list[str] = []
+    monkeypatch.setattr(deezer.click, "secho", lambda message, **_kwargs: said.append(message))
 
     upc = anyio.run(deezer.album_upc, DEEZER_URL)
 
     assert upc is None
+    assert said and "Could not read the barcode" in said[0]
+
+
+def test_an_album_without_a_barcode_says_nothing(monkeypatch) -> None:
+    _deezer_answers(monkeypatch, {"id": 322064097, "upc": ""})
+    said: list[str] = []
+    monkeypatch.setattr(deezer.click, "secho", lambda message, **_kwargs: said.append(message))
+
+    upc = anyio.run(deezer.album_upc, DEEZER_URL)
+
+    assert upc is None
+    assert said == []
 
 
 def test_the_regex_still_reads_every_real_deezer_form() -> None:
