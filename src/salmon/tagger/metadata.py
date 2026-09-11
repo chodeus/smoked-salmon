@@ -12,6 +12,7 @@ from salmon.checks.source import store_url
 from salmon.common import handle_scrape_errors, make_searchstrs, re_strip
 from salmon.common.strings import comparable
 from salmon.search import SEARCHSOURCES, run_metasearch
+from salmon.sources.deezer import album_upc
 from salmon.tagger.combine import combine_metadatas
 from salmon.tagger.sources import METASOURCES
 from salmon.tagger.sources.base import generate_artists
@@ -41,11 +42,20 @@ async def get_metadata(path: str, tags: dict[str, Any], rls_data: dict[str, Any]
         searchstrs, filter=False, track_count=len(tags), artists=artists_list, album=album_title
     )
     choices = _print_search_results(search_results, rls_data)
-    default = suggest_choice(choices, search_results, rls_data, len(tags), store_url(path))
+    store = store_url(path)
+    default = suggest_choice(choices, search_results, rls_data, len(tags), store)
     metadata, source_url = await _select_choice(choices, rls_data, default=default)
+    await fill_upc_from_store(metadata, store)
     remove_various_artists(metadata["tracks"])
     metadata = fix_hardcore_genre(metadata)
     return metadata, source_url
+
+
+async def fill_upc_from_store(metadata: dict[str, Any], store: str | None) -> None:
+    """Take a missing UPC from the files' own Deezer album; another store's release may carry a different barcode."""
+    if metadata.get("upc") or not store:
+        return
+    metadata["upc"] = await album_upc(store)
 
 
 def _print_search_results(results, rls_data=None):
