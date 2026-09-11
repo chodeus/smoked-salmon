@@ -5,6 +5,14 @@ from salmon.common.regexes import re_strip
 from salmon.constants import GENRE_LIST
 from salmon.errors import GenreNotInWhitelist
 
+# No-break, en/em/thin/hair, narrow no-break, medium mathematical and ideographic spaces.
+_ODD_SPACES = re.compile("[\u00a0\u1680\u2000-\u200b\u202f\u205f\u3000]")
+
+
+def plain_spaces(text: str) -> str:
+    """Replace unicode space variants, which scraped titles carry into file names, with a plain space."""
+    return _ODD_SPACES.sub(" ", text)
+
 
 def comparable(text: object) -> str:
     """Casefolded letters and digits of any script, accents and punctuation dropped, for loose equality of names."""

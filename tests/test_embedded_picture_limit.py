@@ -37,7 +37,9 @@ def test_rules_flag_a_tag_block_over_one_mib() -> None:
 
     warnings = collect_upload_warnings("RED", "Artist - Album (2020) [WEB FLAC]", tracks)
 
-    assert warnings == [f"{MIB + 1} bytes of embedded tag exceeds the {MIB}-byte limit (a trump reason): 01. Song.flac"]
+    assert warnings == [
+        f"{MIB + 1} bytes of embedded tag exceeds the {MIB}-byte limit (2.3.19, a trump reason): 01. Song.flac"
+    ]
 
 
 def test_rules_allow_a_tag_block_of_exactly_one_mib() -> None:

@@ -9,6 +9,7 @@ import asyncclick as click
 
 from salmon import cfg
 from salmon.common import strip_template_keys
+from salmon.common.strings import plain_spaces
 from salmon.constants import (
     BLACKLISTED_CHARS,
     BLACKLISTED_FULLWIDTH_REPLACEMENTS,
@@ -161,6 +162,7 @@ def _compile_artist_str(artist_data):
 
 
 def _sub_illegal_characters(stri):
+    stri = plain_spaces(str(stri))
     if cfg.upload.description.fullwidth_replacements:
         for char, sub in BLACKLISTED_FULLWIDTH_REPLACEMENTS.items():
             stri = str(stri).replace(char, sub)

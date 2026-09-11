@@ -21,8 +21,25 @@ def gather_audio_info(path, sort_by_tracknumber=False):
         mut = MutagenFile(os.path.join(path, filename))
         if mut is None:
             raise UploadError(f"Could not read audio file: {filename}")
-        audio_info[filename] = {**_parse_audio_info(mut.info), "tag size": metadata_size(mut)}
+        filepath = os.path.join(path, filename)
+        audio_info[filename] = {
+            **_parse_audio_info(mut.info),
+            "tag size": metadata_size(mut),
+            "id3": has_id3_tag(filepath),
+        }
     return audio_info
+
+
+def has_id3_tag(filepath: str) -> bool:
+    """ID3v2 at the start or ID3v1 at the end of the file: normal in an MP3, a trump reason inside a FLAC."""
+    with open(filepath, "rb") as handle:
+        if handle.read(3) == b"ID3":
+            return True
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() < 128:
+            return False
+        handle.seek(-128, os.SEEK_END)
+        return handle.read(3) == b"TAG"
 
 
 def metadata_size(mut) -> int | None:
