@@ -297,6 +297,11 @@ def _stage_library_source(path: str) -> str:
     return dest
 
 
+def refresh_track_data(path: str, tags: dict[str, Any]) -> dict[str, Any]:
+    """Re-read the audio after the files were rewritten, keeping the tag entry each track carries."""
+    return concat_track_data(tags, gather_audio_info(path))
+
+
 def conversion_description(conversion: dict[str, Any] | None, url: str | None) -> str | None:
     """The conversion note for a folder a converter made, worded exactly as the in-run conversion upload."""
     if not conversion:
@@ -649,11 +654,13 @@ async def upload(
                             return
 
             if not scene:
-                if strip_oversized_pictures(path, track_data):
-                    # The rewritten files are smaller now; the warnings below must not quote the old sizes.
-                    track_data = gather_audio_info(path)
+                rewritten = bool(strip_oversized_pictures(path, track_data))
                 if cfg.image.auto_compress_cover:
                     compress_pictures(path)
+                    rewritten = True
+                if rewritten:
+                    # Both steps rewrite metadata in the files; everything below describes what is on disk now.
+                    track_data = refresh_track_data(path, tags)
 
             if not request_id and cfg.upload.requests.check_requests:
                 request_id = await check_requests(gazelle_site, searchstrs)

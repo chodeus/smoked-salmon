@@ -155,3 +155,14 @@ def test_a_failed_compression_is_not_embedded(album_dir, monkeypatch) -> None:
 
     assert saved == [], "nothing may be embedded or saved when the cover could not be shrunk"
     assert any("leaving it unembedded" in message for message in said)
+
+
+def test_a_refreshed_track_keeps_its_tag_entry(monkeypatch) -> None:
+    # generate_description reads track["t"]; re-reading only the audio info would drop it.
+    import salmon.uploader as uploader
+
+    monkeypatch.setattr(uploader, "gather_audio_info", lambda path: {"01.flac": {"tag size": 8192, "precision": 16}})
+
+    refreshed = uploader.refresh_track_data("/music/album", {"01.flac": "the tags"})
+
+    assert refreshed == {"01.flac": {"tag size": 8192, "precision": 16, "t": "the tags"}}
