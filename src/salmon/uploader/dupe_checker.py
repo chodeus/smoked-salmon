@@ -10,6 +10,7 @@ from salmon import cfg
 from salmon.common import RE_FEAT, make_searchstrs
 from salmon.common.strings import comparable
 from salmon.errors import AbortAndDeleteFolder, RequestError
+from salmon.uploader.upload import generate_catno
 
 if TYPE_CHECKING:
     from salmon.trackers.base import BaseGazelleApi
@@ -86,25 +87,26 @@ async def _prompt_for_recent_upload_results(
     Returns:
         Group ID or None for new group.
     """
+    shown = recent_uploads[:5]
     # First, print the recent uploads if any
-    if recent_uploads:
+    if shown:
         click.secho(
             f"\nFound similar recent uploads in the {gazelle_site.site_string} log: ",
             fg="red",
             nl=False,
         )
         click.secho(f" (searchstrs: {searchstr})", bold=True)
-        for u_index, u in enumerate(recent_uploads[:5]):
+        for u_index, u in enumerate(shown):
             click.echo(f" {u_index + 1:02d} >> ", nl=False)  # torrent_id
             click.secho(f"{u[1]} - {u[2]} ", fg="cyan", nl=False)  # artist - title
             click.echo(f"| {gazelle_site.base_url}/torrents.php?torrentid={u[0]}")
 
     # Now prompt for user action
     while True:
+        pick = "Type an upload's number from the list above (1 is the first), or p" if recent_uploads else "P"
         prompt_text = (
             "\nWould you like to upload to an existing group?\n"
-            f"{'Pick from recent uploads found, p' if recent_uploads else 'P'}aste a URL"
-            f" or [N]ew group / [a]bort {'/ [d]elete music folder ' if offer_deletion else ''}"
+            f"{pick}aste a group URL, or [N]ew group / [a]bort {'/ [d]elete music folder ' if offer_deletion else ''}"
         )
 
         group_id = await click.prompt(
@@ -121,9 +123,9 @@ async def _prompt_for_recent_upload_results(
                     continue
                 group_id_num = 1  # If the user types 0 give them the first choice.
 
-            # If user picks from recent uploads list
-            if recent_uploads and 1 <= group_id_num <= len(recent_uploads):
-                torrent_id = recent_uploads[group_id_num - 1][0]
+            # Only the uploads listed above can be picked by number.
+            if shown and 1 <= group_id_num <= len(shown):
+                torrent_id = shown[group_id_num - 1][0]
                 # Need to convert torrent ID to group ID
                 try:
                     result_group_id = await gazelle_site.get_redirect_torrentgroupid(torrent_id)
@@ -336,12 +338,13 @@ async def _prompt_for_group_id(
     Returns:
         Group ID or None for new group.
     """
+    pick = "Type a group's number from the list above (1 is the first), or p" if results else "P"
+    delete = "/ [d]elete music folder " if offer_deletion else ""
     while True:
         group_id = await click.prompt(
             click.style(
                 "\nWould you like to upload to an existing group?\n"
-                f"Paste a URL{', pick from groups found ' if results is not None else ''}"
-                f"or [N]ew group / [a]bort {'/ [d]elete music folder ' if offer_deletion else ''}",
+                f"{pick}aste a group URL, or [N]ew group / [a]bort {delete}",
                 fg="magenta",
             ),
             default=default,
@@ -412,23 +415,13 @@ async def print_torrents(
     # Pull group-level info once (optional fallback only)
     group_info = rset.get("group", {}) or {}
     group_label = (group_info.get("recordLabel") or "").strip()
-    group_catno = (group_info.get("catalogueNumber") or "").strip()
 
     for t in rset["torrents"]:
         color = "yellow" if highlight_torrent_id and t.get("id") == highlight_torrent_id else None
 
-        # Robust across RED/OPS: don't assume `remastered` exists
-        is_remaster = bool(t.get("remastered")) or any(
-            (
-                t.get("remasterYear"),
-                (t.get("remasterTitle") or "").strip(),
-                (t.get("remasterRecordLabel") or "").strip(),
-                (t.get("remasterCatalogueNumber") or "").strip(),
-            )
-        )
-
+        is_remaster = _is_remaster(t)
         label = ((t.get("remasterRecordLabel") or "").strip() if is_remaster else "") or group_label
-        catno = ((t.get("remasterCatalogueNumber") or "").strip() if is_remaster else "") or group_catno
+        catno = _edition_catno(t, rset)
 
         prefix_parts = []
         if is_remaster:
@@ -456,20 +449,48 @@ async def print_torrents(
     return rset
 
 
+def _is_remaster(torrent: dict) -> bool:
+    """Robust across RED/OPS: `remastered` is not always sent, so any edition field counts."""
+    return bool(torrent.get("remastered")) or any(
+        (
+            torrent.get("remasterYear"),
+            (torrent.get("remasterTitle") or "").strip(),
+            (torrent.get("remasterRecordLabel") or "").strip(),
+            (torrent.get("remasterCatalogueNumber") or "").strip(),
+        )
+    )
+
+
+def _edition_catno(torrent: dict, rset: dict) -> str:
+    """Catalogue number of the torrent's edition; only an original release falls back to the group's."""
+    if _is_remaster(torrent):
+        return (torrent.get("remasterCatalogueNumber") or "").strip()
+    return ((rset.get("group") or {}).get("catalogueNumber") or "").strip()
+
+
 def matching_torrents(rset: dict, release: dict | None) -> list[dict]:
-    """Group torrents matching the release's media, format, encoding and edition year: uploading it again is a dupe."""
+    """Group torrents in the release's edition with its media, format and encoding: uploading it again is a dupe."""
     if not release:
         return []
     wanted = (release.get("source"), release.get("format"), release.get("encoding"))
     if not all(wanted):
         return []
     year = str(release.get("year") or "")
+    catno = comparable(generate_catno(release))
+    edition_title = comparable(release.get("edition_title"))
     matches = []
     for torrent in rset.get("torrents") or []:
         if (torrent.get("media"), torrent.get("format"), torrent.get("encoding")) != wanted:
             continue
         edition_year = str(torrent.get("remasterYear") or rset.get("groupYear") or "")
         if year and edition_year and edition_year != year:
+            continue
+        # Another catalogue number or edition title is another release; one missing on either side still counts.
+        held_catno = comparable(_edition_catno(torrent, rset))
+        if catno and held_catno and held_catno != catno:
+            continue
+        held_title = comparable(torrent.get("remasterTitle"))
+        if edition_title and held_title and held_title != edition_title:
             continue
         matches.append(torrent)
     return matches

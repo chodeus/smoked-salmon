@@ -14,7 +14,9 @@
   }
 
   function edition(t: DupeTorrent): string {
-    const parts = [t.remasterTitle, t.remasterYear, t.remasterRecordLabel].filter((p) => p != null && p !== '')
+    const parts = [t.remasterTitle, t.remasterYear, t.remasterRecordLabel, t.remasterCatalogueNumber].filter(
+      (p) => p != null && p !== '',
+    )
     return parts.length ? parts.join(' · ') : '–'
   }
 </script>
