@@ -169,11 +169,16 @@ def source_row(guess: dict, chosen: str | None) -> Row:
     return Row("source", "Source", OK, f"{chosen} — {why}")
 
 
+def _edition_year(torrent: dict, group: dict) -> int | None:
+    """An original release has no remaster year of its own; it carries the group's."""
+    return torrent.get("remasterYear") or group.get("groupYear")
+
+
 def _editions(group: dict) -> str:
     """A matched group's editions as "year / catalogue number: formats", so a different release is visible."""
     editions: dict[str, list[str]] = {}
     for t in group.get("torrents") or []:
-        edition = (t.get("remasterYear") or group.get("groupYear"), t.get("remasterCatalogueNumber"))
+        edition = (_edition_year(t, group), t.get("remasterCatalogueNumber"))
         key = " / ".join(str(part) for part in edition if part) or "edition unknown"
         fmt = " ".join(str(part) for part in (t.get("media"), t.get("format"), t.get("encoding")) if part)
         editions.setdefault(key, []).append(fmt)
@@ -219,7 +224,7 @@ def dupe_matches(base_url: str, results: list[dict]) -> list[dict]:
                     "hasLog": t.get("hasLog"),
                     "logScore": t.get("logScore"),
                     "remasterTitle": t.get("remasterTitle"),
-                    "remasterYear": t.get("remasterYear"),
+                    "remasterYear": _edition_year(t, r),
                     "remasterRecordLabel": t.get("remasterRecordLabel"),
                     "remasterCatalogueNumber": t.get("remasterCatalogueNumber"),
                     "seeders": t.get("seeders"),

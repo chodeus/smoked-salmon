@@ -170,6 +170,15 @@ def test_dupe_matches_keep_the_catalogue_number():
     assert group["torrents"][0]["remasterCatalogueNumber"] == "1200214726676"
 
 
+def test_dupe_matches_give_an_original_release_the_group_year():
+    """The table shows the same year as the summary row, not a blank or a 0."""
+    original = {"groupId": 1, "groupYear": 2008, "torrents": [{"remasterYear": 0}, {}, {"remasterYear": 2016}]}
+    [group] = pf.dupe_matches("https://redacted.sh", [original])
+
+    years = [t["remasterYear"] for t in group["torrents"]]
+    assert years == [2008, 2008, 2016]
+
+
 def test_no_dupes_is_green():
     assert pf.dupe_row("OPS", []).verdict == pf.OK
 
