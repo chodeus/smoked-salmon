@@ -51,11 +51,25 @@ async def get_metadata(path: str, tags: dict[str, Any], rls_data: dict[str, Any]
     choices = _print_search_results(search_results, rls_data)
     store = store_url(path)
     default = suggest_choice(choices, search_results, rls_data, len(tags), store)
+    _explain_default(default, choices)
     metadata, source_url = await _select_choice(choices, rls_data, default=default)
     await fill_upc_from_store(metadata, store)
     remove_various_artists(metadata["tracks"])
     metadata = fix_hardcore_genre(metadata)
     return metadata, source_url
+
+
+def _explain_default(default: str | None, choices: dict[int, tuple[str, str]]) -> None:
+    """Say where each part of the pre-typed metadata answer came from."""
+    for part in (default or "").split():
+        if part.startswith("*"):
+            click.secho(f"Pre-typed {part}: the store page in the files' tags, starred as the source.", fg="cyan")
+        elif part.isdigit() and int(part) in choices:
+            source = choices[int(part)][0]
+            click.secho(
+                f"Pre-typed {part}: the {source} result matching the files' artist, title and track count.",
+                fg="cyan",
+            )
 
 
 async def fill_upc_from_store(metadata: dict[str, Any], store: str | None) -> None:
@@ -165,8 +179,9 @@ async def _select_choice(
         if choices:
             res = await click.prompt(
                 click.style(
-                    "\nWhich metadata results would you like to use? Other "
-                    'options: paste URLs, [m]anual, [a], prefix choice or URL with "*" to indicate source (WEB)',
+                    "\nWhich metadata results would you like to use? Type result numbers and/or paste URLs, "
+                    'separated by spaces; all of them are combined. Put "*" before the one the files came from '
+                    "(the WEB store). Or [m]anual / [a]bort.",
                     fg="magenta",
                 ),
                 type=click.STRING,
@@ -175,8 +190,8 @@ async def _select_choice(
         else:
             res = await click.prompt(
                 click.style(
-                    "\nNo metadata results were found. Options: paste URLs, "
-                    '[m]anual, [a]bort, prefix URL with "*" to indicate source (WEB)',
+                    "\nNo metadata results were found. Paste URLs separated by spaces (all of them are combined), "
+                    'with "*" before the one the files came from (the WEB store). Or [m]anual / [a]bort.',
                     fg="magenta",
                 ),
                 type=click.STRING,
