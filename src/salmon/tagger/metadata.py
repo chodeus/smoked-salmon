@@ -113,7 +113,7 @@ def suggest_choice(
     url: str | None,
 ) -> str | None:
     """Pre-typed metadata answer: the files' store URL starred as the source, plus the first result matching them."""
-    url_source = next((name for name, meta in METASOURCES.items() if url and meta.Scraper.regex.match(url)), None)
+    url_source = get_source_from_link(url)
     parts = [f"*{url}"] if url else []
     match = _matching_choice(choices, search_results, rls_data, track_count)
     if match is not None and choices[match][0] != url_source:

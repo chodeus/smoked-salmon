@@ -9,9 +9,10 @@ signal there is, and a marker that contradicts the audio (a 24bit claim on a
 import os
 import re
 
+from salmon.checks.source import field_name, tag_texts, tag_url_fields
 from salmon.tagger.tags import gather_tags
 
-# Vorbis comment keys mutagen lowercases; the ripper/store markers worth reading.
+# Field names (see source.field_name, so MP3 and M4A frames count too) of the ripper/store markers worth reading.
 MARKER_FIELDS = (
     "comment",
     "encoded-by",
@@ -40,14 +41,13 @@ def _file_provenance(filename: str, tagfile) -> dict:
     tags = getattr(mut, "tags", None)
     markers: dict[str, str] = {}
     if tags is not None:
-        for field in MARKER_FIELDS:
-            try:
-                values = tags[field]
-            except (KeyError, TypeError):
-                continue
-            text = "; ".join(str(v) for v in values).strip() if isinstance(values, list) else str(values).strip()
-            if text:
-                markers[field] = text
+        for key, value in dict(tags).items():
+            field = field_name(key)
+            text = "; ".join(t for t in tag_texts(value) if t)
+            if field in MARKER_FIELDS and text:
+                markers[field] = f"{markers[field]}; {text}" if field in markers else text
+        for field, url in tag_url_fields(mut):
+            markers.setdefault(field, url)
     info = getattr(mut, "info", None)
     return {
         "file": filename,

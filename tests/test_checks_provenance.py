@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+from mutagen.id3 import COMM, TSSE
+
 from salmon.checks import preflight as pf
 from salmon.checks import provenance as pv
 
@@ -104,3 +106,24 @@ def test_consuming_the_url_does_not_swallow_the_text_after_it():
     # A comma is not part of a path, so a claim following a domain still counts.
     files = [pv._file_provenance("01.flac", tagfile(comment="hd24bit.com, 24bit master", bitdepth=16))]
     assert len(pv._contradictions(files)) == 1
+
+
+def test_mp3_markers_are_read_under_their_common_names():
+    tags = {
+        "COMM::eng": COMM(encoding=3, lang="eng", desc="", text=["EAC FLAC -8"]),
+        "TSSE": TSSE(encoding=3, text=["LAME 3.100"]),
+    }
+    entry = pv._file_provenance("01.mp3", SimpleNamespace(mut=SimpleNamespace(tags=tags, info=None)))
+    assert entry["markers"] == {"comment": "EAC FLAC -8", "encoder settings": "LAME 3.100"}
+
+
+def test_m4a_markers_are_read_under_their_common_names():
+    tags = {"\xa9too": ["iTunes 12.9.0.167"], "\xa9cmt": ["ripped with XLD"]}
+    entry = pv._file_provenance("01.m4a", SimpleNamespace(mut=SimpleNamespace(tags=tags, info=None)))
+    assert entry["markers"] == {"encoder": "iTunes 12.9.0.167", "comment": "ripped with XLD"}
+
+
+def test_a_store_url_under_any_key_is_a_marker():
+    url = "https://www.qobuz.com/album/journaling-illy/ul39e7xjbuqrb"
+    entry = pv._file_provenance("01.flac", tagfile(qobuz_url=url))
+    assert entry["markers"] == {"qobuz url": url}
