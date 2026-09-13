@@ -122,7 +122,7 @@ def test_hi_res_with_no_readable_rate_does_not_claim_0khz(album_dir, monkeypatch
         {"url": ["https://listen.tidal.com/album/2468665"]},
         {"comment": ["https://music.apple.com/au/album/journaling/1623086473"]},
     ],
-    ids=["qobuz-url-key", "sleezer-source-key", "tidal-url-key", "apple-music-comment"],
+    ids=["qobuz-url-key", "deezer-source-key", "tidal-url-key", "apple-music-comment"],
 )
 def test_store_url_in_any_tag_proves_web(album_dir, tagged, tags):
     tagged({**tags, "album": "Y", "tracknumber": "1"})
