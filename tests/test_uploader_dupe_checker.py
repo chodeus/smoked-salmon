@@ -495,7 +495,9 @@ async def test_prompt_recent_number_past_the_listed_five_is_a_group_id(fake_trac
     install_prompt("6")
     calls = install_redirect(fake_tracker, {})
 
-    assert await _prompt_for_recent_upload_results(fake_tracker, uploads, "artist album", True) == 6
+    picked = await _prompt_for_recent_upload_results(fake_tracker, uploads, "artist album", True)
+
+    assert picked == 6
     assert calls == []
 
 
@@ -656,9 +658,13 @@ def test_matching_torrents_skips_another_catalogue_number():
     """Two releases in one group can share year and format; the catalogue number tells them apart."""
     rset = _group_with(remasterCatalogueNumber="1200214726676")
 
-    assert matching_torrents(rset, {**WEB_FLAC, "catno": "1200214425593"}) == []
-    assert matching_torrents(rset, {**WEB_FLAC, "catno": "12002-14726676"}) == rset["torrents"]
-    assert matching_torrents(rset, WEB_FLAC) == rset["torrents"]
+    other = matching_torrents(rset, {**WEB_FLAC, "catno": "1200214425593"})
+    same = matching_torrents(rset, {**WEB_FLAC, "catno": "12002-14726676"})
+    unknown = matching_torrents(rset, WEB_FLAC)
+
+    assert other == []
+    assert same == rset["torrents"]
+    assert unknown == rset["torrents"]
 
 
 def test_a_remaster_without_its_own_catalogue_number_still_counts():
@@ -666,23 +672,32 @@ def test_a_remaster_without_its_own_catalogue_number_still_counts():
     rset = _group_with(remasterCatalogueNumber="")
     rset["group"] = {"catalogueNumber": "ORIG-001"}
 
-    assert matching_torrents(rset, {**WEB_FLAC, "catno": "NEW-002"}) == rset["torrents"]
+    matches = matching_torrents(rset, {**WEB_FLAC, "catno": "NEW-002"})
+
+    assert matches == rset["torrents"]
 
 
 def test_an_original_release_uses_the_group_catalogue_number():
     rset = make_result(100)
     rset["group"] = {"catalogueNumber": "ORIG-001"}
 
-    assert matching_torrents(rset, {**WEB_FLAC, "catno": "NEW-002"}) == []
-    assert matching_torrents(rset, {**WEB_FLAC, "catno": "ORIG-001"}) == rset["torrents"]
+    other = matching_torrents(rset, {**WEB_FLAC, "catno": "NEW-002"})
+    same = matching_torrents(rset, {**WEB_FLAC, "catno": "ORIG-001"})
+
+    assert other == []
+    assert same == rset["torrents"]
 
 
 def test_matching_torrents_skips_another_edition_title():
     rset = _group_with(remasterTitle="Deluxe")
 
-    assert matching_torrents(rset, {**WEB_FLAC, "edition_title": "Remastered"}) == []
-    assert matching_torrents(rset, {**WEB_FLAC, "edition_title": "deluxe"}) == rset["torrents"]
-    assert matching_torrents(rset, WEB_FLAC) == rset["torrents"]
+    other = matching_torrents(rset, {**WEB_FLAC, "edition_title": "Remastered"})
+    same = matching_torrents(rset, {**WEB_FLAC, "edition_title": "deluxe"})
+    unknown = matching_torrents(rset, WEB_FLAC)
+
+    assert other == []
+    assert same == rset["torrents"]
+    assert unknown == rset["torrents"]
 
 
 async def test_confirm_group_id_pretypes_abort_when_the_edition_already_has_the_format(fake_tracker, install_prompt):
