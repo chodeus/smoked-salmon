@@ -23,8 +23,18 @@ _STORE_TAGS = (
     (re.compile(r"(^|\n|:)asin="), "Amazon ASIN tag"),
     (re.compile(r"com\.apple\.itunes|(^|\n)apid=|(^|\n)purchase[ _]?date="), "iTunes purchase tags"),
     (re.compile(r"bandcamp\.com"), "Bandcamp tag"),
-    (re.compile(r"(^|\n)(www|website|url)=[^\n]*(qobuz|bandcamp|beatport|7digital|hdtracks)"), "store URL tag"),
 )
+_STORE_URL = re.compile(
+    r"https?://(?:[a-z0-9-]+\.)*(?:qobuz|deezer|tidal|bandcamp|beatport|7digital|hdtracks|apple)\.com(?:[/:?#]|$)",
+    re.IGNORECASE,
+)
+# Keys downloaders use for the page the files came from; WOAS is ID3's "official audio source".
+_SOURCE_KEYS = frozenset({"source", "sourceurl", "www", "website", "url", "purl", "woas"})
+# MusicBrainz and Discogs links describe a release in a database, not where these files came from:
+# skip both their keys (which can hold a store link) and their own URLs under any key.
+_DATABASE_KEYS = ("musicbrainz", "discogs")
+_DATABASE_URL = re.compile(r"https?://(?:[a-z0-9-]+\.)*(?:musicbrainz\.org|discogs\.com)(?:[/:?#]|$)", re.IGNORECASE)
+_URL_VALUE = re.compile(r"https?://\S+", re.IGNORECASE)
 _MEDIA_TAG = re.compile(r"(?:^|\n)(?:media|sourcemedia|tmed)=\[?'?([a-z0-9 ]+)")
 _MEDIA_VALUES = {
     "cd": "CD",
@@ -43,11 +53,36 @@ _MEDIA_VALUES = {
 _VINYL_TRACKNO = re.compile(r"^([A-H])[0-9]{1,2}$", re.IGNORECASE)
 
 
+def _key_name(key) -> str:
+    """Lowercase field name without its container prefix (TXXX:, WXXX:, ----:com.apple.iTunes:)."""
+    name = str(key).lower()
+    if name.startswith(("txxx:", "wxxx:")):
+        return name[5:]
+    if name.startswith("----:"):
+        return name.rsplit(":", 1)[-1]
+    return name
+
+
+def _tags(mut) -> list:
+    """The file's (key, value) tag pairs, database links left out."""
+    pairs = dict(mut.tags or {}).items()
+    return [(key, value) for key, value in pairs if not _key_name(key).startswith(_DATABASE_KEYS)]
+
+
 def _tag_blob(mut) -> str:
     """Flatten one file's tags to lowercase `key=value` lines, format-agnostic."""
-    if not mut.tags:
-        return ""
-    return "\n".join(f"{key}={value}".lower() for key, value in dict(mut.tags).items())
+    return "\n".join(f"{key}={value}".lower() for key, value in _tags(mut))
+
+
+def _tag_urls(mut) -> list[tuple[str, str]]:
+    """(field name, URL) for every tag whose whole value is one URL."""
+    found = []
+    for key, value in _tags(mut):
+        for item in value if isinstance(value, list) else [value]:
+            text = (item.decode("utf-8", "ignore") if isinstance(item, bytes) else str(item)).strip()
+            if _URL_VALUE.fullmatch(text) and not _DATABASE_URL.match(text):
+                found.append((_key_name(key), text))
+    return found
 
 
 def _has_rip_log(path: str) -> str | None:
@@ -74,7 +109,7 @@ def _has_cue(path: str) -> bool:
 def _gather(path: str) -> dict:
     """Collect every signal in one pass over the album."""
     audio = get_audio_files(path, True)
-    blobs, tracknos, precisions, rates = [], [], set(), set()
+    blobs, urls, tracknos, precisions, rates = [], [], [], set(), set()
     for filename in audio:
         try:
             mut = MutagenFile(os.path.join(path, filename))
@@ -84,6 +119,7 @@ def _gather(path: str) -> dict:
             continue
         blob = _tag_blob(mut)
         blobs.append(blob)
+        urls.extend(url for _key, url in _tag_urls(mut))
         match = re.search(r"(?:^|\n)tracknumber=\[?'?([a-z0-9]+)", blob)
         if match:
             tracknos.append(match.group(1))
@@ -92,6 +128,7 @@ def _gather(path: str) -> dict:
     return {
         "audio": audio,
         "blob": "\n".join(blobs),
+        "urls": urls,
         "tracknos": tracknos,
         "max_precision": max((p for p in precisions if p), default=None),
         "max_rate": max((r for r in rates if r), default=None),
@@ -107,25 +144,19 @@ def _vinyl_sides(tracknos: list[str]) -> bool:
     return sum(bool(_VINYL_TRACKNO.match(t)) for t in tracknos) >= len(tracknos) * 0.8
 
 
-_STORE_URL_KEYS = ("source", "sourceurl", "www", "website", "url", "purl")
-
-
-def store_url(path: str) -> str | None:
-    """First store URL in the files' tags, case preserved (sleezer writes SOURCE=https://www.qobuz.com/…)."""
+def tag_urls(path: str) -> tuple[list[str], list[str]]:
+    """URLs the files' tags hold whole: (under a source key such as SOURCE or WOAS, under any other key)."""
+    sourced, other = [], []
     for filename in get_audio_files(path, True):
         try:
             mut = MutagenFile(os.path.join(path, filename))
         except Exception:
             continue
-        if mut is None or not mut.tags:
+        if mut is None:
             continue
-        for key, value in dict(mut.tags).items():
-            if str(key).lower() not in _STORE_URL_KEYS:
-                continue
-            text = str(value[0] if isinstance(value, list) else value).strip()
-            if text.startswith(("http://", "https://")):
-                return text
-    return None
+        for key, url in _tag_urls(mut):
+            (sourced if key in _SOURCE_KEYS else other).append(url)
+    return list(dict.fromkeys(sourced)), list(dict.fromkeys(other))
 
 
 def detect_source(path: str) -> dict:
@@ -156,6 +187,13 @@ def detect_source(path: str) -> dict:
                 "confidence": "confirmed",
                 "reasons": [f"{why} — only a digital store writes this."],
             }
+
+    if any(_STORE_URL.match(url) for url in ev["urls"]):
+        return {
+            "source": "WEB",
+            "confidence": "confirmed",
+            "reasons": ["Store URL tag — only a digital store writes this."],
+        }
 
     if _vinyl_sides(ev["tracknos"]):
         return {"source": "Vinyl", "confidence": "likely", "reasons": ["Track numbers are vinyl sides (A1, B2 …)."]}

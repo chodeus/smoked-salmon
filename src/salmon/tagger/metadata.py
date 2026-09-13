@@ -8,14 +8,21 @@ import asyncclick as click
 import msgspec
 
 from salmon import cfg
-from salmon.checks.source import store_url
+from salmon.checks.source import tag_urls
 from salmon.common import handle_scrape_errors, make_searchstrs, re_strip
 from salmon.common.strings import comparable
 from salmon.search import SEARCHSOURCES, run_metasearch
 from salmon.sources.deezer import album_upc
-from salmon.tagger.combine import combine_metadatas
+from salmon.tagger.combine import combine_metadatas, get_source_from_link
 from salmon.tagger.sources import METASOURCES
 from salmon.tagger.sources.base import generate_artists
+
+
+def store_url(path: str) -> str | None:
+    """The files' own store page: a link salmon can scrape (source keys first), else a source-key URL."""
+    sourced, other = tag_urls(path)
+    scrapable = (url for url in sourced + other if get_source_from_link(url))
+    return next(scrapable, None) or next(iter(sourced), None)
 
 
 async def get_metadata(path: str, tags: dict[str, Any], rls_data: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
