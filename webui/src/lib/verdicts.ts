@@ -24,6 +24,7 @@ export interface DupeTorrent {
   remasterTitle: string | null
   remasterYear: number | null
   remasterRecordLabel: string | null
+  remasterCatalogueNumber: string | null
   seeders: number | null
 }
 

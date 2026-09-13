@@ -144,6 +144,41 @@ def test_dupe_hits_warn():
     assert "In Rainbows" in row.detail
 
 
+ORACLE_GROUP = {
+    "groupId": 2846669,
+    "groupName": "Oracle (feat. Jem Cooke)",
+    "groupYear": 2026,
+    "torrents": [
+        {"media": "WEB", "format": "FLAC", "encoding": "Lossless", "remasterYear": 2026,
+         "remasterCatalogueNumber": "1200214726676"},
+        {"media": "WEB", "format": "MP3", "encoding": "320", "remasterYear": 2026,
+         "remasterCatalogueNumber": "1200214726676"},
+    ],
+}
+
+
+def test_dupe_row_names_each_matched_edition():
+    """The catalogue number shows a 1-track single and a 3-track release apart without opening the site."""
+    row = pf.dupe_row("RED", [ORACLE_GROUP])
+
+    assert "2026 / 1200214726676: WEB FLAC Lossless, WEB MP3 320" in row.detail
+
+
+def test_dupe_matches_keep_the_catalogue_number():
+    [group] = pf.dupe_matches("https://redacted.sh", [ORACLE_GROUP])
+
+    assert group["torrents"][0]["remasterCatalogueNumber"] == "1200214726676"
+
+
+def test_dupe_matches_give_an_original_release_the_group_year():
+    """The table shows the same year as the summary row, not a blank or a 0."""
+    original = {"groupId": 1, "groupYear": 2008, "torrents": [{"remasterYear": 0}, {}, {"remasterYear": 2016}]}
+    [group] = pf.dupe_matches("https://redacted.sh", [original])
+
+    years = [t["remasterYear"] for t in group["torrents"]]
+    assert years == [2008, 2008, 2016]
+
+
 def test_no_dupes_is_green():
     assert pf.dupe_row("OPS", []).verdict == pf.OK
 
