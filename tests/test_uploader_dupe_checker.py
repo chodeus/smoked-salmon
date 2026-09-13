@@ -489,6 +489,16 @@ async def test_prompt_recent_redirect_returning_none_reprompts(fake_tracker, ins
     assert queue.calls == 2
 
 
+async def test_prompt_recent_number_past_the_listed_five_is_a_group_id(fake_tracker, install_prompt):
+    """Only the five uploads on screen can be picked by number; a sixth is never chosen unseen."""
+    uploads = [(100 + i, "Artist", f"Album {i}") for i in range(1, 8)]
+    install_prompt("6")
+    calls = install_redirect(fake_tracker, {})
+
+    assert await _prompt_for_recent_upload_results(fake_tracker, uploads, "artist album", True) == 6
+    assert calls == []
+
+
 async def test_prompt_recent_redirect_error_reprompts(fake_tracker, install_prompt):
     queue = install_prompt("1", "n")
     install_redirect(fake_tracker, {"111": RuntimeError("redirect failed")})
@@ -649,6 +659,22 @@ def test_matching_torrents_skips_another_catalogue_number():
     assert matching_torrents(rset, {**WEB_FLAC, "catno": "1200214425593"}) == []
     assert matching_torrents(rset, {**WEB_FLAC, "catno": "12002-14726676"}) == rset["torrents"]
     assert matching_torrents(rset, WEB_FLAC) == rset["torrents"]
+
+
+def test_a_remaster_without_its_own_catalogue_number_still_counts():
+    """The group's number belongs to the original release; a remaster that lacks one is unknown, not different."""
+    rset = _group_with(remasterCatalogueNumber="")
+    rset["group"] = {"catalogueNumber": "ORIG-001"}
+
+    assert matching_torrents(rset, {**WEB_FLAC, "catno": "NEW-002"}) == rset["torrents"]
+
+
+def test_an_original_release_uses_the_group_catalogue_number():
+    rset = make_result(100)
+    rset["group"] = {"catalogueNumber": "ORIG-001"}
+
+    assert matching_torrents(rset, {**WEB_FLAC, "catno": "NEW-002"}) == []
+    assert matching_torrents(rset, {**WEB_FLAC, "catno": "ORIG-001"}) == rset["torrents"]
 
 
 def test_matching_torrents_skips_another_edition_title():

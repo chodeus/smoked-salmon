@@ -87,15 +87,16 @@ async def _prompt_for_recent_upload_results(
     Returns:
         Group ID or None for new group.
     """
+    shown = recent_uploads[:5]
     # First, print the recent uploads if any
-    if recent_uploads:
+    if shown:
         click.secho(
             f"\nFound similar recent uploads in the {gazelle_site.site_string} log: ",
             fg="red",
             nl=False,
         )
         click.secho(f" (searchstrs: {searchstr})", bold=True)
-        for u_index, u in enumerate(recent_uploads[:5]):
+        for u_index, u in enumerate(shown):
             click.echo(f" {u_index + 1:02d} >> ", nl=False)  # torrent_id
             click.secho(f"{u[1]} - {u[2]} ", fg="cyan", nl=False)  # artist - title
             click.echo(f"| {gazelle_site.base_url}/torrents.php?torrentid={u[0]}")
@@ -122,9 +123,9 @@ async def _prompt_for_recent_upload_results(
                     continue
                 group_id_num = 1  # If the user types 0 give them the first choice.
 
-            # If user picks from recent uploads list
-            if recent_uploads and 1 <= group_id_num <= len(recent_uploads):
-                torrent_id = recent_uploads[group_id_num - 1][0]
+            # Only the uploads listed above can be picked by number.
+            if shown and 1 <= group_id_num <= len(shown):
+                torrent_id = shown[group_id_num - 1][0]
                 # Need to convert torrent ID to group ID
                 try:
                     result_group_id = await gazelle_site.get_redirect_torrentgroupid(torrent_id)
@@ -461,9 +462,10 @@ def _is_remaster(torrent: dict) -> bool:
 
 
 def _edition_catno(torrent: dict, rset: dict) -> str:
-    """Catalogue number of the torrent's edition; an original release falls back to the group's."""
-    own = (torrent.get("remasterCatalogueNumber") or "").strip() if _is_remaster(torrent) else ""
-    return own or ((rset.get("group") or {}).get("catalogueNumber") or "").strip()
+    """Catalogue number of the torrent's edition; only an original release falls back to the group's."""
+    if _is_remaster(torrent):
+        return (torrent.get("remasterCatalogueNumber") or "").strip()
+    return ((rset.get("group") or {}).get("catalogueNumber") or "").strip()
 
 
 def matching_torrents(rset: dict, release: dict | None) -> list[dict]:
