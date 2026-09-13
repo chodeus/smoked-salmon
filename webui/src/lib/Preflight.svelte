@@ -29,8 +29,11 @@
   const job = $derived(jobId ? jobStore.get(jobId) : undefined)
   const result = $derived<ChecksResult | undefined>(job?.status === 'done' ? job.result : undefined)
   const running = $derived(job?.status === 'queued' || job?.status === 'running')
+  // One shape for the live inputs and a restored job's params, so the two always compare.
+  const signatureOf = (s: Record<string, unknown>) =>
+    JSON.stringify({ path: s.path, source: s.source ?? '', trackers: s.trackers, checks: s.checks })
   // Any change to the inputs invalidates the verdict, so a stale green cannot gate an upload.
-  const signature = $derived(JSON.stringify({ path, source, trackers, checks }))
+  const signature = $derived(signatureOf({ path, source, trackers, checks }))
   const stale = $derived(!!result && signature !== verifiedFor)
   const unacked = $derived(result ? result.warnings.filter((w) => !acked.includes(w)) : [])
   const ok = $derived(!!result && !stale && result.blocking.length === 0 && unacked.length === 0)
@@ -39,6 +42,17 @@
 
   $effect(() => {
     cleared = ok
+  })
+
+  // Back on the page mid-job: pick up this album's newest verification instead of starting blank.
+  $effect(() => {
+    if (jobId || !path) return
+    const earlier = jobStore.jobs.find(
+      (j) => j.type === 'checks' && j.params.path === path && j.status !== 'error' && j.status !== 'cancelled',
+    )
+    if (!earlier) return
+    jobId = earlier.id
+    verifiedFor = signatureOf(earlier.params)
   })
 
   async function verify() {
