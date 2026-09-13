@@ -69,3 +69,48 @@ def test_review_metadata_still_prompts_for_label_errors_in_final_review(monkeypa
         raise AssertionError("Expected final review to prompt for the invalid label")
 
     assert any("Label must be over 2 and under 80 characters." in call for call in confirm_calls)
+
+
+def _run_review(monkeypatch, answers, editor=None):
+    """Answer the edit menu from `answers`; `editor` stands in for the text editor."""
+    replies = iter(answers)
+    printed: list[str] = []
+
+    async def fake_prompt(*_args, **_kwargs):
+        return next(replies)
+
+    monkeypatch.setattr(review_module, "_print_metadata", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(review_module.click, "prompt", fake_prompt)
+    monkeypatch.setattr(review_module.click, "secho", lambda message, **_kwargs: printed.append(str(message)))
+    if editor is not None:
+        monkeypatch.setattr(review_module.click, "edit", lambda text, **_kwargs: editor(text))
+    metadata = make_metadata()
+    anyio.run(review_module.review_metadata, metadata, lambda _metadata: None, False)
+    return metadata, printed
+
+
+def test_typing_one_for_aliases_says_the_key_is_the_letter_l(monkeypatch) -> None:
+    _metadata, printed = _run_review(monkeypatch, ["1", "n"])
+
+    assert any("letter L" in line for line in printed)
+
+
+def test_the_alias_editor_explains_its_syntax_and_splits_an_artist(monkeypatch) -> None:
+    shown: list[str] = []
+
+    def editor(text):
+        shown.append(text)
+        return text + "Example Artist --> Gorgon City\nExample Artist --> Jem Cooke\n"
+
+    metadata, _printed = _run_review(monkeypatch, ["l", "n"], editor)
+
+    assert "existing name --> new name" in shown[0]
+    assert "README" not in shown[0]
+    assert metadata["artists"] == [("Gorgon City", "main"), ("Jem Cooke", "main")]
+    assert metadata["tracks"]["1"]["1"]["artists"] == [("Gorgon City", "main"), ("Jem Cooke", "main")]
+
+
+def test_the_artist_editor_points_to_aliases_for_renames(monkeypatch) -> None:
+    _metadata, printed = _run_review(monkeypatch, ["a", "n"], lambda text: text)
+
+    assert any("a[L]iases" in line for line in printed)
