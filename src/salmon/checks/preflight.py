@@ -169,12 +169,30 @@ def source_row(guess: dict, chosen: str | None) -> Row:
     return Row("source", "Source", OK, f"{chosen} — {why}")
 
 
+def _editions(group: dict) -> str:
+    """A matched group's editions as "year / catalogue number: formats", so a different release is visible."""
+    editions: dict[str, list[str]] = {}
+    for t in group.get("torrents") or []:
+        edition = (t.get("remasterYear") or group.get("groupYear"), t.get("remasterCatalogueNumber"))
+        key = " / ".join(str(part) for part in edition if part) or "edition unknown"
+        fmt = " ".join(str(part) for part in (t.get("media"), t.get("format"), t.get("encoding")) if part)
+        editions.setdefault(key, []).append(fmt)
+    return "; ".join(f"{key}: {', '.join(fmts)}" for key, fmts in editions.items())
+
+
 def dupe_row(tracker: str, results: list[dict]) -> Row:
     label = f"Duplicate ({tracker})"
     if not results:
         return Row(f"dupe:{tracker}", label, OK, "No existing release found.")
-    names = [str(r.get("groupName") or r.get("groupId")) for r in results[:2]]
-    detail = f"{len(results)} possible match(es): {', '.join(names)}. Confirm it is not a duplicate."
+    names = []
+    for r in results[:2]:
+        name = str(r.get("groupName") or r.get("groupId"))
+        editions = _editions(r)
+        names.append(f"{name} ({editions})" if editions else name)
+    detail = (
+        f"{len(results)} possible match(es): {', '.join(names)}. "
+        "A different catalogue number or tracklist is a different release; confirm it is not a duplicate."
+    )
     return Row(f"dupe:{tracker}", label, WARN, detail)
 
 
@@ -203,6 +221,7 @@ def dupe_matches(base_url: str, results: list[dict]) -> list[dict]:
                     "remasterTitle": t.get("remasterTitle"),
                     "remasterYear": t.get("remasterYear"),
                     "remasterRecordLabel": t.get("remasterRecordLabel"),
+                    "remasterCatalogueNumber": t.get("remasterCatalogueNumber"),
                     "seeders": t.get("seeders"),
                 }
                 for t in r.get("torrents", [])

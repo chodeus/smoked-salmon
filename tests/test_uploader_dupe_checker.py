@@ -636,6 +636,29 @@ def test_matching_torrents_still_flags_when_the_release_year_is_unknown():
     assert matching_torrents(make_result(100), {**WEB_FLAC, "year": None}) != []
 
 
+def _group_with(**edition):
+    rset = make_result(100)
+    rset["torrents"] = [{"media": "WEB", "format": "FLAC", "encoding": "Lossless", "remasterYear": 2024, **edition}]
+    return rset
+
+
+def test_matching_torrents_skips_another_catalogue_number():
+    """Two releases in one group can share year and format; the catalogue number tells them apart."""
+    rset = _group_with(remasterCatalogueNumber="1200214726676")
+
+    assert matching_torrents(rset, {**WEB_FLAC, "catno": "1200214425593"}) == []
+    assert matching_torrents(rset, {**WEB_FLAC, "catno": "12002-14726676"}) == rset["torrents"]
+    assert matching_torrents(rset, WEB_FLAC) == rset["torrents"]
+
+
+def test_matching_torrents_skips_another_edition_title():
+    rset = _group_with(remasterTitle="Deluxe")
+
+    assert matching_torrents(rset, {**WEB_FLAC, "edition_title": "Remastered"}) == []
+    assert matching_torrents(rset, {**WEB_FLAC, "edition_title": "deluxe"}) == rset["torrents"]
+    assert matching_torrents(rset, WEB_FLAC) == rset["torrents"]
+
+
 async def test_confirm_group_id_pretypes_abort_when_the_edition_already_has_the_format(fake_tracker, install_prompt):
     install_prompt(USE_DEFAULT)
 
