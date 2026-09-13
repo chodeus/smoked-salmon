@@ -18,10 +18,11 @@ _RIPPER_SIGNATURES = re.compile(
     r"exact audio copy|\bxld\b|x lossless decoder|whipper|morituri|dbpoweramp|cueripper|accuraterip",
     re.IGNORECASE,
 )
-# Tags only a digital storefront writes.
+# Tags only a digital storefront writes. Not ASIN (Picard copies it from MusicBrainz) and not the
+# com.apple.iTunes atom namespace (every tagger files custom M4A fields under it).
 _STORE_TAGS = (
-    (re.compile(r"(^|\n|:)asin="), "Amazon ASIN tag"),
-    (re.compile(r"com\.apple\.itunes|(^|\n)apid=|(^|\n)purchase[ _]?date="), "iTunes purchase tags"),
+    (re.compile(r"amazon\.com song id"), "Amazon download comment"),
+    (re.compile(r"(^|\n)(apid|purd)=|(^|\n)purchase[ _]?date="), "iTunes purchase tags"),
     (re.compile(r"bandcamp\.com"), "Bandcamp tag"),
 )
 _STORE_URL = re.compile(
@@ -35,6 +36,14 @@ _SOURCE_KEYS = frozenset({"source", "sourceurl", "www", "website", "url", "purl"
 _DATABASE_KEYS = ("musicbrainz", "discogs")
 _DATABASE_URL = re.compile(r"https?://(?:[a-z0-9-]+\.)*(?:musicbrainz\.org|discogs\.com)(?:[/:?#]|$)", re.IGNORECASE)
 _URL_VALUE = re.compile(r"https?://\S+", re.IGNORECASE)
+# ID3 and MP4 frames that hold a field under another name.
+_FRAME_FIELDS = {
+    "comm": "comment",
+    "tenc": "encoded-by",
+    "tsse": "encoder settings",
+    "\xa9cmt": "comment",
+    "\xa9too": "encoder",
+}
 _MEDIA_TAG = re.compile(r"(?:^|\n)(?:media|sourcemedia|tmed)=\[?'?([a-z0-9 ]+)")
 _MEDIA_VALUES = {
     "cd": "CD",
@@ -53,36 +62,41 @@ _MEDIA_VALUES = {
 _VINYL_TRACKNO = re.compile(r"^([A-H])[0-9]{1,2}$", re.IGNORECASE)
 
 
-def _key_name(key) -> str:
-    """Lowercase field name without its container prefix (TXXX:, WXXX:, ----:com.apple.iTunes:)."""
+def field_name(key) -> str:
+    """Lowercase Vorbis-style name for a tag key from any container (TXXX:SOURCE, COMM::eng, ----:…:MEDIA)."""
     name = str(key).lower()
     if name.startswith(("txxx:", "wxxx:")):
         return name[5:]
     if name.startswith("----:"):
         return name.rsplit(":", 1)[-1]
-    return name
+    return _FRAME_FIELDS.get(name.split(":", 1)[0], name)
+
+
+def tag_texts(value) -> list[str]:
+    """A tag value as plain strings, whether a list, an ID3 frame or MP4 freeform bytes."""
+    items = value if isinstance(value, list) else [value]
+    return [(item.decode("utf-8", "ignore") if isinstance(item, bytes) else str(item)).strip() for item in items]
 
 
 def _tags(mut) -> list:
     """The file's (key, value) tag pairs, database links left out."""
     pairs = dict(mut.tags or {}).items()
-    return [(key, value) for key, value in pairs if not _key_name(key).startswith(_DATABASE_KEYS)]
+    return [(key, value) for key, value in pairs if not field_name(key).startswith(_DATABASE_KEYS)]
 
 
 def _tag_blob(mut) -> str:
-    """Flatten one file's tags to lowercase `key=value` lines, format-agnostic."""
-    return "\n".join(f"{key}={value}".lower() for key, value in _tags(mut))
+    """Flatten one file's tags to lowercase `field=value` lines, format-agnostic."""
+    return "\n".join(f"{field_name(key)}={'; '.join(tag_texts(value))}".lower() for key, value in _tags(mut))
 
 
-def _tag_urls(mut) -> list[tuple[str, str]]:
+def tag_url_fields(mut) -> list[tuple[str, str]]:
     """(field name, URL) for every tag whose whole value is one URL."""
-    found = []
-    for key, value in _tags(mut):
-        for item in value if isinstance(value, list) else [value]:
-            text = (item.decode("utf-8", "ignore") if isinstance(item, bytes) else str(item)).strip()
-            if _URL_VALUE.fullmatch(text) and not _DATABASE_URL.match(text):
-                found.append((_key_name(key), text))
-    return found
+    return [
+        (field_name(key), text)
+        for key, value in _tags(mut)
+        for text in tag_texts(value)
+        if _URL_VALUE.fullmatch(text) and not _DATABASE_URL.match(text)
+    ]
 
 
 def _has_rip_log(path: str) -> str | None:
@@ -119,7 +133,7 @@ def _gather(path: str) -> dict:
             continue
         blob = _tag_blob(mut)
         blobs.append(blob)
-        urls.extend(url for _key, url in _tag_urls(mut))
+        urls.extend(url for _field, url in tag_url_fields(mut))
         match = re.search(r"(?:^|\n)tracknumber=\[?'?([a-z0-9]+)", blob)
         if match:
             tracknos.append(match.group(1))
@@ -154,8 +168,8 @@ def tag_urls(path: str) -> tuple[list[str], list[str]]:
             continue
         if mut is None:
             continue
-        for key, url in _tag_urls(mut):
-            (sourced if key in _SOURCE_KEYS else other).append(url)
+        for field, url in tag_url_fields(mut):
+            (sourced if field in _SOURCE_KEYS else other).append(url)
     return list(dict.fromkeys(sourced)), list(dict.fromkeys(other))
 
 

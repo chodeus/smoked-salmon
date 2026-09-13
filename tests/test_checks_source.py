@@ -1,4 +1,6 @@
 import pytest
+from mutagen.id3 import COMM
+from mutagen.mp4 import MP4FreeForm
 
 from salmon.checks import source as src
 
@@ -40,11 +42,30 @@ def test_media_tag_is_taken_at_its_word(album_dir, tagged):
     assert result["confidence"] == "confirmed"
 
 
-def test_store_tag_proves_web(album_dir, tagged):
-    tagged({"asin": "B000123", "album": "Y", "tracknumber": "1"})
+@pytest.mark.parametrize(
+    ("tags", "expected"),
+    [
+        ({"asin": ["B000123"]}, None),
+        ({"COMM::eng": COMM(encoding=3, lang="eng", desc="", text=["Amazon.com Song ID: 200000707885981"])}, "WEB"),
+        ({"----:com.apple.iTunes:BARCODE": [MP4FreeForm(b"0602448406705")]}, None),
+        ({"----:com.apple.iTunes:MEDIA": [MP4FreeForm(b"CD")]}, "CD"),
+        ({"apID": ["someone@example.com"]}, "WEB"),
+        ({"purd": ["2020-01-01 10:00:00"]}, "WEB"),
+    ],
+    ids=[
+        "picard-asin",
+        "amazon-song-id-comment",
+        "m4a-custom-atom",
+        "m4a-media-atom",
+        "itunes-apple-id",
+        "itunes-purchase-date",
+    ],
+)
+def test_only_tags_a_store_writes_prove_web(album_dir, tagged, tags, expected):
+    """Picard copies ASIN from MusicBrainz, and every tagger files custom M4A atoms under com.apple.iTunes."""
+    tagged({**tags, "album": "Y", "tracknumber": "1"})
     result = src.detect_source(str(album_dir))
-    assert result["source"] == "WEB"
-    assert result["confidence"] == "confirmed"
+    assert result["source"] == expected
 
 
 def test_hi_res_rules_out_cd_but_is_only_likely_web(album_dir, tagged):
