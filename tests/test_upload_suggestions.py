@@ -81,6 +81,7 @@ TIDAL_TRACK = "https://tidal.com/browse/track/497503885"
 TIDAL_ALBUM = "https://tidal.com/browse/album/497503881"
 AMAZON_URL = "https://www.amazon.com/dp/B000123456"
 MB_RELEASE = "https://musicbrainz.org/release/0a1b2c3d-0000-4000-8000-000000000000"
+DISCOGS_RELEASE = "https://www.discogs.com/release/1234567"
 
 
 @pytest.mark.parametrize(
@@ -90,8 +91,17 @@ MB_RELEASE = "https://musicbrainz.org/release/0a1b2c3d-0000-4000-8000-0000000000
         ({"URL": [TIDAL_TRACK], "COMMENT": [TIDAL_ALBUM]}, TIDAL_ALBUM),
         ({"URL": [AMAZON_URL], "COMMENT": [AMAZON_URL + "?ref=x"]}, AMAZON_URL),
         ({"MUSICBRAINZ_RELATIONSHIP_URL__PURCHASE FOR DOWNLOAD": [QOBUZ_URL], "COMMENT": [MB_RELEASE]}, None),
+        ({"SOURCE": [MB_RELEASE]}, None),
+        ({"WOAS": [MB_RELEASE], "URL": [DISCOGS_RELEASE]}, None),
     ],
-    ids=["source-key-wins", "scrapable-beats-unscrapable", "unscrapable-source-key-kept", "databases-skipped"],
+    ids=[
+        "source-key-wins",
+        "scrapable-beats-unscrapable",
+        "unscrapable-source-key-kept",
+        "database-keys-skipped",
+        "database-url-under-source",
+        "database-urls-under-woas-and-url",
+    ],
 )
 def test_store_url_ranking(album_dir, monkeypatch, tags, expected) -> None:
     monkeypatch.setattr(src, "MutagenFile", lambda _path: _FakeAudio(tags))

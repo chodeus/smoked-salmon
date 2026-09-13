@@ -17,14 +17,11 @@ from salmon.tagger.combine import combine_metadatas, get_source_from_link
 from salmon.tagger.sources import METASOURCES
 from salmon.tagger.sources.base import generate_artists
 
-# Databases, not stores: a starred URL claims where the files came from.
-_DATABASE_SOURCES = ("MusicBrainz", "Discogs")
-
 
 def store_url(path: str) -> str | None:
-    """The files' own store page: a store link salmon can scrape (source keys first), else a source-key URL."""
+    """The files' own store page: a link salmon can scrape (source keys first), else a source-key URL."""
     sourced, other = tag_urls(path)
-    scrapable = (url for url in sourced + other if get_source_from_link(url) not in (None, *_DATABASE_SOURCES))
+    scrapable = (url for url in sourced + other if get_source_from_link(url))
     return next(scrapable, None) or next(iter(sourced), None)
 
 

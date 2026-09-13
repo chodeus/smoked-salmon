@@ -30,8 +30,10 @@ _STORE_URL = re.compile(
 )
 # Keys downloaders use for the page the files came from; WOAS is ID3's "official audio source".
 _SOURCE_KEYS = frozenset({"source", "sourceurl", "www", "website", "url", "purl", "woas"})
-# MusicBrainz and Discogs links describe a release in a database, not where these files came from.
+# MusicBrainz and Discogs links describe a release in a database, not where these files came from:
+# skip both their keys (which can hold a store link) and their own URLs under any key.
 _DATABASE_KEYS = ("musicbrainz", "discogs")
+_DATABASE_URL = re.compile(r"https?://(?:[a-z0-9-]+\.)*(?:musicbrainz\.org|discogs\.com)(?:[/:?#]|$)", re.IGNORECASE)
 _URL_VALUE = re.compile(r"https?://\S+", re.IGNORECASE)
 _MEDIA_TAG = re.compile(r"(?:^|\n)(?:media|sourcemedia|tmed)=\[?'?([a-z0-9 ]+)")
 _MEDIA_VALUES = {
@@ -78,7 +80,7 @@ def _tag_urls(mut) -> list[tuple[str, str]]:
     for key, value in _tags(mut):
         for item in value if isinstance(value, list) else [value]:
             text = (item.decode("utf-8", "ignore") if isinstance(item, bytes) else str(item)).strip()
-            if _URL_VALUE.fullmatch(text):
+            if _URL_VALUE.fullmatch(text) and not _DATABASE_URL.match(text):
                 found.append((_key_name(key), text))
     return found
 
