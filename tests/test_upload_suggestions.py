@@ -6,6 +6,8 @@ from typing import Any, cast
 import anyio
 import asyncclick as click
 import pytest
+from mutagen.id3 import TXXX, WXXX
+from mutagen.mp4 import MP4FreeForm
 
 import salmon.trackers as trackers
 import salmon.uploader as uploader
@@ -49,13 +51,62 @@ def test_comparable_ignores_case_accents_and_punctuation() -> None:
 def test_store_url_reads_the_files_store_tag(album_dir, monkeypatch) -> None:
     monkeypatch.setattr(src, "MutagenFile", lambda _path: _FakeAudio({"SOURCE": [QOBUZ_URL]}))
 
-    assert src.store_url(str(album_dir)) == QOBUZ_URL
+    assert metadata_mod.store_url(str(album_dir)) == QOBUZ_URL
 
 
 def test_store_url_ignores_tags_that_are_not_urls(album_dir, monkeypatch) -> None:
-    monkeypatch.setattr(src, "MutagenFile", lambda _path: _FakeAudio({"source": "Qobuz", "url": "not a url"}))
+    tags = {"source": "Qobuz", "url": "not a url", "comment": f"Bought at {QOBUZ_URL}"}
+    monkeypatch.setattr(src, "MutagenFile", lambda _path: _FakeAudio(tags))
 
-    assert src.store_url(str(album_dir)) is None
+    assert metadata_mod.store_url(str(album_dir)) is None
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [
+        {"QOBUZ URL": [QOBUZ_URL]},
+        {"TXXX:SOURCE": TXXX(encoding=3, desc="SOURCE", text=[QOBUZ_URL])},
+        {"WXXX:Qobuz URL": WXXX(encoding=3, desc="Qobuz URL", url=QOBUZ_URL)},
+        {"----:com.apple.iTunes:SOURCE": [MP4FreeForm(QOBUZ_URL.encode())]},
+    ],
+    ids=["vorbis-any-key", "id3-txxx", "id3-wxxx", "mp4-freeform"],
+)
+def test_store_url_reads_any_tag_in_any_container(album_dir, monkeypatch, tags) -> None:
+    monkeypatch.setattr(src, "MutagenFile", lambda _path: _FakeAudio(tags))
+
+    assert metadata_mod.store_url(str(album_dir)) == QOBUZ_URL
+
+
+TIDAL_TRACK = "https://tidal.com/browse/track/497503885"
+TIDAL_ALBUM = "https://tidal.com/browse/album/497503881"
+AMAZON_URL = "https://www.amazon.com/dp/B000123456"
+MB_RELEASE = "https://musicbrainz.org/release/0a1b2c3d-0000-4000-8000-000000000000"
+DISCOGS_RELEASE = "https://www.discogs.com/release/1234567"
+
+
+@pytest.mark.parametrize(
+    ("tags", "expected"),
+    [
+        ({"QOBUZ URL": [QOBUZ_URL], "SOURCE": [DEEZER_URL]}, DEEZER_URL),
+        ({"URL": [TIDAL_TRACK], "COMMENT": [TIDAL_ALBUM]}, TIDAL_ALBUM),
+        ({"URL": [AMAZON_URL], "COMMENT": [AMAZON_URL + "?ref=x"]}, AMAZON_URL),
+        ({"MUSICBRAINZ_RELATIONSHIP_URL__PURCHASE FOR DOWNLOAD": [QOBUZ_URL], "COMMENT": [MB_RELEASE]}, None),
+        ({"SOURCE": [MB_RELEASE]}, None),
+        ({"WOAS": [MB_RELEASE], "URL": [DISCOGS_RELEASE]}, None),
+    ],
+    ids=[
+        "source-key-wins",
+        "scrapable-beats-unscrapable",
+        "unscrapable-source-key-kept",
+        "database-keys-skipped",
+        "database-url-under-source",
+        "database-urls-under-woas-and-url",
+    ],
+)
+def test_store_url_ranking(album_dir, monkeypatch, tags, expected) -> None:
+    monkeypatch.setattr(src, "MutagenFile", lambda _path: _FakeAudio(tags))
+
+    assert metadata_mod.store_url(str(album_dir)) == expected
 
 
 def test_release_type_from_folder_reads_the_library_layout() -> None:
