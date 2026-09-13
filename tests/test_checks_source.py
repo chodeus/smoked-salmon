@@ -112,3 +112,26 @@ def test_hi_res_with_no_readable_rate_does_not_claim_0khz(album_dir, monkeypatch
     result = src.detect_source(str(album_dir))
     assert result["source"] == "WEB"
     assert "0kHz" not in " ".join(result["reasons"])
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [
+        {"qobuz url": ["https://www.qobuz.com/album/journaling-illy/ul39e7xjbuqrb"]},
+        {"source": ["https://www.deezer.com/album/322064097"]},
+    ],
+    ids=["qobuz-url-key", "sleezer-source-key"],
+)
+def test_store_url_in_any_tag_proves_web(album_dir, tagged, tags):
+    tagged({**tags, "album": "Y", "tracknumber": "1"})
+    result = src.detect_source(str(album_dir))
+    assert result["source"] == "WEB"
+    assert result["confidence"] == "confirmed"
+
+
+def test_database_links_do_not_prove_web(album_dir, tagged):
+    """A MusicBrainz purchase link describes the release, not where these files came from."""
+    link = "https://artist.bandcamp.com/album/y"
+    tagged({"musicbrainz_relationship_url__purchase for download": [link], "album": "Y", "tracknumber": "1"})
+    result = src.detect_source(str(album_dir))
+    assert result["source"] is None
