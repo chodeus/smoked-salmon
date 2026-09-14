@@ -44,7 +44,7 @@ async def run(req: ChecksRequest) -> dict:
             "checks",
             f"Checks ({selected}): {os.path.basename(path)}",
             job_body,
-            {"path": path, "checks": req.checks, "trackers": req.trackers},
+            {"path": path, "checks": req.checks, "source": req.source, "trackers": req.trackers},
         )
     except JobCapacityError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e

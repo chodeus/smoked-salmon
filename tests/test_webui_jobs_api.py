@@ -480,6 +480,15 @@ def test_jobs_list_returns_newest_first(client, album_dir, integrity_stub):
     assert [j["id"] for j in listed] == [second_id, first_id]
 
 
+def test_checks_job_keeps_the_source_it_was_verified_for(client, album_dir, integrity_stub):
+    """The Upload page rebuilds its verified-for signature from these params when you come back to it."""
+    body = {"path": str(album_dir), "checks": ["integrity"], "source": "WEB", "trackers": []}
+    job_id = client.post("/api/checks/run", json=body).json()["id"]
+    finished = join_job(client, job_id)
+
+    assert finished["params"]["source"] == "WEB"
+
+
 def test_job_factory_error_is_surfaced_in_job_dict(client, album_dir, monkeypatch):
     async def broken_check_integrity(path):
         raise ValueError("integrity exploded")

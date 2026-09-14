@@ -65,6 +65,32 @@
   let starting = $state(false)
 
   const activeJob = $derived(activeJobId ? jobStore.get(activeJobId) : undefined)
+
+  // Back on the page mid-job: show the newest running upload, or the album whose verification is
+  // running or not yet uploaded. Once only, and never over an album already picked.
+  let restored = false
+  $effect(() => {
+    if (restored || path || activeJobId) return
+    const live = (j: Job) => j.status === 'queued' || j.status === 'running'
+    const uploadedSince = (j: Job) =>
+      jobStore.jobs.some((u) => u.type === 'upload' && u.params.path === j.params.path && u.created_at > j.created_at)
+    const upload = jobStore.jobs.find((j) => j.type === 'upload' && live(j))
+    const verified = jobStore.jobs.find(
+      (j) => j.type === 'checks' && (live(j) || (j.status === 'done' && !uploadedSince(j))),
+    )
+    const job = upload ?? verified
+    if (!job) return
+    restored = true
+    path = String(job.params.path ?? '')
+    if (job === upload) {
+      activeJobId = job.id
+      return
+    }
+    source = String(job.params.source ?? '')
+    const saved = job.params.trackers as string[] | undefined
+    if (saved?.length) chosen = saved
+  })
+
   // Verify exactly what the upload will check, so the two cannot disagree.
   const checks = $derived([
     'provenance',
