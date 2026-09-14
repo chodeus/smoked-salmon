@@ -91,8 +91,11 @@ reviews:
           "no result", and never let one greenlight an upload.
         - Fail closed on config: a missing or unparseable setting on an upload
           or delete path is an error, not a default.
-        - 0 and "" are legitimate values (track numbers, bit depth, disc 0,
-          empty tag) — use explicit None checks, not truthiness.
+        - 0 and "" are legitimate values when they are data (track numbers,
+          bit depth, disc 0, log score, seeder count, an empty tag) — use
+          explicit None checks, not truthiness. Truthiness is right where ""
+          means unset: tracker API strings (catalogue number, remaster title,
+          record label) arrive as "" when absent, and a display join skips them.
         - Never log or format tracker cookies, API keys, passkeys or session
           tokens, including inside exception messages and URLs.
     - path: "webui/src/**/*.{svelte,ts}"
