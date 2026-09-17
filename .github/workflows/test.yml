@@ -6,6 +6,7 @@ on:
       - master
       - feat/webui
   pull_request:
+  workflow_dispatch:
 
 jobs:
   pytest:
