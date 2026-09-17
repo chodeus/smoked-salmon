@@ -2,6 +2,11 @@
 
 # 🐟 smoked-salmon  
 
+> [!WARNING]
+> **Alpha software.** This fork is under active development and only `:alpha` images have been published.
+> Expect bugs and breaking changes between builds, and pull `:alpha` often so you are running the latest fixes.
+> Check every upload on the tracker once it completes: you are responsible for what is submitted under your account and for following each site's rules.
+
 A simple tool to take the work out of uploading on Gazelle-based trackers. It generates spectrals, gathers metadata, allows re-tagging/renaming files, and automates the upload process.
 
 > **About this fork** — upstream's release pipeline stalled at 0.10.1 while fixes piled up unreleased. This fork is upstream `master` plus the outstanding community fix branches and a batch of our own work, reviewed and covered by tests.
