@@ -1,4 +1,4 @@
-"""Every description generator must carry the same attribution footer."""
+"""The description generators must carry the same attribution footer."""
 
 import importlib
 
@@ -31,6 +31,5 @@ def test_footer_names_the_fork_and_credits_upstream():
     ],
     ids=["downconvert", "transcode"],
 )
-def test_every_generator_ends_with_the_shared_footer(description):
-    # These two shipped the pre-fork footer while upload.py carried the new one.
+def test_converter_descriptions_end_with_the_shared_footer(description):
     assert description().endswith(upload_footer())
