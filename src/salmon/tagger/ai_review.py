@@ -29,6 +29,7 @@ from openai.types.responses import (
 from salmon import cfg
 from salmon.constants import ARTIST_IMPORTANCES
 from salmon.errors import InvalidMetadataError
+from salmon.tagger.sources.base import standardize_genres
 
 POLL_INTERVAL_SECONDS = 5
 STATUS_HEARTBEAT_SECONDS = 15
@@ -986,6 +987,10 @@ def _iter_review_metadata(review: dict[str, Any]):
 def _normalize_review_metadata_value(field: str, value: Any) -> Any:
     if field == "artists":
         return _normalize_artist_entries(value)
+    if field == "genres":
+        # The model returns combined genres like "Dance / Pop"; fall back rather than empty the field.
+        normalized = _normalize_list(value)
+        return standardize_genres(set(normalized)) or normalized
     if field in NORMALIZED_METADATA_FIELDS:
         return _normalize_list(value)
     return value
