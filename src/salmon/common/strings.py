@@ -105,6 +105,33 @@ def fetch_genre(genre: str) -> set[str]:
         raise GenreNotInWhitelist from None
 
 
+# Never "&": the whitelist stores "Drum & Bass" and "R&B" as single genres.
+_GENRE_SEPARATORS = re.compile(r"\s*[/;,]\s*|\s+\\\s+")
+
+
+def split_genre(genre: str) -> list[str]:
+    """Split one genre string into the separate genres it names."""
+    return [part.strip() for part in _GENRE_SEPARATORS.split(genre) if part.strip()]
+
+
+def tagify(genre: str) -> str:
+    """One tracker tag: words joined by dots, "&" spelled out because it is not a tag character."""
+    tag = re.sub(r"\s*&\s*", ".and.", genre)
+    tag = re.sub(r"[-_ /]+", ".", tag)
+    return re.sub(r"\.+", ".", tag).strip(".")
+
+
+def decade_tag(year) -> str | None:
+    """The decade of the original release, which trackers want in place of the year."""
+    try:
+        year = int(year)
+    except (TypeError, ValueError):
+        return None
+    if not 1900 <= year <= 2999:
+        return None
+    return f"{year // 10 * 10}s"
+
+
 def truncate(string, length):
     if len(string) < length:
         return string

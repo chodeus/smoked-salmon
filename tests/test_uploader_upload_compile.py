@@ -14,9 +14,10 @@ import pytest
 from torf import Torrent
 
 from salmon import cfg
+from salmon.common import decade_tag
 from salmon.constants import RELEASE_TYPES
 from salmon.errors import RequestError, UploadError
-from salmon.uploader import _prompt_source, convert_genres, decade_tag, upload_and_report
+from salmon.uploader import _prompt_source, convert_genres, upload_and_report
 from salmon.uploader.upload import (
     collect_logfiles,
     compile_data_existing_group,

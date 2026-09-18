@@ -23,11 +23,14 @@ from salmon.common.regexes import (
     re_strip,
 )
 from salmon.common.strings import (
+    decade_tag,
     fetch_genre,
     less_uppers,
     make_searchstrs,
     normalize_accents,
+    split_genre,
     strip_template_keys,
+    tagify,
     truncate,
 )
 from salmon.errors import ScrapeError
@@ -42,11 +45,14 @@ __all__ = [
     "parse_copyright",
     "re_split",
     "re_strip",
+    "decade_tag",
     "fetch_genre",
     "less_uppers",
     "make_searchstrs",
     "normalize_accents",
+    "split_genre",
     "strip_template_keys",
+    "tagify",
     "truncate",
     "ScrapeError",
     "commandgroup",
