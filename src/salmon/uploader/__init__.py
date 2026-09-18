@@ -18,6 +18,7 @@ from salmon.checks.source import detect_source
 from salmon.checks.tag_rules import collect_upload_warnings
 from salmon.checks.upconverts import upload_upconvert_test
 from salmon.common import commandgroup, decade_tag, tagify
+from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
 from salmon.constants import ENCODINGS, FORMATS, SOURCES, TAG_ENCODINGS
 from salmon.converter.conversions import carry_conversion, conversion_of
 from salmon.converter.downconverting import (
@@ -322,6 +323,17 @@ async def next_tracker(preselected: bool, remaining: list[str]) -> str | None:
     return await salmon.trackers.choose_tracker(remaining)
 
 
+def _cover_host_for_new_group(site_code: str, stored_cover_urls: dict[str, str]) -> str:
+    """Image host to use for this tracker's new-group cover.
+
+    A cached RED-hosted cover is reused as-is on a tracker that proxies it (currently
+    OPS), skipping a redundant re-upload to that tracker's own default host.
+    """
+    if site_code in RED_IMAGE_PROXY_TARGETS and "red" in stored_cover_urls:
+        return "red"
+    return cfg.image.resolve(site_code, "cover_uploader")
+
+
 def follow_up_trackers(trackers: list[str] | None, current: str) -> list[str]:
     """Sites available for the follow-up offer after uploading to `current`.
 
@@ -592,7 +604,7 @@ async def upload(
             else:
                 # For new groups, we need a cover URL
                 # If we already uploaded it for a previous tracker, reuse that URL
-                cover_host = cfg.image.resolve(gazelle_site.site_code, "cover_uploader")
+                cover_host = _cover_host_for_new_group(gazelle_site.site_code, stored_cover_urls)
                 if cover_host not in stored_cover_urls:
                     cover_path, is_downloaded = await download_cover_if_nonexistent(path, metadata["cover"])
                     uploaded = await upload_cover(cover_path, gazelle_site.site_code)
@@ -628,7 +640,7 @@ async def upload(
                             click.secho("Checking for cover image again...", fg="cyan")
                             cover_path, is_downloaded = await download_cover_if_nonexistent(path, metadata["cover"])
                             if cover_path:
-                                cover_host = cfg.image.resolve(gazelle_site.site_code, "cover_uploader")
+                                cover_host = _cover_host_for_new_group(gazelle_site.site_code, stored_cover_urls)
                                 uploaded = await upload_cover(cover_path, gazelle_site.site_code)
                                 if uploaded:
                                     stored_cover_urls[cover_host] = uploaded
