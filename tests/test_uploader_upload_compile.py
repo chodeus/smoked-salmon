@@ -334,7 +334,7 @@ def test_convert_genres_normalizes_separators_to_dots():
 
 
 def test_convert_genres_spells_out_ampersands():
-    # GENRE_LIST itself yields these, so "Drum.&.Bass" reached the tracker on every D&B upload.
+    # GENRE_LIST yields these verbatim; "&" is not a tag character.
     assert convert_genres(["Drum & Bass"]) == "Drum.and.Bass"
     assert convert_genres(["Rhythm & Blues"]) == "Rhythm.and.Blues"
     assert convert_genres(["Rock & Roll"]) == "Rock.and.Roll"
