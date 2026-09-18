@@ -33,3 +33,4 @@ def test_footer_names_the_fork_and_credits_upstream():
 )
 def test_converter_descriptions_end_with_the_shared_footer(description):
     assert description().endswith(upload_footer())
+

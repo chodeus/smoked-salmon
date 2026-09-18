@@ -18,7 +18,7 @@ from salmon.converter.downconverting import convert_folder, generate_conversion_
 from salmon.converter.transcoding import Bitrate, generate_transcode_description, transcode_folder
 from salmon.images import HOSTS
 from salmon.images.red import bare_image_url
-from salmon.release_notification import FORK_URL, get_version
+from salmon.release_notification import FORK_URL, UPSTREAM_URL, get_version, upload_footer
 from salmon.uploader.dupe_checker import check_existing_group, generate_dupe_check_searchstrs
 from salmon.uploader.upload import compile_files, generate_torrent
 
@@ -537,6 +537,9 @@ def _compile_data(
         f"Cross-uploaded with [url={FORK_URL}]smoked-salmon[/url] v{get_version()} (chodeus fork)"
         "[/size][/align]"
     )
+    # The source description is the other tracker's, so it may already end with our footer.
+    carried_footer = "" if UPSTREAM_URL in description else f"\n\n{upload_footer()}"
+
     media = torrent["media"]
     if target_site.site_code == "OPS" and media == "Blu-Ray":
         media = "BD"
@@ -568,6 +571,6 @@ def _compile_data(
         "tags": ",".join(group.get("tags") or []),
         "image": html.unescape(group.get("wikiImage") or ""),
         "album_desc": group.get("bbBody") or group.get("wikiBBcode") or "",
-        "release_desc": f"{cross_post}\n\n{description}",
+        "release_desc": f"{cross_post}\n\n{description}{carried_footer}",
         **({"scene": True} if torrent.get("scene") else {}),
     }
