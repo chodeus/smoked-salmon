@@ -415,7 +415,7 @@ async def test_full_happy_path_uploads_to_fake_tracker(jm, tracker, album_dir, u
     assert data["bitrate"] == "Lossless"
     assert data["media"] == "WEB"
     assert data["image"] == "https://img.example/cover"
-    assert data["tags"] == "Electronic"
+    assert data["tags"] == "Electronic,2020s"  # decade from group_year 2024
     assert "groupid" not in data
     assert files.torrent_data is not None
 

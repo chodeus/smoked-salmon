@@ -14,6 +14,7 @@ import pytest
 from torf import Torrent
 
 from salmon import cfg
+from salmon.common import decade_tag
 from salmon.constants import RELEASE_TYPES
 from salmon.errors import RequestError, UploadError
 from salmon.uploader import _prompt_source, convert_genres, upload_and_report
@@ -330,6 +331,40 @@ def test_generate_catno_explicit_none_upc_yields_empty_string(monkeypatch):
 def test_convert_genres_normalizes_separators_to_dots():
     assert convert_genres(["Hip Hop", "Drum_and_Bass", "Trip-Hop"]) == "Hip.Hop,Drum.and.Bass,Trip.Hop"
     assert convert_genres([]) == ""
+
+
+def test_convert_genres_spells_out_ampersands():
+    # GENRE_LIST yields these verbatim; "&" is not a tag character.
+    assert convert_genres(["Drum & Bass"]) == "Drum.and.Bass"
+    assert convert_genres(["Rhythm & Blues"]) == "Rhythm.and.Blues"
+    assert convert_genres(["Rock & Roll"]) == "Rock.and.Roll"
+    assert convert_genres(["R&B"]) == "R.and.B"
+
+
+def test_convert_genres_collapses_slashes_and_runs():
+    assert convert_genres(["Dance / Pop"]) == "Dance.Pop"
+    assert convert_genres(["Electronica / Downtempo"]) == "Electronica.Downtempo"
+
+
+def test_convert_genres_appends_the_release_decade():
+    assert convert_genres(["House"], 2026) == "House,2020s"
+    assert convert_genres(["Disco"], 1979) == "Disco,1970s"
+    assert convert_genres(["House"]) == "House"
+    assert convert_genres([], 2026) == "2020s"
+
+
+def test_convert_genres_does_not_duplicate_an_existing_decade():
+    assert convert_genres(["House", "2020s"], 2026) == "House,2020s"
+
+
+def test_decade_tag_handles_missing_and_bad_years():
+    assert decade_tag(2026) == "2020s"
+    assert decade_tag("1999") == "1990s"
+    assert decade_tag(2000) == "2000s"
+    assert decade_tag(None) is None
+    assert decade_tag("") is None
+    assert decade_tag("not a year") is None
+    assert decade_tag(1066) is None
 
 
 def test_concat_track_data_merges_tags_into_audio_info():

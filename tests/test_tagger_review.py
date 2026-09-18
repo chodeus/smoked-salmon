@@ -114,3 +114,18 @@ def test_the_artist_editor_points_to_aliases_for_renames(monkeypatch) -> None:
     _metadata, printed = _run_review(monkeypatch, ["a", "n"], lambda text: text)
 
     assert any("a[L]iases" in line for line in printed)
+
+
+def test_edit_genres_keeps_existing_when_the_edit_normalizes_to_nothing(monkeypatch) -> None:
+    metadata = make_metadata()
+    monkeypatch.setattr(review_module.click, "edit", lambda *_a, **_k: "///\n,,,")
+    monkeypatch.setattr(review_module.click, "secho", lambda *_a, **_k: None)
+    anyio.run(review_module._edit_genres, metadata)
+    assert metadata["genres"] == ["Pop"]
+
+
+def test_edit_genres_standardizes_what_the_editor_returns(monkeypatch) -> None:
+    metadata = make_metadata()
+    monkeypatch.setattr(review_module.click, "edit", lambda *_a, **_k: "Dance / Pop\nDrum & Bass")
+    anyio.run(review_module._edit_genres, metadata)
+    assert sorted(metadata["genres"]) == ["Dance", "Drum & Bass", "Pop"]
