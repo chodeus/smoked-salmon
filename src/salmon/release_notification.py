@@ -7,6 +7,8 @@ from packaging.version import Version
 
 from salmon import cfg
 
+FORK_URL = "https://github.com/chodeus/smoked-salmon"
+UPSTREAM_URL = "https://github.com/smokin-salmon/smoked-salmon"
 LOCAL_VERSION_FILE = Path(__file__).parent / "data" / "version.toml"
 REMOTE_VERSION_URL = (
     "https://raw.githubusercontent.com/chodeus/smoked-salmon/refs/heads/master/src/salmon/data/version.toml"
@@ -72,6 +74,14 @@ def get_version() -> str | None:
         return _cached_version
     except FileNotFoundError:
         return None
+
+
+def upload_footer() -> str:
+    """The attribution line every upload description ends with."""
+    return (
+        f"[hr]Uploaded with [url={FORK_URL}][b]smoked-salmon[/b] v{get_version()} (chodeus fork)[/url]"
+        f" of [url={UPSTREAM_URL}]smokin-salmon[/url]"
+    )
 
 
 def _get_remote_version_data(url: str) -> VersionData | None:

@@ -10,7 +10,7 @@ from salmon import cfg
 from salmon.common import UploadFiles, str_to_int_if_int
 from salmon.constants import ARTIST_IMPORTANCES
 from salmon.errors import DryRunComplete
-from salmon.release_notification import get_version
+from salmon.release_notification import upload_footer
 from salmon.sources import SOURCE_ICONS
 from salmon.tagger.sources import METASOURCES
 from salmon.uploader.spectrals import (
@@ -435,11 +435,7 @@ def generate_t_description(
     more_info_links = generate_source_links(metadata_urls, source_url) if metadata_urls else ""
     more_info = f"[b]More info:[/b] {more_info_links}\n" if more_info_links else ""
 
-    footer = (
-        f"[hr]Uploaded with [url=https://github.com/chodeus/smoked-salmon]"
-        f"[b]smoked-salmon[/b] v{get_version()} (chodeus fork)[/url]"
-        f" of [url=https://github.com/smokin-salmon/smoked-salmon]smokin-salmon[/url]"
-    )
+    footer = upload_footer()
 
     return f"{spectrals}{encode_specifics}{release_date}{tracklist}{lossy_notes}{source}{more_info}{footer}"
 

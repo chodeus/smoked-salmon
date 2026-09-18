@@ -100,10 +100,10 @@ def pinned_cfg(monkeypatch):
     monkeypatch.setattr(cfg.upload.description, "bitrates_in_t_desc", False)
     monkeypatch.setattr(cfg.upload.compression, "lma_comment_in_t_desc", False)
     monkeypatch.setattr(cfg.upload.compression, "use_upc_as_catno", True)
-    # NB: "salmon.uploader.upload" as a dotted monkeypatch target resolves to the
-    # upload() *function* re-exported by the package, so fetch the real module.
-    upload_module = importlib.import_module("salmon.uploader.upload")
-    monkeypatch.setattr(upload_module, "get_version", lambda: "1.0.0-test")
+    # The footer is built in release_notification now, so pin the version there.
+    monkeypatch.setattr(
+        importlib.import_module("salmon.release_notification"), "get_version", lambda: "1.0.0-test"
+    )
 
 
 @pytest.fixture
