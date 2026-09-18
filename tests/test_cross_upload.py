@@ -15,6 +15,7 @@ from salmon.cross_upload import (
     _source_response,
     _upload_conversions,
 )
+from salmon.release_notification import upload_footer
 
 
 class SourceSite:
@@ -107,7 +108,29 @@ def test_cross_upload_data_maps_source_to_target() -> None:
     assert "[b]RED → OPS[/b]" in data["release_desc"]
     assert "[url=https://redacted.sh/user.php?id=7]uploader[/url]" in data["release_desc"]
     assert "Cross-uploaded with" in data["release_desc"]
-    assert data["release_desc"].endswith("\n\nRelease notes")
+    assert "\n\nRelease notes" in data["release_desc"]
+    # The source came from another tracker with no footer of ours, so one is added.
+    assert data["release_desc"].endswith(upload_footer())
+    assert data["release_desc"].count("Uploaded with") == 1
+
+
+def test_cross_upload_does_not_duplicate_a_footer_the_source_already_has() -> None:
+    """A source uploaded with this tool already ends with our footer; it must not gain a second."""
+    response: Any = {
+        "group": {"name": "Album", "year": 2020, "releaseType": 17, "recordLabel": "L",
+                  "catalogueNumber": "C", "tags": ["rock"], "wikiImage": "", "wikiBBcode": "",
+                  "musicInfo": {"artists": [{"name": "A"}], "with": []}},
+        "torrent": {"id": 42, "username": "u", "userId": 7,
+                    "description": "Release notes\n" + upload_footer(),
+                    "filePath": "A - Album", "remasterYear": 2021, "remasterTitle": "",
+                    "remasterRecordLabel": "", "remasterCatalogueNumber": "", "format": "FLAC",
+                    "encoding": "Lossless", "media": "WEB", "scene": False},
+    }
+    target: Any = SimpleNamespace(site_code="OPS", release_types={"Demo": 10, "Unknown": 21})
+
+    data = _compile_data(response, cast("Any", SourceSite()), target)
+
+    assert data["release_desc"].count("Uploaded with") == 1
 
 
 def test_conversion_uploads_share_original_group(tmp_path: Path, monkeypatch) -> None:

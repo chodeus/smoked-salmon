@@ -13,7 +13,7 @@ from salmon.common.constants import IMAGE_EXTENSIONS, LOSSY_EXTENSIONS
 from salmon.common.files import process_files
 from salmon.converter.conversions import record_conversion
 from salmon.errors import InvalidSampleRate
-from salmon.release_notification import get_version
+from salmon.release_notification import upload_footer
 from salmon.tagger.audio_info import gather_audio_info
 
 BitDepth = Literal[16, 24]
@@ -287,6 +287,5 @@ def generate_conversion_description(url: str, sample_rate: int | Sequence[int] |
         f"Encode Specifics: {bit_depth} bit {specifics} kHz\n"
         f"[b]Source:[/b] {url}\n"
         f"[b]Transcode process:[/b] [code]{sox_cmds}[/code]\n"
-        f"[hr]Uploaded with [url=https://github.com/smokin-salmon/smoked-salmon]"
-        f"[b]smoked-salmon[/b] v{get_version()}[/url]"
+        f"{upload_footer()}"
     )

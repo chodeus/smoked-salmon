@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import asyncclick as click
@@ -7,9 +8,11 @@ from packaging.version import Version
 
 from salmon import cfg
 
+FORK_URL = "https://github.com/chodeus/smoked-salmon"
+UPSTREAM_URL = "https://github.com/smokin-salmon/smoked-salmon"
 LOCAL_VERSION_FILE = Path(__file__).parent / "data" / "version.toml"
 REMOTE_VERSION_URL = (
-    "https://raw.githubusercontent.com/smokin-salmon/smoked-salmon/refs/heads/master/src/salmon/data/version.toml"
+    "https://raw.githubusercontent.com/chodeus/smoked-salmon/refs/heads/master/src/salmon/data/version.toml"
 )
 
 _cached_version: str | None = None
@@ -72,6 +75,31 @@ def get_version() -> str | None:
         return _cached_version
     except FileNotFoundError:
         return None
+
+
+# Any version and any fork, but the whole shape: a bare link to a repo whose path ends
+# "/smoked-salmon" is not a footer.
+_FOOTER_MARKER = re.compile(
+    r"Uploaded with \[url=https://github\.com/[\w.-]+/smoked-salmon\]"
+    r"\[b\]smoked-salmon\[/b\][^\[]*\[/url\]"
+)
+
+
+def has_upload_footer(description: str) -> bool:
+    """Whether a description carries an upload footer anywhere, whoever built it.
+
+    Anywhere rather than at the end: the question this answers is whether appending one
+    would duplicate the attribution, and a footer mid-description duplicates just as well.
+    """
+    return bool(_FOOTER_MARKER.search(description))
+
+
+def upload_footer() -> str:
+    """The attribution line every upload description ends with."""
+    return (
+        f"[hr]Uploaded with [url={FORK_URL}][b]smoked-salmon[/b] v{get_version()} (chodeus fork)[/url]"
+        f" of [url={UPSTREAM_URL}]smokin-salmon[/url]"
+    )
 
 
 def _get_remote_version_data(url: str) -> VersionData | None:
