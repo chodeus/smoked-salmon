@@ -34,3 +34,20 @@ def test_footer_names_the_fork_and_credits_upstream():
 def test_converter_descriptions_end_with_the_shared_footer(description):
     assert description().endswith(upload_footer())
 
+
+
+@pytest.mark.parametrize(
+    ("description", "already_has_one"),
+    [
+        ("notes\n{current}", True),
+        (f"notes\n[hr]Uploaded with [url={FORK_URL}][b]smoked-salmon[/b] v0.10.1 (chodeus fork)[/url]", True),
+        (f"notes\n[hr]Uploaded with [url={UPSTREAM_URL}][b]smoked-salmon[/b] v0.10.1[/url]", True),
+        (f"See {UPSTREAM_URL} for the tool used.", False),
+        ("a description from another tool", False),
+    ],
+    ids=["current-version", "older-version", "upstream-tool", "bare-link-in-prose", "none"],
+)
+def test_footer_detection_is_version_and_fork_agnostic(description, already_has_one):
+    from salmon.release_notification import has_upload_footer
+
+    assert has_upload_footer(description.format(current=upload_footer())) is already_has_one

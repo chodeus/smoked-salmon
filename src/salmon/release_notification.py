@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import asyncclick as click
@@ -74,6 +75,15 @@ def get_version() -> str | None:
         return _cached_version
     except FileNotFoundError:
         return None
+
+
+# Any version, and any fork: a v0.10.1 footer must still count as one.
+_FOOTER_MARKER = re.compile(r"Uploaded with \[url=[^\]]*/smoked-salmon\]")
+
+
+def has_upload_footer(description: str) -> bool:
+    """Whether a description already ends with an upload footer, whoever built it."""
+    return bool(_FOOTER_MARKER.search(description))
 
 
 def upload_footer() -> str:
