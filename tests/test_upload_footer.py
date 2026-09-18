@@ -43,9 +43,21 @@ def test_converter_descriptions_end_with_the_shared_footer(description):
         (f"notes\n[hr]Uploaded with [url={FORK_URL}][b]smoked-salmon[/b] v0.10.1 (chodeus fork)[/url]", True),
         (f"notes\n[hr]Uploaded with [url={UPSTREAM_URL}][b]smoked-salmon[/b] v0.10.1[/url]", True),
         (f"See {UPSTREAM_URL} for the tool used.", False),
+        ("Uploaded with [url=https://example.invalid/smoked-salmon]another tool[/url]", False),
+        (f"Uploaded with [url={FORK_URL}]another tool[/url]", False),
+        ("notes\n{current}\n\nmore notes after it", True),
         ("a description from another tool", False),
     ],
-    ids=["current-version", "older-version", "upstream-tool", "bare-link-in-prose", "none"],
+    ids=[
+        "current-version",
+        "older-version",
+        "upstream-tool",
+        "bare-link-in-prose",
+        "lookalike-host",
+        "right-host-wrong-shape",
+        "footer-not-last",
+        "none",
+    ],
 )
 def test_footer_detection_is_version_and_fork_agnostic(description, already_has_one):
     from salmon.release_notification import has_upload_footer

@@ -77,12 +77,20 @@ def get_version() -> str | None:
         return None
 
 
-# Any version, and any fork: a v0.10.1 footer must still count as one.
-_FOOTER_MARKER = re.compile(r"Uploaded with \[url=[^\]]*/smoked-salmon\]")
+# Any version and any fork, but the whole shape: a bare link to a repo whose path ends
+# "/smoked-salmon" is not a footer.
+_FOOTER_MARKER = re.compile(
+    r"Uploaded with \[url=https://github\.com/[\w.-]+/smoked-salmon\]"
+    r"\[b\]smoked-salmon\[/b\][^\[]*\[/url\]"
+)
 
 
 def has_upload_footer(description: str) -> bool:
-    """Whether a description already ends with an upload footer, whoever built it."""
+    """Whether a description carries an upload footer anywhere, whoever built it.
+
+    Anywhere rather than at the end: the question this answers is whether appending one
+    would duplicate the attribution, and a footer mid-description duplicates just as well.
+    """
     return bool(_FOOTER_MARKER.search(description))
 
 
