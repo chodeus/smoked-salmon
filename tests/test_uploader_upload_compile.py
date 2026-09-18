@@ -32,8 +32,9 @@ from salmon.uploader.upload import (
 )
 
 FOOTER = (
-    "[hr]Uploaded with [url=https://github.com/smokin-salmon/smoked-salmon]"
-    "[b]smoked-salmon[/b] v1.0.0-test[/url]"
+    "[hr]Uploaded with [url=https://github.com/chodeus/smoked-salmon]"
+    "[b]smoked-salmon[/b] v1.0.0-test (chodeus fork)[/url]"
+    " of [url=https://github.com/smokin-salmon/smoked-salmon]smokin-salmon[/url]"
 )
 
 EXPECTED_ALBUM_DESC = "[b][size=4]Tracklist[/size][/b]\n[b]01.[/b] Testartist - Intro [i](3:05)[/i]\n"
