@@ -808,7 +808,7 @@ async def edit_metadata(
             click.style("\nWould you like to upload the torrent? (No to re-run metadata section)", fg="magenta"),
             default=True,
         ):
-            metadata["tags"] = convert_genres(metadata["genres"])
+            metadata["tags"] = convert_genres(metadata["genres"], metadata.get("group_year"))
             break
 
         # Refresh tags to accomodate differences in file structure.
@@ -1262,9 +1262,31 @@ async def upload_and_report(
     return torrent_id, group_id, torrent_path, torrent_content, url
 
 
-def convert_genres(genres):
-    """Convert the weirdly spaced genres to RED-compliant genres."""
-    return ",".join(re.sub("[-_ ]", ".", g).strip() for g in genres)
+def _tagify(genre):
+    """One tag: words joined by dots, "&" spelled out because it is not a tag character."""
+    tag = re.sub(r"\s*&\s*", ".and.", genre)
+    tag = re.sub(r"[-_ /]+", ".", tag)
+    return re.sub(r"\.+", ".", tag).strip(".")
+
+
+def decade_tag(year):
+    """The decade of the original release, which trackers want in place of the year."""
+    try:
+        year = int(year)
+    except (TypeError, ValueError):
+        return None
+    if not 1900 <= year <= 2999:
+        return None
+    return f"{year // 10 * 10}s"
+
+
+def convert_genres(genres, year=None):
+    """Convert the weirdly spaced genres to RED-compliant genres, plus the release decade."""
+    tags = [t for t in (_tagify(g) for g in genres) if t]
+    decade = decade_tag(year)
+    if decade and decade not in tags:
+        tags.append(decade)
+    return ",".join(tags)
 
 
 async def _prompt_source(detected: dict | None = None):

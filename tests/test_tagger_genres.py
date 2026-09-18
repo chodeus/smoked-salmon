@@ -1,0 +1,27 @@
+"""Genre standardization: splitting combined genres without breaking whitelisted ones."""
+
+from salmon.tagger.sources.base import standardize_genres
+
+
+def test_slash_combined_genres_are_split_into_whitelisted_parts():
+    # Beatport ships "Dance / Pop"; "dancepop" is not in GENRE_LIST, so it used to survive whole.
+    assert sorted(standardize_genres({"Dance / Pop"})) == ["Dance", "Pop"]
+    assert sorted(standardize_genres({"Funk / Soul / Disco"})) == ["Disco", "Funk", "Soul"]
+
+
+def test_ampersand_genres_are_left_whole():
+    # These are single entries in GENRE_LIST; splitting them would invent "Drum" and "Bass".
+    assert standardize_genres({"Drum & Bass"}) == ["Drum & Bass"]
+    assert standardize_genres({"Rhythm & Blues"}) == ["Rhythm & Blues"]
+    # "R&B" keys to "randb", which the whitelist canonicalizes rather than splits.
+    assert standardize_genres({"R&B"}) == ["Rhythm & Blues"]
+
+
+def test_splitting_no_longer_evicts_the_standalone_genre():
+    # "Dance / Pop" used to discard a clean "Dance" via the generic-combination filter.
+    assert sorted(standardize_genres({"Dance", "Dance / Pop"})) == ["Dance", "Pop"]
+
+
+def test_unknown_genres_survive_and_whitespace_is_dropped():
+    assert standardize_genres({"Bhangra"}) == ["Bhangra"]
+    assert sorted(standardize_genres({"House /  / Folk"})) == ["Folk", "House"]
