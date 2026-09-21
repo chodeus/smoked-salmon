@@ -324,11 +324,7 @@ async def next_tracker(preselected: bool, remaining: list[str]) -> str | None:
 
 
 def _cover_host_for_new_group(site_code: str, stored_cover_urls: dict[str, str]) -> str:
-    """Image host to use for this tracker's new-group cover.
-
-    A cached RED-hosted cover is reused as-is on a tracker that proxies it (currently
-    OPS), skipping a redundant re-upload to that tracker's own default host.
-    """
+    """Image host for this tracker's new-group cover: a cached RED cover if the tracker proxies it."""
     if site_code in RED_IMAGE_PROXY_TARGETS and "red" in stored_cover_urls:
         return "red"
     return cfg.image.resolve(site_code, "cover_uploader")
