@@ -13,7 +13,6 @@ from torf import Torrent
 import salmon.trackers
 from salmon import cfg
 from salmon.common import commandgroup
-from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
 from salmon.constants import ARTIST_IMPORTANCES
 from salmon.converter.downconverting import convert_folder, generate_conversion_description
 from salmon.converter.transcoding import Bitrate, generate_transcode_description, transcode_folder
@@ -391,6 +390,10 @@ async def _upload_conversions(
         click.secho(f"Uploaded {label}: {target_site.base_url}/torrents.php?torrentid={torrent_id}", fg="green")
 
 
+# OPS proxies and caches RED-hosted images itself, so a RED → OPS cross-upload keeps them.
+_RED_IMAGE_PROXY_TARGETS = frozenset({"OPS"})
+
+
 _RED_IMAGE_FIELDS = ("image", "album_desc", "release_desc")
 
 
@@ -408,7 +411,7 @@ async def _rehost_red_images(
 ) -> dict[str, Any]:
     if source_site.site_code != "RED":
         return data
-    if target_site.site_code in RED_IMAGE_PROXY_TARGETS:
+    if target_site.site_code in _RED_IMAGE_PROXY_TARGETS:
         return _bare_red_image_urls(data)
 
     # Config validation keeps "red" out of every non-RED slot, so these hosts can display the copies.

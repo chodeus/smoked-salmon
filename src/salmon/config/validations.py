@@ -64,8 +64,6 @@ _TRACKER_CODES = ("red", "ops", "dic")
 # host and is refused in every other slot (description images, spectrals, other trackers' covers).
 _OWN_COVER_HOSTS = {"red": "red"}
 ARTWORK_ONLY_HOSTS = frozenset(_OWN_COVER_HOSTS.values())
-# Trackers that proxy and cache RED-hosted images themselves, so a RED cover URL renders there unchanged.
-RED_IMAGE_PROXY_TARGETS = frozenset({"OPS"})
 SpectralSelectionLiteral = Literal["*", "+", "0"]
 
 
