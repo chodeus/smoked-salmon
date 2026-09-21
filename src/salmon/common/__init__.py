@@ -33,6 +33,7 @@ from salmon.common.strings import (
     tagify,
     truncate,
 )
+from salmon.common.urls import http_url_hostname, is_http_url
 from salmon.errors import ScrapeError
 
 __all__ = [
@@ -54,6 +55,8 @@ __all__ = [
     "strip_template_keys",
     "tagify",
     "truncate",
+    "http_url_hostname",
+    "is_http_url",
     "ScrapeError",
     "commandgroup",
     "prompt_async",

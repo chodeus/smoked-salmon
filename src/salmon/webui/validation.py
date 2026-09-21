@@ -4,11 +4,11 @@ import asyncio
 import ipaddress
 import os
 import socket
-from urllib.parse import urlparse
 
 from fastapi import HTTPException
 
 from salmon import cfg
+from salmon.common import http_url_hostname
 
 
 def allowed_roots() -> list[str]:
@@ -115,10 +115,9 @@ async def assert_public_url(url: str) -> None:
     without this, /api/metadata?url=http://<internal-host>/album/x is an SSRF
     that makes the server fetch internal services.
     """
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+    host = http_url_hostname(url)
+    if host is None:
         raise HTTPException(status_code=422, detail="Only http(s) URLs are supported.")
-    host = parsed.hostname
     try:
         addrs = [ipaddress.ip_address(host)]
     except ValueError:

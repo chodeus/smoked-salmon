@@ -62,6 +62,8 @@ def test_a_url_with_surrounding_whitespace_is_stripped(monkeypatch, tmp_path) ->
         "",
         "   ",
         "Something went wrong, please try again later.",
+        "https://",
+        "https:///abc123.jpg",
     ],
 )
 def test_a_response_without_a_url_raises_instead_of_reporting_success(monkeypatch, tmp_path, body) -> None:
