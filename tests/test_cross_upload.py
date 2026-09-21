@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import anyio
+import asyncclick as click
+import pytest
 from torf import Torrent
 
 import salmon.cross_upload as cross_upload_module
@@ -14,6 +16,7 @@ from salmon.cross_upload import (
     _missing_conversions,
     _source_response,
     _upload_conversions,
+    is_torrent_reference,
 )
 
 
@@ -54,6 +57,35 @@ def test_a_numeric_id_is_an_id_even_when_a_folder_of_that_name_exists(tmp_path: 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "42").mkdir()
     assert _input_items("42", cast("Any", SourceSite())) == [42]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://redacted.sh/torrents.php?id=1&torrentid=42",
+        "https://redacted.sh/../../etc/passwd?torrentid=42",
+    ],
+)
+def test_a_url_reference_resolves_to_its_id_and_not_a_path(value, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    items = _input_items(value, cast("Any", SourceSite()))
+    assert items == [42]
+
+
+@pytest.mark.parametrize("value", ["https://", "https://other.example/torrents.php?torrentid=42"])
+def test_a_url_the_endpoint_lets_through_is_refused_rather_than_walked(value, tmp_path: Path, monkeypatch) -> None:
+    # It skipped validate_confined_path, so the only safe outcomes are an id or a refusal.
+    monkeypatch.chdir(tmp_path)
+    skips_confinement = is_torrent_reference(value)
+    assert skips_confinement is True
+    with pytest.raises(click.UsageError):
+        _input_items(value, cast("Any", SourceSite()))
+
+
+@pytest.mark.parametrize("value", ["/srv/music/album", "album", "~/music", "C:\\music\\album", ""])
+def test_a_local_path_is_not_a_reference_so_it_stays_confined(value) -> None:
+    confined = is_torrent_reference(value)
+    assert confined is False
 
 
 def test_cross_upload_data_maps_source_to_target() -> None:
