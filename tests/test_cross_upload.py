@@ -36,8 +36,10 @@ class SourceSite:
 
 def test_single_and_batch_inputs(tmp_path: Path) -> None:
     source: Any = SourceSite()
-    assert _input_items("42", source) == [42]
-    assert _input_items("https://redacted.sh/torrents.php?id=1&torrentid=42", source) == [42]
+    by_id = _input_items("42", source)
+    by_url = _input_items("https://redacted.sh/torrents.php?id=1&torrentid=42", source)
+    assert by_id == [42]
+    assert by_url == [42]
 
     release = tmp_path / "release"
     release.mkdir()
@@ -47,8 +49,10 @@ def test_single_and_batch_inputs(tmp_path: Path) -> None:
     torrent_file = tmp_path / "release.torrent"
     torrent.write(torrent_file)
 
-    assert _input_items(str(tmp_path), source) == [torrent_file]
-    assert anyio.run(_source_response, torrent_file, source) == {"torrent": {"id": 42}}
+    from_directory = _input_items(str(tmp_path), source)
+    response = anyio.run(_source_response, torrent_file, source)
+    assert from_directory == [torrent_file]
+    assert response == {"torrent": {"id": 42}}
     assert source.params == ("torrent", {"hash": torrent.infohash.upper()})
 
 
@@ -56,7 +60,8 @@ def test_a_numeric_id_is_an_id_even_when_a_folder_of_that_name_exists(tmp_path: 
     """The web UI skips path confinement for references, so a reference must never become a path."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "42").mkdir()
-    assert _input_items("42", cast("Any", SourceSite())) == [42]
+    items = _input_items("42", cast("Any", SourceSite()))
+    assert items == [42]
 
 
 @pytest.mark.parametrize(
@@ -249,7 +254,8 @@ def test_existing_group_skips_duplicate_original(tmp_path: Path, monkeypatch) ->
             transcodes=("320", "V0"),
         )
 
-    assert anyio.run(run) == (0, 9)
+    uploaded = anyio.run(run)
+    assert uploaded == (0, 9)
     assert len(conversion_calls) == 1
     assert conversion_calls[0][3] == 9
 
@@ -289,7 +295,8 @@ def test_existing_conversions_are_filtered_before_processing() -> None:
         "catalogue_number": "CAT-1",
     }
 
-    assert anyio.run(_missing_conversions, cast("Any", Target()), 9, data, True, ("V0", "320")) == (False, ("320",))
+    missing = anyio.run(_missing_conversions, cast("Any", Target()), 9, data, True, ("V0", "320"))
+    assert missing == (False, ("320",))
 
 
 def test_red_images_are_rehosted_for_a_target_without_a_proxy(monkeypatch) -> None:
