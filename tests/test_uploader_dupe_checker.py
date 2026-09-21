@@ -278,7 +278,8 @@ async def test_recent_torrents_clear_non_match_is_ignored(fake_tracker, monkeypa
 async def test_recent_torrents_empty_log_returns_empty_list(fake_tracker, monkeypatch):
     monkeypatch.setattr(cfg.upload, "log_dupe_tolerance", 0.5)
     install_log(fake_tracker, [])
-    assert await dupe_check_recent_torrents(fake_tracker, ["artist album"]) == []
+    actual = await dupe_check_recent_torrents(fake_tracker, ["artist album"])
+    assert actual == []
 
 
 async def test_recent_torrents_same_release_counted_once(fake_tracker, monkeypatch):
@@ -292,7 +293,8 @@ async def test_recent_torrents_tolerance_config_is_honored(fake_tracker, monkeyp
     # "artist albun" vs "artist album" has ratio ~0.917: below a 0.95 bar.
     monkeypatch.setattr(cfg.upload, "log_dupe_tolerance", 0.95)
     install_log(fake_tracker, [(111, "Artist", "Albun")])
-    assert await dupe_check_recent_torrents(fake_tracker, ["artist album"]) == []
+    actual = await dupe_check_recent_torrents(fake_tracker, ["artist album"])
+    assert actual == []
 
 
 async def test_recent_torrents_all_searchstrs_are_compared(fake_tracker, monkeypatch):
@@ -317,13 +319,15 @@ async def test_recent_torrents_any_searchstr_match_counts_once(fake_tracker, mon
 async def test_get_search_results_returns_hits(fake_tracker):
     result = make_result(100)
     fake_tracker.api_responses["browse"] = {"results": [result]}
-    assert await get_search_results(fake_tracker, ["artist album"]) == [result]
+    actual = await get_search_results(fake_tracker, ["artist album"])
+    assert actual == [result]
     assert fake_tracker.api_calls == [("browse", {"searchstr": "artist album"})]
 
 
 async def test_get_search_results_zero_hits(fake_tracker):
     fake_tracker.api_responses["browse"] = {"results": []}
-    assert await get_search_results(fake_tracker, ["artist album"]) == []
+    actual = await get_search_results(fake_tracker, ["artist album"])
+    assert actual == []
 
 
 async def test_get_search_results_one_api_call_per_searchstr(fake_tracker):
@@ -360,66 +364,77 @@ async def test_get_search_results_propagates_api_error(fake_tracker):
 async def test_prompt_group_id_pick_listed_result_by_number(fake_tracker, install_prompt):
     install_prompt("2")
     results = [make_result(100), make_result(200)]
-    assert await _prompt_for_group_id(fake_tracker, results, True) == 200
+    actual = await _prompt_for_group_id(fake_tracker, results, True)
+    assert actual == 200
 
 
 async def test_prompt_group_id_zero_is_clamped_to_first_result(fake_tracker, install_prompt):
     install_prompt("0")
     results = [make_result(100), make_result(200)]
-    assert await _prompt_for_group_id(fake_tracker, results, True) == 100
+    actual = await _prompt_for_group_id(fake_tracker, results, True)
+    assert actual == 100
 
 
 async def test_prompt_group_id_number_beyond_results_is_direct_group_id(fake_tracker, install_prompt):
     install_prompt("7777")
-    assert await _prompt_for_group_id(fake_tracker, [make_result(100)], True) == 7777
+    actual = await _prompt_for_group_id(fake_tracker, [make_result(100)], True)
+    assert actual == 7777
 
 
 async def test_prompt_group_id_zero_with_no_results_reprompts(fake_tracker, install_prompt):
     queue = install_prompt("0", "n")
-    assert await _prompt_for_group_id(fake_tracker, [], True) is None
+    actual = await _prompt_for_group_id(fake_tracker, [], True)
+    assert actual is None
     assert queue.calls == 2
 
 
 async def test_prompt_group_id_paste_group_url(fake_tracker, install_prompt):
     install_prompt(f"{fake_tracker.base_url}/torrents.php?id=555")
-    assert await _prompt_for_group_id(fake_tracker, [], True) == 555
+    actual = await _prompt_for_group_id(fake_tracker, [], True)
+    assert actual == 555
 
 
 async def test_prompt_group_id_paste_torrent_url_resolves_group(fake_tracker, install_prompt):
     install_prompt(f"{fake_tracker.base_url}/torrents.php?torrentid=999")
     calls = install_redirect(fake_tracker, {"999": 321})
-    assert await _prompt_for_group_id(fake_tracker, [], True) == 321
+    actual = await _prompt_for_group_id(fake_tracker, [], True)
+    assert actual == 321
     assert calls == ["999"]
 
 
 async def test_prompt_group_id_torrent_url_without_group_reprompts(fake_tracker, install_prompt):
     queue = install_prompt(f"{fake_tracker.base_url}/torrents.php?torrentid=999", "n")
     install_redirect(fake_tracker, {"999": None})
-    assert await _prompt_for_group_id(fake_tracker, [], True) is None
+    actual = await _prompt_for_group_id(fake_tracker, [], True)
+    assert actual is None
     assert queue.calls == 2
 
 
 async def test_prompt_group_id_url_without_any_id_reprompts(fake_tracker, install_prompt):
     queue = install_prompt(f"{fake_tracker.base_url}/torrents.php?page=2", "n")
-    assert await _prompt_for_group_id(fake_tracker, [], True) is None
+    actual = await _prompt_for_group_id(fake_tracker, [], True)
+    assert actual is None
     assert queue.calls == 2
 
 
 async def test_prompt_group_id_foreign_url_is_not_treated_as_url(fake_tracker, install_prompt):
     # A URL for a different site matches no branch and simply re-prompts.
     queue = install_prompt("https://other-site.example/torrents.php?id=5", "n")
-    assert await _prompt_for_group_id(fake_tracker, [], True) is None
+    actual = await _prompt_for_group_id(fake_tracker, [], True)
+    assert actual is None
     assert queue.calls == 2
 
 
 async def test_prompt_group_id_new_group_via_n(fake_tracker, install_prompt):
     install_prompt("N")
-    assert await _prompt_for_group_id(fake_tracker, [make_result(100)], True) is None
+    actual = await _prompt_for_group_id(fake_tracker, [make_result(100)], True)
+    assert actual is None
 
 
 async def test_prompt_group_id_new_group_via_empty_default(fake_tracker, install_prompt):
     install_prompt(USE_DEFAULT)  # user hits enter, prompt returns default ""
-    assert await _prompt_for_group_id(fake_tracker, [], True) is None
+    actual = await _prompt_for_group_id(fake_tracker, [], True)
+    assert actual is None
 
 
 async def test_prompt_group_id_abort(fake_tracker, install_prompt):
@@ -436,13 +451,15 @@ async def test_prompt_group_id_delete_folder(fake_tracker, install_prompt):
 
 async def test_prompt_group_id_delete_ignored_when_deletion_not_offered(fake_tracker, install_prompt):
     queue = install_prompt("d", "n")
-    assert await _prompt_for_group_id(fake_tracker, [], False) is None
+    actual = await _prompt_for_group_id(fake_tracker, [], False)
+    assert actual is None
     assert queue.calls == 2
 
 
 async def test_prompt_group_id_invalid_input_then_valid(fake_tracker, install_prompt):
     queue = install_prompt("xyz", "1")
-    assert await _prompt_for_group_id(fake_tracker, [make_result(100)], True) == 100
+    actual = await _prompt_for_group_id(fake_tracker, [make_result(100)], True)
+    assert actual == 100
     assert queue.calls == 2
 
 
@@ -456,36 +473,42 @@ RECENT = [(111, "Artist", "Album"), (222, "Other", "Record")]
 async def test_prompt_recent_pick_listed_upload_resolves_group(fake_tracker, install_prompt):
     install_prompt("1")
     calls = install_redirect(fake_tracker, {"111": 4242})
-    assert await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True) == 4242
+    actual = await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True)
+    assert actual == 4242
     assert calls == [111]
 
 
 async def test_prompt_recent_zero_is_treated_as_first_upload(fake_tracker, install_prompt):
     install_prompt("0")
     install_redirect(fake_tracker, {"111": 4242})
-    assert await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True) == 4242
+    actual = await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True)
+    assert actual == 4242
 
 
 async def test_prompt_recent_number_beyond_list_is_direct_group_id(fake_tracker, install_prompt):
     install_prompt("9")
-    assert await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True) == 9
+    actual = await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True)
+    assert actual == 9
 
 
 async def test_prompt_recent_numeric_without_uploads_is_direct_group_id(fake_tracker, install_prompt):
     install_prompt("123")
-    assert await _prompt_for_recent_upload_results(fake_tracker, [], "artist album", True) == 123
+    actual = await _prompt_for_recent_upload_results(fake_tracker, [], "artist album", True)
+    assert actual == 123
 
 
 async def test_prompt_recent_zero_without_uploads_reprompts(fake_tracker, install_prompt):
     queue = install_prompt("0", "n")
-    assert await _prompt_for_recent_upload_results(fake_tracker, [], "artist album", True) is None
+    actual = await _prompt_for_recent_upload_results(fake_tracker, [], "artist album", True)
+    assert actual is None
     assert queue.calls == 2
 
 
 async def test_prompt_recent_redirect_returning_none_reprompts(fake_tracker, install_prompt):
     queue = install_prompt("1", "n")
     install_redirect(fake_tracker, {"111": None})
-    assert await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True) is None
+    actual = await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True)
+    assert actual is None
     assert queue.calls == 2
 
 
@@ -504,35 +527,41 @@ async def test_prompt_recent_number_past_the_listed_five_is_a_group_id(fake_trac
 async def test_prompt_recent_redirect_error_reprompts(fake_tracker, install_prompt):
     queue = install_prompt("1", "n")
     install_redirect(fake_tracker, {"111": RuntimeError("redirect failed")})
-    assert await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True) is None
+    actual = await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True)
+    assert actual is None
     assert queue.calls == 2
 
 
 async def test_prompt_recent_paste_group_url(fake_tracker, install_prompt):
     install_prompt(f"{fake_tracker.base_url}/torrents.php?id=555")
-    assert await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True) == 555
+    actual = await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True)
+    assert actual == 555
 
 
 async def test_prompt_recent_paste_torrent_url_resolves_group(fake_tracker, install_prompt):
     install_prompt(f"{fake_tracker.base_url}/torrents.php?torrentid=999")
     install_redirect(fake_tracker, {"999": 321})
-    assert await _prompt_for_recent_upload_results(fake_tracker, [], "artist album", True) == 321
+    actual = await _prompt_for_recent_upload_results(fake_tracker, [], "artist album", True)
+    assert actual == 321
 
 
 async def test_prompt_recent_url_without_any_id_reprompts(fake_tracker, install_prompt):
     queue = install_prompt(f"{fake_tracker.base_url}/torrents.php?page=2", "n")
-    assert await _prompt_for_recent_upload_results(fake_tracker, [], "artist album", True) is None
+    actual = await _prompt_for_recent_upload_results(fake_tracker, [], "artist album", True)
+    assert actual is None
     assert queue.calls == 2
 
 
 async def test_prompt_recent_new_group_via_n(fake_tracker, install_prompt):
     install_prompt("new")
-    assert await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True) is None
+    actual = await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True)
+    assert actual is None
 
 
 async def test_prompt_recent_new_group_via_empty_input(fake_tracker, install_prompt):
     install_prompt(USE_DEFAULT)
-    assert await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True) is None
+    actual = await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True)
+    assert actual is None
 
 
 async def test_prompt_recent_abort(fake_tracker, install_prompt):
@@ -549,13 +578,15 @@ async def test_prompt_recent_delete_folder(fake_tracker, install_prompt):
 
 async def test_prompt_recent_delete_ignored_when_deletion_not_offered(fake_tracker, install_prompt):
     queue = install_prompt("d", "n")
-    assert await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", False) is None
+    actual = await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", False)
+    assert actual is None
     assert queue.calls == 2
 
 
 async def test_prompt_recent_invalid_input_then_valid(fake_tracker, install_prompt):
     queue = install_prompt("xyz", "n")
-    assert await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True) is None
+    actual = await _prompt_for_recent_upload_results(fake_tracker, RECENT, "artist album", True)
+    assert actual is None
     assert queue.calls == 2
 
 
@@ -575,18 +606,21 @@ async def test_prompt_recent_lists_at_most_five_uploads(fake_tracker, install_pr
 
 async def test_confirm_group_id_yes_uses_search_result_without_api_call(fake_tracker, install_prompt):
     install_prompt("Y")
-    assert await _confirm_group_id(fake_tracker, 100, [make_result(100)]) is True
+    actual = await _confirm_group_id(fake_tracker, 100, [make_result(100)])
+    assert actual is True
     assert fake_tracker.api_calls == []  # rset came from the search results
 
 
 async def test_confirm_group_id_default_is_yes(fake_tracker, install_prompt):
     install_prompt(USE_DEFAULT)  # prompt default is "Y"
-    assert await _confirm_group_id(fake_tracker, 100, [make_result(100)]) is True
+    actual = await _confirm_group_id(fake_tracker, 100, [make_result(100)])
+    assert actual is True
 
 
 async def test_confirm_group_id_new_group_returns_false(fake_tracker, install_prompt):
     install_prompt("n")
-    assert await _confirm_group_id(fake_tracker, 100, [make_result(100)]) is False
+    actual = await _confirm_group_id(fake_tracker, 100, [make_result(100)])
+    assert actual is False
 
 
 async def test_confirm_group_id_abort(fake_tracker, install_prompt):
@@ -603,14 +637,16 @@ async def test_confirm_group_id_delete_folder(fake_tracker, install_prompt):
 
 async def test_confirm_group_id_invalid_answer_reprompts(fake_tracker, install_prompt):
     queue = install_prompt("zebra", "y")
-    assert await _confirm_group_id(fake_tracker, 100, [make_result(100)]) is True
+    actual = await _confirm_group_id(fake_tracker, 100, [make_result(100)])
+    assert actual is True
     assert queue.calls == 2
 
 
 async def test_confirm_group_id_fetches_group_when_not_in_results(fake_tracker, install_prompt):
     install_prompt("Y")
     fake_tracker.api_responses["torrentgroup"] = make_torrentgroup_response(555)
-    assert await _confirm_group_id(fake_tracker, 555, [make_result(100)]) is True
+    actual = await _confirm_group_id(fake_tracker, 555, [make_result(100)])
+    assert actual is True
     assert fake_tracker.api_calls == [("torrentgroup", {"id": 555})]
 
 
@@ -814,19 +850,22 @@ def test_print_recent_upload_results_silent_when_empty(fake_tracker, capsys):
 async def test_check_existing_group_pick_result_and_confirm(fake_tracker, install_prompt):
     install_prompt("1", "Y")
     fake_tracker.api_responses["browse"] = {"results": [make_result(100)]}
-    assert await check_existing_group(fake_tracker, ["artist album"]) == 100
+    actual = await check_existing_group(fake_tracker, ["artist album"])
+    assert actual == 100
 
 
 async def test_check_existing_group_confirmation_declined_returns_none(fake_tracker, install_prompt):
     install_prompt("1", "n")
     fake_tracker.api_responses["browse"] = {"results": [make_result(100)]}
-    assert await check_existing_group(fake_tracker, ["artist album"]) is None
+    actual = await check_existing_group(fake_tracker, ["artist album"])
+    assert actual is None
 
 
 async def test_check_existing_group_new_group_skips_confirmation(fake_tracker, install_prompt):
     queue = install_prompt("n")
     fake_tracker.api_responses["browse"] = {"results": [make_result(100)]}
-    assert await check_existing_group(fake_tracker, ["artist album"]) is None
+    actual = await check_existing_group(fake_tracker, ["artist album"])
+    assert actual is None
     assert queue.calls == 1
 
 
@@ -847,7 +886,8 @@ async def test_check_existing_group_delete_folder_propagates(fake_tracker, insta
 async def test_check_existing_group_no_deletion_offer_is_passed_through(fake_tracker, install_prompt):
     queue = install_prompt("d", "n")
     fake_tracker.api_responses["browse"] = {"results": [make_result(100)]}
-    assert await check_existing_group(fake_tracker, ["artist album"], offer_deletion=False) is None
+    actual = await check_existing_group(fake_tracker, ["artist album"], offer_deletion=False)
+    assert actual is None
     assert queue.calls == 2
 
 
@@ -859,7 +899,8 @@ async def test_check_existing_group_no_results_uses_recent_log_flow(fake_tracker
     fake_tracker.api_responses["torrentgroup"] = make_torrentgroup_response(777)
     install_log(fake_tracker, [(111, "Artist", "Album")])
     install_redirect(fake_tracker, {"111": 777})
-    assert await check_existing_group(fake_tracker, ["artist album"]) == 777
+    actual = await check_existing_group(fake_tracker, ["artist album"])
+    assert actual == 777
 
 
 async def test_check_existing_group_no_results_recent_flow_new_group(fake_tracker, install_prompt, monkeypatch):
@@ -868,7 +909,8 @@ async def test_check_existing_group_no_results_recent_flow_new_group(fake_tracke
     queue = install_prompt("n")
     fake_tracker.api_responses["browse"] = {"results": []}
     install_log(fake_tracker, [])
-    assert await check_existing_group(fake_tracker, ["artist album"]) is None
+    actual = await check_existing_group(fake_tracker, ["artist album"])
+    assert actual is None
     assert queue.calls == 1
 
 
@@ -878,14 +920,16 @@ async def test_check_existing_group_recent_check_disabled_uses_group_prompt(fake
     fake_tracker.api_responses["browse"] = {"results": []}
     fake_tracker.api_responses["torrentgroup"] = make_torrentgroup_response(42)
     # get_uploads_from_log intentionally NOT installed: this path must not touch it.
-    assert await check_existing_group(fake_tracker, ["artist album"]) == 42
+    actual = await check_existing_group(fake_tracker, ["artist album"])
+    assert actual == 42
 
 
 async def test_check_existing_group_zero_input_never_returns_zero(fake_tracker, install_prompt, monkeypatch):
     monkeypatch.setattr(cfg.upload.requests, "check_recent_uploads", False)
     queue = install_prompt("0", "n")
     fake_tracker.api_responses["browse"] = {"results": []}
-    assert await check_existing_group(fake_tracker, ["artist album"]) is None
+    actual = await check_existing_group(fake_tracker, ["artist album"])
+    assert actual is None
     assert queue.calls == 2
 
 
@@ -894,5 +938,6 @@ async def test_check_existing_group_yes_all_does_not_skip_prompts(fake_tracker, 
     monkeypatch.setattr(cfg.upload, "yes_all", True)
     queue = install_prompt("n")
     fake_tracker.api_responses["browse"] = {"results": [make_result(100)]}
-    assert await check_existing_group(fake_tracker, ["artist album"]) is None
+    actual = await check_existing_group(fake_tracker, ["artist album"])
+    assert actual is None
     assert queue.calls == 1
