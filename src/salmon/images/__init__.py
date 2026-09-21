@@ -81,6 +81,8 @@ async def upload_images(filepaths: Sequence[str], image_host) -> list[str]:
     try:
         tasks = [uploader.upload_file(f) for f in filepaths]
         for url, _deletion_url in await asyncio.gather(*tasks):
+            if not is_http_url(url):
+                raise ImageUploadFailed(f"{image_host.__name__} returned no usable URL: {str(url)[:200]!r}")
             click.secho(url)
             urls.append(url)
         if cfg.upload.description.copy_uploaded_url_to_clipboard:
