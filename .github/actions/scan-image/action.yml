@@ -18,8 +18,10 @@ runs:
     # The report tier is the wide net and never blocks; the gate tier is narrow and blocks.
     # ignore-unfixed stops an unfixable base-image CVE wedging every build until Debian patches.
     - name: Scan image (report)
-      uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
+        # The action's default trivy trails its own releases; pin the scanner.
+        version: v0.74.0 # renovate: aquasecurity/trivy
         scan-type: image
         image-ref: ${{ inputs.image-ref }}
         severity: ${{ inputs.report-severity }}
@@ -40,8 +42,10 @@ runs:
         } >> "$GITHUB_STEP_SUMMARY"
 
     - name: Scan image (gate)
-      uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
+        # The action's default trivy trails its own releases; pin the scanner.
+        version: v0.74.0 # renovate: aquasecurity/trivy
         scan-type: image
         image-ref: ${{ inputs.image-ref }}
         severity: ${{ inputs.gate-severity }}
