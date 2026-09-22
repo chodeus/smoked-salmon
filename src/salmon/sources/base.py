@@ -1,16 +1,47 @@
 import re
+import socket
 from random import choice
 from string import Formatter
 from typing import Any
 
 import aiohttp
 import msgspec
+from aiohttp.abc import AbstractResolver, ResolveResult
 from bs4 import BeautifulSoup
 
+from salmon.common import is_public_ip
 from salmon.constants import UAGENTS
 from salmon.errors import ScrapeError
 
 HEADERS = {"User-Agent": choice(UAGENTS)}
+
+
+class _PublicOnlyResolver(AbstractResolver):
+    """Refuses any host resolving to a non-public address, on every hop a redirect chain takes."""
+
+    def __init__(self) -> None:
+        # Built on first use: aiohttp's default resolver wants a running loop at construction.
+        self._resolver: AbstractResolver | None = None
+
+    async def resolve(
+        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
+    ) -> list[ResolveResult]:
+        if self._resolver is None:
+            self._resolver = aiohttp.DefaultResolver()
+        results = await self._resolver.resolve(host, port, family)
+        for result in results:
+            if not is_public_ip(result["host"]):
+                raise OSError(f"refusing to connect to a non-public address for {host}")
+        return results
+
+    async def close(self) -> None:
+        if self._resolver is not None:
+            await self._resolver.close()
+
+
+def _public_only_session(timeout: aiohttp.ClientTimeout) -> aiohttp.ClientSession:
+    """A session whose every connection — including each redirect hop — must be a public address."""
+    return aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(resolver=_PublicOnlyResolver()))
 
 
 class IdentData(msgspec.Struct, frozen=True):
@@ -89,7 +120,7 @@ class BaseScraper:
         timeout = aiohttp.ClientTimeout(total=10)
         try:
             async with (
-                aiohttp.ClientSession(timeout=timeout) as session,
+                _public_only_session(timeout) as session,
                 session.get(full_url, params=params, headers=headers) as resp,
             ):
                 return await self.handle_json_response(resp)
@@ -119,7 +150,7 @@ class BaseScraper:
         timeout = aiohttp.ClientTimeout(total=7)
         try:
             async with (
-                aiohttp.ClientSession(timeout=timeout) as session,
+                _public_only_session(timeout) as session,
                 session.get(
                     url,
                     params=params,

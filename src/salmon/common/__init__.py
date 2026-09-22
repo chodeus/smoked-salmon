@@ -33,7 +33,7 @@ from salmon.common.strings import (
     tagify,
     truncate,
 )
-from salmon.common.urls import http_url_hostname, is_http_url
+from salmon.common.urls import http_url_hostname, is_http_url, is_public_ip
 from salmon.errors import ScrapeError
 
 __all__ = [
@@ -57,6 +57,7 @@ __all__ = [
     "truncate",
     "http_url_hostname",
     "is_http_url",
+    "is_public_ip",
     "ScrapeError",
     "commandgroup",
     "prompt_async",
