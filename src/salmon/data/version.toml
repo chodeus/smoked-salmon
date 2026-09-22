@@ -1,4 +1,50 @@
-current = "0.10.1"
+current = "0.11.0"
+
+[[changelog]]
+version = "0.11.0"
+date = "2026-09-18"
+notes = """
+First release of the chodeus fork, 165 commits past upstream 0.10.1.
+
+## ✨ Major additions
+
+- **Web interface** (`salmon web`) with an interactive upload wizard, full CLI parity,
+  token auth and a login screen, and a job log that survives navigating away
+- **Cross-upload** between RED and OPS, including dupe-checking into an existing group
+- **Tidal v2 API** support
+- **RED's internal image host** as an image uploader, with per-tracker image host overrides
+- **`--dry-run`**: RED server-side dryrun, OPS local build, nothing posted
+- **Per-tracker seedbox destinations**
+
+## 🛡️ Rule compliance
+
+- Hard-block uploads of blacklisted releases
+- Warn on path length, sample rate, ID3 tags inside FLACs and uncompressed FLACs, citing the rule
+- Keep embedded pictures and padding under the 1 MiB trump threshold, saving the cover first
+- Fail the integrity check when a FLAC's STREAMINFO MD5 is unset
+- Genre tags follow the tagging rules: "&" is spelled out, combined genres split, and the release
+  decade is tagged instead of the year
+
+## 🔍 Analysis
+
+- Lossy detection measures an encoder's two marks rather than a peak-relative cutoff
+- Averaged-spectrum plots, a pasteable report, and a provenance check
+- Verify a library album's spectrals before uploading
+
+## 🔒 Hardening
+
+- Store bare RED image URLs and scrub credentials before an OPS pass-through
+- Never offer RED's host for spectrals
+- Confine browse and cross-upload paths before any filesystem probe; refuse jobs on / and $HOME
+- The AI metadata review can no longer empty fields that nothing validates
+
+## 🔧 Sources
+
+- Qobuz: read metadata from the public album page when no account is configured, report inactive
+  instead of crashing, take the album artist from the first main-artist link, map epmini to EP
+- Deezer: take a missing UPC from the files' own album
+- Recognise a store URL by its value rather than the tag name
+"""
 
 [[changelog]]
 version = "0.10.1"

@@ -17,7 +17,7 @@ from salmon.common.files import process_files
 from salmon.constants import TAG_TRUMP_SIZE
 from salmon.converter.conversions import record_conversion
 from salmon.errors import UploadError
-from salmon.release_notification import get_version
+from salmon.release_notification import upload_footer
 
 Bitrate = Literal["V0", "320"]
 
@@ -494,6 +494,5 @@ def generate_transcode_description(url: str, bitrate: Bitrate) -> str:
         f"[b]Source:[/b] {url}\n"
         f"[b]Transcode process:[/b] "
         f"[code]flac -Vdsc -- input.flac | lame -S {lame_command} --ignore-tag-errors - output.mp3[/code]\n"
-        f"[hr]Uploaded with [url=https://github.com/smokin-salmon/smoked-salmon]"
-        f"[b]smoked-salmon[/b] v{get_version()}[/url]"
+        f"{upload_footer()}"
     )
