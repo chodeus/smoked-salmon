@@ -116,5 +116,17 @@ async def _decode_response(response: aiohttp.ClientResponse) -> dict[str, Any]:
         raise ImageUploadFailed("RED returned an invalid response") from error
 
     if not isinstance(payload, dict) or payload.get("status") != "success":
-        raise ImageUploadFailed("RED image request was unsuccessful")
+        reason = _rejection_reason(payload)
+        raise ImageUploadFailed(
+            f"RED rejected the request: {reason}" if reason else "RED image request was unsuccessful"
+        )
     return payload
+
+
+def _rejection_reason(payload: Any) -> str | None:
+    """RED's own error text, normalised the way trackers.base does, or None when it gave none."""
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if error is None:
+        return None
+    text = error if isinstance(error, str) else msgspec.json.encode(error).decode()
+    return text[:200]

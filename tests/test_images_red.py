@@ -153,3 +153,39 @@ def test_red_refuses_off_origin_image_url(monkeypatch, tmp_path) -> None:
 
     with pytest.raises(ImageUploadFailed, match="evil.example"):
         anyio.run(red.ImageUploader().upload_file, str(image))
+
+
+class _RejectingSession(_Session):
+    def __init__(self, number: int, payload: dict, **kwargs):
+        super().__init__(number, **kwargs)
+        self.payload = payload
+
+    def post(self, url: str, *, params: dict, data, allow_redirects=True):
+        return _Response(self.payload)
+
+
+def _upload_against(monkeypatch, tmp_path, payload: dict):
+    _patch_red_env(monkeypatch)
+    monkeypatch.setattr(red.aiohttp, "ClientSession", lambda **kw: _RejectingSession(1, payload, **kw))
+    image = tmp_path / "cover.jpg"
+    image.write_bytes(b"\xff\xd8\xff")
+    return anyio.run(red.ImageUploader().upload_file, str(image))
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        ("Image must be album art", "Image must be album art"),
+        ({"code": 7, "text": "quota"}, "quota"),
+    ],
+)
+def test_reds_rejection_reason_reaches_the_user(reason, expected, monkeypatch, tmp_path) -> None:
+    # trackers/base.py already surfaces this field; the image host threw it away.
+    with pytest.raises(ImageUploadFailed) as excinfo:
+        _upload_against(monkeypatch, tmp_path, {"status": "failure", "error": reason})
+    assert expected in str(excinfo.value)
+
+
+def test_a_rejection_without_a_reason_still_fails_cleanly(monkeypatch, tmp_path) -> None:
+    with pytest.raises(ImageUploadFailed):
+        _upload_against(monkeypatch, tmp_path, {"status": "failure"})
