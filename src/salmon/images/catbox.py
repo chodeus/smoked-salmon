@@ -4,6 +4,7 @@ from random import choice
 import aiohttp
 import anyio
 
+from salmon.common import is_http_url
 from salmon.constants import UAGENTS
 from salmon.errors import ImageUploadFailed
 from salmon.images.base import BaseImageUploader
@@ -37,7 +38,11 @@ class ImageUploader(BaseImageUploader):
         try:
             async with aiohttp.ClientSession() as session, session.post(url, headers=HEADERS, data=data) as resp:
                 resp.raise_for_status()
-                return await resp.text(), None
+                body = (await resp.text()).strip()
+                # A 200 with no/garbage body has been observed; catbox's own failure text is never a URL.
+                if not is_http_url(body):
+                    raise ImageUploadFailed(f"catbox returned an unexpected response: {body[:200]!r}")
+                return body, None
         except ValueError as e:
             raise ImageUploadFailed(f"Failed decoding body: {e}") from e
         except aiohttp.ClientError as e:
