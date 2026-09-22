@@ -20,5 +20,7 @@ def test_a_non_proxy_target_never_reuses_reds_cover() -> None:
     assert _cover_host_for_new_group("DIC", stored) == cfg.image.resolve("DIC", "cover_uploader")
 
 
-def test_red_itself_is_unaffected() -> None:
-    assert _cover_host_for_new_group("RED", {}) == "red"
+def test_red_follows_its_configured_host() -> None:
+    # No [image.red] section in the test config, so RED uses the global cover host.
+    host = _cover_host_for_new_group("RED", {})
+    assert host == cfg.image.resolve("RED", "cover_uploader")
