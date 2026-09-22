@@ -16,7 +16,8 @@ def _files() -> Any:
 async def test_base_dry_run_upload_returns_zero_and_no_network():
     api = BaseGazelleApi.__new__(BaseGazelleApi)
     api.site_string = "OPS"
-    assert await api.dry_run_upload({"title": "x"}, _files()) == (0, 0)
+    actual = await api.dry_run_upload({"title": "x"}, _files())
+    assert actual == (0, 0)
 
 
 async def test_red_dry_run_never_contacts_the_tracker(monkeypatch):
@@ -43,7 +44,8 @@ async def test_red_dry_run_never_contacts_the_tracker(monkeypatch):
     monkeypatch.setattr(api, "_request", fake_request)
     monkeypatch.setattr(api, "ensure_authenticated", fake_ensure)
 
-    assert await api.dry_run_upload({"title": "x"}, _files()) == (0, 0)
+    actual = await api.dry_run_upload({"title": "x"}, _files())
+    assert actual == (0, 0)
     assert called["request"] is False
     assert called["auth"] is False
 
