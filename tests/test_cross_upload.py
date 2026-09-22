@@ -410,3 +410,64 @@ def test_verify_release_files_rejects_renamed_file(tmp_path: Path) -> None:
         raise AssertionError("expected ClickException")
     except click.ClickException:
         pass
+
+
+class _RedImageResponse:
+    status = 200
+    content_type = "image/jpeg"
+    content_length = 3
+
+    def __init__(self) -> None:
+        self.content = SimpleNamespace(read=self._read)
+
+    async def _read(self, _size):
+        return b"\xff\xd8\xff"
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+
+class _RedImageSession:
+    def __init__(self, *_args, **_kwargs) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def get(self, *_args, **_kwargs):
+        return _RedImageResponse()
+
+
+def _host_returning(url):
+    async def upload_file(_path):
+        return url, None
+
+    return SimpleNamespace(ImageUploader=lambda: SimpleNamespace(upload_file=upload_file))
+
+
+def _red_source():
+    return cast("Any", SimpleNamespace(headers={}, base_url="https://redacted.sh", _get_cookies=lambda: {}))
+
+
+def _rehost(monkeypatch, returned):
+    monkeypatch.setattr(cross_upload_module.aiohttp, "ClientSession", _RedImageSession)
+    monkeypatch.setitem(cross_upload_module.HOSTS, "catbox", _host_returning(returned))
+    return anyio.run(cross_upload_module._rehost_red_image, "https://redacted.sh/i/x.jpg", _red_source(), "catbox")
+
+
+def test_a_rehosted_image_returns_its_new_url(monkeypatch) -> None:
+    rehosted = _rehost(monkeypatch, "https://files.catbox.moe/abc.jpg")
+    assert rehosted == "https://files.catbox.moe/abc.jpg"
+
+
+@pytest.mark.parametrize("returned", ["", None, "https://", "Something went wrong"])
+def test_a_rehost_without_a_usable_url_is_refused(returned, monkeypatch) -> None:
+    # It would otherwise be substituted into the description, and None breaks str.replace outright.
+    with pytest.raises(click.ClickException):
+        _rehost(monkeypatch, returned)

@@ -12,7 +12,7 @@ from torf import Torrent
 
 import salmon.trackers
 from salmon import cfg
-from salmon.common import commandgroup
+from salmon.common import commandgroup, is_http_url
 from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
 from salmon.constants import ARTIST_IMPORTANCES
 from salmon.converter.downconverting import convert_folder, generate_conversion_description
@@ -464,6 +464,8 @@ async def _rehost_red_image(url: str, source_site: "BaseGazelleApi", image_host:
         image_path = Path(directory) / f"image{suffix}"
         await anyio.Path(image_path).write_bytes(content)
         uploaded_url, _ = await HOSTS[image_host].ImageUploader().upload_file(str(image_path))
+    if not is_http_url(uploaded_url):
+        raise click.ClickException(f"{image_host} returned no usable URL for {shown}.")
     return uploaded_url
 
 
