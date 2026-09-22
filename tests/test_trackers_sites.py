@@ -320,7 +320,8 @@ async def test_ops_report_lossy_master_always_uses_lossyapproval(ops_tracker, mo
 
     monkeypatch.setattr(ops_tracker, "_request", fake_request)
 
-    assert await ops_tracker.report_lossy_master(555, "lossy comment", source="WEB") is True
+    actual = await ops_tracker.report_lossy_master(555, "lossy comment", source="WEB")
+    assert actual is True
     assert captured["method"] == "POST"
     assert captured["url"] == "https://orpheus.network/reportsv2.php"
     assert captured["params"] == {"action": "takereport"}
@@ -690,32 +691,37 @@ def test_tracker_url_code_map_pins_known_domains() -> None:
 async def test_choose_tracker_accepts_exact_choice(monkeypatch) -> None:
     prompts = patch_tracker_prompt(monkeypatch, ["OPS"])
 
-    assert await trackers.choose_tracker(["RED", "OPS"]) == "OPS"
+    actual = await trackers.choose_tracker(["RED", "OPS"])
+    assert actual == "OPS"
     assert len(prompts) == 1
 
 
 async def test_choose_tracker_uppercases_and_strips_input(monkeypatch) -> None:
     patch_tracker_prompt(monkeypatch, ["  red  "])
 
-    assert await trackers.choose_tracker(["RED", "OPS"]) == "RED"
+    actual = await trackers.choose_tracker(["RED", "OPS"])
+    assert actual == "RED"
 
 
 async def test_choose_tracker_accepts_first_letter_shortcut(monkeypatch) -> None:
     patch_tracker_prompt(monkeypatch, ["o"])
 
-    assert await trackers.choose_tracker(["RED", "OPS"]) == "OPS"
+    actual = await trackers.choose_tracker(["RED", "OPS"])
+    assert actual == "OPS"
 
 
 async def test_choose_tracker_none_input_returns_none(monkeypatch) -> None:
     patch_tracker_prompt(monkeypatch, ["no thanks"])
 
-    assert await trackers.choose_tracker(["RED", "OPS"]) is None
+    actual = await trackers.choose_tracker(["RED", "OPS"])
+    assert actual is None
 
 
 async def test_choose_tracker_reprompts_until_valid_input(monkeypatch) -> None:
     prompts = patch_tracker_prompt(monkeypatch, ["XYZ", "banana", "dic"])
 
-    assert await trackers.choose_tracker(["RED", "OPS", "DIC"]) == "DIC"
+    actual = await trackers.choose_tracker(["RED", "OPS", "DIC"])
+    assert actual == "DIC"
     assert len(prompts) == 3
 
 
@@ -736,7 +742,8 @@ async def test_choose_tracker_first_time_single_tracker_short_circuits(monkeypat
     monkeypatch.setattr(trackers, "tracker_list", ["DIC"])
     prompts = patch_tracker_prompt(monkeypatch, [])
 
-    assert await trackers.choose_tracker_first_time() == "DIC"
+    actual = await trackers.choose_tracker_first_time()
+    assert actual == "DIC"
     assert prompts == []
 
 
@@ -745,7 +752,8 @@ async def test_choose_tracker_first_time_uses_default_tracker(monkeypatch) -> No
     monkeypatch.setattr(trackers.tracker_cfg, "default_tracker", "OPS")
     prompts = patch_tracker_prompt(monkeypatch, [])
 
-    assert await trackers.choose_tracker_first_time() == "OPS"
+    actual = await trackers.choose_tracker_first_time()
+    assert actual == "OPS"
     assert prompts == []
 
 
@@ -754,7 +762,8 @@ async def test_choose_tracker_first_time_prompts_without_default(monkeypatch) ->
     monkeypatch.setattr(trackers.tracker_cfg, "default_tracker", None)
     prompts = patch_tracker_prompt(monkeypatch, ["ops"])
 
-    assert await trackers.choose_tracker_first_time() == "OPS"
+    actual = await trackers.choose_tracker_first_time()
+    assert actual == "OPS"
     assert len(prompts) == 1
 
 
@@ -767,8 +776,10 @@ async def test_validate_tracker_accepts_configured_tracker_case_insensitive(monk
     monkeypatch.setattr(trackers, "tracker_list", ["RED", "OPS"])
     prompts = patch_tracker_prompt(monkeypatch, [])
 
-    assert await trackers.validate_tracker(None, "tracker", "red") == "RED"
-    assert await trackers.validate_tracker(None, "tracker", "OPS") == "OPS"
+    actual = await trackers.validate_tracker(None, "tracker", "red")
+    assert actual == "RED"
+    actual = await trackers.validate_tracker(None, "tracker", "OPS")
+    assert actual == "OPS"
     assert prompts == []
 
 
@@ -776,7 +787,8 @@ async def test_validate_tracker_unknown_value_falls_back_to_prompt(monkeypatch) 
     monkeypatch.setattr(trackers, "tracker_list", ["RED", "OPS"])
     prompts = patch_tracker_prompt(monkeypatch, ["ops"])
 
-    assert await trackers.validate_tracker(None, "tracker", "PTP") == "OPS"
+    actual = await trackers.validate_tracker(None, "tracker", "PTP")
+    assert actual == "OPS"
     assert len(prompts) == 1
 
 
@@ -784,7 +796,8 @@ async def test_validate_tracker_none_value_uses_first_time_flow(monkeypatch) -> 
     monkeypatch.setattr(trackers, "tracker_list", ["RED"])
     prompts = patch_tracker_prompt(monkeypatch, [])
 
-    assert await trackers.validate_tracker(None, "tracker", None) == "RED"
+    actual = await trackers.validate_tracker(None, "tracker", None)
+    assert actual == "RED"
     assert prompts == []
 
 
@@ -793,7 +806,8 @@ async def test_validate_tracker_none_value_prefers_default_tracker(monkeypatch) 
     monkeypatch.setattr(trackers.tracker_cfg, "default_tracker", "RED")
     prompts = patch_tracker_prompt(monkeypatch, [])
 
-    assert await trackers.validate_tracker(None, "tracker", None) == "RED"
+    actual = await trackers.validate_tracker(None, "tracker", None)
+    assert actual == "RED"
     assert prompts == []
 
 
