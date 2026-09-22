@@ -164,7 +164,8 @@ async def test_get_request_results_filters_non_music_categories(fake_tracker):
 async def test_get_request_results_empty_results_returns_empty_list(fake_tracker):
     fake_tracker.api_responses["requests"] = {"results": []}
 
-    assert await get_request_results(fake_tracker, ["Testalbum"]) == []
+    actual = await get_request_results(fake_tracker, ["Testalbum"])
+    assert actual == []
 
 
 async def test_get_request_results_queries_once_per_searchstr_and_dedupes(fake_tracker):
@@ -308,7 +309,8 @@ async def test_prompt_pick_result_by_number_returns_its_request_id(fake_tracker,
     patch_prompt(monkeypatch, ["2"])
     results = [make_search_result(101), make_search_result(202)]
 
-    assert await _prompt_for_request_id(fake_tracker, results) == 202
+    actual = await _prompt_for_request_id(fake_tracker, results)
+    assert actual == 202
 
 
 async def test_prompt_zero_is_clamped_to_first_result(fake_tracker, monkeypatch):
@@ -316,34 +318,39 @@ async def test_prompt_zero_is_clamped_to_first_result(fake_tracker, monkeypatch)
     patch_prompt(monkeypatch, ["0"])
     results = [make_search_result(101), make_search_result(202)]
 
-    assert await _prompt_for_request_id(fake_tracker, results) == 101
+    actual = await _prompt_for_request_id(fake_tracker, results)
+    assert actual == 101
 
 
 async def test_prompt_number_beyond_results_is_treated_as_raw_request_id(fake_tracker, monkeypatch, capsys):
     patch_prompt(monkeypatch, ["7"])
     results = [make_search_result(101), make_search_result(202)]
 
-    assert await _prompt_for_request_id(fake_tracker, results) == 7
+    actual = await _prompt_for_request_id(fake_tracker, results)
+    assert actual == 7
     assert "Interpreting 7 as a request id" in capsys.readouterr().out
 
 
 async def test_prompt_digit_with_no_results_is_treated_as_request_id(fake_tracker, monkeypatch):
     patch_prompt(monkeypatch, ["123456"])
 
-    assert await _prompt_for_request_id(fake_tracker, []) == 123456
+    actual = await _prompt_for_request_id(fake_tracker, [])
+    assert actual == 123456
 
 
 async def test_prompt_pasted_request_url_returns_extracted_id(fake_tracker, monkeypatch):
     url = f"{fake_tracker.base_url}/requests.php?action=view&id=777"
     patch_prompt(monkeypatch, [url])
 
-    assert await _prompt_for_request_id(fake_tracker, []) == 777
+    actual = await _prompt_for_request_id(fake_tracker, [])
+    assert actual == 777
 
 
 async def test_prompt_pasted_url_without_id_param_reprompts(fake_tracker, monkeypatch):
     calls = patch_prompt(monkeypatch, [f"{fake_tracker.base_url}/requests.php?action=view", "n"])
 
-    assert await _prompt_for_request_id(fake_tracker, []) is None
+    actual = await _prompt_for_request_id(fake_tracker, [])
+    assert actual is None
     assert len(calls) == 2
 
 
@@ -351,7 +358,8 @@ async def test_prompt_pasted_url_without_id_param_reprompts(fake_tracker, monkey
 async def test_prompt_decline_returns_none(fake_tracker, monkeypatch, answer, capsys):
     patch_prompt(monkeypatch, [answer])
 
-    assert await _prompt_for_request_id(fake_tracker, [make_search_result(101)]) is None
+    actual = await _prompt_for_request_id(fake_tracker, [make_search_result(101)])
+    assert actual is None
     assert "Not filling a request" in capsys.readouterr().out
 
 
@@ -359,7 +367,8 @@ async def test_prompt_invalid_input_reprompts_until_valid(fake_tracker, monkeypa
     foreign_url = "https://orpheus.network/requests.php?action=view&id=5"
     calls = patch_prompt(monkeypatch, ["garbage", foreign_url, "n"])
 
-    assert await _prompt_for_request_id(fake_tracker, [make_search_result(101)]) is None
+    actual = await _prompt_for_request_id(fake_tracker, [make_search_result(101)])
+    assert actual is None
     assert len(calls) == 3
 
 
@@ -373,7 +382,8 @@ async def test_confirm_yes_returns_true(fake_tracker, monkeypatch, answer):
     fake_tracker.api_responses["request"] = make_request_detail(101)
     patch_prompt(monkeypatch, [answer])
 
-    assert await _confirm_request_id(fake_tracker, 101) is True
+    actual = await _confirm_request_id(fake_tracker, 101)
+    assert actual is True
     assert fake_tracker.api_calls == [("request", {"id": 101})]
 
 
@@ -382,7 +392,8 @@ async def test_confirm_no_returns_false(fake_tracker, monkeypatch, answer, capsy
     fake_tracker.api_responses["request"] = make_request_detail(101)
     patch_prompt(monkeypatch, [answer])
 
-    assert await _confirm_request_id(fake_tracker, 101) is False
+    actual = await _confirm_request_id(fake_tracker, 101)
+    assert actual is False
     assert "Not filling this request" in capsys.readouterr().out
 
 
@@ -390,7 +401,8 @@ async def test_confirm_invalid_answer_reprompts(fake_tracker, monkeypatch):
     fake_tracker.api_responses["request"] = make_request_detail(101)
     calls = patch_prompt(monkeypatch, ["x", "maybe", "y"])
 
-    assert await _confirm_request_id(fake_tracker, 101) is True
+    actual = await _confirm_request_id(fake_tracker, 101)
+    assert actual is True
     assert len(calls) == 3
 
 
@@ -399,7 +411,8 @@ async def test_confirm_yes_all_skips_prompt(fake_tracker, monkeypatch):
     fake_tracker.api_responses["request"] = make_request_detail(101)
     calls = patch_prompt(monkeypatch, [])
 
-    assert await _confirm_request_id(fake_tracker, 101) is True
+    actual = await _confirm_request_id(fake_tracker, 101)
+    assert actual is True
     assert calls == []
 
 
@@ -417,7 +430,8 @@ async def test_confirm_more_than_three_artists_shows_various(fake_tracker, monke
     fake_tracker.api_responses["request"] = detail
     patch_prompt(monkeypatch, ["y"])
 
-    assert await _confirm_request_id(fake_tracker, 101) is True
+    actual = await _confirm_request_id(fake_tracker, 101)
+    assert actual is True
     assert "Various Artists" in capsys.readouterr().out
 
 
@@ -496,7 +510,8 @@ async def test_check_requests_pick_and_confirm_returns_request_id(fake_tracker, 
     fake_tracker.api_responses["request"] = make_request_detail(101)
     patch_prompt(monkeypatch, ["1", "y"])
 
-    assert await check_requests(fake_tracker, ["Testartist Testalbum"]) == 101
+    actual = await check_requests(fake_tracker, ["Testartist Testalbum"])
+    assert actual == 101
     assert fake_tracker.api_calls == [
         ("requests", {"search": "Testartist Testalbum"}),
         ("request", {"id": 101}),
@@ -507,7 +522,8 @@ async def test_check_requests_decline_at_selection_returns_none(fake_tracker, mo
     fake_tracker.api_responses["requests"] = {"results": [make_search_result(101)]}
     calls = patch_prompt(monkeypatch, ["n"])
 
-    assert await check_requests(fake_tracker, ["Testalbum"]) is None
+    actual = await check_requests(fake_tracker, ["Testalbum"])
+    assert actual is None
     # The detail/confirmation step is never reached.
     assert len(calls) == 1
     assert [action for action, _ in fake_tracker.api_calls] == ["requests"]
@@ -518,14 +534,16 @@ async def test_check_requests_confirm_no_returns_none(fake_tracker, monkeypatch)
     fake_tracker.api_responses["request"] = make_request_detail(101)
     patch_prompt(monkeypatch, ["1", "n"])
 
-    assert await check_requests(fake_tracker, ["Testalbum"]) is None
+    actual = await check_requests(fake_tracker, ["Testalbum"])
+    assert actual is None
 
 
 async def test_check_requests_no_results_returns_none_without_prompting(fake_tracker, monkeypatch):
     fake_tracker.api_responses["requests"] = {"results": []}
     calls = patch_prompt(monkeypatch, [])
 
-    assert await check_requests(fake_tracker, ["Testalbum"]) is None
+    actual = await check_requests(fake_tracker, ["Testalbum"])
+    assert actual is None
     assert calls == []
 
 
@@ -536,7 +554,8 @@ async def test_check_requests_no_results_with_always_ask_prompts_anyway(fake_tra
     url = f"{fake_tracker.base_url}/requests.php?action=view&id=555"
     patch_prompt(monkeypatch, [url, "y"])
 
-    assert await check_requests(fake_tracker, ["Testalbum"]) == 555
+    actual = await check_requests(fake_tracker, ["Testalbum"])
+    assert actual == 555
 
 
 async def test_check_requests_yes_all_confirms_without_second_prompt(fake_tracker, monkeypatch):
@@ -545,7 +564,8 @@ async def test_check_requests_yes_all_confirms_without_second_prompt(fake_tracke
     fake_tracker.api_responses["request"] = make_request_detail(101)
     calls = patch_prompt(monkeypatch, ["1"])
 
-    assert await check_requests(fake_tracker, ["Testalbum"]) == 101
+    actual = await check_requests(fake_tracker, ["Testalbum"])
+    assert actual == 101
     assert len(calls) == 1
 
 

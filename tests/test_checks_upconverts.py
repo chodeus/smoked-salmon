@@ -29,7 +29,8 @@ async def test_16bit_is_skipped_without_a_warning(monkeypatch, capsys):
 
     monkeypatch.setattr(uc, "check_upconvert", out_of_scope)
 
-    assert await uc._upconvert_check_handler("/music/album/01.flac") is None
+    actual = await uc._upconvert_check_handler("/music/album/01.flac")
+    assert actual is None
     # A 16bit album would otherwise warn once per track about nothing being wrong.
     assert capsys.readouterr().out == ""
 
@@ -40,7 +41,8 @@ async def test_a_real_failure_still_names_the_file_and_the_reason(monkeypatch, c
 
     monkeypatch.setattr(uc, "check_upconvert", broken)
 
-    assert await uc._upconvert_check_handler("/music/album/02.flac") is None
+    actual = await uc._upconvert_check_handler("/music/album/02.flac")
+    assert actual is None
     printed = capsys.readouterr().out
     assert "02.flac" in printed
     assert "bad frame" in printed

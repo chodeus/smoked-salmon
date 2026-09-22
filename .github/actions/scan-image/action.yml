@@ -1,0 +1,51 @@
+name: Scan image
+description: Report fixable HIGH and CRITICAL findings, then fail on a fixable CRITICAL.
+
+inputs:
+  image-ref:
+    description: Locally loaded image to scan.
+    required: true
+  report-severity:
+    description: Severities listed in the job summary without blocking.
+    default: HIGH,CRITICAL
+  gate-severity:
+    description: Severities that fail the job.
+    default: CRITICAL
+
+runs:
+  using: composite
+  steps:
+    # The report tier is the wide net and never blocks; the gate tier is narrow and blocks.
+    # ignore-unfixed stops an unfixable base-image CVE wedging every build until Debian patches.
+    - name: Scan image (report)
+      uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+      with:
+        scan-type: image
+        image-ref: ${{ inputs.image-ref }}
+        severity: ${{ inputs.report-severity }}
+        ignore-unfixed: true
+        exit-code: '0'
+        format: table
+        output: trivy-report.txt
+
+    - name: Publish scan report
+      if: always()
+      shell: bash
+      run: |
+        {
+          echo "### Image scan - fixable ${{ inputs.report-severity }}"
+          echo '```'
+          cat trivy-report.txt 2>/dev/null || echo '(no report produced)'
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Scan image (gate)
+      uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+      with:
+        scan-type: image
+        image-ref: ${{ inputs.image-ref }}
+        severity: ${{ inputs.gate-severity }}
+        ignore-unfixed: true
+        exit-code: '1'
+        # The report step above already installed trivy in this job.
+        skip-setup-trivy: true

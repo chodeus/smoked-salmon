@@ -7,7 +7,7 @@ import asyncclick as click
 import pyperclip
 
 from salmon import cfg
-from salmon.common import AliasedCommands, commandgroup
+from salmon.common import AliasedCommands, commandgroup, is_http_url
 from salmon.errors import ImageUploadFailed
 from salmon.images import catbox, imgbb, imgbox, oeimg, ptpimg, ptscreens, red
 
@@ -81,6 +81,8 @@ async def upload_images(filepaths: Sequence[str], image_host) -> list[str]:
     try:
         tasks = [uploader.upload_file(f) for f in filepaths]
         for url, _deletion_url in await asyncio.gather(*tasks):
+            if not is_http_url(url):
+                raise ImageUploadFailed(f"{image_host.__name__} returned no usable URL: {str(url)[:200]!r}")
             click.secho(url)
             urls.append(url)
         if cfg.upload.description.copy_uploaded_url_to_clipboard:
@@ -108,6 +110,10 @@ async def upload_cover(cover_path: str | None, site_code: str | None = None) -> 
     try:
         uploader = HOSTS[host].ImageUploader()
         url, _ = await uploader.upload_file(cover_path)
+        # A host can return without raising and still hand back nothing usable; treat that as a failure too.
+        if not is_http_url(url):
+            click.secho(f" failed :( host returned no usable URL: {str(url)[:200]!r}", fg="red")
+            return None
         click.secho(f" done! {url}", fg="yellow")
         return url
     except (ImageUploadFailed, ValueError) as error:

@@ -87,7 +87,8 @@ def test_an_unknown_filename_aborts_without_writing(album, monkeypatch):
 async def test_without_puddletag_the_json_editor_is_used(album, monkeypatch):
     used: list[str] = []
     monkeypatch.setattr(tags_mod, "edit_tags_as_json", lambda _p: used.append("json") or True)
-    assert await tags_mod.open_tag_editor(album["path"]) is True
+    actual = await tags_mod.open_tag_editor(album["path"])
+    assert actual is True
     assert used == ["json"], "a missing puddletag must not be reported as a successful edit"
 
 
@@ -104,7 +105,8 @@ async def test_puddletag_is_preferred_when_installed(album, monkeypatch):
     monkeypatch.setattr(tags_mod.shutil, "which", lambda _n: "/usr/bin/puddletag")
     monkeypatch.setattr(tags_mod.anyio, "run_process", fake_run)
     monkeypatch.setattr(tags_mod, "edit_tags_as_json", lambda _p: pytest.fail("should not fall back"))
-    assert await tags_mod.open_tag_editor(album["path"]) is True
+    actual = await tags_mod.open_tag_editor(album["path"])
+    assert actual is True
     assert launched == [["puddletag", album["path"]]]
 
 
@@ -118,7 +120,8 @@ async def test_a_failed_puddletag_launch_falls_back(album, monkeypatch):
     monkeypatch.setattr(tags_mod.shutil, "which", lambda _n: "/usr/bin/puddletag")
     monkeypatch.setattr(tags_mod.anyio, "run_process", fake_run)
     monkeypatch.setattr(tags_mod, "edit_tags_as_json", lambda _p: True)
-    assert await tags_mod.open_tag_editor(album["path"]) is True
+    actual = await tags_mod.open_tag_editor(album["path"])
+    assert actual is True
 
 
 @pytest.mark.parametrize(
@@ -237,7 +240,8 @@ async def test_a_puddletag_that_cannot_start_falls_back(album, monkeypatch):
     monkeypatch.setattr(tags_mod.shutil, "which", lambda _n: "/usr/bin/puddletag")
     monkeypatch.setattr(tags_mod.anyio, "run_process", boom)
     monkeypatch.setattr(tags_mod, "edit_tags_as_json", lambda _p: used.append("json") or True)
-    assert await tags_mod.open_tag_editor(album["path"]) is True
+    actual = await tags_mod.open_tag_editor(album["path"])
+    assert actual is True
     assert used == ["json"], "a launch failure must not be reported as a successful edit"
 
 

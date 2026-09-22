@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import anyio
+import asyncclick as click
+import pytest
 from torf import Torrent
 
 import salmon.cross_upload as cross_upload_module
@@ -14,6 +16,7 @@ from salmon.cross_upload import (
     _missing_conversions,
     _source_response,
     _upload_conversions,
+    is_torrent_reference,
 )
 from salmon.release_notification import upload_footer
 
@@ -34,8 +37,10 @@ class SourceSite:
 
 def test_single_and_batch_inputs(tmp_path: Path) -> None:
     source: Any = SourceSite()
-    assert _input_items("42", source) == [42]
-    assert _input_items("https://redacted.sh/torrents.php?id=1&torrentid=42", source) == [42]
+    by_id = _input_items("42", source)
+    by_url = _input_items("https://redacted.sh/torrents.php?id=1&torrentid=42", source)
+    assert by_id == [42]
+    assert by_url == [42]
 
     release = tmp_path / "release"
     release.mkdir()
@@ -45,8 +50,10 @@ def test_single_and_batch_inputs(tmp_path: Path) -> None:
     torrent_file = tmp_path / "release.torrent"
     torrent.write(torrent_file)
 
-    assert _input_items(str(tmp_path), source) == [torrent_file]
-    assert anyio.run(_source_response, torrent_file, source) == {"torrent": {"id": 42}}
+    from_directory = _input_items(str(tmp_path), source)
+    response = anyio.run(_source_response, torrent_file, source)
+    assert from_directory == [torrent_file]
+    assert response == {"torrent": {"id": 42}}
     assert source.params == ("torrent", {"hash": torrent.infohash.upper()})
 
 
@@ -54,7 +61,37 @@ def test_a_numeric_id_is_an_id_even_when_a_folder_of_that_name_exists(tmp_path: 
     """The web UI skips path confinement for references, so a reference must never become a path."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "42").mkdir()
-    assert _input_items("42", cast("Any", SourceSite())) == [42]
+    items = _input_items("42", cast("Any", SourceSite()))
+    assert items == [42]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://redacted.sh/torrents.php?id=1&torrentid=42",
+        "https://redacted.sh/../../etc/passwd?torrentid=42",
+    ],
+)
+def test_a_url_reference_resolves_to_its_id_and_not_a_path(value, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    items = _input_items(value, cast("Any", SourceSite()))
+    assert items == [42]
+
+
+@pytest.mark.parametrize("value", ["https://", "https://other.example/torrents.php?torrentid=42"])
+def test_a_url_the_endpoint_lets_through_is_refused_rather_than_walked(value, tmp_path: Path, monkeypatch) -> None:
+    # It skipped validate_confined_path, so the only safe outcomes are an id or a refusal.
+    monkeypatch.chdir(tmp_path)
+    skips_confinement = is_torrent_reference(value)
+    assert skips_confinement is True
+    with pytest.raises(click.UsageError):
+        _input_items(value, cast("Any", SourceSite()))
+
+
+@pytest.mark.parametrize("value", ["/srv/music/album", "album", "~/music", "C:\\music\\album", ""])
+def test_a_local_path_is_not_a_reference_so_it_stays_confined(value) -> None:
+    confined = is_torrent_reference(value)
+    assert confined is False
 
 
 def test_cross_upload_data_maps_source_to_target() -> None:
@@ -240,7 +277,8 @@ def test_existing_group_skips_duplicate_original(tmp_path: Path, monkeypatch) ->
             transcodes=("320", "V0"),
         )
 
-    assert anyio.run(run) == (0, 9)
+    uploaded = anyio.run(run)
+    assert uploaded == (0, 9)
     assert len(conversion_calls) == 1
     assert conversion_calls[0][3] == 9
 
@@ -280,7 +318,8 @@ def test_existing_conversions_are_filtered_before_processing() -> None:
         "catalogue_number": "CAT-1",
     }
 
-    assert anyio.run(_missing_conversions, cast("Any", Target()), 9, data, True, ("V0", "320")) == (False, ("320",))
+    missing = anyio.run(_missing_conversions, cast("Any", Target()), 9, data, True, ("V0", "320"))
+    assert missing == (False, ("320",))
 
 
 def test_red_images_are_rehosted_for_a_target_without_a_proxy(monkeypatch) -> None:
@@ -394,3 +433,64 @@ def test_verify_release_files_rejects_renamed_file(tmp_path: Path) -> None:
         raise AssertionError("expected ClickException")
     except click.ClickException:
         pass
+
+
+class _RedImageResponse:
+    status = 200
+    content_type = "image/jpeg"
+    content_length = 3
+
+    def __init__(self) -> None:
+        self.content = SimpleNamespace(read=self._read)
+
+    async def _read(self, _size):
+        return b"\xff\xd8\xff"
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+
+class _RedImageSession:
+    def __init__(self, *_args, **_kwargs) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def get(self, *_args, **_kwargs):
+        return _RedImageResponse()
+
+
+def _host_returning(url):
+    async def upload_file(_path):
+        return url, None
+
+    return SimpleNamespace(ImageUploader=lambda: SimpleNamespace(upload_file=upload_file))
+
+
+def _red_source():
+    return cast("Any", SimpleNamespace(headers={}, base_url="https://redacted.sh", _get_cookies=lambda: {}))
+
+
+def _rehost(monkeypatch, returned):
+    monkeypatch.setattr(cross_upload_module.aiohttp, "ClientSession", _RedImageSession)
+    monkeypatch.setitem(cross_upload_module.HOSTS, "catbox", _host_returning(returned))
+    return anyio.run(cross_upload_module._rehost_red_image, "https://redacted.sh/i/x.jpg", _red_source(), "catbox")
+
+
+def test_a_rehosted_image_returns_its_new_url(monkeypatch) -> None:
+    rehosted = _rehost(monkeypatch, "https://files.catbox.moe/abc.jpg")
+    assert rehosted == "https://files.catbox.moe/abc.jpg"
+
+
+@pytest.mark.parametrize("returned", ["", None, "https://", "Something went wrong"])
+def test_a_rehost_without_a_usable_url_is_refused(returned, monkeypatch) -> None:
+    # It would otherwise be substituted into the description, and None breaks str.replace outright.
+    with pytest.raises(click.ClickException):
+        _rehost(monkeypatch, returned)

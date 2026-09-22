@@ -881,24 +881,28 @@ def install_prompt(monkeypatch, responses):
 
 async def test_prompt_source_valid_source_returned_immediately(monkeypatch):
     calls = install_prompt(monkeypatch, ["web"])
-    assert await _prompt_source() == "WEB"
+    actual = await _prompt_source()
+    assert actual == "WEB"
     assert len(calls) == 1
 
 
 async def test_prompt_source_is_case_insensitive(monkeypatch):
     install_prompt(monkeypatch, ["CD"])
-    assert await _prompt_source() == "CD"
+    actual = await _prompt_source()
+    assert actual == "CD"
 
 
 async def test_prompt_source_invalid_then_valid_reprompts(monkeypatch):
     calls = install_prompt(monkeypatch, ["bogus", "vinyl"])
-    assert await _prompt_source() == "Vinyl"
+    actual = await _prompt_source()
+    assert actual == "Vinyl"
     assert len(calls) == 2
 
 
 async def test_prompt_source_empty_input_reprompts_until_valid(monkeypatch):
     calls = install_prompt(monkeypatch, ["", "", "sacd"])
-    assert await _prompt_source() == "SACD"
+    actual = await _prompt_source()
+    assert actual == "SACD"
     assert len(calls) == 3
 
 
@@ -912,5 +916,6 @@ async def test_prompt_source_exact_abort_input_aborts(monkeypatch, abort_input):
 @pytest.mark.parametrize("non_abort", ["aiff", "atmos"])
 async def test_prompt_source_other_a_input_reprompts_instead_of_aborting(monkeypatch, non_abort):
     calls = install_prompt(monkeypatch, [non_abort, "web"])
-    assert await _prompt_source() == "WEB"
+    actual = await _prompt_source()
+    assert actual == "WEB"
     assert len(calls) == 2

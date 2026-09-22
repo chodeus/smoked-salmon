@@ -27,5 +27,12 @@ jobs:
           context: .
           platforms: linux/amd64
           push: false
+          load: true
+          tags: smoked-salmon-scan:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Scan image
+        uses: ./.github/actions/scan-image
+        with:
+          image-ref: smoked-salmon-scan:${{ github.sha }}

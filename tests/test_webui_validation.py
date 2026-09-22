@@ -1,12 +1,14 @@
-"""Path confinement for webui filesystem operations (realpath + allowlist)."""
+"""Path confinement for webui filesystem operations, and the SSRF guard on fetched URLs."""
 
+import asyncio
 import os
+import socket
 
 import pytest
 from fastapi import HTTPException
 
 from salmon import cfg
-from salmon.webui.validation import validate_album_dir
+from salmon.webui.validation import assert_public_url, validate_album_dir
 
 
 def test_folder_within_download_dir_is_allowed(tmp_path):
@@ -62,3 +64,30 @@ def test_validate_confined_path_refuses_outside_without_probing(monkeypatch) -> 
     assert probes == []
     inside = os.path.join(os.path.realpath(cfg.directory.download_directory), "x.png")
     assert validation.validate_confined_path(inside) == inside
+
+
+async def test_a_non_http_scheme_is_rejected() -> None:
+    with pytest.raises(HTTPException) as excinfo:
+        await assert_public_url("file:///etc/passwd")
+    assert excinfo.value.status_code == 422
+
+
+async def test_a_private_address_is_rejected() -> None:
+    with pytest.raises(HTTPException) as excinfo:
+        await assert_public_url("http://127.0.0.1/album/x")
+    assert excinfo.value.status_code == 422
+
+
+async def test_a_public_address_is_allowed() -> None:
+    await assert_public_url("http://8.8.8.8/album/x")
+
+
+async def test_a_backslash_in_the_authority_is_refused_before_dns(monkeypatch) -> None:
+    # urlparse read this host as evil.com while a fetcher can still reach 127.0.0.1.
+    async def _resolves_public(*_args, **_kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", _resolves_public)
+    with pytest.raises(HTTPException) as excinfo:
+        await assert_public_url("http://127.0.0.1\\@evil.com/")
+    assert excinfo.value.detail == "Only http(s) URLs are supported."
