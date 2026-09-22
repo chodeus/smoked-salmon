@@ -180,7 +180,6 @@ def _upload_against(monkeypatch, tmp_path, payload: dict):
     ],
 )
 def test_reds_rejection_reason_reaches_the_user(reason, expected, monkeypatch, tmp_path) -> None:
-    # trackers/base.py already surfaces this field; the image host threw it away.
     with pytest.raises(ImageUploadFailed) as excinfo:
         _upload_against(monkeypatch, tmp_path, {"status": "failure", "error": reason})
     assert expected in str(excinfo.value)
@@ -189,3 +188,17 @@ def test_reds_rejection_reason_reaches_the_user(reason, expected, monkeypatch, t
 def test_a_rejection_without_a_reason_still_fails_cleanly(monkeypatch, tmp_path) -> None:
     with pytest.raises(ImageUploadFailed):
         _upload_against(monkeypatch, tmp_path, {"status": "failure"})
+
+
+def test_a_rejection_reason_cannot_leak_credentials(monkeypatch, tmp_path) -> None:
+    # RED controls this string; tracker responses embed authkey/torrent_pass in download links.
+    reason = (
+        "could not fetch https://redacted.sh/torrents.php?action=download"
+        "&authkey=SYNTHETIC-AUTHKEY-VALUE&torrent_pass=SYNTHETIC-PASS-VALUE"
+    )
+    with pytest.raises(ImageUploadFailed) as excinfo:
+        _upload_against(monkeypatch, tmp_path, {"status": "failure", "error": reason})
+    message = str(excinfo.value)
+    assert "SYNTHETIC-AUTHKEY-VALUE" not in message
+    assert "SYNTHETIC-PASS-VALUE" not in message
+    assert "REDACTED" in message

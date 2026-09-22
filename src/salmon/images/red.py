@@ -12,7 +12,7 @@ from yarl import URL
 from salmon import cfg
 from salmon.errors import ImageUploadFailed
 from salmon.images.base import BaseImageUploader
-from salmon.trackers.base import _build_tracker_cookies
+from salmon.trackers.base import _build_tracker_cookies, _safe_response_excerpt
 
 BASE_URL = "https://redacted.sh"
 AJAX_URL = f"{BASE_URL}/ajax.php"
@@ -124,9 +124,9 @@ async def _decode_response(response: aiohttp.ClientResponse) -> dict[str, Any]:
 
 
 def _rejection_reason(payload: Any) -> str | None:
-    """RED's own error text, normalised the way trackers.base does, or None when it gave none."""
+    """RED's own error text, redacted and capped like any other tracker response, or None."""
     error = payload.get("error") if isinstance(payload, dict) else None
     if error is None:
         return None
     text = error if isinstance(error, str) else msgspec.json.encode(error).decode()
-    return text[:200]
+    return _safe_response_excerpt(text)
