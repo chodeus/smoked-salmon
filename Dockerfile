@@ -64,8 +64,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Keep rclone from its official release, not apt: Debian's is years old. Checksum-verified.
 # No RCLONE_ prefix on these: rclone reads every RCLONE_* variable as a flag.
-ARG VERSION_RCLONE=1.72.0
-ARG SHA256_RCLONE=f3757aa829828c0f3359301bea25eef4d4fd62de735c47546ee6866c5b5545e2
+ARG VERSION_RCLONE=1.75.1
+ARG SHA256_RCLONE=982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab
 RUN curl -fsSL -o /tmp/rclone.zip \
         "https://downloads.rclone.org/v${VERSION_RCLONE}/rclone-v${VERSION_RCLONE}-linux-amd64.zip" \
     && echo "${SHA256_RCLONE}  /tmp/rclone.zip" | sha256sum -c - \
