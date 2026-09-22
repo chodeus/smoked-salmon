@@ -86,11 +86,9 @@ _FOOTER_MARKER = re.compile(
 
 
 def has_upload_footer(description: str) -> bool:
-    """Whether a description carries an upload footer anywhere, whoever built it.
-
-    Anywhere rather than at the end: the question this answers is whether appending one
-    would duplicate the attribution, and a footer mid-description duplicates just as well.
-    """
+    """Whether a description carries an upload footer anywhere, whoever built it."""
+    # search, not anchored to the end: this answers whether appending would duplicate the
+    # attribution, and a footer mid-description duplicates just as well.
     return bool(_FOOTER_MARKER.search(description))
 
 
