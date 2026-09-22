@@ -17,13 +17,10 @@ HEADERS = {"User-Agent": choice(UAGENTS)}
 
 
 class _PublicOnlyConnector(aiohttp.TCPConnector):
-    """Refuses any address the connector would use, on every hop a redirect chain takes.
-
-    Overrides _resolve_host rather than supplying a resolver: the connector short-circuits
-    that path for an IP literal, so a redirect straight to http://127.0.0.1/ never resolves.
-    """
+    """Refuses any address the connector would use, on every hop a redirect chain takes."""
 
     async def _resolve_host(self, host: str, port: int, traces: Any = None) -> list[ResolveResult]:
+        # Hooked here, not on the resolver: the connector short-circuits that for an IP literal.
         results = await super()._resolve_host(host, port, traces)
         for result in results:
             if not is_public_ip(result["host"]):

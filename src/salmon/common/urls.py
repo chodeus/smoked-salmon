@@ -20,9 +20,10 @@ def is_http_url(value: str | None) -> bool:
 
 
 def is_public_ip(address: str) -> bool:
-    """False for loopback, private, link-local, reserved, multicast and unspecified addresses."""
+    """True only for a globally routable address, so CGNAT and every special range are refused."""
     try:
         ip = ipaddress.ip_address(address)
     except ValueError:
         return False
-    return not any(getattr(ip, attr) for attr in _NON_PUBLIC_IP_ATTRS)
+    # Both: is_global misses nothing the denylist catches, and the denylist refuses NAT64 too.
+    return ip.is_global and not any(getattr(ip, attr) for attr in _NON_PUBLIC_IP_ATTRS)

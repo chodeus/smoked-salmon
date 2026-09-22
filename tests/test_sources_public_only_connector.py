@@ -1,8 +1,4 @@
-"""BaseScraper's sessions refuse a non-public address, whether it arrives as an IP literal or via DNS.
-
-Exercised through the production connector: aiohttp short-circuits _resolve_host for an IP
-literal, so a check that only sits on the resolver never sees http://127.0.0.1/.
-"""
+"""BaseScraper's sessions refuse a non-public address, as an IP literal or via DNS."""
 
 import socket
 from typing import Any, cast
@@ -37,7 +33,20 @@ async def _resolve(host: str, *dns_answers: str):
         await connector.close()
 
 
-@pytest.mark.parametrize("literal", ["127.0.0.1", "::1", "10.0.20.11", "192.168.1.1", "169.254.169.254"])
+@pytest.mark.parametrize(
+    "literal",
+    [
+        "127.0.0.1",
+        "::1",
+        "10.0.20.11",
+        "192.168.1.1",
+        "169.254.169.254",
+        "100.64.0.1",  # CGNAT, where a Tailscale node lives
+        "100.127.255.254",
+        "198.18.0.1",
+        "2001:db8::1",
+    ],
+)
 def test_an_ip_literal_on_a_private_address_is_refused(literal) -> None:
     with pytest.raises(OSError, match="non-public address"):
         anyio.run(_resolve, literal)
@@ -70,4 +79,5 @@ def test_the_scraper_session_uses_that_connector() -> None:
         async with _public_only_session(aiohttp.ClientTimeout(total=1)) as session:
             return type(session.connector)
 
-    assert anyio.run(_build) is _PublicOnlyConnector
+    connector_type = anyio.run(_build)
+    assert connector_type is _PublicOnlyConnector
