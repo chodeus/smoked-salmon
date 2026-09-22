@@ -33,6 +33,12 @@ def test_a_usable_url_yields_its_hostname(value, host) -> None:
         # yarl raises on these; a parse failure must read as "no hostname", never propagate.
         "http://[::1",
         "https://example.com:notaport/x",
+        # yarl raises TypeError, not ValueError, for anything that is not a str - and a host's
+        # JSON url field can be a number.
+        123,
+        4.5,
+        b"https://files.catbox.moe/a.jpg",
+        ["https://files.catbox.moe/a.jpg"],
     ],
 )
 def test_an_unusable_value_has_no_hostname(value) -> None:

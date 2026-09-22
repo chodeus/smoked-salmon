@@ -9,7 +9,8 @@ def http_url_hostname(value: str | None) -> str | None:
     """Hostname of ``value`` when it is an http(s) URL, else None."""
     try:
         parsed = URL(value or "")
-    except ValueError:
+    except (TypeError, ValueError):
+        # TypeError: yarl refuses a non-str, which a host's JSON field can still be.
         return None
     return parsed.host if parsed.scheme in {"http", "https"} else None
 
@@ -25,5 +26,6 @@ def is_public_ip(address: str) -> bool:
         ip = ipaddress.ip_address(address)
     except ValueError:
         return False
-    # Both: is_global misses nothing the denylist catches, and the denylist refuses NAT64 too.
+    # Both: is_global refuses CGNAT, which the denylist allows; the denylist refuses NAT64,
+    # which is_global allows.
     return ip.is_global and not any(getattr(ip, attr) for attr in _NON_PUBLIC_IP_ATTRS)
