@@ -60,8 +60,8 @@ class Directory(BaseStruct):
 ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "red"]
 _HOST_KINDS = ("image_uploader", "cover_uploader", "specs_uploader")
 _TRACKER_CODES = ("red", "ops", "dic")
-# A tracker's own image host is for its album artwork only: it is that tracker's default cover
-# host and is refused in every other slot (description images, spectrals, other trackers' covers).
+# A tracker's own image host is for its album artwork only: opt in under [image.<tracker>], and it
+# is refused in every other slot (description images, spectrals, other trackers' covers).
 _OWN_COVER_HOSTS = {"red": "red"}
 ARTWORK_ONLY_HOSTS = frozenset(_OWN_COVER_HOSTS.values())
 # Trackers that fetch and cache RED-hosted images themselves, so a BARE RED URL renders there
@@ -92,14 +92,12 @@ class ImageUploader(BaseStruct):
     dic: ImageHostOverride | None = None
 
     def resolve(self, site_code: str | None, kind: str) -> str:
-        """Host for a tracker + kind: per-tracker override, else the tracker's cover default, else global."""
+        """Host for a tracker + kind: the per-tracker override if set, else the global setting."""
         code = site_code.lower() if site_code else None
         if code:
             override = getattr(self, code, None)
             if override is not None and getattr(override, kind) is not None:
                 return getattr(override, kind)
-            if kind == "cover_uploader" and code in _OWN_COVER_HOSTS:
-                return _OWN_COVER_HOSTS[code]
         return getattr(self, kind)
 
     def _selections(self) -> list[tuple[str | None, str, str]]:

@@ -38,17 +38,17 @@ dottorrents_dir = '.torrents'
 # ===============================
 # Image hosters: ptpimg, ptscreens, oeimg, imgbb, catbox, imgbox, red
 # catbox and imgbox need no API key. ptpimg.me is dead — do not use it.
-# red = RED's own host (uses the tracker.red session), for album artwork only: RED covers
-# default to it; anywhere else ("red" for description images, spectrals, OPS/DIC) is refused.
+# red = RED's own host (uses the tracker.red session), for album artwork only: opt in under
+# [image.red]; anywhere else ("red" for description images, spectrals, OPS/DIC) is refused.
 [image]
 image_uploader = "catbox"
 cover_uploader = "catbox"
 specs_uploader = "catbox"
 
-# Per-tracker overrides (optional); unset keys fall back to [image], except RED covers → "red".
+# Per-tracker overrides (optional); unset keys fall back to [image].
 # RED→OPS cross-uploads keep RED-hosted images as they are (OPS proxies and caches them).
 # [image.red]
-# cover_uploader = "catbox"   # opt RED covers out of RED's host
+# cover_uploader = "red"      # send RED covers to RED's own host
 # [image.ops]
 # cover_uploader = "imgbox"
 
