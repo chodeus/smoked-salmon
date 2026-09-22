@@ -15,9 +15,8 @@ inputs:
 runs:
   using: composite
   steps:
-    # Two tiers on purpose: the report tier is the wide net and never blocks, the gate
-    # tier is narrow and blocks. ignore-unfixed keeps an unfixable base-image CVE from
-    # wedging every build until Debian ships a patch.
+    # The report tier is the wide net and never blocks; the gate tier is narrow and blocks.
+    # ignore-unfixed stops an unfixable base-image CVE wedging every build until Debian patches.
     - name: Scan image (report)
       uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
       with:

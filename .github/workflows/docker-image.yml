@@ -43,16 +43,19 @@ jobs:
             type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' }}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
 
-      # Built and loaded locally first so the gate below can block a publish.
-      # The push step that follows hits the same gha cache, so it costs one build.
-      - name: Build image for scanning
+      # Loaded locally and scanned before anything is pushed, so what publishes is the exact
+      # image the gate passed rather than a rebuild of it. The scan tag is an extra name for it.
+      - name: Build image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           platforms: linux/amd64
           push: false
           load: true
-          tags: smoked-salmon-scan:${{ github.sha }}
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            smoked-salmon-scan:${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -61,13 +64,12 @@ jobs:
         with:
           image-ref: smoked-salmon-scan:${{ github.sha }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Push the scanned image
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            docker push "$tag"
+          done <<< "$TAGS"
