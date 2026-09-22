@@ -1,12 +1,12 @@
+import errno
 import re
-import socket
 from random import choice
 from string import Formatter
 from typing import Any
 
 import aiohttp
 import msgspec
-from aiohttp.abc import AbstractResolver, ResolveResult
+from aiohttp.abc import ResolveResult
 from bs4 import BeautifulSoup
 
 from salmon.common import is_public_ip
@@ -16,32 +16,26 @@ from salmon.errors import ScrapeError
 HEADERS = {"User-Agent": choice(UAGENTS)}
 
 
-class _PublicOnlyResolver(AbstractResolver):
-    """Refuses any host resolving to a non-public address, on every hop a redirect chain takes."""
+class _PublicOnlyConnector(aiohttp.TCPConnector):
+    """Refuses any address the connector would use, on every hop a redirect chain takes.
 
-    def __init__(self) -> None:
-        # Built on first use: aiohttp's default resolver wants a running loop at construction.
-        self._resolver: AbstractResolver | None = None
+    Overrides _resolve_host rather than supplying a resolver: the connector short-circuits
+    that path for an IP literal, so a redirect straight to http://127.0.0.1/ never resolves.
+    """
 
-    async def resolve(
-        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
-    ) -> list[ResolveResult]:
-        if self._resolver is None:
-            self._resolver = aiohttp.DefaultResolver()
-        results = await self._resolver.resolve(host, port, family)
+    async def _resolve_host(self, host: str, port: int, traces: Any = None) -> list[ResolveResult]:
+        results = await super()._resolve_host(host, port, traces)
         for result in results:
             if not is_public_ip(result["host"]):
-                raise OSError(f"refusing to connect to a non-public address for {host}")
+                # aiohttp turns an OSError from here into ClientConnectorDNSError, which
+                # fetch_page already converts to ScrapeError.
+                raise OSError(errno.EPERM, f"refusing to connect to a non-public address for {host}")
         return results
-
-    async def close(self) -> None:
-        if self._resolver is not None:
-            await self._resolver.close()
 
 
 def _public_only_session(timeout: aiohttp.ClientTimeout) -> aiohttp.ClientSession:
     """A session whose every connection — including each redirect hop — must be a public address."""
-    return aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(resolver=_PublicOnlyResolver()))
+    return aiohttp.ClientSession(timeout=timeout, connector=_PublicOnlyConnector())
 
 
 class IdentData(msgspec.Struct, frozen=True):
