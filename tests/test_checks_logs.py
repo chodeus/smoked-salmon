@@ -268,3 +268,24 @@ def test_a_range_rip_on_a_later_disc_skips_the_combined_check(tmp_path, monkeypa
 
     out = capsys.readouterr().out
     assert "Multi-disc range rip" in out
+
+
+def test_a_range_entry_replaced_by_a_rerip_is_verified(tmp_path, monkeypatch, capsys) -> None:
+    basepath = _write_files(tmp_path, ["d1-01.flac", "d2-01.flac"])
+    output = FakeCambiaOutput(
+        parsed=FakeParsedCombined(
+            parsed_logs=[
+                FakeParsedLog(toc_hash="disc-1", tracks=[FakeTrack(num=1, copy_hash="D1-1")]),
+                FakeParsedLog(toc_hash="disc-2", tracks=[FakeTrack(num=1, copy_hash="R2", is_range=True)]),
+                # Appended rerip of disc 2 as a track rip: the latest entry is what's checked.
+                FakeParsedLog(toc_hash="disc-2", tracks=[FakeTrack(num=1, copy_hash="D2-1")]),
+            ]
+        )
+    )
+    _patch_cambia(monkeypatch, output)
+    _patch_file_crcs(monkeypatch, {"d1-01.flac": "D1-1", "d2-01.flac": "D2-1"})
+
+    anyio.run(logs.check_log_cambia, "log.log", basepath)
+
+    out = capsys.readouterr().out
+    assert "All CRC values match" in out

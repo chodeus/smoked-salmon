@@ -191,10 +191,12 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
     # so a second disc's track numbers don't overwrite the first's (#358).
     parsed_logs = cambia_output.parsed.parsed_logs
     last_copy_hash: dict[tuple[str, int], str] = {}
+    last_is_range: dict[tuple[str, int], bool] = {}
     for parsed_log in parsed_logs:
         disc_id = parsed_log.toc.accurip_tocid.hash
         for track in parsed_log.tracks:
             last_copy_hash[(disc_id, track.num)] = track.test_and_copy.copy_hash
+            last_is_range[(disc_id, track.num)] = track.is_range
     copy_crc_set = set(last_copy_hash.values())
 
     def _find_audio(root_dir: str) -> list[str]:
@@ -224,7 +226,7 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         return
     # A range CRC on any disc matches no single file, and one range rebuilt from the first disc's
     # TOC can't stand for several discs (#358).
-    if multi_disc and any(track.is_range for pl in parsed_logs for track in pl.tracks):
+    if multi_disc and any(last_is_range.values()):
         click.secho("Multi-disc range rip log: skipping combined CRC file verification.", fg="yellow")
         return
     if parsed_logs[0].tracks[0].is_range:
