@@ -174,6 +174,16 @@ class SearchReleaseData(msgspec.Struct, frozen=True):
     url: str
 
 
+_TRANSIENT_5XX = frozenset(
+    {
+        HTTPStatus.INTERNAL_SERVER_ERROR,
+        HTTPStatus.BAD_GATEWAY,
+        HTTPStatus.SERVICE_UNAVAILABLE,
+        HTTPStatus.GATEWAY_TIMEOUT,
+    }
+)
+
+
 class RetryableError(RequestError):
     """Exception for retryable network errors."""
 
@@ -402,11 +412,9 @@ class BaseGazelleApi:
                         )
                         raise LoginError(error_msg)
 
-                    if resp.status in (
-                        HTTPStatus.INTERNAL_SERVER_ERROR,
-                        HTTPStatus.BAD_GATEWAY,
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        HTTPStatus.GATEWAY_TIMEOUT,
+                    # Any 5xx may follow the tracker acting on a POST; a GET is resent only on these.
+                    if resp.status >= HTTPStatus.INTERNAL_SERVER_ERROR and (
+                        not idempotent or resp.status in _TRANSIENT_5XX
                     ):
                         raise _failed(f"Server error {resp.status}")
 
@@ -774,7 +782,7 @@ class BaseGazelleApi:
             reason = _safe_response_excerpt(str(lookup_err))
             raise UnknownOutcomeError(
                 f"Could not tell whether {self.site_string} took the upload ({err}), and looking it up by "
-                f"its infohash did not find it ({reason}). The upload may still have gone through: "
+                f"its infohash did not confirm it ({reason}). The upload may still have gone through: "
                 f"check your uploads on {self.site_string} before uploading it again."
             ) from lookup_err
         click.secho(f"Found the upload on {self.site_string}: torrent {torrent_id}.", fg="green")

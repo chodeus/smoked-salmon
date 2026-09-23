@@ -926,8 +926,10 @@ def _real_torrent(tmp_path) -> bytes:
         TimeoutError(),
         FakeAiohttpResponse(text="bad gateway", status=502),
         FakeAiohttpResponse(text="unavailable", status=503),
+        FakeAiohttpResponse(text="not implemented", status=501),
+        FakeAiohttpResponse(text="origin timed out", status=524),
     ],
-    ids=["answer-dropped", "timeout", "502", "503"],
+    ids=["answer-dropped", "timeout", "502", "503", "501", "524"],
 )
 async def test_a_post_that_may_have_reached_the_tracker_is_sent_once(api, monkeypatch, outcome):
     monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
@@ -936,6 +938,15 @@ async def test_a_post_that_may_have_reached_the_tracker_is_sent_once(api, monkey
 
     with pytest.raises(UnknownOutcomeError):
         await api._request("POST", "https://dummy.example/upload.php", data={"x": "1"})
+    assert len(captured["requests"]) == 1
+
+
+async def test_an_unusual_5xx_on_a_get_fails_without_a_retry(api, monkeypatch):
+    captured = install_fake_aiohttp(monkeypatch, [FakeAiohttpResponse(text="not implemented", status=501)])
+    api._authenticated = True
+
+    with pytest.raises(RequestFailedError):
+        await api._request("GET", "https://dummy.example/ajax.php")
     assert len(captured["requests"]) == 1
 
 
@@ -1033,6 +1044,8 @@ async def test_a_lost_upload_not_found_says_it_may_have_gone_through(api, tmp_pa
         await getattr(api, method)({}, UploadFiles(torrent_data=torrent))
 
     assert "may still have gone through" in str(excinfo.value)
+    # The lookup may have failed rather than come back empty.
+    assert "did not confirm it" in str(excinfo.value)
     assert [c["method"] for c in calls] == ["POST", "GET"]
 
 
