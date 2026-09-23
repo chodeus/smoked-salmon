@@ -1,7 +1,7 @@
 """Tracker connectivity checks shared by `salmon checkconf` and the web interface."""
 
 import salmon.trackers
-from salmon.trackers.base import _safe_response_excerpt
+from salmon.trackers.base import BaseGazelleApi, _safe_response_excerpt
 
 
 async def check_tracker_connection(code: str) -> dict:
@@ -21,6 +21,16 @@ async def check_tracker_connection(code: str) -> dict:
         "api_key_error": None,
     }
 
+    # On the web UI's server loop the only click context is the server's, closed at shutdown.
+    try:
+        await _probe(tracker, index_url, result)
+    finally:
+        await tracker.close()
+    return result
+
+
+async def _probe(tracker: BaseGazelleApi, index_url: str, result: dict) -> None:
+    """Fill ``result`` with the outcome of each configured login."""
     try:
         await tracker._request("GET", index_url, params={"action": "index"}, prefer_api_key=False)
         result["session_ok"] = True
@@ -34,5 +44,3 @@ async def check_tracker_connection(code: str) -> dict:
         except Exception as error:
             result["api_key_ok"] = False
             result["api_key_error"] = _safe_response_excerpt(str(error), limit=300)
-
-    return result
