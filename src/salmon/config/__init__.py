@@ -2,13 +2,14 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import get_args
 
 import asyncclick as click
 import msgspec
 import requests
 from platformdirs import user_config_dir
 
-from .validations import Cfg
+from .validations import Cfg, ImgUploaderLiteral
 
 APPNAME = "smoked-salmon"
 # Containers mount a single /config; platformdirs would bury the file under an
@@ -54,7 +55,17 @@ def get_default_config_path() -> Path:
 
 
 def _parse_config(config_path: Path) -> Cfg:
-    return msgspec.toml.decode(config_path.read_bytes(), type=Cfg)
+    try:
+        return msgspec.toml.decode(config_path.read_bytes(), type=Cfg)
+    except msgspec.ValidationError as e:
+        # msgspec would only say "Invalid enum value" for a host that was removed.
+        if "'ptpimg'" not in str(e):
+            raise
+        hosts = ", ".join(get_args(ImgUploaderLiteral))
+        raise ValueError(
+            f"ptpimg has shut down and is no longer a supported image host. Choose another one in your config "
+            f"({hosts}); catbox needs no API key."
+        ) from e
 
 
 def _try_creating_config(src: Path, dest: Path) -> None:

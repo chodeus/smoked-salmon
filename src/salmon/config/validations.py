@@ -57,7 +57,7 @@ class Directory(BaseStruct):
         return any(_path_contains(entry, path) for entry in self.library_dirs)
 
 
-ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "red"]
+ImgUploaderLiteral = Literal["ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "red"]
 _HOST_KINDS = ("image_uploader", "cover_uploader", "specs_uploader")
 _TRACKER_CODES = ("red", "ops", "dic")
 # A tracker's own image host is for its album artwork only: opt in under [image.<tracker>], and it
@@ -80,7 +80,6 @@ class ImageUploader(BaseStruct):
     image_uploader: ImgUploaderLiteral = "catbox"
     cover_uploader: ImgUploaderLiteral = "catbox"
     specs_uploader: ImgUploaderLiteral = "catbox"
-    ptpimg_key: str | None = None
     ptscreens_key: str | None = None
     oeimg_key: str | None = None
     imgbb_key: str | None = None
@@ -116,8 +115,6 @@ class ImageUploader(BaseStruct):
     def __post_init__(self):
         selections = self._selections()
         hosts = {host for _, _, host in selections}
-        if "ptpimg" in hosts and self.ptpimg_key is None:
-            raise ValueError("ptpimg key not specified")
         if "ptscreens" in hosts and self.ptscreens_key is None:
             raise ValueError("PTScreens key not specified")
         if "oeimg" in hosts and self.oeimg_key is None:

@@ -36,8 +36,8 @@ dottorrents_dir = '.torrents'
 # ===============================
 # IMAGE UPLOAD SETTINGS
 # ===============================
-# Image hosters: ptpimg, ptscreens, oeimg, imgbb, catbox, imgbox, red
-# catbox and imgbox need no API key. ptpimg.me is dead — do not use it.
+# Image hosters: ptscreens, oeimg, imgbb, catbox, imgbox, red
+# catbox and imgbox need no API key.
 # red = RED's own host (uses the tracker.red session), for album artwork only: opt in under
 # [image.red]; anywhere else ("red" for description images, spectrals, OPS/DIC) is refused.
 [image]
@@ -56,8 +56,6 @@ specs_uploader = "catbox"
 # "*" = all, "+" = randomized selection, "0" = none. Leave unset to use context-based default.
 # default_spectral_ids = "*"
 
-# ptpimg API key (log into ptpimg, developpers tools, go to the Elements tab, and search for 'api_key')
-ptpimg_key = 'api_key'
 # ptscreens API key (log into ptscreens, settings, API)
 ptscreens_key = 'api_key'
 # oeimg API key (log into imgoe, settings, API)
