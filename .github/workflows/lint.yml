@@ -43,10 +43,11 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync && uv pip install basedpyright
+        run: uv sync --frozen
 
+      # The basedpyright in uv.lock, as for ruff above.
       - name: Run Pyright Type Check
-        run: uv run basedpyright
+        run: uv run --frozen basedpyright
 
   svelte-check:
     runs-on: ubuntu-latest
