@@ -315,3 +315,23 @@ def test_a_first_log_range_rip_replaced_by_a_rerip_is_verified_per_file(
 
     out = capsys.readouterr().out
     assert "All CRC values match" in out
+
+
+@pytest.mark.parametrize("multi_disc", [True, False], ids=["multi-disc", "one-disc"])
+def test_two_tracks_sharing_a_crc_each_need_a_matching_file(tmp_path, monkeypatch, multi_disc) -> None:
+    # The same track on two discs, or two silent tracks: one good copy must not cover a corrupt one.
+    basepath = _write_files(tmp_path, ["a.flac", "b.flac"])
+    second_disc = "disc-2" if multi_disc else "disc-1"
+    output = FakeCambiaOutput(
+        parsed=FakeParsedCombined(
+            parsed_logs=[
+                FakeParsedLog(toc_hash="disc-1", tracks=[FakeTrack(num=1, copy_hash="SAME")]),
+                FakeParsedLog(toc_hash=second_disc, tracks=[FakeTrack(num=2, copy_hash="SAME")]),
+            ]
+        )
+    )
+    _patch_cambia(monkeypatch, output)
+    _patch_file_crcs(monkeypatch, {"a.flac": "SAME", "b.flac": "CORRUPTED"})
+
+    with pytest.raises(CRCMismatchError):
+        anyio.run(logs.check_log_cambia, "log.log", basepath)

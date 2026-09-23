@@ -1,5 +1,6 @@
 import os
 import zlib
+from collections import Counter
 from collections.abc import Generator, Iterable
 from typing import Any
 
@@ -197,7 +198,7 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         for track in parsed_log.tracks:
             last_copy_hash[(disc_id, track.num)] = track.test_and_copy.copy_hash
             last_is_range[(disc_id, track.num)] = track.is_range
-    copy_crc_set = set(last_copy_hash.values())
+    expected_crcs = Counter(last_copy_hash.values())
 
     def _find_audio(root_dir: str) -> list[str]:
         found: list[str] = []
@@ -237,12 +238,13 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         # Log contains range rip CRC, but we have individual track files
         # Concatenate track files to recreate the original range rip for CRC verification
         range_crc = await _calculate_range_crc_async(files_to_check, toc_entries)
-        crc_set = {range_crc}
+        found_crcs = Counter({range_crc: 1})
     else:
         crc_results = await process_files(files_to_check, _calculate_file_crc_async, "Calculating CRC32 hashes")
-        crc_set = set(crc_results)
+        # Counted, not a set: two tracks can share a CRC, and each needs a file of its own.
+        found_crcs = Counter(crc_results)
 
-    if not copy_crc_set.issubset(crc_set):
+    if expected_crcs - found_crcs:
         raise CRCMismatchError("CRC Mismatch")
 
     click.secho("All CRC values match the log file.", fg="green")
