@@ -220,7 +220,8 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
     if multi_disc and len(files_to_check) < len(last_copy_hash):
         click.secho(
             f"Multi-disc log, but only {len(files_to_check)} audio file(s) under {basepath} for "
-            f"{len(last_copy_hash)} tracks: skipping CRC file verification. Check it from the album folder.",
+            f"{len(last_copy_hash)} tracks: skipping CRC file verification. Every disc's audio must be under "
+            "that folder for it to be checked.",
             fg="yellow",
         )
         return

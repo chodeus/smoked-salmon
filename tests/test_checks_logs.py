@@ -215,7 +215,7 @@ def test_a_one_disc_range_rip_is_rebuilt_from_its_own_disc_folder(tmp_path, monk
 
 
 def test_a_multi_disc_log_missing_other_discs_audio_is_skipped_not_failed(tmp_path, monkeypatch, capsys) -> None:
-    # `salmon checklog CD1/rip.log` can only see CD1; that is not a CRC mismatch.
+    # Only one disc's audio under the search root: a skip, not a CRC mismatch.
     disc = _write_files(tmp_path, ["d1-01.flac"])
     output = FakeCambiaOutput(
         parsed=FakeParsedCombined(
