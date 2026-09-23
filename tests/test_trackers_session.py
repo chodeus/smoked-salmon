@@ -6,11 +6,12 @@ from typing import Any, cast
 import pytest
 from aiohttp import web
 from aiolimiter import AsyncLimiter
+from tenacity import wait_fixed
 
 import salmon.trackers
 from salmon import cfg
 from salmon.checks.connection import check_tracker_connection
-from salmon.errors import RequestFailedError
+from salmon.errors import RequestFailedError, UnknownOutcomeError
 from salmon.trackers.base import BaseGazelleApi
 from salmon.webui.jobs import JobManager
 
@@ -99,6 +100,29 @@ async def test_queued_requests_do_not_time_out_while_waiting(serve):
     assert len(hits) == 6
 
 
+async def test_a_trickled_answer_still_times_out(serve, monkeypatch):
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        await request.read()
+        resp = web.StreamResponse()
+        await resp.prepare(request)
+        # Each byte lands well inside sock_read, so only a bound on the whole read stops it.
+        for _ in range(30):
+            await resp.write(b" ")
+            await asyncio.sleep(0.1)
+        return resp
+
+    api = FakeApi(await serve(handler))
+    started = asyncio.get_running_loop().time()
+    try:
+        with pytest.raises(UnknownOutcomeError):
+            await api._request("POST", f"{api.base_url}/upload.php", data={"x": "1"}, timeout_secs=1)
+    finally:
+        await api.close()
+    assert asyncio.get_running_loop().time() - started < 2
+
+
 async def test_api_key_requests_stay_cookie_free(serve):
     sent: list[str | None] = []
 
@@ -134,6 +158,8 @@ async def test_a_post_goes_on_a_fresh_connection_and_leaves_the_pool_alone(serve
     api = FakeApi(await serve(handler))
     try:
         await api._request("GET", f"{api.base_url}/ajax.php")
+        # An idle pooled connection is free: a pooled POST would take it.
+        await api._request("POST", f"{api.base_url}/upload.php", data={"x": "0"})
         # A GET in flight on the pool must survive the POST.
         await asyncio.gather(
             api._request("GET", f"{api.base_url}/slow"),
@@ -143,9 +169,10 @@ async def test_a_post_goes_on_a_fresh_connection_and_leaves_the_pool_alone(serve
     finally:
         await api.close()
 
-    post_port = next(port for method, port in seen if method == "POST")
+    post_ports = [port for method, port in seen if method == "POST"]
     get_ports = {port for method, port in seen if method == "GET"}
-    assert post_port not in get_ports
+    assert len(post_ports) == 2
+    assert not set(post_ports) & get_ports
     assert seen[0][1] == seen[-1][1]
 
 

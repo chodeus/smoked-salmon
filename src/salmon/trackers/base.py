@@ -423,7 +423,9 @@ class BaseGazelleApi:
                             allow_redirects=False,
                         ) as resp,
                     ):
-                        text = await resp.text()
+                        # sock_read resets on every chunk, so a trickled body needs its own bound.
+                        async with asyncio.timeout(timeout_secs):
+                            text = await resp.text()
                         if cfg.upload.debug_tracker_connection:
                             self._debug_response(resp, text)
                         if not resp.ok:
