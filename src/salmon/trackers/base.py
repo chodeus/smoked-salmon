@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager, suppress
 from http import HTTPStatus
 from typing import Any, cast
 from urllib.parse import parse_qs, quote, unquote, urlparse
+from weakref import WeakKeyDictionary
 
 import aiohttp
 import asyncclick as click
@@ -184,6 +185,28 @@ _TRANSIENT_5XX = frozenset(
 )
 
 
+# Pools still open per click context, closed when it exits. A set, not one callback per pool, so a
+# long-lived context (the web UI server's) holds nothing for a pool already closed.
+_open_pools: WeakKeyDictionary[click.Context, set[aiohttp.ClientSession]] = WeakKeyDictionary()
+
+
+def _close_with_context(session: aiohttp.ClientSession) -> None:
+    """Close ``session`` when the current click context exits, unless it is closed first."""
+    # Web UI jobs get their own context in JobManager._thread_main.
+    ctx = click.get_current_context(silent=True)
+    if ctx is None:
+        return
+    if ctx not in _open_pools:
+        open_pools = _open_pools[ctx] = set()
+
+        async def close_open_pools() -> None:
+            for pool in list(open_pools):
+                await pool.close()
+
+        ctx.call_on_close(close_open_pools)
+    _open_pools[ctx].add(session)
+
+
 class RetryableError(RequestError):
     """Exception for retryable network errors."""
 
@@ -241,15 +264,15 @@ class BaseGazelleApi:
                 connector=aiohttp.TCPConnector(limit=2),
                 cookie_jar=aiohttp.DummyCookieJar(),
             )
-            # Web UI jobs get their own context in JobManager._thread_main.
-            with suppress(RuntimeError):
-                click.get_current_context().call_on_close(self.close)
+            _close_with_context(self._session)
         return self._session
 
     async def close(self) -> None:
         """Close the kept-alive pool."""
         if self._session is not None:
             await self._session.close()
+            for open_pools in _open_pools.values():
+                open_pools.discard(self._session)
             self._session = None
 
     @asynccontextmanager
