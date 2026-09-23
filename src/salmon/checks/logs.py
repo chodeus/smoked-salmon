@@ -183,14 +183,16 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         click.secho(f"Error checking log {logpath}: {e}", fg="red")
         raise
 
-    if cambia_output.parsed.parsed_logs[0].checksum.integrity == cambia.Integrity.Mismatch:
+    # Every appended log carries its own checksum; an edited rerip log must not pass on the first one's.
+    parsed_logs = cambia_output.parsed.parsed_logs
+    integrities = [parsed_log.checksum.integrity for parsed_log in parsed_logs]
+    if cambia.Integrity.Mismatch in integrities:
         raise EditedLogError("Edited logs")
-    elif cambia_output.parsed.parsed_logs[0].checksum.integrity == cambia.Integrity.Unknown:
+    elif cambia.Integrity.Unknown in integrities:
         click.secho("Lacking a valid checksum. The torrent will be marked as trumpable.", fg="yellow")
 
     # Appended rerip logs: last log per (disc, track) wins. Key on the disc's TOC id
     # so a second disc's track numbers don't overwrite the first's (#358).
-    parsed_logs = cambia_output.parsed.parsed_logs
     last_copy_hash: dict[tuple[str, int], str] = {}
     last_is_range: dict[tuple[str, int], bool] = {}
     for parsed_log in parsed_logs:

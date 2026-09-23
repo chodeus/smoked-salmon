@@ -6,7 +6,7 @@ import anyio
 import cambia
 import pytest
 
-from salmon.errors import CRCMismatchError
+from salmon.errors import CRCMismatchError, EditedLogError
 
 # salmon.checks.__init__ likely defines click commands that could shadow submodules on the
 # package object, so importlib is used to get the module itself, matching test_checks_integrity.
@@ -335,3 +335,47 @@ def test_two_tracks_sharing_a_crc_each_need_a_matching_file(tmp_path, monkeypatc
 
     with pytest.raises(CRCMismatchError):
         anyio.run(logs.check_log_cambia, "log.log", basepath)
+
+
+@pytest.mark.parametrize("multi_disc", [True, False], ids=["multi-disc", "one-disc"])
+def test_an_edited_appended_log_is_refused(tmp_path, monkeypatch, multi_disc) -> None:
+    basepath = _write_files(tmp_path, ["a.flac", "b.flac"])
+    output = FakeCambiaOutput(
+        parsed=FakeParsedCombined(
+            parsed_logs=[
+                FakeParsedLog(toc_hash="disc-1", tracks=[FakeTrack(num=1, copy_hash="A")]),
+                FakeParsedLog(
+                    toc_hash="disc-2" if multi_disc else "disc-1",
+                    tracks=[FakeTrack(num=2, copy_hash="B")],
+                    checksum=FakeChecksum(integrity=cambia.Integrity.Mismatch),
+                ),
+            ]
+        )
+    )
+    _patch_cambia(monkeypatch, output)
+    _patch_file_crcs(monkeypatch, {"a.flac": "A", "b.flac": "B"})
+
+    with pytest.raises(EditedLogError):
+        anyio.run(logs.check_log_cambia, "log.log", basepath)
+
+
+def test_an_appended_log_without_a_checksum_warns(tmp_path, monkeypatch, capsys) -> None:
+    basepath = _write_files(tmp_path, ["a.flac"])
+    output = FakeCambiaOutput(
+        parsed=FakeParsedCombined(
+            parsed_logs=[
+                FakeParsedLog(tracks=[FakeTrack(num=1, copy_hash="STALE")]),
+                FakeParsedLog(
+                    tracks=[FakeTrack(num=1, copy_hash="A")],
+                    checksum=FakeChecksum(integrity=cambia.Integrity.Unknown),
+                ),
+            ]
+        )
+    )
+    _patch_cambia(monkeypatch, output)
+    _patch_file_crcs(monkeypatch, {"a.flac": "A"})
+
+    anyio.run(logs.check_log_cambia, "log.log", basepath)
+
+    out = capsys.readouterr().out
+    assert "Lacking a valid checksum" in out
