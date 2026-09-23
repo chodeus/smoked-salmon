@@ -276,6 +276,32 @@ def test_rate_limit_asking_for_a_long_wait_is_not_retried(tidal: FakeTidal, monk
     assert len(tidal.api_requests) == 1
 
 
+def test_rate_limit_with_a_non_numeric_wait_backs_off(tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = iter([_json({}, 429, {"Retry-After": "nan"}), _json({"data": []})])
+    tidal.routes["ping"] = lambda request: next(responses)(request)
+
+    assert _run(tidal, monkeypatch, lambda: Scraper().get_json("/ping")) == {"data": []}
+    assert len(tidal.api_requests) == 2
+
+
+def test_rejected_token_is_replaced_once(tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = iter([_json({}, 401), _json({"data": []})])
+    tidal.routes["ping"] = lambda request: next(responses)(request)
+
+    assert _run(tidal, monkeypatch, lambda: Scraper().get_json("/ping")) == {"data": []}
+    assert len(tidal.token_requests) == 2
+    assert len(tidal.api_requests) == 2
+
+
+def test_token_rejected_twice_is_an_error(tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch) -> None:
+    tidal.routes["ping"] = _json({}, 401)
+
+    with pytest.raises(ScrapeError):
+        _run(tidal, monkeypatch, lambda: Scraper().get_json("/ping"))
+    assert len(tidal.token_requests) == 2
+    assert len(tidal.api_requests) == 2
+
+
 def test_search_uses_the_search_results_collection(tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch) -> None:
     tidal.routes["searchResults"] = _json(SEARCH_DOC)
 
