@@ -990,6 +990,29 @@ async def test_a_failure_after_the_post_was_redirected_is_an_unknown_outcome(api
     assert [r["method"] for r in captured["requests"]] == ["POST", "GET"]
 
 
+def _hop(url: str, location: str) -> FakeAiohttpResponse:
+    return FakeAiohttpResponse(status=302, url=url, headers={"Location": location})
+
+
+@pytest.mark.parametrize(
+    "later",
+    [
+        [_hop("https://dummy.example/torrents.php", "/login.php")],
+        [_hop("https://dummy.example/torrents.php", "https://evil.example/x")],
+        [_hop("https://dummy.example/torrents.php", "/torrents.php")],
+    ],
+    ids=["login-bounce", "off-site", "too-many-hops"],
+)
+async def test_a_refused_hop_after_the_post_was_redirected_is_an_unknown_outcome(api, monkeypatch, later):
+    captured = install_fake_aiohttp(monkeypatch, [_hop("https://dummy.example/upload.php", "/torrents.php"), *later])
+    api._authenticated = True
+
+    with pytest.raises(UnknownOutcomeError):
+        await api._request("POST", "https://dummy.example/upload.php", data={"x": "1"})
+    assert captured["requests"][0]["method"] == "POST"
+    assert len(captured["requests"]) <= 4
+
+
 async def test_an_idempotent_post_keeps_retrying(api, monkeypatch):
     monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [aiohttp.ServerDisconnectedError()])

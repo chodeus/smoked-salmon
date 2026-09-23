@@ -432,6 +432,12 @@ class BaseGazelleApi:
         except (TimeoutError, aiohttp.ClientError) as err:
             # Checked by type: ConnectionTimeoutError is also a TimeoutError, and never connected is safe to resend.
             raise failure(f"Network error: {err}", not_acted_on=isinstance(err, _NOT_SENT_ERRORS)) from err
+        except RequestError as err:
+            # After a redirect the tracker has acted, so a refused later hop is an unknown outcome.
+            if idempotent or not redirected or isinstance(err, UnknownOutcomeError):
+                raise
+            # By type only: a RequestFailedError carries the raw response body.
+            raise UnknownOutcomeError(f"{self.site_string} failed on a later hop ({type(err).__name__})") from err
 
     @staticmethod
     def _debug_response(resp: aiohttp.ClientResponse, text: str) -> None:
