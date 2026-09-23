@@ -102,7 +102,8 @@ async def test_each_redirect_hop_takes_a_rate_limiter_slot(serve, api_for):
 
     url = await serve(torrents=torrents)
     api = api_for(url)
-    assert await api.get_redirect_torrentgroupid(1) == 2
+    group_id = await api.get_redirect_torrentgroupid(1)
+    assert group_id == 2
     assert hits == ["/torrents.php?torrentid=1", "/torrents.php?id=2&torrentid=1"]
     assert cast("CountingLimiter", _tracker_limiter("RED")).slots == len(hits)
 
@@ -112,7 +113,8 @@ async def test_a_redirected_post_is_fetched_with_get(serve, api_for):
 
     async def upload(request: web.Request) -> web.Response:
         hits.append((request.method, request.path))
-        assert (await request.post())["auth"] == "an-authkey"
+        form = await request.post()
+        assert form["auth"] == "an-authkey"
         raise web.HTTPFound("/torrents.php?id=5")
 
     async def torrents(request: web.Request) -> web.Response:
@@ -234,16 +236,19 @@ async def test_no_session_cookie_skips_the_site_log(serve, api_for, capsys):
     tracker = FakeLog()
     url = await serve(log=tracker.log, login=tracker.login)
 
-    assert await api_for(url, cookie="").get_uploads_from_log() == []
+    uploads = await api_for(url, cookie="").get_uploads_from_log()
+    out = capsys.readouterr().out
+    assert uploads == []
     assert tracker.hits == []
-    assert "needs a session cookie" in capsys.readouterr().out
+    assert "needs a session cookie" in out
 
 
 async def test_an_expired_cookie_costs_one_request(serve, api_for):
     tracker = FakeLog()
     url = await serve(log=tracker.log, login=tracker.login)
 
-    assert await api_for(url, cookie="expired").get_uploads_from_log() == []
+    uploads = await api_for(url, cookie="expired").get_uploads_from_log()
+    assert uploads == []
     assert tracker.hits == ["/log.php?page=1"]
 
 
