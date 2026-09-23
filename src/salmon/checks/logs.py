@@ -197,10 +197,6 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
             last_copy_hash[(disc_id, track.num)] = track.test_and_copy.copy_hash
     copy_crc_set = set(last_copy_hash.values())
 
-    # Prefer the log's own directory: for a multi-disc release with a log per disc, the
-    # release root (basepath) would mix other discs' audio and break range-CRC track counts.
-    # But when the log lives in a nested dir (e.g. Album/logs/) it holds no audio, so fall
-    # back to basepath — a combined multi-disc log then hits the >1-TOC skip below anyway.
     def _find_audio(root_dir: str) -> list[str]:
         found: list[str] = []
         for root, _folders, files_ in os.walk(root_dir):
@@ -209,19 +205,28 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
                     found.append(os.path.join(root, f))
         return found
 
-    files_to_check = _find_audio(os.path.dirname(logpath)) or _find_audio(basepath)
+    # A log per disc: its own folder, so other discs' audio can't break range-CRC track counts.
+    # One log for several discs, or a log in a folder without audio: the whole release.
+    multi_disc = len({pl.toc.accurip_tocid.hash for pl in parsed_logs}) > 1
+    files_to_check = [] if multi_disc else _find_audio(os.path.dirname(logpath))
+    files_to_check = files_to_check or _find_audio(basepath)
 
     if not files_to_check:
         raise ValueError("No audio files found!")
 
     click.secho("\nVerifying audio file CRC values...", fg="cyan", bold=True)
-    # Multiple discs in one log make the flat file set ambiguous against per-(disc,track)
-    # hashes and against a single log's range/TOC; the log score + checksum checks above
-    # already ran, so skip the file-CRC comparison rather than risk a false failure (#358, 3b).
-    if len({pl.toc.accurip_tocid.hash for pl in parsed_logs}) > 1:
-        click.secho("Multi-disc log detected — skipping combined CRC file verification.", fg="yellow")
+    if multi_disc and len(files_to_check) < len(last_copy_hash):
+        click.secho(
+            f"Multi-disc log, but only {len(files_to_check)} audio file(s) under {basepath} for "
+            f"{len(last_copy_hash)} tracks: skipping CRC file verification. Check it from the album folder.",
+            fg="yellow",
+        )
         return
     if parsed_logs[0].tracks[0].is_range:
+        # One range rebuilt from the first disc's TOC can't stand for several discs (#358).
+        if multi_disc:
+            click.secho("Multi-disc range rip log: skipping combined CRC file verification.", fg="yellow")
+            return
         toc_entries = parsed_logs[0].toc.raw.entries
 
         # Log contains range rip CRC, but we have individual track files
