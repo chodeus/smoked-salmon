@@ -289,3 +289,29 @@ def test_a_range_entry_replaced_by_a_rerip_is_verified(tmp_path, monkeypatch, ca
 
     out = capsys.readouterr().out
     assert "All CRC values match" in out
+
+
+@pytest.mark.parametrize("multi_disc", [True, False], ids=["multi-disc", "one-disc"])
+def test_a_first_log_range_rip_replaced_by_a_rerip_is_verified_per_file(
+    tmp_path, monkeypatch, capsys, multi_disc
+) -> None:
+    names = ["d1-01.flac", "d2-01.flac"] if multi_disc else ["d1-01.flac"]
+    basepath = _write_files(tmp_path, names)
+    logs_ = [
+        FakeParsedLog(toc_hash="disc-1", tracks=[FakeTrack(num=1, copy_hash="R1", is_range=True)]),
+        FakeParsedLog(toc_hash="disc-1", tracks=[FakeTrack(num=1, copy_hash="D1-1")]),
+    ]
+    if multi_disc:
+        logs_.append(FakeParsedLog(toc_hash="disc-2", tracks=[FakeTrack(num=1, copy_hash="D2-1")]))
+    _patch_cambia(monkeypatch, FakeCambiaOutput(parsed=FakeParsedCombined(parsed_logs=logs_)))
+    _patch_file_crcs(monkeypatch, {"d1-01.flac": "D1-1", "d2-01.flac": "D2-1"})
+
+    async def no_range(*_args, **_kwargs) -> str:
+        raise AssertionError("the range was replaced; nothing should be rebuilt from its TOC")
+
+    monkeypatch.setattr(logs, "_calculate_range_crc_async", no_range)
+
+    anyio.run(logs.check_log_cambia, "log.log", basepath)
+
+    out = capsys.readouterr().out
+    assert "All CRC values match" in out

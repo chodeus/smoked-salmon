@@ -225,12 +225,13 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
             fg="yellow",
         )
         return
-    # A range CRC on any disc matches no single file, and one range rebuilt from the first disc's
-    # TOC can't stand for several discs (#358).
-    if multi_disc and any(last_is_range.values()):
+    # Latest entries, as a rerip replaces a range rip. A range CRC matches no single file, and one
+    # range rebuilt from the first disc's TOC can't stand for several discs (#358).
+    range_rip = any(last_is_range.values())
+    if multi_disc and range_rip:
         click.secho("Multi-disc range rip log: skipping combined CRC file verification.", fg="yellow")
         return
-    if parsed_logs[0].tracks[0].is_range:
+    if range_rip:
         toc_entries = parsed_logs[0].toc.raw.entries
 
         # Log contains range rip CRC, but we have individual track files
