@@ -1,6 +1,7 @@
 import asyncio
 import html
 import re
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from http import HTTPStatus
@@ -188,23 +189,28 @@ _TRANSIENT_5XX = frozenset(
 # Pools still open per click context, closed when it exits. A set, not one callback per pool, so a
 # long-lived context (the web UI server's) holds nothing for a pool already closed.
 _open_pools: WeakKeyDictionary[click.Context, set[aiohttp.ClientSession]] = WeakKeyDictionary()
+# Web UI job threads register their own contexts concurrently.
+_open_pools_lock = threading.Lock()
 
 
-def _close_with_context(session: aiohttp.ClientSession) -> None:
-    """Close ``session`` when the current click context exits, unless it is closed first."""
+def _close_with_context(session: aiohttp.ClientSession) -> set[aiohttp.ClientSession] | None:
+    """Close ``session`` when the current click context exits; returns that context's open-pool set."""
     # Web UI jobs get their own context in JobManager._thread_main.
     ctx = click.get_current_context(silent=True)
     if ctx is None:
-        return
-    if ctx not in _open_pools:
-        open_pools = _open_pools[ctx] = set()
+        return None
+    with _open_pools_lock:
+        open_pools = _open_pools.get(ctx)
+        if open_pools is None:
+            open_pools = _open_pools[ctx] = set()
 
-        async def close_open_pools() -> None:
-            for pool in list(open_pools):
-                await pool.close()
+            async def close_open_pools() -> None:
+                for pool in list(open_pools):
+                    await pool.close()
 
-        ctx.call_on_close(close_open_pools)
-    _open_pools[ctx].add(session)
+            ctx.call_on_close(close_open_pools)
+    open_pools.add(session)
+    return open_pools
 
 
 class RetryableError(RequestError):
@@ -254,6 +260,7 @@ class BaseGazelleApi:
         self.passkey: str | None = None
         self._authenticated = False
         self._session: aiohttp.ClientSession | None = None
+        self._pool_owner: set[aiohttp.ClientSession] | None = None
 
     def _http_session(self) -> aiohttp.ClientSession:
         """Get this instance's kept-alive pool, opening it on first use."""
@@ -264,15 +271,17 @@ class BaseGazelleApi:
                 connector=aiohttp.TCPConnector(limit=2),
                 cookie_jar=aiohttp.DummyCookieJar(),
             )
-            _close_with_context(self._session)
+            self._pool_owner = _close_with_context(self._session)
         return self._session
 
     async def close(self) -> None:
         """Close the kept-alive pool."""
         if self._session is not None:
             await self._session.close()
-            for open_pools in _open_pools.values():
-                open_pools.discard(self._session)
+            # Only this pool's own context, never the shared registry another thread may be adding to.
+            if self._pool_owner is not None:
+                self._pool_owner.discard(self._session)
+                self._pool_owner = None
             self._session = None
 
     @asynccontextmanager
