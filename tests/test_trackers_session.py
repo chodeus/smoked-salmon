@@ -1,8 +1,11 @@
 """The kept-alive tracker connection pool, against real local servers."""
 
 import asyncio
+import gc
+import weakref
 from typing import Any, cast
 
+import asyncclick as click
 import pytest
 from aiohttp import web
 from aiolimiter import AsyncLimiter
@@ -234,3 +237,29 @@ async def test_the_connection_check_closes_its_pool(serve, monkeypatch):
 
     assert result["session_ok"], result
     assert cast("Any", made[0])._session is None
+
+
+async def test_a_long_lived_context_keeps_no_tracker_once_its_pool_is_closed(serve):
+    # The web UI's server context lives until shutdown; each connection check must not pile up on it.
+    base = await serve(_answer_ok)
+    async with click.Context(click.Command("web")):
+        refs = []
+        for _ in range(3):
+            api = FakeApi(base)
+            await api._request("GET", f"{base}/ajax.php")
+            await api.close()
+            refs.append(weakref.ref(api))
+            del api
+        gc.collect()
+        assert all(ref() is None for ref in refs)
+
+
+async def test_a_pool_left_open_still_closes_with_its_context(serve):
+    base = await serve(_answer_ok)
+    async with click.Context(click.Command("cli")):
+        api = FakeApi(base)
+        await api._request("GET", f"{base}/ajax.php")
+        session = api._session
+        del api
+        gc.collect()
+    assert session is not None and session.closed
