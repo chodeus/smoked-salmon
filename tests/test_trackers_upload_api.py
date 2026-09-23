@@ -127,28 +127,39 @@ def install_fake_aiohttp(monkeypatch, outcomes):
 
     Each outcome is a FakeAiohttpResponse to serve or an Exception to raise.
     The last outcome repeats. Returns a capture dict with the session
-    constructor kwargs, cookie-jar seedings, and the individual request calls.
+    constructor kwargs and the individual request calls.
     """
-    captured = {"sessions": [], "requests": [], "cookie_jars": []}
-
-    class FakeCookieJar:
-        def update_cookies(self, cookies, response_url=None):
-            captured["cookie_jars"].append({"cookies": dict(cookies), "response_url": str(response_url)})
+    captured = {"sessions": [], "requests": []}
 
     class FakeClientSession:
         def __init__(self, **kwargs):
             captured["sessions"].append(kwargs)
-            self.cookie_jar = FakeCookieJar()
+            self.closed = False
 
         async def __aenter__(self):
             return self
 
         async def __aexit__(self, *args):
+            await self.close()
             return False
 
-        def request(self, method, url, params=None, data=None, max_redirects=None):
+        async def close(self):
+            self.closed = True
+
+        def request(
+            self, method, url, params=None, data=None, headers=None, cookies=None, timeout=None, max_redirects=None
+        ):
             captured["requests"].append(
-                {"method": method, "url": url, "params": params, "data": data, "max_redirects": max_redirects}
+                {
+                    "method": method,
+                    "url": url,
+                    "params": params,
+                    "data": data,
+                    "headers": headers,
+                    "cookies": cookies,
+                    "timeout": timeout,
+                    "max_redirects": max_redirects,
+                }
             )
             outcome = outcomes[min(len(captured["requests"]) - 1, len(outcomes) - 1)]
             return _FakeRequestCM(outcome)
@@ -325,26 +336,22 @@ async def test_request_with_api_key_uses_authorization_header_and_no_cookie(api,
 
     await api._request("GET", "https://dummy.example/ajax.php", prefer_api_key=True)
 
-    session_kwargs = captured["sessions"][0]
-    assert session_kwargs["headers"]["Authorization"] == "secret-api-key"
-    assert "cookies" not in session_kwargs  # cookies go through the jar, scoped to the tracker
-    assert captured["cookie_jars"] == []  # api-key mode sends no cookie at all
+    sent = captured["requests"][0]
+    assert sent["headers"]["Authorization"] == "secret-api-key"
+    assert sent["cookies"] == {}  # api-key mode sends no cookie at all
 
 
-async def test_request_without_api_key_scopes_session_cookie_to_tracker(api, monkeypatch):
+async def test_request_without_api_key_sends_the_session_cookie(api, monkeypatch):
     captured = install_fake_aiohttp(monkeypatch, [FakeAiohttpResponse(text="ok")])
     api._authenticated = True
     api.api_key = ""
 
     await api._request("GET", "https://dummy.example/ajax.php", prefer_api_key=True)
 
-    session_kwargs = captured["sessions"][0]
-    # Jar-scoped to the tracker origin so a cross-origin redirect can't carry it.
-    assert "cookies" not in session_kwargs
-    assert captured["cookie_jars"] == [
-        {"cookies": {"session": "test-cookie"}, "response_url": "https://dummy.example"}
-    ]
-    assert "Authorization" not in session_kwargs["headers"]
+    sent = captured["requests"][0]
+    # Off-origin hops are covered against a real server in test_trackers_session.
+    assert sent["cookies"] == {"session": "test-cookie"}
+    assert "Authorization" not in sent["headers"]
 
 
 async def test_request_rate_limited_retries_and_succeeds(api, monkeypatch):
@@ -1097,8 +1104,11 @@ async def test_a_real_dropped_answer_to_a_get_is_retried(api, monkeypatch, track
     api.base_url = base
     api._authenticated = True
 
-    with pytest.raises(RetryableError):
-        await api._request("GET", f"{base}/ajax.php")
+    try:
+        with pytest.raises(RetryableError):
+            await api._request("GET", f"{base}/ajax.php")
+    finally:
+        await api.close()
     # aiohttp also re-sends an idempotent request once itself, so each attempt can hit twice.
     assert len(hits) >= 5
     assert set(hits) == {"GET"}

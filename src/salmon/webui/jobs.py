@@ -68,6 +68,12 @@ class JobCapacityError(Exception):
     """Too many jobs are already running; the caller should retry later."""
 
 
+async def _in_click_context(coro: Coroutine[Any, Any, Any]) -> Any:
+    # Click's context stack is per thread; tracker pools close when this context exits.
+    async with click.Context(click.Command("job")):
+        return await coro
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -227,7 +233,7 @@ class JobManager:
             self._set_status(job, "running", threadsafe=True)
             if job.interaction is not None and job.interaction.cancel_requested.is_set():
                 raise asyncio.CancelledError()
-            task = loop.create_task(factory(job))
+            task = loop.create_task(_in_click_context(factory(job)))
             job._thread_task = task
             job.result = loop.run_until_complete(task)
             job.status = "done"
