@@ -373,7 +373,9 @@ class BaseGazelleApi:
                     max_redirects=3,
                 ) as resp,
             ):
-                text = await resp.text()
+                # sock_read resets on every chunk, so a trickled body needs its own bound.
+                async with asyncio.timeout(timeout_secs):
+                    text = await resp.text()
 
                 # An off-origin hop is hostile or badly broken — refuse the response.
                 expected_origin = URL(url).origin()
