@@ -13,6 +13,7 @@ from aiohttp import FormData
 from aiolimiter import AsyncLimiter
 from bs4 import BeautifulSoup
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
+from torf import TorfError, Torrent
 from yarl import URL
 
 from salmon import cfg
@@ -22,6 +23,7 @@ from salmon.errors import (
     LoginError,
     RequestError,
     RequestFailedError,
+    UnknownOutcomeError,
     UploadError,
 )
 
@@ -264,6 +266,7 @@ class BaseGazelleApi:
         data: Any = None,
         timeout_secs: int = 10,
         prefer_api_key: bool = False,
+        idempotent: bool | None = None,
     ) -> HttpResponse:
         """Authenticated HTTP request, returns response data.
 
@@ -276,10 +279,23 @@ class BaseGazelleApi:
             prefer_api_key: If True and api_key is set, use Authorization header
                 only (no cookie). If False or api_key is empty, use cookie only
                 (no Authorization header).
+            idempotent: Whether sending the request twice does no more than sending it
+                once. Defaults to True for everything but POST.
 
         Returns:
             HttpResponse with text, url, status, and headers.
+
+        Raises:
+            UnknownOutcomeError: A request that is not idempotent failed after it may have
+                reached the tracker, so it is not sent again.
         """
+        if idempotent is None:
+            idempotent = method.upper() != "POST"
+
+        def _failed(message: str) -> RequestError:
+            # Re-sending is only safe when repeating the request cannot change anything twice.
+            return RetryableError(message) if idempotent else UnknownOutcomeError(message)
+
         if not (params and params.get("action") == "index"):
             await self.ensure_authenticated()
 
@@ -324,6 +340,9 @@ class BaseGazelleApi:
                             error_msg = msgspec.json.encode(msgspec.json.decode(text)["error"]).decode()
 
                         if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
+                            # A redirect means the tracker already acted; this 429 is on a later hop.
+                            if not idempotent and resp.history:
+                                raise UnknownOutcomeError(f"{self.site_string} rate-limited a later hop")
                             retry_after = float(resp.headers.get("Retry-After", "20"))
                             click.secho(f"Rate limit exceeded, waiting {retry_after} seconds...", fg="yellow")
                             await asyncio.sleep(retry_after)
@@ -343,7 +362,7 @@ class BaseGazelleApi:
                             HTTPStatus.SERVICE_UNAVAILABLE,
                             HTTPStatus.GATEWAY_TIMEOUT,
                         ):
-                            raise RetryableError(f"Server error {resp.status}, retrying...")
+                            raise _failed(f"Server error {resp.status}")
 
                         click.secho(
                             f"Request to {self.site_string} failed ({resp.status}): {error_msg}",
@@ -365,7 +384,11 @@ class BaseGazelleApi:
             )
             raise LoginError from err
         except (TimeoutError, aiohttp.ClientError) as err:
-            raise RetryableError(f"Network error: {err}") from err
+            # Checked first: ConnectionTimeoutError is also a TimeoutError. Never connected means
+            # nothing reached the tracker, so re-sending is safe whatever the method.
+            if isinstance(err, (aiohttp.ClientConnectorError, aiohttp.ConnectionTimeoutError)):
+                raise RetryableError(f"Network error: {err}") from err
+            raise _failed(f"Network error: {err}") from err
 
     async def api_call(self, action: str, params: dict[str, Any] | None = None) -> dict:
         """Make a request to the site API with rate limiting.
@@ -597,9 +620,12 @@ class BaseGazelleApi:
         url = self.base_url + "/ajax.php?action=upload"
         data["auth"] = self.authkey
 
-        response = await self._request(
-            "POST", url, data=_compose_form_data(files, data), timeout_secs=30, prefer_api_key=True
-        )
+        try:
+            response = await self._request(
+                "POST", url, data=_compose_form_data(files, data), timeout_secs=30, prefer_api_key=True
+            )
+        except UnknownOutcomeError as err:
+            return await self._find_lost_upload(files, err)
         try:
             resp = msgspec.json.decode(response.text)
         except (msgspec.DecodeError, ValueError) as e:
@@ -658,7 +684,10 @@ class BaseGazelleApi:
             url = self.base_url + "/upload.php"
         data["auth"] = self.authkey
 
-        response = await self._request("POST", url, data=_compose_form_data(files, data), timeout_secs=30)
+        try:
+            response = await self._request("POST", url, data=_compose_form_data(files, data), timeout_secs=30)
+        except UnknownOutcomeError as err:
+            return await self._find_lost_upload(files, err)
         resp_text = response.text
         resp_url = response.url
 
@@ -685,6 +714,25 @@ class BaseGazelleApi:
             return self.parse_most_recent_torrent_and_group_id_from_group_page(resp_text)
         except TypeError as err:
             raise RequestError(f"Site upload failed, response text: {_safe_response_excerpt(resp_text)}") from err
+
+    async def _find_lost_upload(self, files: UploadFiles, err: UnknownOutcomeError) -> tuple[int, int]:
+        """Look an upload whose answer was lost up once, by its infohash, and return its ids."""
+        click.secho(f"Could not tell whether {self.site_string} took the upload ({err}), looking it up...", fg="yellow")
+        try:
+            # Gazelle's API documentation asks for the hash in uppercase.
+            infohash = Torrent.read_stream(files.torrent_data).infohash.upper()
+            found = await self.api_call("torrent", params={"hash": infohash})
+            torrent_id, group_id = int(found["torrent"]["id"]), int(found["group"]["id"])
+        except (RequestError, TorfError, KeyError, TypeError, ValueError) as lookup_err:
+            # A non-JSON answer arrives here whole, and a logged-in page's links carry secrets.
+            reason = _safe_response_excerpt(str(lookup_err))
+            raise UnknownOutcomeError(
+                f"Could not tell whether {self.site_string} took the upload ({err}), and looking it up by "
+                f"its infohash did not find it ({reason}). The upload may still have gone through: "
+                f"check your uploads on {self.site_string} before uploading it again."
+            ) from lookup_err
+        click.secho(f"Found the upload on {self.site_string}: torrent {torrent_id}.", fg="green")
+        return torrent_id, group_id
 
     async def upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Upload torrent via API or upload.php.
@@ -772,7 +820,8 @@ class BaseGazelleApi:
             "auth": self.authkey,
         }
         url = self.base_url + "/torrents.php"
-        resp = await self._request("POST", url, data=new_data)
+        # Every field is rebuilt from the torrent's current state, so sending it twice is harmless.
+        resp = await self._request("POST", url, data=new_data, idempotent=True)
         resp_text = resp.text
 
         soup = BeautifulSoup(resp_text, "lxml")

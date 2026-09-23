@@ -14,19 +14,25 @@ from typing import Any, cast
 import aiohttp
 import asyncclick as click
 import pytest
+import torf
+from aiohttp import web
+from aiohttp.client_reqrep import ConnectionKey
 from aiolimiter import AsyncLimiter
 from tenacity import wait_fixed
+from yarl import URL
 
 from salmon import cfg
 from salmon.common import UploadFiles
-from salmon.errors import LoginError, RequestError, RequestFailedError, UploadError
+from salmon.errors import LoginError, RequestError, RequestFailedError, UnknownOutcomeError, UploadError
 from salmon.trackers.base import (
     BaseGazelleApi,
     HttpResponse,
     RetryableError,
     _redact,
 )
+from salmon.trackers.ops import OpsApi
 from salmon.trackers.red import RedApi
+from salmon.uploader import spectrals
 
 
 class DummyGazelleApi(BaseGazelleApi):
@@ -62,7 +68,7 @@ def script_requests(api, outcomes):
     """
     calls = []
 
-    async def fake_request(method, url, params=None, data=None, timeout_secs=10, prefer_api_key=False):
+    async def fake_request(method, url, params=None, data=None, timeout_secs=10, prefer_api_key=False, idempotent=None):
         calls.append(
             {
                 "method": method,
@@ -71,6 +77,7 @@ def script_requests(api, outcomes):
                 "data": data,
                 "timeout_secs": timeout_secs,
                 "prefer_api_key": prefer_api_key,
+                "idempotent": idempotent,
             }
         )
         outcome = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
@@ -886,3 +893,243 @@ def test_redact_masks_cookie_credentials():
     redacted = _redact(json_headers)
     assert "deadbeef" not in redacted
     assert "s3cr3t" not in redacted
+
+
+# ---------------------------------------------------------------------------
+# A request that changes state is never sent twice once it may have reached the tracker
+# ---------------------------------------------------------------------------
+
+
+def _connect_refused() -> aiohttp.ClientConnectorError:
+    key = ConnectionKey("dummy.example", 443, True, True, None, None, None)
+    return aiohttp.ClientConnectorError(key, OSError(61, "Connection refused"))
+
+
+def _real_torrent(tmp_path) -> bytes:
+    (tmp_path / "track.flac").write_bytes(b"x" * 1000)
+    torrent = torf.Torrent(path=tmp_path, trackers=["https://announce.dummy.example"], private=True)
+    torrent.generate()
+    return torrent.dump()
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        aiohttp.ServerDisconnectedError(),
+        TimeoutError(),
+        FakeAiohttpResponse(text="bad gateway", status=502),
+        FakeAiohttpResponse(text="unavailable", status=503),
+    ],
+    ids=["answer-dropped", "timeout", "502", "503"],
+)
+async def test_a_post_that_may_have_reached_the_tracker_is_sent_once(api, monkeypatch, outcome):
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    captured = install_fake_aiohttp(monkeypatch, [outcome])
+    api._authenticated = True
+
+    with pytest.raises(UnknownOutcomeError):
+        await api._request("POST", "https://dummy.example/upload.php", data={"x": "1"})
+    assert len(captured["requests"]) == 1
+
+
+async def test_a_post_that_never_connected_is_retried(api, monkeypatch):
+    # Nothing reached the tracker, so sending it again cannot do anything twice.
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    captured = install_fake_aiohttp(monkeypatch, [_connect_refused()])
+    api._authenticated = True
+
+    with pytest.raises(RetryableError):
+        await api._request("POST", "https://dummy.example/upload.php", data={"x": "1"})
+    assert len(captured["requests"]) == 5
+
+
+async def test_a_post_refused_with_429_is_retried(api, monkeypatch):
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    captured = install_fake_aiohttp(
+        monkeypatch,
+        [FakeAiohttpResponse(status=429, headers={"Retry-After": "0"}), FakeAiohttpResponse(text="ok")],
+    )
+    api._authenticated = True
+
+    resp = await api._request("POST", "https://dummy.example/upload.php", data={"x": "1"})
+    assert resp.text == "ok"
+    assert len(captured["requests"]) == 2
+
+
+async def test_a_429_after_the_post_was_redirected_is_not_retried(api, monkeypatch):
+    # A redirect means the tracker already acted on the POST; the 429 is on a later hop.
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    hop = FakeAiohttpResponse(status=302, url=URL("https://dummy.example/upload.php"))
+    captured = install_fake_aiohttp(
+        monkeypatch,
+        [
+            FakeAiohttpResponse(
+                status=429,
+                headers={"Retry-After": "0"},
+                url=URL("https://dummy.example/torrents.php"),
+                history=[hop],
+            )
+        ],
+    )
+    api._authenticated = True
+
+    with pytest.raises(UnknownOutcomeError):
+        await api._request("POST", "https://dummy.example/upload.php", data={"x": "1"})
+    assert len(captured["requests"]) == 1
+
+
+async def test_an_idempotent_post_keeps_retrying(api, monkeypatch):
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    captured = install_fake_aiohttp(monkeypatch, [aiohttp.ServerDisconnectedError()])
+    api._authenticated = True
+
+    with pytest.raises(RetryableError):
+        await api._request("POST", "https://dummy.example/torrents.php", data={"x": "1"}, idempotent=True)
+    assert len(captured["requests"]) == 5
+
+
+async def test_a_get_whose_answer_is_dropped_is_still_retried(api, monkeypatch):
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    captured = install_fake_aiohttp(monkeypatch, [aiohttp.ServerDisconnectedError()])
+    api._authenticated = True
+
+    with pytest.raises(RetryableError):
+        await api._request("GET", "https://dummy.example/ajax.php")
+    assert len(captured["requests"]) == 5
+
+
+@pytest.mark.parametrize("method", ["api_key_upload", "site_page_upload"])
+async def test_a_lost_upload_found_by_its_infohash_returns_its_ids(api, tmp_path, method):
+    torrent = _real_torrent(tmp_path)
+    found = '{"status": "success", "response": {"torrent": {"id": 123}, "group": {"id": 456}}}'
+    calls = script_requests(api, [UnknownOutcomeError("answer lost"), http(text=found)])
+    api.authkey = "AK"
+
+    result = await getattr(api, method)({}, UploadFiles(torrent_data=torrent))
+
+    assert result == (123, 456)
+    assert len(calls) == 2
+    assert calls[0]["method"] == "POST"
+    assert calls[1]["method"] == "GET"
+    assert calls[1]["params"]["action"] == "torrent"
+    assert calls[1]["params"]["hash"] == torf.Torrent.read_stream(torrent).infohash.upper()
+
+
+@pytest.mark.parametrize("method", ["api_key_upload", "site_page_upload"])
+async def test_a_lost_upload_not_found_says_it_may_have_gone_through(api, tmp_path, method):
+    torrent = _real_torrent(tmp_path)
+    calls = script_requests(api, [UnknownOutcomeError("answer lost"), http(text='{"status": "failure"}')])
+    api.authkey = "AK"
+
+    with pytest.raises(UnknownOutcomeError) as excinfo:
+        await getattr(api, method)({}, UploadFiles(torrent_data=torrent))
+
+    assert "may still have gone through" in str(excinfo.value)
+    assert [c["method"] for c in calls] == ["POST", "GET"]
+
+
+async def test_the_description_edit_is_sent_as_idempotent(api):
+    torrent = (
+        '{"remasterYear": 2020, "remasterTitle": "", "remasterRecordLabel": "", "remasterCatalogueNumber": "",'
+        ' "format": "FLAC", "encoding": "Lossless", "media": "WEB", "description": "old"}'
+    )
+    group = '{"status": "success", "response": {"torrent": ' + torrent + ', "group": {"id": 1}}}'
+    calls = script_requests(api, [http(text=group), http(text="<html></html>")])
+    api.authkey = "AK"
+
+    await api.append_to_torrent_description(7, "addition")
+
+    assert calls[-1]["method"] == "POST"
+    assert calls[-1]["idempotent"] is True
+
+
+@pytest.fixture
+async def tracker_that_drops_answers():
+    """A real tracker that reads each request in full, then drops the connection unanswered."""
+    hits: list[str] = []
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        await request.read()
+        hits.append(request.method)
+        assert request.transport is not None
+        request.transport.close()
+        return web.Response()
+
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", handler)
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    yield f"http://127.0.0.1:{runner.addresses[0][1]}", hits
+    await runner.cleanup()
+
+
+async def test_a_real_dropped_answer_to_a_post_is_not_resent(api, monkeypatch, tracker_that_drops_answers):
+    # Pins the exception aiohttp really raises here, which the fakes above can only assume.
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    base, hits = tracker_that_drops_answers
+    api.base_url = base
+    api._authenticated = True
+
+    with pytest.raises(UnknownOutcomeError):
+        await api._request("POST", f"{base}/upload.php", data={"x": "1"})
+    assert hits == ["POST"]
+
+
+async def test_a_real_dropped_answer_to_a_get_is_retried(api, monkeypatch, tracker_that_drops_answers):
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    base, hits = tracker_that_drops_answers
+    api.base_url = base
+    api._authenticated = True
+
+    with pytest.raises(RetryableError):
+        await api._request("GET", f"{base}/ajax.php")
+    # aiohttp also re-sends an idempotent request once itself, so each attempt can hit twice.
+    assert len(hits) >= 5
+    assert set(hits) == {"GET"}
+
+
+async def test_a_report_with_an_unknown_outcome_is_not_filed_again(capsys):
+    class _Site:
+        base_url = "https://dummy.example"
+
+        async def report_lossy_master(self, *_args):
+            raise UnknownOutcomeError("answer lost")
+
+    await spectrals.report_lossy_master(cast("Any", _Site()), 7, None, None, "WEB", "comment")
+
+    out = capsys.readouterr().out
+    assert "Could not tell whether the Lossy Master/WEB report was filed" in out
+    assert "torrents.php?torrentid=7" in out
+
+
+async def test_opss_own_report_is_not_resent_either(monkeypatch):
+    # OPS overrides report_lossy_master with its own takereport POST.
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    captured = install_fake_aiohttp(monkeypatch, [aiohttp.ServerDisconnectedError()])
+    ops = OpsApi()
+    ops._authenticated = True
+    ops.authkey = "AK"
+    ops.cookie = "test-cookie"
+    ops.keeplogged = None
+
+    with pytest.raises(UnknownOutcomeError):
+        await ops.report_lossy_master(7, "comment", "WEB")
+    assert len(captured["requests"]) == 1
+
+
+async def test_a_failed_lookup_cannot_leak_credentials(api, tmp_path):
+    # A non-JSON answer reaches the message whole, and a logged-in page's links carry secrets.
+    torrent = _real_torrent(tmp_path)
+    page = '<a href="torrents.php?action=download&authkey=SYNTHETIC-AUTHKEY&torrent_pass=SYNTHETIC-PASS">DL</a>'
+    script_requests(api, [UnknownOutcomeError("answer lost"), http(text=page)])
+    api.authkey = "AK"
+
+    with pytest.raises(UnknownOutcomeError) as excinfo:
+        await api.api_key_upload({}, UploadFiles(torrent_data=torrent))
+
+    message = str(excinfo.value)
+    assert "SYNTHETIC-AUTHKEY" not in message
+    assert "SYNTHETIC-PASS" not in message
+    assert "may still have gone through" in message

@@ -76,6 +76,12 @@ class LoginError(RequestError):
     pass
 
 
+class UnknownOutcomeError(RequestError):
+    """A request that changes state failed after it may have reached the tracker, so it is not re-sent."""
+
+    pass
+
+
 class EditedLogError(Exception):
     """Raised when a log file has been edited."""
 
