@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 from importlib import import_module
 
@@ -82,7 +83,7 @@ def _patch_cambia(monkeypatch, output: FakeCambiaOutput) -> None:
 
 def _patch_file_crcs(monkeypatch, crc_by_name: dict[str, str]) -> None:
     async def fake_calculate_file_crc_async(filepath: str, _: object = None) -> str:
-        return crc_by_name[filepath.rsplit("/", 1)[-1]]
+        return crc_by_name[os.path.basename(filepath)]
 
     monkeypatch.setattr(logs, "_calculate_file_crc_async", fake_calculate_file_crc_async)
 
@@ -111,10 +112,7 @@ def test_appended_rerip_replaces_the_stale_hash(tmp_path, monkeypatch) -> None:
 
 
 def test_two_discs_with_overlapping_track_numbers_keep_both_hashes(tmp_path, monkeypatch) -> None:
-    # Both discs use track number 1. If the expected hash were keyed by track number alone,
-    # disc 2's entry would silently overwrite disc 1's, and a real corruption on disc 1 track 1
-    # would go undetected because its expected hash was dropped from copy_crc_set. Keying by
-    # (disc, track) keeps both expectations, so the corrupt disc-1 file must still be caught.
+    # Keyed by track number alone, disc 2's hash would drop disc 1's, hiding its corrupt track.
     basepath = _write_files(tmp_path, ["d1-01.flac", "d2-01.flac"])
     output = FakeCambiaOutput(
         parsed=FakeParsedCombined(
@@ -162,7 +160,8 @@ def test_multi_disc_range_rip_is_skipped_with_a_notice(tmp_path, monkeypatch, ca
 
     anyio.run(logs.check_log_cambia, "log.log", basepath)
 
-    assert "Multi-disc range rip" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Multi-disc range rip" in out
 
 
 def _write_discs(tmp_path, discs: dict[str, list[str]]) -> str:
@@ -205,7 +204,7 @@ def test_a_one_disc_range_rip_is_rebuilt_from_its_own_disc_folder(tmp_path, monk
     rebuilt_from: list[list[str]] = []
 
     async def fake_range_crc(track_files: list[str], _toc_entries: list) -> str:
-        rebuilt_from.append(sorted(f.rsplit("/", 1)[-1] for f in track_files))
+        rebuilt_from.append(sorted(os.path.basename(f) for f in track_files))
         return "R1"
 
     monkeypatch.setattr(logs, "_calculate_range_crc_async", fake_range_crc)
@@ -231,7 +230,8 @@ def test_a_multi_disc_log_missing_other_discs_audio_is_skipped_not_failed(tmp_pa
 
     anyio.run(logs.check_log_cambia, str(tmp_path / "rip.log"), disc)
 
-    assert "only 1 audio file" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "only 1 audio file" in out
 
 
 def test_checklog_on_a_folder_checks_each_log_against_that_folder(tmp_path, monkeypatch) -> None:
@@ -248,3 +248,23 @@ def test_checklog_on_a_folder_checks_each_log_against_that_folder(tmp_path, monk
     anyio.run(checks.log.callback, basepath)
 
     assert seen == [(str(tmp_path / "CD1" / "rip.log"), basepath)]
+
+
+def test_a_range_rip_on_a_later_disc_skips_the_combined_check(tmp_path, monkeypatch, capsys) -> None:
+    basepath = _write_files(tmp_path, ["d1-01.flac", "d2-range.flac"])
+    output = FakeCambiaOutput(
+        parsed=FakeParsedCombined(
+            parsed_logs=[
+                FakeParsedLog(toc_hash="disc-1", tracks=[FakeTrack(num=1, copy_hash="D1-1")]),
+                FakeParsedLog(toc_hash="disc-2", tracks=[FakeTrack(num=1, copy_hash="R2", is_range=True)]),
+            ]
+        )
+    )
+    _patch_cambia(monkeypatch, output)
+    # Disc 2's range CRC matches no single file, so a per-file check would call a good rip a mismatch.
+    _patch_file_crcs(monkeypatch, {"d1-01.flac": "D1-1", "d2-range.flac": "FILE-CRC"})
+
+    anyio.run(logs.check_log_cambia, "log.log", basepath)
+
+    out = capsys.readouterr().out
+    assert "Multi-disc range rip" in out

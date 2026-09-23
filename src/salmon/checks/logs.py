@@ -205,8 +205,8 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
                     found.append(os.path.join(root, f))
         return found
 
-    # A log per disc: its own folder, so other discs' audio can't break range-CRC track counts.
-    # One log for several discs, or a log in a folder without audio: the whole release.
+    # A single-disc log searches its own folder first; a multi-disc log, or a folder with no audio,
+    # searches basepath.
     multi_disc = len({pl.toc.accurip_tocid.hash for pl in parsed_logs}) > 1
     files_to_check = [] if multi_disc else _find_audio(os.path.dirname(logpath))
     files_to_check = files_to_check or _find_audio(basepath)
@@ -222,11 +222,12 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
             fg="yellow",
         )
         return
+    # A range CRC on any disc matches no single file, and one range rebuilt from the first disc's
+    # TOC can't stand for several discs (#358).
+    if multi_disc and any(track.is_range for pl in parsed_logs for track in pl.tracks):
+        click.secho("Multi-disc range rip log: skipping combined CRC file verification.", fg="yellow")
+        return
     if parsed_logs[0].tracks[0].is_range:
-        # One range rebuilt from the first disc's TOC can't stand for several discs (#358).
-        if multi_disc:
-            click.secho("Multi-disc range rip log: skipping combined CRC file verification.", fg="yellow")
-            return
         toc_entries = parsed_logs[0].toc.raw.entries
 
         # Log contains range rip CRC, but we have individual track files

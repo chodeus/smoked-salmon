@@ -38,12 +38,7 @@ async def log(path: str) -> None:
 
 
 async def _check_log(path: str, basepath: str) -> None:
-    """Score a single log file and display the result.
-
-    Args:
-        path: Path to the log file to check.
-        basepath: The album folder holding the log's audio.
-    """
+    """Score the log at ``path``, searching ``basepath`` for its audio."""
     try:
         await check_log_cambia(path, basepath)
     except EditedLogError:
