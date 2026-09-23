@@ -100,21 +100,23 @@ def create_track_changes(tags, metadata):
     changes = {}
     tracks = metadata_to_track_list(metadata["tracks"])
 
-    sorted_tags = sorted(
-        tags.items(),
-        key=lambda item: (
-            _get_tag_number(item[1], "discnumber"),
-            _get_tag_number(item[1], "tracknumber"),
-        ),
-    )
+    def disc_track_key(tagset):
+        return (_get_tag_number(tagset, "discnumber"), _get_tag_number(tagset, "tracknumber"))
 
-    if len(sorted_tags) != len(tracks):
+    disc_track_keys = [disc_track_key(tagset) for tagset in tags.values()]
+    if len(set(disc_track_keys)) == len(disc_track_keys):
+        ordered_tags = sorted(tags.items(), key=lambda item: disc_track_key(item[1]))
+    else:
+        # Colliding pairs (e.g. CD1/CD2 folders with no DISCNUMBER) can't identify files; keep file order.
+        ordered_tags = list(tags.items())
+
+    if len(ordered_tags) != len(tracks):
         raise UploadError(
-            f"Track count mismatch: {len(sorted_tags)} audio files but {len(tracks)} metadata tracks. "
+            f"Track count mismatch: {len(ordered_tags)} audio files but {len(tracks)} metadata tracks. "
             "Fix the folder or the metadata before uploading."
         )
 
-    for (filename, tagset), trackmeta in zip(sorted_tags, tracks, strict=False):
+    for (filename, tagset), trackmeta in zip(ordered_tags, tracks, strict=False):
         changes[filename] = []
 
         try:

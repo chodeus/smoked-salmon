@@ -284,6 +284,36 @@ def test_create_track_changes_matches_files_by_disc_and_track_number():
     assert Change("title", "Old Third", "New Third") in changes["2-01 Third.flac"]
 
 
+def test_create_track_changes_keeps_file_order_when_discnumber_tags_are_missing():
+    # No DISCNUMBER anywhere: CD1 and CD2 track 1 both key as (1, 1), so the
+    # file order from get_audio_files must win over the colliding sort.
+    tags = {
+        "CD1/01.flac": _tagset("Old CD1 1", tracknumber="1", discnumber=None),
+        "CD1/02.flac": _tagset("Old CD1 2", tracknumber="2", discnumber=None),
+        "CD2/01.flac": _tagset("Old CD2 1", tracknumber="1", discnumber=None),
+        "CD2/02.flac": _tagset("Old CD2 2", tracknumber="2", discnumber=None),
+    }
+    metadata = {
+        "tracks": {
+            "1": {
+                "1": _trackmeta("New CD1 1", "1", "1"),
+                "2": _trackmeta("New CD1 2", "2", "1"),
+            },
+            "2": {
+                "1": _trackmeta("New CD2 1", "1", "2"),
+                "2": _trackmeta("New CD2 2", "2", "2"),
+            },
+        }
+    }
+
+    changes = create_track_changes(tags, metadata)
+
+    assert Change("title", "Old CD1 1", "New CD1 1") in changes["CD1/01.flac"]
+    assert Change("title", "Old CD1 2", "New CD1 2") in changes["CD1/02.flac"]
+    assert Change("title", "Old CD2 1", "New CD2 1") in changes["CD2/01.flac"]
+    assert Change("title", "Old CD2 2", "New CD2 2") in changes["CD2/02.flac"]
+
+
 def test_get_tag_number_reads_the_number_part_of_a_slash_pair():
     assert _get_tag_number(SimpleNamespace(discnumber="3/12"), "discnumber") == 3
 
