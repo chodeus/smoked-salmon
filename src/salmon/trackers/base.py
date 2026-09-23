@@ -385,10 +385,11 @@ class BaseGazelleApi:
                     with suppress(msgspec.DecodeError, ValueError):
                         error_msg = msgspec.json.encode(msgspec.json.decode(text)["error"]).decode()
 
+                    # A redirect means the tracker already acted; this failure is on a later hop.
+                    if not idempotent and resp.history:
+                        raise UnknownOutcomeError(f"{self.site_string} answered {resp.status} on a later hop")
+
                     if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
-                        # A redirect means the tracker already acted; this 429 is on a later hop.
-                        if not idempotent and resp.history:
-                            raise UnknownOutcomeError(f"{self.site_string} rate-limited a later hop")
                         retry_after = float(resp.headers.get("Retry-After", "20"))
                         click.secho(f"Rate limit exceeded, waiting {retry_after} seconds...", fg="yellow")
                         await asyncio.sleep(retry_after)
