@@ -19,7 +19,6 @@ from aiohttp import web
 from aiohttp.client_reqrep import ConnectionKey
 from aiolimiter import AsyncLimiter
 from tenacity import wait_fixed
-from yarl import URL
 
 from salmon import cfg
 from salmon.common import UploadFiles
@@ -147,7 +146,7 @@ def install_fake_aiohttp(monkeypatch, outcomes):
             self.closed = True
 
         def request(
-            self, method, url, params=None, data=None, headers=None, cookies=None, timeout=None, max_redirects=None
+            self, method, url, params=None, data=None, headers=None, cookies=None, timeout=None, allow_redirects=True
         ):
             captured["requests"].append(
                 {
@@ -158,7 +157,7 @@ def install_fake_aiohttp(monkeypatch, outcomes):
                     "headers": headers,
                     "cookies": cookies,
                     "timeout": timeout,
-                    "max_redirects": max_redirects,
+                    "allow_redirects": allow_redirects,
                 }
             )
             outcome = outcomes[min(len(captured["requests"]) - 1, len(outcomes) - 1)]
@@ -584,15 +583,18 @@ async def test_site_page_upload_request_fill_failure_extracts_error(api):
     assert "Request fill failed: Request already filled" in str(excinfo.value)
 
 
-async def test_site_page_upload_redirect_loop_raises_login_error(api, monkeypatch):
-    # Expired/invalid cookies make the site redirect to login until aiohttp
-    # gives up; that must surface as LoginError.
-    install_fake_aiohttp(monkeypatch, [aiohttp.TooManyRedirects(cast("Any", None), ())])
+async def test_site_page_upload_bounced_to_login_raises_login_error(api, monkeypatch):
+    # An expired cookie sends the upload to login.php, which is never requested.
+    captured = install_fake_aiohttp(
+        monkeypatch,
+        [FakeAiohttpResponse(status=302, url="https://dummy.example/upload.php", headers={"Location": "/login.php"})],
+    )
     api._authenticated = True
     api.passkey = "PK"
 
     with pytest.raises(LoginError):
         await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
+    assert len(captured["requests"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -869,27 +871,31 @@ async def test_label_rls_fetches_every_page_exactly_once(api):
 
 
 async def test_request_refuses_off_origin_redirect(api, monkeypatch):
-    from yarl import URL
-
-    hop = FakeAiohttpResponse(url=URL("https://dummy.example/torrents.php"))
-    final = FakeAiohttpResponse(text="pwned", url=URL("https://evil.example/login"), history=(hop,))
-    install_fake_aiohttp(monkeypatch, [final])
+    hop = FakeAiohttpResponse(
+        status=302, url="https://dummy.example/torrents.php", headers={"Location": "https://evil.example/login"}
+    )
+    captured = install_fake_aiohttp(monkeypatch, [hop, FakeAiohttpResponse(text="pwned")])
     api._authenticated = True
 
-    with pytest.raises(RequestFailedError, match="off-origin"):
-        await api._request("GET", "https://dummy.example/ajax.php")
+    with pytest.raises(RequestFailedError, match="another site"):
+        await api._request("GET", "https://dummy.example/torrents.php")
+    assert len(captured["requests"]) == 1
 
 
 async def test_request_same_origin_redirect_is_allowed(api, monkeypatch):
-    from yarl import URL
-
-    hop = FakeAiohttpResponse(url=URL("https://dummy.example/torrents.php?torrentid=1"))
-    final = FakeAiohttpResponse(text="ok", url=URL("https://dummy.example/torrents.php?id=2"), history=(hop,))
-    install_fake_aiohttp(monkeypatch, [final])
+    hop = FakeAiohttpResponse(
+        status=302, url="https://dummy.example/torrents.php?torrentid=1", headers={"Location": "torrents.php?id=2"}
+    )
+    final = FakeAiohttpResponse(text="ok", url="https://dummy.example/torrents.php?id=2")
+    captured = install_fake_aiohttp(monkeypatch, [hop, final])
     api._authenticated = True
 
-    resp = await api._request("GET", "https://dummy.example/ajax.php")
+    resp = await api._request("GET", "https://dummy.example/torrents.php", params={"torrentid": 1})
     assert resp.text == "ok"
+    assert [r["url"] for r in captured["requests"]] == [
+        "https://dummy.example/torrents.php",
+        "https://dummy.example/torrents.php?id=2",
+    ]
 
 
 def test_redact_masks_cookie_credentials():
@@ -966,23 +972,18 @@ async def test_a_post_refused_with_429_is_retried(api, monkeypatch):
 async def test_a_429_after_the_post_was_redirected_is_not_retried(api, monkeypatch):
     # A redirect means the tracker already acted on the POST; the 429 is on a later hop.
     monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
-    hop = FakeAiohttpResponse(status=302, url=URL("https://dummy.example/upload.php"))
+    hop = FakeAiohttpResponse(
+        status=302, url="https://dummy.example/upload.php", headers={"Location": "/torrents.php?id=5"}
+    )
     captured = install_fake_aiohttp(
         monkeypatch,
-        [
-            FakeAiohttpResponse(
-                status=429,
-                headers={"Retry-After": "0"},
-                url=URL("https://dummy.example/torrents.php"),
-                history=[hop],
-            )
-        ],
+        [hop, FakeAiohttpResponse(status=429, headers={"Retry-After": "0"}, url="https://dummy.example/torrents.php")],
     )
     api._authenticated = True
 
     with pytest.raises(UnknownOutcomeError):
         await api._request("POST", "https://dummy.example/upload.php", data={"x": "1"})
-    assert len(captured["requests"]) == 1
+    assert [r["method"] for r in captured["requests"]] == ["POST", "GET"]
 
 
 async def test_an_idempotent_post_keeps_retrying(api, monkeypatch):

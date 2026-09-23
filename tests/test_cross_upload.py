@@ -453,20 +453,6 @@ class _RedImageResponse:
         return None
 
 
-class _RedImageSession:
-    def __init__(self, *_args, **_kwargs) -> None:
-        pass
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_args):
-        return None
-
-    def get(self, *_args, **_kwargs):
-        return _RedImageResponse()
-
-
 def _host_returning(url):
     async def upload_file(_path):
         return url, None
@@ -474,19 +460,28 @@ def _host_returning(url):
     return SimpleNamespace(ImageUploader=lambda: SimpleNamespace(upload_file=upload_file))
 
 
-def _red_source():
-    return cast("Any", SimpleNamespace(headers={}, base_url="https://redacted.sh", _get_cookies=lambda: {}))
+def _red_source(fetched: list | None = None):
+    def site_get(url, headers=None):
+        # Through the source tracker's client, so the fetch spends its rate limit.
+        if fetched is not None:
+            fetched.append((url, headers))
+        return _RedImageResponse()
+
+    return cast("Any", SimpleNamespace(base_url="https://redacted.sh", site_get=site_get))
 
 
-def _rehost(monkeypatch, returned):
-    monkeypatch.setattr(cross_upload_module.aiohttp, "ClientSession", _RedImageSession)
+def _rehost(monkeypatch, returned, fetched: list | None = None):
     monkeypatch.setitem(cross_upload_module.HOSTS, "catbox", _host_returning(returned))
-    return anyio.run(cross_upload_module._rehost_red_image, "https://redacted.sh/i/x.jpg", _red_source(), "catbox")
+    return anyio.run(
+        cross_upload_module._rehost_red_image, "https://redacted.sh/i/x.jpg", _red_source(fetched), "catbox"
+    )
 
 
 def test_a_rehosted_image_returns_its_new_url(monkeypatch) -> None:
-    rehosted = _rehost(monkeypatch, "https://files.catbox.moe/abc.jpg")
+    fetched: list = []
+    rehosted = _rehost(monkeypatch, "https://files.catbox.moe/abc.jpg", fetched)
     assert rehosted == "https://files.catbox.moe/abc.jpg"
+    assert fetched == [("https://redacted.sh/i/x.jpg", {"Referer": "https://redacted.sh/"})]
 
 
 @pytest.mark.parametrize("returned", ["", None, "https://", "Something went wrong"])

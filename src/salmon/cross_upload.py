@@ -435,19 +435,8 @@ async def _rehost_red_images(
 async def _rehost_red_image(url: str, source_site: "BaseGazelleApi", image_host: str) -> str:
     shown = bare_image_url(url)  # the stored URL may carry RED's per-viewer signature; never print it
     suffix = Path(urlparse(url).path).suffix or ".jpg"
-    timeout = aiohttp.ClientTimeout(total=30)
-    headers = {**source_site.headers, "Referer": f"{source_site.base_url}/"}
     try:
-        async with (
-            aiohttp.ClientSession(
-                timeout=timeout,
-                headers=headers,
-                cookies=source_site._get_cookies(),
-            ) as session,
-            # No redirects: aiohttp's empty-domain cookie jar would send the RED session
-            # cookie to whatever host a redirect points at.
-            session.get(url, allow_redirects=False) as response,
-        ):
+        async with source_site.site_get(url, headers={"Referer": f"{source_site.base_url}/"}) as response:
             if response.status >= 400 or not response.content_type.startswith("image/"):
                 raise click.ClickException(f"Could not download RED image {shown} (HTTP {response.status}).")
             # Cap the fetch so tracker-supplied metadata can't make us buffer a huge body.

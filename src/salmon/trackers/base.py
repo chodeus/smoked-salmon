@@ -1,11 +1,12 @@
 import asyncio
 import html
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from http import HTTPStatus
-from typing import Any, cast
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from typing import Any, NoReturn, cast
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
+from weakref import WeakKeyDictionary
 
 import aiohttp
 import asyncclick as click
@@ -15,7 +16,6 @@ from aiolimiter import AsyncLimiter
 from bs4 import BeautifulSoup
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential, wait_random
 from torf import TorfError, Torrent
-from yarl import URL
 
 from salmon import cfg
 from salmon.common import UploadFiles
@@ -174,6 +174,34 @@ class SearchReleaseData(msgspec.Struct, frozen=True):
     url: str
 
 
+# The tracker limits the account, so every client of one tracker shares a budget. Per event
+# loop: an AsyncLimiter binds to the first loop that uses it, and web UI jobs run their own.
+_limiters: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, AsyncLimiter]] = WeakKeyDictionary()
+
+
+def _tracker_limiter(site_code: str) -> AsyncLimiter:
+    """5 requests per 10 seconds for one tracker on the running loop."""
+    per_loop = _limiters.setdefault(asyncio.get_running_loop(), {})
+    if site_code not in per_loop:
+        per_loop[site_code] = AsyncLimiter(5, 10)
+    return per_loop[site_code]
+
+
+# An upload that fills a request takes two hops; one spare.
+_MAX_REDIRECTS = 3
+_REDIRECT_STATUSES = frozenset(
+    {
+        HTTPStatus.MOVED_PERMANENTLY,
+        HTTPStatus.FOUND,
+        HTTPStatus.SEE_OTHER,
+        HTTPStatus.TEMPORARY_REDIRECT,
+        HTTPStatus.PERMANENT_REDIRECT,
+    }
+)
+# The request never left, so re-sending it is safe whatever it does.
+_NOT_SENT_ERRORS = (aiohttp.ClientConnectorError, aiohttp.ConnectionTimeoutError)
+
+
 class RetryableError(RequestError):
     """Exception for retryable network errors."""
 
@@ -204,10 +232,6 @@ class BaseGazelleApi:
 
     def __init__(self) -> None:
         """Initialize the API client. Subclasses should call this after setting cookie/base_url."""
-        # Rate limiter: 5 requests per 10 seconds. Per instance, because an
-        # AsyncLimiter binds to the first event loop that uses it and the web
-        # interface runs upload jobs on their own loops.
-        self._rate_limiter = AsyncLimiter(5, 10)
         self.headers = {
             "Connection": "keep-alive",
             "Cache-Control": "max-age=0",
@@ -221,6 +245,11 @@ class BaseGazelleApi:
         self.passkey: str | None = None
         self._authenticated = False
         self._session: aiohttp.ClientSession | None = None
+
+    @property
+    def _rate_limiter(self) -> AsyncLimiter:
+        """This tracker's request budget on the running event loop."""
+        return _tracker_limiter(self.site_code)
 
     def _http_session(self) -> aiohttp.ClientSession:
         """Get this instance's kept-alive pool, opening it on first use."""
@@ -255,6 +284,24 @@ class BaseGazelleApi:
             cookie_jar=aiohttp.DummyCookieJar(),
         ) as session:
             yield session
+
+    @asynccontextmanager
+    async def site_get(
+        self, url: str, headers: dict[str, str] | None = None, timeout_secs: int = 30
+    ) -> AsyncIterator[aiohttp.ClientResponse]:
+        """GET a raw file off the tracker, inside its rate limit, without following redirects."""
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=timeout_secs, sock_read=timeout_secs)
+        async with (
+            self._rate_limiter,
+            self._http_session().get(
+                url,
+                headers={**self.headers, **(headers or {})},
+                cookies=self._get_cookies(),
+                timeout=timeout,
+                allow_redirects=False,
+            ) as resp,
+        ):
+            yield resp
 
     def _get_cookies(self) -> dict[str, str]:
         """Get cookies dict for requests."""
@@ -328,10 +375,14 @@ class BaseGazelleApi:
         """
         if idempotent is None:
             idempotent = method.upper() != "POST"
+        # Once the tracker redirects, it has acted on the request, whatever happens next.
+        redirected = False
 
-        def _failed(message: str) -> RequestError:
+        def failure(message: str, *, not_acted_on: bool = False) -> RequestError:
             # Re-sending is only safe when repeating the request cannot change anything twice.
-            return RetryableError(message) if idempotent else UnknownOutcomeError(message)
+            if idempotent or (not_acted_on and not redirected):
+                return RetryableError(message)
+            return UnknownOutcomeError(message)
 
         if not (params and params.get("action") == "index"):
             await self.ensure_authenticated()
@@ -348,92 +399,103 @@ class BaseGazelleApi:
         try:
             # No total: it would also count the wait for a free pooled connection.
             timeout = aiohttp.ClientTimeout(total=None, sock_connect=timeout_secs, sock_read=timeout_secs)
-            # aiohttp drops these cookies and the Authorization header on a cross-origin hop.
-            async with (
-                self._rate_limiter,
-                self._session_for(idempotent) as session,
-                session.request(
-                    method,
-                    url,
-                    params=params,
-                    data=data,
-                    headers=headers,
-                    cookies=cookies,
-                    timeout=timeout,
-                    max_redirects=3,
-                ) as resp,
-            ):
-                text = await resp.text()
-
-                # An off-origin hop is hostile or badly broken — refuse the response.
-                expected_origin = URL(url).origin()
-                if resp.history and (
-                    any(h.url.origin() != expected_origin for h in resp.history) or resp.url.origin() != expected_origin
-                ):
-                    raise RequestFailedError(f"{self.site_string} redirected off-origin; refusing response.")
-
-                if cfg.upload.debug_tracker_connection:
-                    click.secho(f"[DEBUG] status: {resp.status}", fg="cyan")
-                    click.secho(
-                        f"[DEBUG] response headers: {_redact(msgspec.json.encode(dict(resp.headers)).decode())}",
-                        fg="cyan",
-                    )
-                    click.secho(f"[DEBUG] response body: {_redact(text)}", fg="green")
-
-                if not resp.ok:
-                    error_msg = text
-                    with suppress(msgspec.DecodeError, ValueError):
-                        error_msg = msgspec.json.encode(msgspec.json.decode(text)["error"]).decode()
-
-                    if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
-                        # A redirect means the tracker already acted; this 429 is on a later hop.
-                        if not idempotent and resp.history:
-                            raise UnknownOutcomeError(f"{self.site_string} rate-limited a later hop")
-                        retry_after = float(resp.headers.get("Retry-After", "20"))
-                        click.secho(f"Rate limit exceeded, waiting {retry_after} seconds...", fg="yellow")
-                        await asyncio.sleep(retry_after)
-                        raise RetryableError("Rate limit exceeded")
-
-                    if resp.status == HTTPStatus.UNAUTHORIZED:
-                        click.secho(
-                            f"Authentication to {self.site_string} failed: {error_msg}.\nYour API key may be invalid.",
-                            fg="red",
-                        )
-                        raise LoginError(error_msg)
-
-                    if resp.status in (
-                        HTTPStatus.INTERNAL_SERVER_ERROR,
-                        HTTPStatus.BAD_GATEWAY,
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        HTTPStatus.GATEWAY_TIMEOUT,
+            async with self._session_for(idempotent) as session:
+                # Hop by hop, each through the limiter: aiohttp would follow them all in one slot (#432).
+                for _ in range(_MAX_REDIRECTS + 1):
+                    async with (
+                        self._rate_limiter,
+                        session.request(
+                            method,
+                            url,
+                            params=params,
+                            data=data,
+                            headers=headers,
+                            cookies=cookies,
+                            timeout=timeout,
+                            allow_redirects=False,
+                        ) as resp,
                     ):
-                        raise _failed(f"Server error {resp.status}")
+                        text = await resp.text()
+                        if cfg.upload.debug_tracker_connection:
+                            self._debug_response(resp, text)
+                        if not resp.ok:
+                            await self._raise_for_status(resp, text, failure)
+                        location = resp.headers.get(aiohttp.hdrs.LOCATION)
+                        if resp.status not in _REDIRECT_STATUSES or not location:
+                            return HttpResponse(text=text, url=str(resp.url), status=resp.status)
+                        method, data, url = self._next_hop(str(resp.url), resp.status, method, data, location)
+                        params = None
+                        redirected = True
 
-                    click.secho(
-                        f"Request to {self.site_string} failed ({resp.status}): {error_msg}",
-                        fg="red",
-                    )
-                    raise RequestFailedError(error_msg)
+            click.secho(f"Too many redirects from {self.site_string}, last to {urlparse(url).path}", fg="red")
+            raise RequestFailedError(f"Too many redirects from {self.site_string}")
+        except (TimeoutError, aiohttp.ClientError) as err:
+            # Checked by type: ConnectionTimeoutError is also a TimeoutError, and never connected is safe to resend.
+            raise failure(f"Network error: {err}", not_acted_on=isinstance(err, _NOT_SENT_ERRORS)) from err
 
-                return HttpResponse(
-                    text=text,
-                    url=str(resp.url),
-                    status=resp.status,
-                )
-        except aiohttp.TooManyRedirects as err:
+    @staticmethod
+    def _debug_response(resp: aiohttp.ClientResponse, text: str) -> None:
+        """Print a tracker answer, redacted, for debug_tracker_connection."""
+        click.secho(f"[DEBUG] status: {resp.status}", fg="cyan")
+        click.secho(
+            f"[DEBUG] response headers: {_redact(msgspec.json.encode(dict(resp.headers)).decode())}",
+            fg="cyan",
+        )
+        click.secho(f"[DEBUG] response body: {_redact(text)}", fg="green")
+
+    async def _raise_for_status(
+        self, resp: aiohttp.ClientResponse, text: str, failure: Callable[..., RequestError]
+    ) -> NoReturn:
+        """Raise the error a failed tracker answer calls for."""
+        error_msg = text
+        with suppress(msgspec.DecodeError, ValueError):
+            error_msg = msgspec.json.encode(msgspec.json.decode(text)["error"]).decode()
+
+        if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
+            retry_after = float(resp.headers.get("Retry-After", "20"))
+            click.secho(f"Rate limit exceeded, waiting {retry_after} seconds...", fg="yellow")
+            await asyncio.sleep(retry_after)
+            raise failure("Rate limit exceeded", not_acted_on=True)
+
+        if resp.status == HTTPStatus.UNAUTHORIZED:
             click.secho(
-                "Too many redirects — check the tracker base_url (e.g. https://redacted.sh, no "
-                "trailing slash) and that your session cookie is still valid.",
+                f"Authentication to {self.site_string} failed: {error_msg}.\nYour API key may be invalid.",
+                fg="red",
+            )
+            raise LoginError(error_msg)
+
+        if resp.status in (
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+            HTTPStatus.BAD_GATEWAY,
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            HTTPStatus.GATEWAY_TIMEOUT,
+        ):
+            raise failure(f"Server error {resp.status}")
+
+        click.secho(f"Request to {self.site_string} failed ({resp.status}): {error_msg}", fg="red")
+        raise RequestFailedError(error_msg)
+
+    def _next_hop(self, current: str, status: int, method: str, data: Any, location: str) -> tuple[str, Any, str]:
+        """The method, body and URL a tracker redirect sends a request on to."""
+        target = urlparse(urljoin(current, location))
+        if target.path.endswith("/login.php"):
+            click.secho(
+                f"{self.site_string} sent this request to its login page: your session cookie is missing or "
+                f"expired. Check tracker.{self.site_code.lower()}.session in your config.",
                 fg="red",
                 bold=True,
             )
-            raise LoginError from err
-        except (TimeoutError, aiohttp.ClientError) as err:
-            # Checked first: ConnectionTimeoutError is also a TimeoutError. Never connected means
-            # nothing reached the tracker, so re-sending is safe whatever the method.
-            if isinstance(err, (aiohttp.ClientConnectorError, aiohttp.ConnectionTimeoutError)):
-                raise RetryableError(f"Network error: {err}") from err
-            raise _failed(f"Network error: {err}") from err
+            raise LoginError(f"{self.site_string} redirected to its login page")
+        origin = urlparse(current)
+        if (target.scheme, target.netloc) != (origin.scheme, origin.netloc):
+            click.secho(f"{self.site_string} redirected to {target.scheme}://{target.netloc}, not following.", fg="red")
+            raise RequestFailedError(f"{self.site_string} redirected to another site")
+        # As browsers and aiohttp do, a redirected POST is fetched with GET.
+        if status == HTTPStatus.SEE_OTHER or (
+            status in (HTTPStatus.MOVED_PERMANENTLY, HTTPStatus.FOUND) and method.upper() == "POST"
+        ):
+            method, data = "GET", None
+        return method, data, target._replace(fragment="").geturl()
 
     async def api_call(self, action: str, params: dict[str, Any] | None = None) -> dict:
         """Make a request to the site API with rate limiting.
@@ -629,6 +691,14 @@ class BaseGazelleApi:
         Returns:
             List of (torrent_id, artist, title) tuples.
         """
+        # log.php is a site page: an API key doesn't open it, and without a cookie it bounces to login.
+        if not self.cookie.strip():
+            click.secho(
+                f"Skipping the recent-uploads check: the {self.site_string} site log needs a session cookie "
+                f"(tracker.{self.site_code.lower()}.session), and none is set.",
+                fg="yellow",
+            )
+            return []
         # Probe page 1 alone: an invalid cookie must not fan out into N redirect chains (#432)
         try:
             first_page = await self.fetch_log(1)

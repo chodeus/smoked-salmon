@@ -1,78 +1,51 @@
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import anyio
 import msgspec
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from salmon.errors import ImageUploadFailed
+from salmon.errors import ImageUploadFailed, RequestFailedError
 from salmon.images import HOSTS, red
 from salmon.images.base import BaseImageUploader
+from salmon.trackers.base import HttpResponse
 
 
-class _Response:
-    def __init__(self, payload: dict):
-        self.payload = payload
+class _FakeRed:
+    """Stands in for RedApi: records requests and answers upload_image with ``payload``."""
 
-    async def __aenter__(self):
-        return self
+    base_url = "https://redacted.sh"
+    made: ClassVar[list["_FakeRed"]] = []
+    payload: ClassVar[dict] = {}
 
-    async def __aexit__(self, *_args):
-        return None
-
-    def raise_for_status(self) -> None:
-        pass
-
-    async def text(self) -> str:
-        return msgspec.json.encode(self.payload).decode()
-
-
-class _CookieJar:
-    def __init__(self):
-        self.seeded: list[tuple[dict, str]] = []
-
-    def update_cookies(self, cookies, response_url=None):
-        self.seeded.append((dict(cookies), str(response_url)))
-
-
-class _Session:
-    def __init__(self, number: int, **kwargs):
-        self.number = number
-        self.kwargs = kwargs
-        self.cookie_jar = _CookieJar()
+    def __init__(self) -> None:
+        self.authkey: str | None = None
         self.calls: list[tuple[str, str, dict]] = []
-        self.redirect_flags: list = []
+        self.closed = False
+        _FakeRed.made.append(self)
 
-    async def __aenter__(self):
-        return self
+    async def ensure_authenticated(self) -> None:
+        self.calls.append(("auth", "", {}))
+        self.authkey = "account-authkey"
 
-    async def __aexit__(self, *_args):
-        return None
+    async def _request(self, method: str, url: str, params: dict, data) -> HttpResponse:
+        self.calls.append((method, url, params))
+        return HttpResponse(text=msgspec.json.encode(self.payload).decode(), url=url, status=200)
 
-    def post(self, url: str, *, params: dict, data, allow_redirects=True):
-        self.calls.append(("post", url, params))
-        self.redirect_flags.append(allow_redirects)
-        return _Response({"status": "success", "response": {"url": f"https://redacted.sh/i/image-{self.number}.png"}})
-
-    def get(self, url: str, *, params: dict, allow_redirects=True):
-        self.calls.append(("get", url, params))
-        self.redirect_flags.append(allow_redirects)
-        if params["action"] == "index":
-            return _Response({"status": "success", "response": {"authkey": "account-authkey"}})
-        return _Response(
-            {
-                "status": "success",
-                "response": {"h": f"key-{self.number}", "e": 123456 + self.number, "u": self.number},
-            }
-        )
+    async def close(self) -> None:
+        self.closed = True
 
 
-def _patch_red_env(monkeypatch):
-    """Reset RED uploader class caches and stub config for a test."""
-    monkeypatch.setattr(red.ImageUploader, "_authkey", None)
-    monkeypatch.setattr(red.ImageUploader, "_authkey_session", None)
+def _patch_red_env(monkeypatch, payload: dict | None = None):
+    """Swap in the fake RED client and stub config for a test."""
+    monkeypatch.setattr(_FakeRed, "made", [])
+    monkeypatch.setattr(
+        _FakeRed, "payload", payload or {"status": "success", "response": {"url": "https://redacted.sh/i/image.png"}}
+    )
+    monkeypatch.setattr(red, "RedApi", _FakeRed)
     monkeypatch.setattr(
         red,
         "cfg",
@@ -90,40 +63,21 @@ def test_red_is_registered_as_an_image_uploader() -> None:
 
 def test_red_returns_the_bare_image_url(monkeypatch, tmp_path) -> None:
     # RED signs image URLs per viewer itself; the uploader's credentials must never be stored.
-    sessions: list[_Session] = []
-
-    def session_factory(**kwargs):
-        session = _Session(len(sessions) + 1, **kwargs)
-        sessions.append(session)
-        return session
-
-    monkeypatch.setattr(red.aiohttp, "ClientSession", session_factory)
-    _patch_red_env(monkeypatch)
+    _patch_red_env(
+        monkeypatch,
+        {"status": "success", "response": {"url": "https://redacted.sh/i/image.png?h=hash&e=1700000000&u=12345"}},
+    )
     image = tmp_path / "image.png"
     image.write_bytes(b"png-data")
 
-    async def upload_twice() -> tuple[tuple[str, None], tuple[str, None]]:
-        first = await red.ImageUploader().upload_file(str(image))
-        second = await red.ImageUploader().upload_file(str(image))
-        return first, second
-
-    first, second = anyio.run(upload_twice)
-
-    assert first == ("https://redacted.sh/i/image-1.png", None)
-    assert second == ("https://redacted.sh/i/image-2.png", None)
-    # The authkey is fetched once and reused; image-access credentials are never requested.
-    assert sessions[0].calls == [
-        ("get", red.AJAX_URL, {"action": "index"}),
-        ("post", red.AJAX_URL, {"action": "upload_image"}),
+    assert anyio.run(red.ImageUploader().upload_file, str(image)) == ("https://redacted.sh/i/image.png", None)
+    [site] = _FakeRed.made
+    # Through the RED client, so both requests spend RED's rate limit, and its pool is closed.
+    assert site.calls == [
+        ("auth", "", {}),
+        ("POST", "https://redacted.sh/ajax.php", {"action": "upload_image"}),
     ]
-    assert sessions[1].calls == [("post", red.AJAX_URL, {"action": "upload_image"})]
-    # Cookies are jar-scoped to RED (not session-wide) so redirects can't leak them.
-    assert all("cookies" not in session.kwargs for session in sessions)
-    assert all(
-        session.cookie_jar.seeded == [({"session": "red-session"}, red.BASE_URL)] for session in sessions
-    )
-    # Nothing on the RED ajax endpoints legitimately redirects.
-    assert all(flag is False for session in sessions for flag in session.redirect_flags)
+    assert site.closed
 
 
 @pytest.mark.parametrize(
@@ -142,12 +96,7 @@ def test_bare_image_url_strips_only_red_credentials(url, expected) -> None:
 
 def test_red_refuses_off_origin_image_url(monkeypatch, tmp_path) -> None:
     # The image URL is server-controlled; only a RED-origin URL may become a cover.
-    class _OffOriginSession(_Session):
-        def post(self, url: str, *, params: dict, data, allow_redirects=True):
-            return _Response({"status": "success", "response": {"url": "https://evil.example/i/x.png"}})
-
-    monkeypatch.setattr(red.aiohttp, "ClientSession", lambda **kwargs: _OffOriginSession(1, **kwargs))
-    _patch_red_env(monkeypatch)
+    _patch_red_env(monkeypatch, {"status": "success", "response": {"url": "https://evil.example/i/x.png"}})
     image = tmp_path / "image.png"
     image.write_bytes(b"png-data")
 
@@ -155,18 +104,8 @@ def test_red_refuses_off_origin_image_url(monkeypatch, tmp_path) -> None:
         anyio.run(red.ImageUploader().upload_file, str(image))
 
 
-class _RejectingSession(_Session):
-    def __init__(self, number: int, payload: dict, **kwargs):
-        super().__init__(number, **kwargs)
-        self.payload = payload
-
-    def post(self, url: str, *, params: dict, data, allow_redirects=True):
-        return _Response(self.payload)
-
-
 def _upload_against(monkeypatch, tmp_path, payload: dict):
-    _patch_red_env(monkeypatch)
-    monkeypatch.setattr(red.aiohttp, "ClientSession", lambda **kw: _RejectingSession(1, payload, **kw))
+    _patch_red_env(monkeypatch, payload)
     image = tmp_path / "cover.jpg"
     image.write_bytes(b"\xff\xd8\xff")
     return anyio.run(red.ImageUploader().upload_file, str(image))
@@ -202,3 +141,19 @@ def test_a_rejection_reason_cannot_leak_credentials(monkeypatch, tmp_path) -> No
     assert "SYNTHETIC-AUTHKEY-VALUE" not in message
     assert "SYNTHETIC-PASS-VALUE" not in message
     assert "REDACTED" in message
+
+
+def test_a_failed_request_closes_the_client_and_cannot_leak_credentials(monkeypatch, tmp_path) -> None:
+    _patch_red_env(monkeypatch)
+
+    async def refuse(*_args, **_kwargs):
+        raise RequestFailedError("<a href='torrents.php?action=download&authkey=SYNTHETIC-AUTHKEY-VALUE'>")
+
+    monkeypatch.setattr(_FakeRed, "_request", refuse)
+    image = tmp_path / "cover.jpg"
+    image.write_bytes(b"\xff\xd8\xff")
+
+    with pytest.raises(ImageUploadFailed) as excinfo:
+        anyio.run(red.ImageUploader().upload_file, str(image))
+    assert "SYNTHETIC-AUTHKEY-VALUE" not in str(excinfo.value)
+    assert _FakeRed.made[0].closed
