@@ -200,6 +200,14 @@ _REDIRECT_STATUSES = frozenset(
 )
 # The request never left, so re-sending it is safe whatever it does.
 _NOT_SENT_ERRORS = (aiohttp.ClientConnectorError, aiohttp.ConnectionTimeoutError)
+_TRANSIENT_5XX = frozenset(
+    {
+        HTTPStatus.INTERNAL_SERVER_ERROR,
+        HTTPStatus.BAD_GATEWAY,
+        HTTPStatus.SERVICE_UNAVAILABLE,
+        HTTPStatus.GATEWAY_TIMEOUT,
+    }
+)
 
 
 class RetryableError(RequestError):
@@ -419,7 +427,7 @@ class BaseGazelleApi:
                         if cfg.upload.debug_tracker_connection:
                             self._debug_response(resp, text)
                         if not resp.ok:
-                            await self._raise_for_status(resp, text, failure)
+                            await self._raise_for_status(resp, text, failure, idempotent)
                         location = resp.headers.get(aiohttp.hdrs.LOCATION)
                         if resp.status not in _REDIRECT_STATUSES or not location:
                             return HttpResponse(text=text, url=str(resp.url), status=resp.status)
@@ -450,7 +458,7 @@ class BaseGazelleApi:
         click.secho(f"[DEBUG] response body: {_redact(text)}", fg="green")
 
     async def _raise_for_status(
-        self, resp: aiohttp.ClientResponse, text: str, failure: Callable[..., RequestError]
+        self, resp: aiohttp.ClientResponse, text: str, failure: Callable[..., RequestError], idempotent: bool
     ) -> NoReturn:
         """Raise the error a failed tracker answer calls for."""
         error_msg = text
@@ -470,12 +478,8 @@ class BaseGazelleApi:
             )
             raise LoginError(error_msg)
 
-        if resp.status in (
-            HTTPStatus.INTERNAL_SERVER_ERROR,
-            HTTPStatus.BAD_GATEWAY,
-            HTTPStatus.SERVICE_UNAVAILABLE,
-            HTTPStatus.GATEWAY_TIMEOUT,
-        ):
+        # Any 5xx may follow the tracker acting on a POST; a GET is resent only on these.
+        if resp.status >= HTTPStatus.INTERNAL_SERVER_ERROR and (not idempotent or resp.status in _TRANSIENT_5XX):
             raise failure(f"Server error {resp.status}")
 
         click.secho(f"Request to {self.site_string} failed ({resp.status}): {error_msg}", fg="red")
@@ -849,7 +853,7 @@ class BaseGazelleApi:
             reason = _safe_response_excerpt(str(lookup_err))
             raise UnknownOutcomeError(
                 f"Could not tell whether {self.site_string} took the upload ({err}), and looking it up by "
-                f"its infohash did not find it ({reason}). The upload may still have gone through: "
+                f"its infohash did not confirm it ({reason}). The upload may still have gone through: "
                 f"check your uploads on {self.site_string} before uploading it again."
             ) from lookup_err
         click.secho(f"Found the upload on {self.site_string}: torrent {torrent_id}.", fg="green")
