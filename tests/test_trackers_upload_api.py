@@ -956,15 +956,16 @@ async def test_a_post_refused_with_429_is_retried(api, monkeypatch):
     assert len(captured["requests"]) == 2
 
 
-async def test_a_429_after_the_post_was_redirected_is_not_retried(api, monkeypatch):
-    # A redirect means the tracker already acted on the POST; the 429 is on a later hop.
+@pytest.mark.parametrize("status", [429, 401, 403, 404])
+async def test_a_failure_after_the_post_was_redirected_is_an_unknown_outcome(api, monkeypatch, status):
+    # A redirect means the tracker already acted on the POST, whatever the later hop answers.
     monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
     hop = FakeAiohttpResponse(status=302, url=URL("https://dummy.example/upload.php"))
     captured = install_fake_aiohttp(
         monkeypatch,
         [
             FakeAiohttpResponse(
-                status=429,
+                status=status,
                 headers={"Retry-After": "0"},
                 url=URL("https://dummy.example/torrents.php"),
                 history=[hop],
@@ -1102,6 +1103,7 @@ async def test_a_report_with_an_unknown_outcome_is_not_filed_again(capsys):
     out = capsys.readouterr().out
     assert "Could not tell whether the Lossy Master/WEB report was filed" in out
     assert "torrents.php?torrentid=7" in out
+    assert "Reported upload for Lossy Master/WEB Approval Request" not in out
 
 
 async def test_opss_own_report_is_not_resent_either(monkeypatch):
