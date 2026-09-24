@@ -1,8 +1,4 @@
-"""`salmon checkconf --seedbox` actually contacts the seedbox and rclone remote (issue #444).
-
-Never touches a real torrent client, rclone binary or remote: the torrent client login and
-`anyio.run_process` are monkeypatched throughout.
-"""
+"""`checkconf --seedbox` logs in and lists the rclone remote; the client login and rclone are faked throughout."""
 
 import anyio
 import qbittorrentapi
