@@ -55,10 +55,11 @@ class FakeParsedLog:
     tracks: list[FakeTrack]
     toc_hash: str = "disc-1"
     checksum: FakeChecksum = field(default_factory=FakeChecksum)
+    toc_entries: list = field(default_factory=list)
 
     @property
     def toc(self) -> FakeToc:
-        return FakeToc(accurip_tocid=FakeTocHash(hash=self.toc_hash))
+        return FakeToc(accurip_tocid=FakeTocHash(hash=self.toc_hash), raw=FakeTocRaw(entries=self.toc_entries))
 
 
 @dataclass
@@ -141,7 +142,7 @@ def test_a_real_mismatch_still_raises(tmp_path, monkeypatch) -> None:
         anyio.run(logs.check_log_cambia, "log.log", basepath)
 
 
-def test_multi_disc_range_rip_is_skipped_with_a_notice(tmp_path, monkeypatch, capsys) -> None:
+def test_multi_disc_range_rip_is_skipped_with_a_notice(tmp_path, monkeypatch) -> None:
     basepath = _write_files(tmp_path, ["range1.flac", "range2.flac"])
     output = FakeCambiaOutput(
         parsed=FakeParsedCombined(
@@ -158,10 +159,8 @@ def test_multi_disc_range_rip_is_skipped_with_a_notice(tmp_path, monkeypatch, ca
 
     monkeypatch.setattr(logs, "_calculate_range_crc_async", fail_range_crc)
 
-    anyio.run(logs.check_log_cambia, "log.log", basepath)
-
-    out = capsys.readouterr().out
-    assert "Multi-disc range rip" in out
+    with pytest.raises(LogCheckSkipped, match="Multi-disc range rip"):
+        anyio.run(logs.check_log_cambia, "log.log", basepath)
 
 
 def _write_discs(tmp_path, discs: dict[str, list[str]]) -> str:
@@ -211,6 +210,47 @@ def test_a_log_with_no_audio_is_skipped(tmp_path, monkeypatch) -> None:
         anyio.run(logs.check_log_cambia, str(tmp_path / "rip.log"), str(tmp_path))
 
 
+def test_a_log_with_no_tracks_is_skipped_not_passed(tmp_path, monkeypatch) -> None:
+    disc = _write_files(tmp_path, ["d1-01.flac"])
+    _patch_cambia(monkeypatch, FakeCambiaOutput(parsed=FakeParsedCombined(parsed_logs=[FakeParsedLog(tracks=[])])))
+    _patch_file_crcs(monkeypatch, {"d1-01.flac": "CORRUPTED"})
+    with pytest.raises(LogCheckSkipped, match="no tracks"):
+        anyio.run(logs.check_log_cambia, str(tmp_path / "rip.log"), disc)
+
+
+def test_appended_logs_without_a_toc_are_skipped_not_merged(tmp_path, monkeypatch) -> None:
+    disc = _write_files(tmp_path, ["d1-01.flac", "d2-01.flac"])
+    output = FakeCambiaOutput(
+        parsed=FakeParsedCombined(
+            parsed_logs=[
+                FakeParsedLog(toc_hash="", tracks=[FakeTrack(num=1, copy_hash="D1-1")]),
+                FakeParsedLog(toc_hash="", tracks=[FakeTrack(num=1, copy_hash="D2-1")]),
+            ]
+        )
+    )
+    _patch_cambia(monkeypatch, output)
+    _patch_file_crcs(monkeypatch, {"d1-01.flac": "CORRUPTED", "d2-01.flac": "D2-1"})
+    with pytest.raises(LogCheckSkipped, match="without a TOC"):
+        anyio.run(logs.check_log_cambia, str(tmp_path / "rip.log"), disc)
+
+
+def test_a_range_rip_with_more_files_than_its_toc_is_skipped_not_aborted(tmp_path, monkeypatch) -> None:
+    basepath = _write_discs(tmp_path, {"CD1": ["d1-01.flac", "d1-02.flac"], "CD2": ["d2-01.flac", "d2-02.flac"]})
+    output = FakeCambiaOutput(
+        parsed=FakeParsedCombined(
+            parsed_logs=[
+                FakeParsedLog(
+                    tracks=[FakeTrack(num=1, copy_hash="R1", is_range=True)], toc_entries=["track 1", "track 2"]
+                )
+            ]
+        )
+    )
+    _patch_cambia(monkeypatch, output)
+    # The log sits at the album root, so its folder search finds both discs' audio.
+    with pytest.raises(LogCheckSkipped, match="Range rip of 2 tracks, but 4 audio file"):
+        anyio.run(logs.check_log_cambia, str(tmp_path / "CD1.log"), basepath)
+
+
 def _fail_scandir(monkeypatch, folder: str, error: OSError) -> None:
     real_scandir = os.scandir
 
@@ -247,7 +287,13 @@ def test_a_one_disc_range_rip_is_rebuilt_from_its_own_disc_folder(tmp_path, monk
     basepath = _write_discs(tmp_path, {"CD1": ["d1-01.flac", "d1-02.flac"], "CD2": ["d2-01.flac"]})
     output = FakeCambiaOutput(
         parsed=FakeParsedCombined(
-            parsed_logs=[FakeParsedLog(toc_hash="disc-1", tracks=[FakeTrack(num=1, copy_hash="R1", is_range=True)])]
+            parsed_logs=[
+                FakeParsedLog(
+                    toc_hash="disc-1",
+                    tracks=[FakeTrack(num=1, copy_hash="R1", is_range=True)],
+                    toc_entries=["track 1", "track 2"],
+                )
+            ]
         )
     )
     _patch_cambia(monkeypatch, output)
@@ -264,7 +310,7 @@ def test_a_one_disc_range_rip_is_rebuilt_from_its_own_disc_folder(tmp_path, monk
     assert rebuilt_from == [["d1-01.flac", "d1-02.flac"]]
 
 
-def test_a_multi_disc_log_missing_other_discs_audio_is_skipped_not_failed(tmp_path, monkeypatch, capsys) -> None:
+def test_a_multi_disc_log_missing_other_discs_audio_is_skipped_not_failed(tmp_path, monkeypatch) -> None:
     # Only one disc's audio under the search root: a skip, not a CRC mismatch.
     disc = _write_files(tmp_path, ["d1-01.flac"])
     output = FakeCambiaOutput(
@@ -278,10 +324,8 @@ def test_a_multi_disc_log_missing_other_discs_audio_is_skipped_not_failed(tmp_pa
     _patch_cambia(monkeypatch, output)
     _patch_file_crcs(monkeypatch, {"d1-01.flac": "D1-1"})
 
-    anyio.run(logs.check_log_cambia, str(tmp_path / "rip.log"), disc)
-
-    out = capsys.readouterr().out
-    assert "only 1 audio file" in out
+    with pytest.raises(LogCheckSkipped, match="only 1 audio file"):
+        anyio.run(logs.check_log_cambia, str(tmp_path / "rip.log"), disc)
 
 
 def test_an_unreadable_disc_folder_is_an_error_not_a_skip(tmp_path, monkeypatch) -> None:
@@ -351,7 +395,7 @@ def test_checklog_on_a_folder_checks_each_log_against_that_folder(tmp_path, monk
     assert seen == [(str(tmp_path / "CD1" / "rip.log"), basepath)]
 
 
-def test_a_range_rip_on_a_later_disc_skips_the_combined_check(tmp_path, monkeypatch, capsys) -> None:
+def test_a_range_rip_on_a_later_disc_skips_the_combined_check(tmp_path, monkeypatch) -> None:
     basepath = _write_files(tmp_path, ["d1-01.flac", "d2-range.flac"])
     output = FakeCambiaOutput(
         parsed=FakeParsedCombined(
@@ -365,10 +409,8 @@ def test_a_range_rip_on_a_later_disc_skips_the_combined_check(tmp_path, monkeypa
     # Disc 2's range CRC matches no single file, so a per-file check would call a good rip a mismatch.
     _patch_file_crcs(monkeypatch, {"d1-01.flac": "D1-1", "d2-range.flac": "FILE-CRC"})
 
-    anyio.run(logs.check_log_cambia, "log.log", basepath)
-
-    out = capsys.readouterr().out
-    assert "Multi-disc range rip" in out
+    with pytest.raises(LogCheckSkipped, match="Multi-disc range rip"):
+        anyio.run(logs.check_log_cambia, "log.log", basepath)
 
 
 def test_a_range_entry_replaced_by_a_rerip_is_verified(tmp_path, monkeypatch, capsys) -> None:

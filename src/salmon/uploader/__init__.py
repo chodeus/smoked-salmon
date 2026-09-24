@@ -312,7 +312,7 @@ async def _check_logs(path: str) -> None:
                 ):
                     raise click.Abort() from e
             except LogCheckSkipped as e:
-                click.secho(f"Error checking log: {e}", fg="red")
+                click.secho(f"Log not checked: {e}", fg="yellow")
             except Exception as e:
                 # Any other failure is one while verifying the audio, which must not pass as verified.
                 click.secho(f"Could not verify the audio against {filepath}: {e}", fg="red")

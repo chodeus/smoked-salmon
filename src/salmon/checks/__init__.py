@@ -9,7 +9,7 @@ from salmon.checks.mqa import check_mqa
 from salmon.checks.upconverts import test_upconverted
 from salmon.common import commandgroup
 from salmon.constants import SOURCES
-from salmon.errors import CRCMismatchError, EditedLogError
+from salmon.errors import CRCMismatchError, EditedLogError, LogCheckSkipped
 
 
 @commandgroup.group()
@@ -45,6 +45,8 @@ async def _check_log(path: str, basepath: str) -> None:
         click.secho("Error: Edited logs detected!", fg="red", bold=True)
     except CRCMismatchError:
         click.secho("Error: CRC mismatch between log and audio files!", fg="red", bold=True)
+    except LogCheckSkipped as e:
+        click.secho(f"Log not checked: {e}", fg="yellow")
     except Exception as e:
         click.secho(f"Error checking log: {e}", fg="red")
 

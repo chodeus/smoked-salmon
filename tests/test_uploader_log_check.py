@@ -39,7 +39,7 @@ def test_a_log_that_cannot_be_checked_is_reported_not_fatal(tmp_path, monkeypatc
     monkeypatch.setattr(uploader, "check_log_cambia", _check_log_raising(LogCheckSkipped("No audio files found!")))
     anyio.run(uploader._check_logs, _album_with_a_log(tmp_path))
     out = capsys.readouterr().out
-    assert "Error checking log: No audio files found!" in out
+    assert "Log not checked: No audio files found!" in out
 
 
 def test_a_folder_that_cannot_be_scanned_for_logs_aborts_the_upload(tmp_path, monkeypatch) -> None:

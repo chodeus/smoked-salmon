@@ -168,7 +168,7 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         basepath: Base directory path containing audio files.
 
     Raises:
-        LogCheckSkipped: If cambia can't parse the log, or there is no audio to check.
+        LogCheckSkipped: If the log's CRCs can't be checked against the audio (see each raise).
         EditedLogError: If a log's checksum shows it was edited.
         CRCMismatchError: If the audio doesn't match the log's CRCs.
         Exception: Any other error means the audio could not be verified.
@@ -197,6 +197,10 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
     elif cambia.Integrity.Unknown in integrities:
         click.secho("Lacking a valid checksum. The torrent will be marked as trumpable.", fg="yellow")
 
+    # A log without a TOC has an empty disc id, so appended logs of different discs would merge.
+    if len(parsed_logs) > 1 and not all(pl.toc.accurip_tocid.hash for pl in parsed_logs):
+        raise LogCheckSkipped("Appended logs without a TOC: can't tell which disc each track is on.")
+
     # Appended rerip logs: last log per (disc, track) wins. Key on the disc's TOC id
     # so a second disc's track numbers don't overwrite the first's (#358).
     last_copy_hash: dict[tuple[str, int], str] = {}
@@ -206,6 +210,8 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         for track in parsed_log.tracks:
             last_copy_hash[(disc_id, track.num)] = track.test_and_copy.copy_hash
             last_is_range[(disc_id, track.num)] = track.is_range
+    if not last_copy_hash:
+        raise LogCheckSkipped("The log lists no tracks, so there are no CRCs to check.")
     expected_crcs = Counter(last_copy_hash.values())
 
     def _find_audio(root_dir: str) -> list[str]:
@@ -236,21 +242,22 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
 
     click.secho("\nVerifying audio file CRC values...", fg="cyan", bold=True)
     if multi_disc and len(files_to_check) < len(last_copy_hash):
-        click.secho(
+        raise LogCheckSkipped(
             f"Multi-disc log, but only {len(files_to_check)} audio file(s) under {basepath} for "
-            f"{len(last_copy_hash)} tracks: skipping CRC file verification. Every disc's audio must be under "
-            "that folder for it to be checked.",
-            fg="yellow",
+            f"{len(last_copy_hash)} tracks. Every disc's audio must be under that folder for it to be checked."
         )
-        return
     # Latest entries, as a rerip replaces a range rip. A range CRC matches no single file, and one
     # range rebuilt from the first disc's TOC can't stand for several discs (#358).
     range_rip = any(last_is_range.values())
     if multi_disc and range_rip:
-        click.secho("Multi-disc range rip log: skipping combined CRC file verification.", fg="yellow")
-        return
+        raise LogCheckSkipped("Multi-disc range rip log: a range can't be rebuilt across discs.")
     if range_rip:
         toc_entries = parsed_logs[0].toc.raw.entries
+        if len(files_to_check) != len(toc_entries):
+            raise LogCheckSkipped(
+                f"Range rip of {len(toc_entries)} tracks, but {len(files_to_check)} audio file(s) found: "
+                "can't rebuild the range."
+            )
 
         # Log contains range rip CRC, but we have individual track files
         # Concatenate track files to recreate the original range rip for CRC verification

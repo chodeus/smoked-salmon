@@ -95,7 +95,7 @@ class CRCMismatchError(Exception):
 
 
 class LogCheckSkipped(Exception):
-    """Raised when a log can't be checked at all (unparseable, or no audio to check against)."""
+    """Raised when a log's CRCs can't be checked against the audio; not a verdict on the rip."""
 
     pass
 
