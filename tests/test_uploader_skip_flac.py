@@ -408,3 +408,39 @@ def test_the_red_blacklist_still_blocks(monkeypatch) -> None:
     assert transcoded == []
     assert "upload_and_report" not in calls
     assert "choose_tracker" not in calls
+
+
+def test_formats_the_edition_already_holds_are_dupe_risks_left_out(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(salmon.uploader.click, "prompt", _default_answer([]))
+    group = _group(_torrent(11), _torrent(12, format_="MP3", encoding="320"))
+
+    _calls, transcoded = _flow(monkeypatch, group)
+
+    assert transcoded == [(["MP3 V0"], "https://tracker.test/torrents.php?torrentid=11")]
+    assert "DUPE RISK: this edition already has MP3 320" in capsys.readouterr().out
+
+
+def test_held_formats_are_left_out_with_yes_all(monkeypatch) -> None:
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
+    group = _group(_torrent(11), _torrent(12, format_="MP3", encoding="V0 (VBR)"))
+
+    _calls, transcoded = _flow(monkeypatch, group)
+
+    assert transcoded == [(["MP3 320"], "https://tracker.test/torrents.php?torrentid=11")]
+
+
+def test_a_held_format_of_another_edition_is_offered(monkeypatch) -> None:
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
+    group = _group(_torrent(11), _torrent(12, format_="MP3", encoding="320", catno="OTHER-9"))
+
+    _calls, transcoded = _flow(monkeypatch, group)
+
+    assert transcoded == [(["MP3 320", "MP3 V0"], "https://tracker.test/torrents.php?torrentid=11")]
+
+
+def _default_answer(asked: list[str]):
+    async def fake_prompt(text: str, *_args, default: str = "", **_kwargs) -> str:
+        asked.append(text)
+        return default
+
+    return fake_prompt

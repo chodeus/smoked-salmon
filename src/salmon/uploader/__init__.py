@@ -66,6 +66,7 @@ from salmon.uploader.dupe_checker import (
     choose_source_flac,
     dupe_check_recent_torrents,
     generate_dupe_check_searchstrs,
+    matching_torrents,
     print_recent_upload_results,
     print_torrents,
 )
@@ -737,9 +738,13 @@ async def upload(
 
             group_link = f"{gazelle_site.base_url}/torrents.php?id={group_id}" if group_id else source_url
             try:
+                held: set[str] = set()
                 if flac_url:
                     click.secho(f"\nNot uploading the FLAC: transcoding from {flac_url}", fg="yellow")
                     url = flac_url
+                    held = held_downconversions(
+                        get_downconversion_options(rls_data, track_data), flac_group or {}, metadata, source_flac
+                    )
                 else:
                     torrent_id, group_id, torrent_path, torrent_content, url = await upload_and_report(
                         gazelle_site,
@@ -772,7 +777,7 @@ async def upload(
                         default=True,
                     )
                 ):
-                    selected_tasks = await prompt_downconversion_choice(rls_data, track_data)
+                    selected_tasks = await prompt_downconversion_choice(rls_data, track_data, held)
                     if selected_tasks:
                         display_names = [task["name"] for task in selected_tasks]
                         click.secho(
@@ -1012,18 +1017,44 @@ def get_downconversion_options(rls_data, track_data):
     return options
 
 
-async def prompt_downconversion_choice(rls_data, track_data):
+def downconversion_format(task: dict[str, Any]) -> tuple[str, str]:
+    """Format and encoding of the torrent a downconversion task makes."""
+    if task["action"] == "transcode":
+        return "MP3", {"320": "320", "V0": "V0 (VBR)"}[task["encoding"]]
+    return "FLAC", "Lossless" if task["target_bitdepth"] == 16 else "24bit Lossless"
+
+
+def held_downconversions(
+    options: list[dict[str, Any]], group: dict[str, Any], release: dict[str, Any], source_flac: dict[str, Any] | None
+) -> set[str]:
+    """Names of the options this release's edition in the group already holds, the source FLAC aside."""
+    held = set()
+    for option in options:
+        fmt, encoding = downconversion_format(option)
+        in_edition = matching_torrents(group, {**release, "format": fmt, "encoding": encoding})
+        if any(source_flac is None or t.get("id") != source_flac.get("id") for t in in_edition):
+            held.add(option["name"])
+    return held
+
+
+async def prompt_downconversion_choice(rls_data, track_data, held: set[str] | frozenset[str] = frozenset()):
     """
     Prompt user to select downconversion formats.
     Returns a list of selected task dictionaries.
+    Options in `held` are already in the edition: they are flagged and left out unless picked by number.
     """
     options = get_downconversion_options(rls_data, track_data)
 
     if not options:
         return []
 
+    for name in sorted(held):
+        click.secho(
+            f"\nDUPE RISK: this edition already has {name}; the site removes exact duplicates.", fg="red", bold=True
+        )
+    unheld = [option for option in options if option["name"] not in held]
     if cfg.upload.yes_all:
-        return options
+        return unheld
 
     click.secho("\nDownconversion Options", fg="cyan", bold=True)
 
@@ -1045,6 +1076,10 @@ async def prompt_downconversion_choice(rls_data, track_data):
 
     click.secho("  0. Skip downconversion", fg="white")
     click.secho("  *. All formats", fg="white")
+    if len(unheld) == len(options):
+        default = "*"
+    else:
+        default = " ".join(str(i) for i, option in enumerate(options, 1) if option in unheld) or "0"
 
     selected_tasks = []
 
@@ -1054,7 +1089,7 @@ async def prompt_downconversion_choice(rls_data, track_data):
                 click.style(
                     '\nSelect formats to convert (space-separated list of IDs, "0" for none, "*" for all)', fg="magenta"
                 ),
-                default="*",
+                default=default,
             )
 
             if choices.strip() == "0":
@@ -1155,8 +1190,7 @@ async def execute_downconversion_tasks(
 
             # Update metadata for this conversion
             conversion_metadata = metadata.copy()
-            if task["target_bitdepth"] == 16:
-                conversion_metadata["encoding"] = "Lossless"
+            conversion_metadata["format"], conversion_metadata["encoding"] = downconversion_format(task)
 
             # Generate description for conversion
             description = generate_conversion_description(base_url, sample_rate, task["target_bitdepth"])
@@ -1196,8 +1230,7 @@ async def execute_downconversion_tasks(
 
             # Update metadata for this transcode
             transcode_metadata = metadata.copy()
-            transcode_metadata["format"] = "MP3"
-            transcode_metadata["encoding"] = {"320": "320", "V0": "V0 (VBR)"}[task["encoding"]]
+            transcode_metadata["format"], transcode_metadata["encoding"] = downconversion_format(task)
             transcode_metadata["encoding_vbr"] = {"320": False, "V0": True}[task["encoding"]]
 
             # Generate description for transcode
