@@ -449,6 +449,16 @@ def test_a_failed_artist_release_page_is_an_error_not_no_releases(
     assert any(r.match_info["path"] == "artists/a1/relationships/albums" for r in tidal.api_requests)
 
 
+def test_a_hi_res_duplicate_of_a_lossless_release_is_dropped() -> None:
+    releases = [
+        SimpleNamespace(url="a", quality="LOSSLESS", album="Same", year=2020),
+        SimpleNamespace(url="b", quality="HI_RES", album="Same", year=2020),
+        SimpleNamespace(url="c", quality="HI_RES", album="Other", year=2020),
+        SimpleNamespace(url="a", quality="LOSSLESS", album="Same", year=2020),
+    ]
+    assert [r.url for r in Searcher._filter_dupes(releases)] == ["a", "c"]
+
+
 def test_undated_artist_releases_sort_after_dated_ones() -> None:
     releases = [
         SimpleNamespace(url=url, quality="LOSSLESS", album=url, year=year)
