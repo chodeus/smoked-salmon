@@ -1,12 +1,15 @@
 """Tracker redirects and the site log, against real local servers."""
 
 import asyncio
+from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 from aiohttp import web
 from aiolimiter import AsyncLimiter
 
+import salmon.cross_upload as cross_upload
 from salmon import cfg
 from salmon.errors import LoginError, RequestFailedError
 from salmon.trackers.base import BaseGazelleApi, _tracker_limiter
@@ -198,6 +201,46 @@ async def test_a_raw_site_fetch_takes_a_slot_and_stays_put(serve, api_for):
         assert resp.status == 302
     assert seen == ["a-cookie"]
     assert cast("CountingLimiter", _tracker_limiter("RED")).slots == 1
+
+
+async def _stream_image(request: web.Request, chunks: int, size: int, pause: float) -> web.StreamResponse:
+    resp = web.StreamResponse(headers={"Content-Type": "image/jpeg"})
+    await resp.prepare(request)
+    for _ in range(chunks):
+        await resp.write(b"x" * size)
+        await asyncio.sleep(pause)
+    await resp.write_eof()
+    return resp
+
+
+async def test_a_trickled_raw_site_fetch_still_times_out(serve, api_for):
+    async def image(request: web.Request) -> web.StreamResponse:
+        return await _stream_image(request, chunks=10, size=1, pause=0.3)
+
+    url = await serve(image=image)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    with pytest.raises(TimeoutError):
+        async with api_for(url).site_get(f"{url}/image.php", timeout_secs=1) as resp:
+            await resp.read()
+    assert loop.time() - start < 2
+
+
+async def test_a_rehosted_red_image_is_read_to_the_end(serve, api_for, monkeypatch):
+    async def image(request: web.Request) -> web.StreamResponse:
+        return await _stream_image(request, chunks=3, size=65536, pause=0.05)
+
+    uploaded: list[int] = []
+
+    async def upload_file(path: str) -> tuple[str, None]:
+        uploaded.append(len(Path(path).read_bytes()))
+        return "https://files.catbox.moe/abc.jpg", None
+
+    host = SimpleNamespace(ImageUploader=lambda: SimpleNamespace(upload_file=upload_file))
+    monkeypatch.setitem(cross_upload.HOSTS, "catbox", host)
+    url = await serve(image=image)
+    await cross_upload._rehost_red_image(f"{url}/image.php", api_for(url), "catbox")
+    assert uploaded == [3 * 65536]
 
 
 async def test_clients_of_one_tracker_share_one_budget(api_for):

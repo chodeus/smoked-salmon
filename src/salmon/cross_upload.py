@@ -443,16 +443,19 @@ async def _rehost_red_image(url: str, source_site: "BaseGazelleApi", image_host:
             max_bytes = 25 * 1024 * 1024  # RED accepts up to 20 MiB
             if response.content_length is not None and response.content_length > max_bytes:
                 raise click.ClickException(f"RED image {shown} is too large ({response.content_length} bytes).")
-            content = await response.content.read(max_bytes + 1)
-            if len(content) > max_bytes:
-                raise click.ClickException(f"RED image {shown} exceeds the {max_bytes}-byte limit.")
+            # read(n) returns what is buffered so far, not n bytes, so read to the end.
+            content = bytearray()
+            async for chunk in response.content.iter_chunked(64 * 1024):
+                content += chunk
+                if len(content) > max_bytes:
+                    raise click.ClickException(f"RED image {shown} exceeds the {max_bytes}-byte limit.")
     except (aiohttp.ClientError, TimeoutError) as error:
         # aiohttp's error text repeats the request URL, signature included; name the type only.
         raise click.ClickException(f"Could not download RED image {shown} ({type(error).__name__}).") from error
 
     with TemporaryDirectory() as directory:
         image_path = Path(directory) / f"image{suffix}"
-        await anyio.Path(image_path).write_bytes(content)
+        await anyio.Path(image_path).write_bytes(bytes(content))
         uploaded_url, _ = await HOSTS[image_host].ImageUploader().upload_file(str(image_path))
     if not is_http_url(uploaded_url):
         raise click.ClickException(f"{image_host} returned no usable URL for {shown}.")

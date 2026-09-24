@@ -340,7 +340,9 @@ class BaseGazelleApi:
                 allow_redirects=False,
             ) as resp,
         ):
-            yield resp
+            # sock_read resets on every chunk, so a trickled body needs its own bound (as in _request).
+            async with asyncio.timeout(timeout_secs):
+                yield resp
 
     def _get_cookies(self) -> dict[str, str]:
         """Get cookies dict for requests."""

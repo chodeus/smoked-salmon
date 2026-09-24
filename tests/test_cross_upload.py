@@ -441,10 +441,10 @@ class _RedImageResponse:
     content_length = 3
 
     def __init__(self) -> None:
-        self.content = SimpleNamespace(read=self._read)
+        self.content = SimpleNamespace(iter_chunked=self._iter_chunked)
 
-    async def _read(self, _size):
-        return b"\xff\xd8\xff"
+    async def _iter_chunked(self, _size):
+        yield b"\xff\xd8\xff"
 
     async def __aenter__(self):
         return self
