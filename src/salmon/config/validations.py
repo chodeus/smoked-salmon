@@ -57,7 +57,7 @@ class Directory(BaseStruct):
         return any(_path_contains(entry, path) for entry in self.library_dirs)
 
 
-ImgUploaderLiteral = Literal["ptpimg", "ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "red"]
+ImgUploaderLiteral = Literal["ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "red"]
 _HOST_KINDS = ("image_uploader", "cover_uploader", "specs_uploader")
 _TRACKER_CODES = ("red", "ops", "dic")
 # A tracker's own image host is for its album artwork only: opt in under [image.<tracker>], and it
@@ -70,6 +70,11 @@ RED_IMAGE_PROXY_TARGETS = frozenset({"OPS"})
 SpectralSelectionLiteral = Literal["*", "+", "0"]
 
 
+def host_allowed(code: str | None, kind: str, host: str) -> bool:
+    """Whether `host` may fill `kind` under [image] (code None) or [image.<code>]."""
+    return host not in ARTWORK_ONLY_HOSTS or (kind == "cover_uploader" and _OWN_COVER_HOSTS.get(code or "") == host)
+
+
 class ImageHostOverride(BaseStruct):
     image_uploader: ImgUploaderLiteral | None = None
     cover_uploader: ImgUploaderLiteral | None = None
@@ -80,7 +85,6 @@ class ImageUploader(BaseStruct):
     image_uploader: ImgUploaderLiteral = "catbox"
     cover_uploader: ImgUploaderLiteral = "catbox"
     specs_uploader: ImgUploaderLiteral = "catbox"
-    ptpimg_key: str | None = None
     ptscreens_key: str | None = None
     oeimg_key: str | None = None
     imgbb_key: str | None = None
@@ -116,8 +120,6 @@ class ImageUploader(BaseStruct):
     def __post_init__(self):
         selections = self._selections()
         hosts = {host for _, _, host in selections}
-        if "ptpimg" in hosts and self.ptpimg_key is None:
-            raise ValueError("ptpimg key not specified")
         if "ptscreens" in hosts and self.ptscreens_key is None:
             raise ValueError("PTScreens key not specified")
         if "oeimg" in hosts and self.oeimg_key is None:
@@ -125,8 +127,7 @@ class ImageUploader(BaseStruct):
         if "imgbb" in hosts and self.imgbb_key is None:
             raise ValueError("imgbb key not specified")
         for code, kind, host in selections:
-            own_slot = kind == "cover_uploader" and code is not None and _OWN_COVER_HOSTS.get(code) == host
-            if host not in ARTWORK_ONLY_HOSTS or own_slot:
+            if host_allowed(code, kind, host):
                 continue
             owner = next(tracker for tracker, own in _OWN_COVER_HOSTS.items() if own == host)
             section = f"[image.{code}]" if code else "[image]"
