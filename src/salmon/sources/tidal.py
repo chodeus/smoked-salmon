@@ -1,5 +1,6 @@
 import math
 import re
+from datetime import UTC
 from email.utils import parsedate_to_datetime
 from functools import cache
 from time import monotonic, time
@@ -75,9 +76,14 @@ def _parse_retry_after(value: str | None) -> float | None:
     else:
         return max(seconds, 0.0) if math.isfinite(seconds) else None
     try:
-        return max(parsedate_to_datetime(value).timestamp() - time(), 0.0)
+        when = parsedate_to_datetime(value)
     except (TypeError, ValueError):
         return None
+    if when.tzinfo is None:  # a "-0000" date: UTC, not local time
+        when = when.replace(tzinfo=UTC)
+    wait = when.timestamp() - time()
+    # A date already past names no wait, so the normal backoff applies.
+    return wait if wait > 0 else None
 
 
 class _RateLimitedError(ScrapeError):
