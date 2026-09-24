@@ -23,6 +23,7 @@ from salmon.common import compress as recompress
 from salmon.config import find_config_path, get_default_config_path, get_user_cfg_path
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.uploader.description import build_tracklist_description
+from salmon.uploader.redaction import redact_secrets
 from salmon.uploader.spectrals import (
     check_spectrals,
     get_spectrals_path,
@@ -340,7 +341,9 @@ async def _test_seedbox_connections() -> None:
 
         click.secho(f"\n  Testing Seedbox {i + 1} ({seedbox_config.name})...", fg="yellow")
         click.secho(f"    Type: {seedbox_config.type}", fg="cyan")
-        click.secho(f"    URL: {seedbox_config.url}", fg="cyan")
+        # An rclone remote can be a connection string carrying a password.
+        remote = redact_secrets(seedbox_config.url)
+        click.secho(f"    URL: {remote}", fg="cyan")
 
         try:
             # Test the torrent client initialization
@@ -358,21 +361,19 @@ async def _test_seedbox_connections() -> None:
                         with anyio.fail_after(10):
                             result = await anyio.run_process(["rclone", "lsd", f"{seedbox_config.url}:"], check=False)
                         if result.returncode == 0:
-                            click.secho(
-                                f"    ✔ Rclone remote '{seedbox_config.url}' is accessible", fg="green", bold=True
-                            )
+                            click.secho(f"    ✔ Rclone remote '{remote}' is accessible", fg="green", bold=True)
                         else:
-                            error = result.stderr.decode().strip() or f"exit code {result.returncode}"
+                            error = result.stderr.decode(errors="replace").strip() or f"exit code {result.returncode}"
                             click.secho(
-                                f"    ✖ Rclone remote '{seedbox_config.url}' failed: {error}", fg="red", bold=True
+                                f"    ✖ Rclone remote '{remote}' failed: {redact_secrets(error)}", fg="red", bold=True
                             )
                     except Exception as rclone_e:
-                        click.secho(f"    ✖ Rclone test failed: {rclone_e}", fg="red", bold=True)
+                        click.secho(f"    ✖ Rclone test failed: {redact_secrets(str(rclone_e))}", fg="red", bold=True)
                 else:
                     click.secho("    ✖ Rclone executable not found", fg="red", bold=True)
 
         except Exception as e:
-            click.secho(f"    ✖ Seedbox test failed: {e}", fg="red", bold=True)
+            click.secho(f"    ✖ Seedbox test failed: {redact_secrets(str(e))}", fg="red", bold=True)
 
     click.secho("-" * 50, fg="yellow")
 

@@ -5,6 +5,7 @@ Never touches a real torrent client, rclone binary or remote: the torrent client
 """
 
 import anyio
+import qbittorrentapi
 
 import salmon.commands as commands_module
 from salmon import cfg
@@ -94,3 +95,43 @@ def test_rclone_lsd_failure_reports_failed_with_stderr(monkeypatch, capsys) -> N
 
 def test_seedboxhealth_command_does_not_exist() -> None:
     assert "seedboxhealth" not in commandgroup.commands
+
+
+def test_failed_login_output_never_contains_the_password(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cfg, "seedbox", [_seedbox(type="local", torrent_client="qbittorrent+http://user:hunter2@box:8080")]
+    )
+
+    def refuse(self):
+        raise qbittorrentapi.APIConnectionError("Failed to connect to http://user:hunter2@box:8080?password=hunter2")
+
+    monkeypatch.setattr(qbittorrentapi.Client, "auth_log_in", refuse)
+
+    _run_seedbox_check()
+
+    out = capsys.readouterr().out
+    assert "connection failed" in out.lower()
+    assert "hunter2" not in out
+
+
+def test_rclone_failure_output_never_contains_the_password(monkeypatch, capsys) -> None:
+    remote = ":sftp,host=box,user=dean,pass=hunter2"
+    monkeypatch.setattr(cfg, "seedbox", [_seedbox(url=remote)])
+    monkeypatch.setattr(QBittorrentClient, "login", lambda self: object())
+    monkeypatch.setattr(commands_module.shutil, "which", lambda name: "/usr/bin/rclone")
+
+    class FakeResult:
+        returncode = 1
+        stdout = b""
+        stderr = b"couldn't connect to sftp://dean:hunter2@box --sftp-pass hunter2"
+
+    async def fake_run_process(cmd, check=True):
+        return FakeResult()
+
+    monkeypatch.setattr(commands_module.anyio, "run_process", fake_run_process)
+
+    _run_seedbox_check()
+
+    out = capsys.readouterr().out
+    assert "failed" in out.lower()
+    assert "hunter2" not in out

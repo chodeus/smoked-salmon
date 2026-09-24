@@ -2,13 +2,13 @@ import argparse
 import collections
 import os
 import posixpath
-import re
 
 import anyio
 import asyncclick as click
 
 from salmon import cfg
 from salmon.config.validations import Seedbox
+from salmon.uploader.redaction import redact_secrets as _redact
 from salmon.uploader.torrent_client import TorrentClient, TorrentClientGenerator
 
 
@@ -31,19 +31,6 @@ def _resolve_shell_path(remote_folder: str, extra_args: list[str]) -> str:
     if override.startswith("@"):
         return posixpath.join(override.removeprefix("@"), remote_folder.removeprefix("/"))
     return override
-
-
-_URL_USERINFO = re.compile(r"(://)[^/\s@]+@")
-_SECRET_WORDS = r"(?:pass|password|token|secret|key|session)"
-_SECRET_FLAG = re.compile(rf"(--?[\w-]*{_SECRET_WORDS}[\w-]*(?:=|[ \t]+))\S+", re.IGNORECASE)
-_SECRET_ASSIGNMENT = re.compile(rf"\b([\w-]*{_SECRET_WORDS}[\w-]*)=\S+", re.IGNORECASE)
-
-
-def _redact(text: str) -> str:
-    """Mask URL userinfo and password/token flags before rclone's command line or output reaches a log."""
-    text = _URL_USERINFO.sub(r"\1[REDACTED]@", text)
-    text = _SECRET_FLAG.sub(r"\1[REDACTED]", text)
-    return _SECRET_ASSIGNMENT.sub(r"\1=[REDACTED]", text)
 
 
 async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str) -> bool:
@@ -142,9 +129,7 @@ class UploadManager:
         """
         return self._client_cache[seedbox.torrent_client]
 
-    def add_upload_task(
-        self, directory: str, task_type: str, is_flac: bool, site_code: str | None = None
-    ) -> None:
+    def add_upload_task(self, directory: str, task_type: str, is_flac: bool, site_code: str | None = None) -> None:
         """Queue upload tasks for a path across all configured seedboxes.
 
         Args:
