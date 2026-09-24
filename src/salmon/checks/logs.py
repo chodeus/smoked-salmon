@@ -1,5 +1,6 @@
 import os
 import zlib
+from collections import Counter
 from collections.abc import Generator, Iterable
 from typing import Any
 
@@ -10,7 +11,7 @@ import av
 import cambia
 
 from salmon.common.files import process_files
-from salmon.errors import CRCMismatchError, EditedLogError
+from salmon.errors import CRCMismatchError, EditedLogError, LogCheckSkipped
 
 
 def _get_audio_duration_sectors(filepath: str) -> int:
@@ -167,72 +168,107 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         basepath: Base directory path containing audio files.
 
     Raises:
-        ValueError: If log parsing fails, log is edited, or CRC mismatch detected.
-        Exception: If any other error occurs during checking.
+        LogCheckSkipped: If the log's CRCs can't be checked against the audio (see each raise).
+        EditedLogError: If a log's checksum shows it was edited.
+        CRCMismatchError: If the audio doesn't match the log's CRCs.
+        Exception: Any other error means the audio could not be verified.
     """
+    # cambia raises ValueError for a log it can't parse; an OSError reading it propagates.
     try:
         cambia_output = cambia.parse_log_file(logpath)
+    except ValueError as e:
+        raise LogCheckSkipped(f"Could not parse {logpath}: {e}") from e
 
+    try:
         score = int(cambia_output.evaluation_combined[0].combined_score)
+    except (IndexError, ValueError):
+        click.secho("Could not read the log score; checking its CRCs anyway.", fg="yellow")
+    else:
         if score < 100:
             click.secho(f"Log Score: {score} (The torrent will be trumpable)", fg="yellow", bold=True)
         else:
             click.secho(f"Log Score: {score}", fg="green")
-    except Exception as e:
-        click.secho(f"Error checking log {logpath}: {e}", fg="red")
-        raise
 
-    if cambia_output.parsed.parsed_logs[0].checksum.integrity == cambia.Integrity.Mismatch:
+    # Every appended log carries its own checksum; an edited rerip log must not pass on the first one's.
+    parsed_logs = cambia_output.parsed.parsed_logs
+    integrities = [parsed_log.checksum.integrity for parsed_log in parsed_logs]
+    if cambia.Integrity.Mismatch in integrities:
         raise EditedLogError("Edited logs")
-    elif cambia_output.parsed.parsed_logs[0].checksum.integrity == cambia.Integrity.Unknown:
+    elif cambia.Integrity.Unknown in integrities:
         click.secho("Lacking a valid checksum. The torrent will be marked as trumpable.", fg="yellow")
+
+    # A log without a TOC has an empty disc id, so appended logs of different discs would merge.
+    if len(parsed_logs) > 1 and not all(pl.toc.accurip_tocid.hash for pl in parsed_logs):
+        raise LogCheckSkipped("Appended logs without a TOC: can't tell which disc each track is on.")
 
     # Appended rerip logs: last log per (disc, track) wins. Key on the disc's TOC id
     # so a second disc's track numbers don't overwrite the first's (#358).
-    parsed_logs = cambia_output.parsed.parsed_logs
     last_copy_hash: dict[tuple[str, int], str] = {}
+    last_is_range: dict[tuple[str, int], bool] = {}
     for parsed_log in parsed_logs:
         disc_id = parsed_log.toc.accurip_tocid.hash
         for track in parsed_log.tracks:
             last_copy_hash[(disc_id, track.num)] = track.test_and_copy.copy_hash
-    copy_crc_set = set(last_copy_hash.values())
+            last_is_range[(disc_id, track.num)] = track.is_range
+    if not last_copy_hash:
+        raise LogCheckSkipped("The log lists no tracks, so there are no CRCs to check.")
+    expected_crcs = Counter(last_copy_hash.values())
 
-    # Prefer the log's own directory: for a multi-disc release with a log per disc, the
-    # release root (basepath) would mix other discs' audio and break range-CRC track counts.
-    # But when the log lives in a nested dir (e.g. Album/logs/) it holds no audio, so fall
-    # back to basepath — a combined multi-disc log then hits the >1-TOC skip below anyway.
     def _find_audio(root_dir: str) -> list[str]:
+        try:
+            os.stat(root_dir)
+        except FileNotFoundError:
+            return []  # e.g. the dirname of a bare "rip.log"; any other stat error propagates
+
+        def _raise_scan_error(error: OSError) -> None:
+            raise error
+
         found: list[str] = []
-        for root, _folders, files_ in os.walk(root_dir):
+        # An unreadable or vanished disc folder would otherwise pass as "audio missing" and skip the check.
+        for root, _folders, files_ in os.walk(root_dir, onerror=_raise_scan_error):
             for f in files_:
                 if os.path.splitext(f.lower())[1] in {".flac", ".mp3", ".m4a"}:
                     found.append(os.path.join(root, f))
         return found
 
-    files_to_check = _find_audio(os.path.dirname(logpath)) or _find_audio(basepath)
+    # A single-disc log searches its own folder first; a multi-disc log, or a folder with no audio,
+    # searches basepath.
+    multi_disc = len({pl.toc.accurip_tocid.hash for pl in parsed_logs}) > 1
+    files_to_check = [] if multi_disc else _find_audio(os.path.dirname(logpath))
+    files_to_check = files_to_check or _find_audio(basepath)
 
     if not files_to_check:
-        raise ValueError("No audio files found!")
+        raise LogCheckSkipped("No audio files found!")
 
     click.secho("\nVerifying audio file CRC values...", fg="cyan", bold=True)
-    # Multiple discs in one log make the flat file set ambiguous against per-(disc,track)
-    # hashes and against a single log's range/TOC; the log score + checksum checks above
-    # already ran, so skip the file-CRC comparison rather than risk a false failure (#358, 3b).
-    if len({pl.toc.accurip_tocid.hash for pl in parsed_logs}) > 1:
-        click.secho("Multi-disc log detected — skipping combined CRC file verification.", fg="yellow")
-        return
-    if parsed_logs[0].tracks[0].is_range:
+    if multi_disc and len(files_to_check) < len(last_copy_hash):
+        raise LogCheckSkipped(
+            f"Multi-disc log, but only {len(files_to_check)} audio file(s) under {basepath} for "
+            f"{len(last_copy_hash)} tracks. Every disc's audio must be under that folder for it to be checked."
+        )
+    # Latest entries, as a rerip replaces a range rip. A range CRC matches no single file, and one
+    # range rebuilt from the first disc's TOC can't stand for several discs (#358).
+    range_rip = any(last_is_range.values())
+    if multi_disc and range_rip:
+        raise LogCheckSkipped("Multi-disc range rip log: a range can't be rebuilt across discs.")
+    if range_rip:
         toc_entries = parsed_logs[0].toc.raw.entries
+        if len(files_to_check) != len(toc_entries):
+            raise LogCheckSkipped(
+                f"Range rip of {len(toc_entries)} tracks, but {len(files_to_check)} audio file(s) found: "
+                "can't rebuild the range."
+            )
 
         # Log contains range rip CRC, but we have individual track files
         # Concatenate track files to recreate the original range rip for CRC verification
         range_crc = await _calculate_range_crc_async(files_to_check, toc_entries)
-        crc_set = {range_crc}
+        found_crcs = Counter({range_crc: 1})
     else:
         crc_results = await process_files(files_to_check, _calculate_file_crc_async, "Calculating CRC32 hashes")
-        crc_set = set(crc_results)
+        # Counted, not a set: two tracks can share a CRC, and each needs a file of its own.
+        found_crcs = Counter(crc_results)
 
-    if not copy_crc_set.issubset(crc_set):
+    if expected_crcs - found_crcs:
         raise CRCMismatchError("CRC Mismatch")
 
     click.secho("All CRC values match the log file.", fg="green")

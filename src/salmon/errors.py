@@ -76,6 +76,12 @@ class LoginError(RequestError):
     pass
 
 
+class UnknownOutcomeError(RequestError):
+    """A request that changes state failed after it may have reached the tracker, so it is not re-sent."""
+
+    pass
+
+
 class EditedLogError(Exception):
     """Raised when a log file has been edited."""
 
@@ -84,6 +90,12 @@ class EditedLogError(Exception):
 
 class CRCMismatchError(Exception):
     """Raised when CRC values don't match between log and audio files."""
+
+    pass
+
+
+class LogCheckSkipped(Exception):
+    """Raised when a log's CRCs can't be checked against the audio; not a verdict on the rip."""
 
     pass
 
