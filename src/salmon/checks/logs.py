@@ -202,9 +202,15 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
             last_is_range[(disc_id, track.num)] = track.is_range
     expected_crcs = Counter(last_copy_hash.values())
 
+    def _raise_scan_error(error: OSError) -> None:
+        # A missing folder (e.g. dirname of a bare "rip.log") just has no audio.
+        if not isinstance(error, FileNotFoundError):
+            raise error
+
     def _find_audio(root_dir: str) -> list[str]:
         found: list[str] = []
-        for root, _folders, files_ in os.walk(root_dir):
+        # An unreadable disc folder would otherwise pass as "audio missing" and skip the check.
+        for root, _folders, files_ in os.walk(root_dir, onerror=_raise_scan_error):
             for f in files_:
                 if os.path.splitext(f.lower())[1] in {".flac", ".mp3", ".m4a"}:
                     found.append(os.path.join(root, f))

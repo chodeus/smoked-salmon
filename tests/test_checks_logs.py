@@ -234,6 +234,26 @@ def test_a_multi_disc_log_missing_other_discs_audio_is_skipped_not_failed(tmp_pa
     assert "only 1 audio file" in out
 
 
+def test_an_unreadable_disc_folder_is_an_error_not_a_skip(tmp_path, monkeypatch) -> None:
+    basepath = _write_discs(tmp_path, {"CD1": ["d1-01.flac"], "CD2": ["d2-01.flac"]})
+    output = FakeCambiaOutput(
+        parsed=FakeParsedCombined(
+            parsed_logs=[
+                FakeParsedLog(toc_hash="disc-1", tracks=[FakeTrack(num=1, copy_hash="D1-1")]),
+                FakeParsedLog(toc_hash="disc-2", tracks=[FakeTrack(num=1, copy_hash="D2-1")]),
+            ]
+        )
+    )
+    _patch_cambia(monkeypatch, output)
+    _patch_file_crcs(monkeypatch, {"d1-01.flac": "D1-1", "d2-01.flac": "D2-1"})
+    (tmp_path / "CD2").chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            anyio.run(logs.check_log_cambia, str(tmp_path / "CD1" / "rip.log"), basepath)
+    finally:
+        (tmp_path / "CD2").chmod(0o755)
+
+
 def test_checklog_on_a_folder_checks_each_log_against_that_folder(tmp_path, monkeypatch) -> None:
     basepath = _write_discs(tmp_path, {"CD1": ["d1-01.flac"], "CD2": ["d2-01.flac"]})
     (tmp_path / "CD1" / "rip.log").write_text("log")
