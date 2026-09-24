@@ -52,7 +52,7 @@ def test_top_level_ptpimg_uploader_fails_with_a_clear_message(tmp_path: Path, re
     message = str(excinfo.value)
     assert f"$.image.{field}" in message
     # RED's host is artwork-only, so suggesting it for these settings would fail again.
-    assert "catbox" in message and ", red" not in message
+    assert "(ptscreens, oeimg, catbox, imgbb, imgbox);" in message
 
 
 def test_per_tracker_ptpimg_cover_uploader_fails_with_a_clear_message(tmp_path: Path) -> None:
@@ -64,9 +64,9 @@ def test_per_tracker_ptpimg_cover_uploader_fails_with_a_clear_message(tmp_path: 
     with pytest.raises(ValueError, match="ptpimg has shut down") as excinfo:
         _parse_config(path)
     message = str(excinfo.value)
-    assert "cover_uploader" in message
+    assert "$.image.red.cover_uploader" in message
     # RED's own host is valid in this one slot, so it is offered here.
-    assert "imgbox, red)" in message
+    assert "(ptscreens, oeimg, catbox, imgbb, imgbox, red);" in message
 
 
 def test_ptpimg_in_a_setting_that_is_not_a_host_keeps_its_own_error(tmp_path: Path) -> None:
