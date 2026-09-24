@@ -38,7 +38,8 @@ def test_torrent_client_login_failure_reports_connection_failed(monkeypatch, cap
 
     _run_seedbox_check()
 
-    assert "connection failed" in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out.lower()
+    assert "connection failed" in out
 
 
 def test_torrent_client_login_success_reports_successful(monkeypatch, capsys) -> None:
@@ -47,7 +48,8 @@ def test_torrent_client_login_success_reports_successful(monkeypatch, capsys) ->
 
     _run_seedbox_check()
 
-    assert "successful" in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out.lower()
+    assert "successful" in out
 
 
 def test_rclone_lsd_success_reports_accessible(monkeypatch, capsys) -> None:
@@ -68,7 +70,8 @@ def test_rclone_lsd_success_reports_accessible(monkeypatch, capsys) -> None:
 
     _run_seedbox_check()
 
-    assert "accessible" in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out.lower()
+    assert "accessible" in out
 
 
 def test_rclone_lsd_failure_reports_failed_with_stderr(monkeypatch, capsys) -> None:
