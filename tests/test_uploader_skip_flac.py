@@ -426,7 +426,8 @@ def test_formats_the_edition_already_holds_are_dupe_risks_left_out(monkeypatch, 
     _calls, transcoded = _flow(monkeypatch, group)
 
     assert transcoded == [(["MP3 V0"], "https://tracker.test/torrents.php?torrentid=11")]
-    assert "DUPE RISK: this edition already has MP3 320" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "DUPE RISK: this edition already has MP3 320" in out
 
 
 def test_held_formats_are_left_out_with_yes_all(monkeypatch) -> None:
@@ -466,4 +467,5 @@ def test_delete_music_folder_never_deletes_the_source(monkeypatch, capsys) -> No
 
     assert deleted == []
     assert transcoded == []
-    assert "Not deleting the music folder" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Not deleting the music folder" in out
