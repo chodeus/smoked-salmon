@@ -9,7 +9,7 @@ import msgspec
 import requests
 from platformdirs import user_config_dir
 
-from .validations import Cfg, ImgUploaderLiteral
+from .validations import ARTWORK_ONLY_HOSTS, Cfg, ImgUploaderLiteral
 
 APPNAME = "smoked-salmon"
 # Containers mount a single /config; platformdirs would bury the file under an
@@ -59,12 +59,13 @@ def _parse_config(config_path: Path) -> Cfg:
         return msgspec.toml.decode(config_path.read_bytes(), type=Cfg)
     except msgspec.ValidationError as e:
         # msgspec would only say "Invalid enum value" for a host that was removed.
-        if "'ptpimg'" not in str(e):
+        message, _, location = str(e).rpartition(" - at ")
+        if "'ptpimg'" not in message or not location.endswith("_uploader`"):
             raise
-        hosts = ", ".join(get_args(ImgUploaderLiteral))
+        hosts = ", ".join(h for h in get_args(ImgUploaderLiteral) if h not in ARTWORK_ONLY_HOSTS)
         raise ValueError(
-            f"ptpimg has shut down and is no longer a supported image host. Choose another one in your config "
-            f"({hosts}); catbox needs no API key."
+            f"ptpimg has shut down and is no longer a supported image host. Choose another one for {location} "
+            f"in your config ({hosts}); catbox needs no API key."
         ) from e
 
 

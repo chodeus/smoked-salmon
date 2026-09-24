@@ -7,6 +7,7 @@ same path an end user's config goes through, without ever contacting a real host
 
 from pathlib import Path
 
+import msgspec
 import pytest
 
 from salmon.config import _parse_config
@@ -51,8 +52,12 @@ def test_top_level_ptpimg_uploader_fails_with_a_clear_message(tmp_path: Path, re
     field = replacement.split(" =")[0]
     text = _base_config(tmp_path).replace(f'{field} = "catbox"', replacement)
     path = _write_config(tmp_path, text)
-    with pytest.raises(ValueError, match="ptpimg has shut down"):
+    with pytest.raises(ValueError, match="ptpimg has shut down") as excinfo:
         _parse_config(path)
+    message = str(excinfo.value)
+    assert f"$.image.{field}" in message
+    # RED's host is artwork-only, so suggesting it for these settings would fail again.
+    assert "catbox" in message and ", red" not in message
 
 
 def test_per_tracker_ptpimg_cover_uploader_fails_with_a_clear_message(tmp_path: Path) -> None:
@@ -61,7 +66,15 @@ def test_per_tracker_ptpimg_cover_uploader_fails_with_a_clear_message(tmp_path: 
         '[image.red]\ncover_uploader = "ptpimg"',
     )
     path = _write_config(tmp_path, text)
-    with pytest.raises(ValueError, match="ptpimg has shut down"):
+    with pytest.raises(ValueError, match="ptpimg has shut down") as excinfo:
+        _parse_config(path)
+    assert "cover_uploader" in str(excinfo.value)
+
+
+def test_ptpimg_in_a_setting_that_is_not_a_host_keeps_its_own_error(tmp_path: Path) -> None:
+    text = _base_config(tmp_path).replace('# default_spectral_ids = "*"', 'default_spectral_ids = "ptpimg"')
+    path = _write_config(tmp_path, text)
+    with pytest.raises(msgspec.ValidationError, match="default_spectral_ids"):
         _parse_config(path)
 
 
