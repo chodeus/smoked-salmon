@@ -1032,8 +1032,7 @@ def _rename_script(beside_downloads: bool) -> list:
 
 @pytest.mark.parametrize("beside_downloads", [False, True])
 async def test_skip_flac_upload_never_modifies_the_source_folder(skip_flac_run, beside_downloads):
-    """The source is the folder seeding the group's FLAC: retag, rename, art strip and cover
-    extraction happen on a scratch copy, and nothing is written in or beside the source."""
+    """Retag, rename, art strip and cover extraction hit a scratch copy; nothing is written in or beside the source."""
     from mutagen.flac import FLAC
 
     source = skip_flac_run.make_source(beside_downloads)

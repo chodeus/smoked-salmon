@@ -18,11 +18,7 @@ STAGING_DIR = ".salmon-staging"
 
 @contextmanager
 def staged_source(path: str, scratch: bool) -> Iterator[tuple[str, str | None]]:
-    """The folder to work on, and the directory its rename stays in (None: download_directory).
-
-    A scratch copy (--skip-flac-upload: never uploaded or seeded) is removed on exit; a library
-    album is copied into download_directory and kept, as it is the upload; anything else is used as is.
-    """
+    """Yield (folder to work on, dir its rename stays in); a --skip-flac-upload scratch copy is removed on exit."""
     if not scratch:
         yield (_stage_source(path) if cfg.directory.is_library_path(path) else path), None
         return
@@ -34,15 +30,12 @@ def staged_source(path: str, scratch: bool) -> Iterator[tuple[str, str | None]]:
 
 
 def _stage_source(path: str, into: str | None = None) -> str:
-    """Copy an album that must stay untouched into `into` (download_directory) before anything can mutate it.
-
-    Must be a real copy, not a hardlink: a hardlink shares the inode, so the tag
-    writes later in the flow would reach the source file too.
-    """
+    """Copy an album that must stay untouched into `into` (download_directory) before anything can mutate it."""
     dest = os.path.join(into or cfg.directory.download_directory, os.path.basename(path.rstrip(os.sep)))
     if os.path.exists(dest):
         raise UploadError(f"Cannot stage the source, {dest} already exists.")
     click.secho(f"\nCopying {path} to {dest} (the source is never modified)...", fg="cyan")
+    # A real copy: a hardlink shares the inode, so later tag writes would reach the source.
     shutil.copytree(path, dest)
     # The record lives beside the album, not in it, so the copy would otherwise leave it behind.
     carry_conversion(path, dest)
