@@ -21,8 +21,11 @@ class _FakeRed:
     made: ClassVar[list["_FakeRed"]] = []
     payload: ClassVar[dict] = {}
 
+    api_key: ClassVar[str | None] = None
+
     def __init__(self) -> None:
         self.authkey: str | None = None
+        self.request_options: dict = {}
         self.calls: list[tuple[str, str, dict]] = []
         self.form: dict[str, object] = {}
         self.closed = False
@@ -32,11 +35,15 @@ class _FakeRed:
         self.calls.append(("auth", "", {}))
         self.authkey = "account-authkey"
 
-    async def _request(self, method: str, url: str, params: dict, data) -> HttpResponse:
+    async def _request(self, method: str, url: str, params: dict, data, **options) -> HttpResponse:
         self.calls.append((method, url, params))
+        self.request_options = options
         # aiohttp.FormData keeps (options, headers, value) per field; recorded so tests see what was posted.
         self.form = {options["name"]: value for options, _headers, value in data._fields}
         return HttpResponse(text=msgspec.json.encode(self.payload).decode(), url=url, status=200)
+
+    def _scrub(self, text: str) -> str:
+        return text
 
     async def close(self) -> None:
         self.closed = True
@@ -83,6 +90,21 @@ def test_red_returns_the_bare_image_url(monkeypatch, tmp_path) -> None:
     ]
     assert site.form == {"auth": "account-authkey", "file": b"png-data"}
     assert site.closed
+
+
+def test_with_an_api_key_the_upload_uses_it_and_skips_the_authkey(monkeypatch, tmp_path) -> None:
+    _patch_red_env(monkeypatch)
+    monkeypatch.setattr(_FakeRed, "api_key", "red-api-key")
+    image = tmp_path / "image.png"
+    image.write_bytes(b"png-data")
+
+    result = anyio.run(red.ImageUploader().upload_file, str(image))
+    assert result == ("https://redacted.sh/i/image.png", None)
+    [site] = _FakeRed.made
+    # No index call for an authkey, and no auth field: the key authenticates the POST.
+    assert site.calls == [("POST", "https://redacted.sh/ajax.php", {"action": "upload_image"})]
+    assert site.form == {"file": b"png-data"}
+    assert site.request_options == {"prefer_api_key": True, "needs_authkey": False}
 
 
 @pytest.mark.parametrize(

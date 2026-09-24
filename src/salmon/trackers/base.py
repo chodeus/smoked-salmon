@@ -392,6 +392,7 @@ class BaseGazelleApi:
         timeout_secs: int = 10,
         prefer_api_key: bool = False,
         idempotent: bool | None = None,
+        needs_authkey: bool = True,
     ) -> HttpResponse:
         """Authenticated HTTP request, returns response data.
 
@@ -425,7 +426,8 @@ class BaseGazelleApi:
                 return RetryableError(message)
             return UnknownOutcomeError(message)
 
-        if not (params and params.get("action") == "index"):
+        # An api key request that sends no auth field needs no index call for the authkey.
+        if needs_authkey and not (params and params.get("action") == "index"):
             await self.ensure_authenticated()
 
         use_api_key = prefer_api_key and bool(self.api_key)
@@ -462,7 +464,7 @@ class BaseGazelleApi:
                         if cfg.upload.debug_tracker_connection:
                             self._debug_response(resp, text)
                         if not resp.ok:
-                            await self._raise_for_status(resp, text, failure, idempotent)
+                            await self._raise_for_status(resp, self._scrub(text), failure, idempotent)
                         location = resp.headers.get(aiohttp.hdrs.LOCATION)
                         if resp.status not in _REDIRECT_STATUSES or not location:
                             return HttpResponse(text=text, url=str(resp.url), status=resp.status)
@@ -487,15 +489,22 @@ class BaseGazelleApi:
             # By type only: a RequestFailedError carries the raw response body.
             raise UnknownOutcomeError(f"{self.site_string} failed on a later hop ({type(err).__name__})") from err
 
-    @staticmethod
-    def _debug_response(resp: aiohttp.ClientResponse, text: str) -> None:
+    def _scrub(self, text: str) -> str:
+        """_redact, plus this client's own credentials wherever a tracker answer repeats them."""
+        text = _redact(text)
+        secrets = {self.api_key, self.authkey, self.passkey, self.cookie, *self._get_cookies().values()}
+        # Longest first, so a secret containing another is masked whole.
+        for secret in sorted((s for s in secrets if s and len(s) >= 8), key=len, reverse=True):
+            text = text.replace(secret, "[REDACTED]")
+        return text
+
+    def _debug_response(self, resp: aiohttp.ClientResponse, text: str) -> None:
         """Print a tracker answer, redacted, for debug_tracker_connection."""
         click.secho(f"[DEBUG] status: {resp.status}", fg="cyan")
         click.secho(
-            f"[DEBUG] response headers: {_redact(msgspec.json.encode(dict(resp.headers)).decode())}",
-            fg="cyan",
+            f"[DEBUG] response headers: {self._scrub(msgspec.json.encode(dict(resp.headers)).decode())}", fg="cyan"
         )
-        click.secho(f"[DEBUG] response body: {_redact(text)}", fg="green")
+        click.secho(f"[DEBUG] response body: {self._scrub(text)}", fg="green")
 
     async def _raise_for_status(
         self, resp: aiohttp.ClientResponse, text: str, failure: Callable[..., RequestError], idempotent: bool
@@ -796,7 +805,7 @@ class BaseGazelleApi:
         except (msgspec.DecodeError, ValueError) as e:
             click.secho("❌ Failed to decode JSON response", fg="red", err=True)
             click.secho(f"Status code: {response.status}", fg="red", err=True)
-            click.secho(f"Response text: {_safe_response_excerpt(response.text)}", fg="red", err=True)
+            click.secho(f"Response text: {_safe_response_excerpt(self._scrub(response.text))}", fg="red", err=True)
             raise click.Abort from e
 
         try:
@@ -869,16 +878,18 @@ class BaseGazelleApi:
             except (TypeError, ValueError) as err:
                 soup = BeautifulSoup(resp_text, "lxml")
                 error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
-                error_message = _safe_response_excerpt(resp_text)
+                error_message = _safe_response_excerpt(self._scrub(resp_text))
                 if error and error.parent and error.parent.parent:
                     p_tag = error.parent.parent.find("p")
                     if p_tag:
-                        error_message = _redact(p_tag.text)
+                        error_message = self._scrub(p_tag.text)
                 raise RequestError(f"Request fill failed: {error_message}") from err
         try:
             return self.parse_most_recent_torrent_and_group_id_from_group_page(resp_text)
         except TypeError as err:
-            raise RequestError(f"Site upload failed, response text: {_safe_response_excerpt(resp_text)}") from err
+            raise RequestError(
+                f"Site upload failed, response text: {_safe_response_excerpt(self._scrub(resp_text))}"
+            ) from err
 
     async def _find_lost_upload(self, files: UploadFiles, err: UnknownOutcomeError) -> tuple[int, int]:
         """Look an upload whose answer was lost up once, by its infohash, and return its ids."""
@@ -890,7 +901,7 @@ class BaseGazelleApi:
             torrent_id, group_id = int(found["torrent"]["id"]), int(found["group"]["id"])
         except (RequestError, TorfError, KeyError, TypeError, ValueError) as lookup_err:
             # A non-JSON answer arrives here whole, and a logged-in page's links carry secrets.
-            reason = _safe_response_excerpt(str(lookup_err))
+            reason = _safe_response_excerpt(self._scrub(str(lookup_err)))
             raise UnknownOutcomeError(
                 f"Could not tell whether {self.site_string} took the upload ({err}), and looking it up by "
                 f"its infohash did not confirm it ({reason}). The upload may still have gone through: "

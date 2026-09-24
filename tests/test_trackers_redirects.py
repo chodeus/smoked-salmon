@@ -11,7 +11,8 @@ from aiolimiter import AsyncLimiter
 
 import salmon.cross_upload as cross_upload
 from salmon import cfg
-from salmon.errors import LoginError, RequestFailedError
+from salmon.errors import ImageUploadFailed, LoginError, RequestFailedError
+from salmon.images import red as red_image_host
 from salmon.trackers.base import BaseGazelleApi, _tracker_limiter
 
 
@@ -303,3 +304,63 @@ async def test_a_valid_cookie_reads_every_page_after_the_first(serve, api_for):
     assert tracker.requested_when_page_one_answered == ["/log.php?page=1"]
     assert sorted(tracker.hits) == sorted(f"/log.php?page={page}" for page in range(1, 11))
     assert sorted(uploads) == sorted((str(page), "Artist", f"Title {page}") for page in range(1, 11))
+
+
+_SECRETS = ("SYNTH-API-KEY", "SYNTH-SESSION-COOKIE", "SYNTH-AUTHKEY")
+
+
+def _red_image_host_against(monkeypatch, url: str, api_key: str, authenticated: bool = True) -> None:
+    def make_site() -> FakeApi:
+        site = FakeApi(url, cookie="SYNTH-SESSION-COOKIE")
+        site.api_key = api_key
+        site.authkey = "SYNTH-AUTHKEY"
+        site._authenticated = authenticated
+        return site
+
+    monkeypatch.setattr(red_image_host, "RedApi", make_site)
+    monkeypatch.setattr(
+        red_image_host, "cfg", SimpleNamespace(tracker=SimpleNamespace(red=SimpleNamespace(session="x")))
+    )
+
+
+async def test_the_red_image_host_sends_only_the_api_key_when_one_is_set(serve, monkeypatch, tmp_path):
+    seen: list[dict] = []
+
+    async def ajax(request: web.Request) -> web.Response:
+        form = await request.post()
+        seen.append({"query": dict(request.query), "headers": dict(request.headers), "form": set(form)})
+        return web.json_response({"status": "success", "response": {"url": "https://redacted.sh/i/x.png"}})
+
+    url = await serve(ajax=ajax)
+    # A fresh client: an index call for the authkey would show up as a second request.
+    _red_image_host_against(monkeypatch, url, "SYNTH-API-KEY", authenticated=False)
+    image = tmp_path / "cover.png"
+    image.write_bytes(b"png-data")
+
+    assert (await red_image_host.ImageUploader().upload_file(str(image)))[0] == "https://redacted.sh/i/x.png"
+    [request] = seen
+    assert request["query"] == {"action": "upload_image"}
+    assert request["headers"]["Authorization"] == "SYNTH-API-KEY"
+    assert "Cookie" not in request["headers"]
+    assert request["form"] == {"file"}
+
+
+@pytest.mark.parametrize("api_key", ["SYNTH-API-KEY", ""], ids=["api key", "session cookie"])
+async def test_the_red_image_host_never_repeats_a_credential(serve, monkeypatch, tmp_path, capsys, api_key):
+    # RED's answer is untrusted: here it echoes back every credential it was sent.
+    async def ajax(request: web.Request) -> web.Response:
+        form = await request.post()
+        echo = f"{request.headers.get('Authorization')} {request.headers.get('Cookie')} {form.get('auth')}"
+        return web.json_response({"status": "failure", "error": f"rejected: {echo}"}, status=400)
+
+    url = await serve(ajax=ajax)
+    _red_image_host_against(monkeypatch, url, api_key)
+    monkeypatch.setattr(cfg.upload, "debug_tracker_connection", True)
+    image = tmp_path / "cover.png"
+    image.write_bytes(b"png-data")
+
+    with pytest.raises(ImageUploadFailed) as excinfo:
+        await red_image_host.ImageUploader().upload_file(str(image))
+    shown = str(excinfo.value) + "".join(capsys.readouterr())
+    assert "rejected" in shown
+    assert [secret for secret in _SECRETS if secret in shown] == []
