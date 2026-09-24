@@ -203,8 +203,10 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
     expected_crcs = Counter(last_copy_hash.values())
 
     def _find_audio(root_dir: str) -> list[str]:
-        if not os.path.isdir(root_dir):
-            return []  # e.g. the dirname of a bare "rip.log"
+        try:
+            os.stat(root_dir)
+        except FileNotFoundError:
+            return []  # e.g. the dirname of a bare "rip.log"; any other stat error propagates
 
         def _raise_scan_error(error: OSError) -> None:
             raise error

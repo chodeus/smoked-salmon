@@ -172,6 +172,17 @@ def _write_discs(tmp_path, discs: dict[str, list[str]]) -> str:
     return str(tmp_path)
 
 
+def _fail_scandir(monkeypatch, folder: str, error: OSError) -> None:
+    real_scandir = os.scandir
+
+    def scandir(path):
+        if os.path.basename(path) == folder:
+            raise error
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+
+
 def test_a_multi_disc_track_rip_log_in_a_disc_folder_checks_every_disc(tmp_path, monkeypatch) -> None:
     basepath = _write_discs(tmp_path, {"CD1": ["d1-01.flac"], "CD2": ["d2-01.flac"]})
     output = FakeCambiaOutput(
@@ -246,12 +257,26 @@ def test_an_unreadable_disc_folder_is_an_error_not_a_skip(tmp_path, monkeypatch)
     )
     _patch_cambia(monkeypatch, output)
     _patch_file_crcs(monkeypatch, {"d1-01.flac": "D1-1", "d2-01.flac": "D2-1"})
-    (tmp_path / "CD2").chmod(0)
-    try:
-        with pytest.raises(PermissionError):
-            anyio.run(logs.check_log_cambia, str(tmp_path / "CD1" / "rip.log"), basepath)
-    finally:
-        (tmp_path / "CD2").chmod(0o755)
+    _fail_scandir(monkeypatch, "CD2", PermissionError(13, "Permission denied"))
+    with pytest.raises(PermissionError):
+        anyio.run(logs.check_log_cambia, str(tmp_path / "CD1" / "rip.log"), basepath)
+
+
+def test_an_unreadable_search_root_is_an_error_not_no_audio(tmp_path, monkeypatch) -> None:
+    disc = _write_files(tmp_path, ["d1-01.flac"])
+    output = FakeCambiaOutput(parsed=FakeParsedCombined(parsed_logs=[FakeParsedLog(tracks=[FakeTrack(1, "D1-1")])]))
+    _patch_cambia(monkeypatch, output)
+    _patch_file_crcs(monkeypatch, {"d1-01.flac": "D1-1"})
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if os.fspath(path) == disc:
+            raise PermissionError(13, "Permission denied", path)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+    with pytest.raises(PermissionError):
+        anyio.run(logs.check_log_cambia, str(tmp_path / "rip.log"), disc)
 
 
 def test_a_disc_folder_that_vanishes_mid_scan_is_an_error(tmp_path, monkeypatch) -> None:
@@ -266,14 +291,7 @@ def test_a_disc_folder_that_vanishes_mid_scan_is_an_error(tmp_path, monkeypatch)
     )
     _patch_cambia(monkeypatch, output)
     _patch_file_crcs(monkeypatch, {"d1-01.flac": "D1-1", "d2-01.flac": "D2-1"})
-    real_scandir = os.scandir
-
-    def scandir(path):
-        if os.path.basename(path) == "CD2":
-            raise FileNotFoundError(2, "No such file or directory", path)
-        return real_scandir(path)
-
-    monkeypatch.setattr(os, "scandir", scandir)
+    _fail_scandir(monkeypatch, "CD2", FileNotFoundError(2, "No such file or directory"))
     with pytest.raises(FileNotFoundError):
         anyio.run(logs.check_log_cambia, str(tmp_path / "CD1" / "rip.log"), basepath)
 

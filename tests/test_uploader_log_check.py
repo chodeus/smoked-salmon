@@ -26,4 +26,5 @@ def test_unreadable_audio_aborts_the_upload(tmp_path, monkeypatch) -> None:
 def test_other_log_check_errors_are_reported_not_fatal(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setattr(uploader, "check_log_cambia", _check_log_raising(ValueError("No audio files found!")))
     anyio.run(uploader._check_logs, _album_with_a_log(tmp_path))
-    assert "Error checking log: No audio files found!" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Error checking log: No audio files found!" in out
