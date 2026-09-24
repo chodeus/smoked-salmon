@@ -70,6 +70,11 @@ RED_IMAGE_PROXY_TARGETS = frozenset({"OPS"})
 SpectralSelectionLiteral = Literal["*", "+", "0"]
 
 
+def host_allowed(code: str | None, kind: str, host: str) -> bool:
+    """Whether `host` may fill `kind` under [image] (code None) or [image.<code>]."""
+    return host not in ARTWORK_ONLY_HOSTS or (kind == "cover_uploader" and _OWN_COVER_HOSTS.get(code or "") == host)
+
+
 class ImageHostOverride(BaseStruct):
     image_uploader: ImgUploaderLiteral | None = None
     cover_uploader: ImgUploaderLiteral | None = None
@@ -122,8 +127,7 @@ class ImageUploader(BaseStruct):
         if "imgbb" in hosts and self.imgbb_key is None:
             raise ValueError("imgbb key not specified")
         for code, kind, host in selections:
-            own_slot = kind == "cover_uploader" and code is not None and _OWN_COVER_HOSTS.get(code) == host
-            if host not in ARTWORK_ONLY_HOSTS or own_slot:
+            if host_allowed(code, kind, host):
                 continue
             owner = next(tracker for tracker, own in _OWN_COVER_HOSTS.items() if own == host)
             section = f"[image.{code}]" if code else "[image]"

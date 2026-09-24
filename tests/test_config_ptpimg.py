@@ -68,7 +68,10 @@ def test_per_tracker_ptpimg_cover_uploader_fails_with_a_clear_message(tmp_path: 
     path = _write_config(tmp_path, text)
     with pytest.raises(ValueError, match="ptpimg has shut down") as excinfo:
         _parse_config(path)
-    assert "cover_uploader" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "cover_uploader" in message
+    # RED's own host is valid in this one slot, so it is offered here.
+    assert "imgbox, red)" in message
 
 
 def test_ptpimg_in_a_setting_that_is_not_a_host_keeps_its_own_error(tmp_path: Path) -> None:
@@ -79,7 +82,8 @@ def test_ptpimg_in_a_setting_that_is_not_a_host_keeps_its_own_error(tmp_path: Pa
 
 
 def test_leftover_ptpimg_key_is_ignored_when_another_host_is_used(tmp_path: Path) -> None:
-    text = _base_config(tmp_path) + "\nptpimg_key = 'leftover-key'\n"
+    text = _base_config(tmp_path).replace("[image]\n", "[image]\nptpimg_key = 'leftover-key'\n", 1)
+    assert "[image]\nptpimg_key" in text
     path = _write_config(tmp_path, text)
     cfg = _parse_config(path)
     assert cfg.image.image_uploader == "catbox"
