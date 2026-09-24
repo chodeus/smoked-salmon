@@ -200,7 +200,8 @@ class Searcher(TidalBase, SearchMixin):
             if rls.album in lossless:
                 filtered.remove(rls)
 
-        return sorted(filtered, key=lambda r: r.year, reverse=True)
+        # Newest first; an undated release (no releaseDate) goes last instead of breaking the sort.
+        return sorted(filtered, key=lambda r: (r.year is not None, r.year or 0), reverse=True)
 
 
 def strip_parens(stri):

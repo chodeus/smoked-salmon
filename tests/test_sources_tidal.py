@@ -4,6 +4,7 @@ import asyncio
 import time
 from collections.abc import Callable
 from email.utils import formatdate
+from types import SimpleNamespace
 from typing import Any
 
 import aiohttp
@@ -338,6 +339,15 @@ def test_a_failed_artist_release_page_is_an_error_not_no_releases(
 
     with pytest.raises(ScrapeError):
         _run(tidal, monkeypatch, lambda: Searcher()._get_artist_albums("a1", "US"))
+
+
+def test_undated_artist_releases_sort_after_dated_ones() -> None:
+    releases = [
+        SimpleNamespace(url=url, quality="LOSSLESS", album=url, year=year)
+        for url, year in [("a", None), ("b", 2018), ("c", 2021)]
+    ]
+    ordered = Searcher._filter_dupes(releases)
+    assert [r.year for r in ordered] == [2021, 2018, None]
 
 
 def test_search_uses_the_search_results_collection(tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch) -> None:
