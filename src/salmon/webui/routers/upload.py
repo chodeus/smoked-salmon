@@ -12,7 +12,7 @@ import salmon.trackers
 from salmon.constants import SOURCES as SOURCE_CODES
 from salmon.constants import TAG_ENCODINGS
 from salmon.uploader import upload as run_upload
-from salmon.uploader.preassumptions import confirm_group_upload, print_preassumptions
+from salmon.uploader.preassumptions import confirm_group_upload, print_preassumptions, skip_flac_upload_conflict
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
 from salmon.webui.validation import validate_album_dir
 
@@ -40,6 +40,7 @@ class UploadStartRequest(BaseModel):
     skip_log_check: bool = False
     skip_integrity_check: bool = False
     essential_only: bool = False
+    skip_flac_upload: bool = False
     dry_run: bool = False
     overwrite: bool = False
     encoding: str | None = None
@@ -75,6 +76,11 @@ async def start(req: UploadStartRequest) -> dict:
     # Mirrors the CLI, where these two are mutually exclusive.
     if req.essential_only and req.scene:
         raise HTTPException(status_code=422, detail="essential_only and scene cannot be combined.")
+    sites = [req.tracker, *req.trackers]
+    if req.skip_flac_upload and (
+        conflict := skip_flac_upload_conflict(req.group_id, req.request, req.spectrals_after, sites)
+    ):
+        raise HTTPException(status_code=422, detail=conflict)
 
     request_id = req.request
     if request_id:
@@ -90,8 +96,10 @@ async def start(req: UploadStartRequest) -> dict:
         print_preassumptions(
             gazelle_site, path, req.group_id, req.source, req.lossy, spectrals, req.encoding, req.spectrals_after
         )
+        flac_group = None
         if req.group_id:
-            await confirm_group_upload(gazelle_site, req.group_id, req.source)
+            group = await confirm_group_upload(gazelle_site, req.group_id, req.source)
+            flac_group = group if req.skip_flac_upload else None
         await run_upload(
             gazelle_site,
             path,
@@ -112,6 +120,7 @@ async def start(req: UploadStartRequest) -> dict:
             skip_log_check=req.skip_log_check,
             skip_integrity_check=req.skip_integrity_check,
             essential_only=req.essential_only,
+            flac_group=flac_group,
             skip_initial_review=req.skip_initial_review,
             trackers=req.trackers or None,
             apply_ai_suggestions=req.apply_ai_suggestions,

@@ -846,3 +846,64 @@ def test_http_answer_endpoint_and_spectral_serving(client, tmp_path):
     assert final["status"] == "done"
     assert final["result"] == {"confirmed": True}
     assert final["question"] is None
+
+
+# ---------------------------------------------------------------------------
+# --skip-flac-upload through the same pipeline
+# ---------------------------------------------------------------------------
+
+
+async def test_skip_flac_upload_sends_only_transcodes_linked_to_the_group_flac(
+    jm, tracker, album_dir, upload_world, monkeypatch
+):
+    async def fake_transcode(path, bitrate):
+        target = f"{path} [MP3 {bitrate}]"
+        os.makedirs(target)
+        for fn in TRACK_FILES:
+            Path(target, fn.replace(".flac", ".mp3")).write_bytes(b"ID3" + bytes(2000))
+        return target
+
+    integrity_checked = []
+
+    async def fake_integrity(path, scene, assume_yes):
+        integrity_checked.append(path)
+
+    monkeypatch.setattr("salmon.uploader.transcode_folder", fake_transcode)
+    monkeypatch.setattr("salmon.uploader.resolve_integrity_for_upload", fake_integrity)
+    path = str(album_dir)
+
+    async def run(job):
+        await run_upload(
+            tracker,
+            path,
+            2002,
+            "WEB",
+            None,
+            (),
+            None,
+            skip_up=True,
+            skip_mqa=True,
+            flac_group=TORRENTGROUP_RESPONSE,
+        )
+
+    m = jm()
+    job = m.create_threaded("upload", "Upload to RED", run, lock_key=path)
+    await drive(
+        job,
+        [
+            ("Is this release lossy mastered?", "n"),
+            ("What spectral IDs would you like to upload", "*"),
+            ("Would you like to upload the torrent?", True),
+            ("Select formats to convert", "*"),
+        ],
+    )
+    await join_job(job)
+
+    assert job.status == "done", job.error
+    assert [(d["format"], d["bitrate"], d["groupid"]) for d, _files in tracker.uploads] == [
+        ("MP3", "320", 2002),
+        ("MP3", "V0 (VBR)", 2002),
+    ]
+    assert all("torrentid=1001" in d["release_desc"] for d, _files in tracker.uploads)
+    assert "torrentgroup" not in [action for action, _ in tracker.api_calls]
+    assert integrity_checked == [path]
