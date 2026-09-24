@@ -346,6 +346,9 @@ select the lower formats to transcode and upload:
 ```bash
 salmon up /data/path/to/album -s WEB -g GROUP_ID --skip-flac-upload
 ```
+This only works from a lossless FLAC, and uploads to that one tracker. The usual checks still run. The transcode
+descriptions link to the group's FLAC in this release's edition (same media, encoding, year, catalogue number and
+edition title); if there are several, salmon asks which one (with `--yes-all` it stops).
 
 To vet an album before deciding whether to upload it at all — every check in one pass, with a single verdict and a non-zero exit when the release is unfit:
 ```bash

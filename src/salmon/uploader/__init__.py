@@ -63,12 +63,13 @@ from salmon.tagger.review import release_type_from_folder, review_metadata, sugg
 from salmon.tagger.tags import check_tags, gather_tags, standardize_tags
 from salmon.uploader.dupe_checker import (
     check_existing_group,
+    choose_source_flac,
     dupe_check_recent_torrents,
     generate_dupe_check_searchstrs,
     print_recent_upload_results,
     print_torrents,
 )
-from salmon.uploader.preassumptions import confirm_group_upload, print_preassumptions
+from salmon.uploader.preassumptions import confirm_group_upload, print_preassumptions, skip_flac_upload_conflict
 from salmon.uploader.request_checker import check_requests
 from salmon.uploader.seedbox import UploadManager
 from salmon.uploader.spectrals import (
@@ -95,7 +96,7 @@ if TYPE_CHECKING:
 @click.option(
     "--skip-flac-upload",
     is_flag=True,
-    help="Skip uploading the local FLAC torrent and only upload selected lower formats to --group-id.",
+    help="The FLAC is already in --group-id: do not upload it, only upload transcodes of it into that group.",
 )
 @click.option(
     "--source",
@@ -234,8 +235,8 @@ async def up(
     essential_only: bool,
 ) -> None:
     """Command to upload an album folder to a Gazelle Site."""
-    if skip_flac_upload and group_id is None:
-        raise click.UsageError("--skip-flac-upload requires --group-id.")
+    if skip_flac_upload and (conflict := skip_flac_upload_conflict(group_id, request, spectrals_after, trackers)):
+        raise click.UsageError(conflict)
     if essential_only and scene:
         raise click.UsageError("--essential-only and --scene cannot be used together.")
     if yyy:
@@ -257,8 +258,10 @@ async def up(
         encoding,
         spectrals_after,
     )
+    flac_group = None
     if group_id:
-        await confirm_group_upload(gazelle_site, group_id, source)
+        group = await confirm_group_upload(gazelle_site, group_id, source)
+        flac_group = group if skip_flac_upload else None
     if source_url:
         source_url = source_url.strip()
     try:
@@ -282,7 +285,7 @@ async def up(
             skip_log_check=skip_log_check,
             skip_integrity_check=skip_integrity_check,
             essential_only=essential_only,
-            skip_flac_upload=skip_flac_upload,
+            flac_group=flac_group,
             skip_initial_review=skip_initial_review,
             apply_ai_suggestions=apply_ai_suggestions,
             trackers=list(trackers) if len(trackers) > 1 else None,
@@ -476,7 +479,7 @@ async def upload(
     skip_log_check: bool = False,
     skip_integrity_check: bool = False,
     essential_only: bool = False,
-    skip_flac_upload: bool = False,
+    flac_group: dict[str, Any] | None = None,
     skip_initial_review: bool = False,
     apply_ai_suggestions: bool = False,
     trackers: list[str] | None = None,
@@ -506,7 +509,8 @@ async def upload(
         skip_log_check: Skip log checking.
         skip_integrity_check: Skip integrity check.
         essential_only: If True, only essential extensions are allowed.
-        skip_flac_upload: Skip the source torrent and upload lower formats to the existing group.
+        flac_group: The group, as the torrentgroup API returns it, that already holds this
+            release's FLAC. If given, the FLAC is not uploaded, only transcodes of it into that group.
         skip_initial_review: Skip the first manual metadata review before AI review.
         apply_ai_suggestions: Automatically apply AI review suggestions when present.
         trackers: Restrict the follow-up tracker offer to these sites, in order;
@@ -540,7 +544,16 @@ async def upload(
         prompt_encoding=True,
         hybrid=hybrid,
     )
+    lossless_flac = rls_data["format"] == "FLAC" and rls_data["encoding"] in ("Lossless", "24bit Lossless")
+    if flac_group is not None and not lossless_flac:
+        return click.secho(
+            f"\n--skip-flac-upload only uploads transcodes of a lossless FLAC, "
+            f"and this release is {rls_data['format']} {rls_data['encoding']}.",
+            fg="red",
+            bold=True,
+        )
 
+    source_flac = None
     try:
         if not skip_mqa:
             click.secho("Checking for MQA release (every file)", fg="cyan", bold=True)
@@ -601,6 +614,11 @@ async def upload(
             group_id = await recheck_dupe(gazelle_site, searchstrs, metadata)
             click.echo()
         track_data = concat_track_data(tags, audio_info)
+        if flac_group is not None:
+            # Matched on the reviewed metadata, so an edited catalogue number or edition moves the pick.
+            source_flac = await choose_source_flac(flac_group, metadata)
+            if source_flac is None:
+                raise click.Abort
     except click.Abort:
         return click.secho("\nAborting upload...", fg="red")
     except AbortAndDeleteFolder:
@@ -647,6 +665,7 @@ async def upload(
     searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
 
     seedbox_uploader = UploadManager()
+    flac_url = f"{gazelle_site.base_url}/torrents.php?torrentid={source_flac['id']}" if source_flac else None
 
     try:
         while True:
@@ -671,6 +690,8 @@ async def upload(
                 group_id = await check_existing_group(gazelle_site, searchstrs, release=metadata)
 
             remaining_gazelle_sites.remove(tracker)
+            # The source FLAC's group is on this tracker only.
+            last_site = bool(flac_url) or not remaining_gazelle_sites or not cfg.upload.multi_tracker_upload
 
             # RED bans specific releases from being uploaded; block RED here (OPS is unaffected).
             if gazelle_site.site_code == "RED":
@@ -678,7 +699,7 @@ async def upload(
                 if block_reason:
                     click.secho(f"\n⛔ Blocked — {block_reason}", fg="red", bold=True)
                     click.secho("Not uploading this release to RED.", fg="red", bold=True)
-                    if not remaining_gazelle_sites or not cfg.upload.multi_tracker_upload:
+                    if last_site:
                         break  # choose_tracker([]) would raise; nothing left to upload to
                     tracker = None
                     continue
@@ -695,7 +716,7 @@ async def upload(
                 # Like a failed upload: skip this tracker, and offer the next one.
                 click.secho(f"\nSkipping upload to {gazelle_site.site_string}.", fg="red", bold=True)
                 tracker = None
-                if not remaining_gazelle_sites or not cfg.upload.multi_tracker_upload:
+                if last_site:
                     break
                 continue
 
@@ -708,7 +729,7 @@ async def upload(
                     # Both steps rewrite metadata in the files; everything below describes what is on disk now.
                     track_data = refresh_track_data(path, tags)
 
-            if not request_id and cfg.upload.requests.check_requests:
+            if not flac_url and not request_id and cfg.upload.requests.check_requests:
                 request_id = await check_requests(gazelle_site, searchstrs)
 
             for rule_warning in collect_upload_warnings(gazelle_site.site_code, os.path.basename(path), track_data):
@@ -716,9 +737,9 @@ async def upload(
 
             group_link = f"{gazelle_site.base_url}/torrents.php?id={group_id}" if group_id else source_url
             try:
-                if skip_flac_upload:
-                    click.secho("Skipping FLAC upload; using the existing group.", fg="yellow")
-                    url = f"{gazelle_site.base_url}/torrents.php?id={group_id}"
+                if flac_url:
+                    click.secho(f"\nNot uploading the FLAC: transcoding from {flac_url}", fg="yellow")
+                    url = flac_url
                 else:
                     torrent_id, group_id, torrent_path, torrent_content, url = await upload_and_report(
                         gazelle_site,
@@ -744,7 +765,8 @@ async def upload(
                     await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
 
                 if get_downconversion_options(rls_data, track_data) and (
-                    cfg.upload.yes_all
+                    flac_url
+                    or cfg.upload.yes_all
                     or click.confirm(
                         click.style("\nWould you like to check downconversion options?", fg="magenta"),
                         default=True,
@@ -781,7 +803,7 @@ async def upload(
                 click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
 
             tracker = None
-            if skip_flac_upload or not remaining_gazelle_sites or not cfg.upload.multi_tracker_upload:
+            if last_site:
                 click.secho("\nDone uploading this release.", fg="green")
                 break
 

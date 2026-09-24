@@ -1,5 +1,5 @@
 from html import unescape
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import asyncclick as click
 
@@ -60,26 +60,42 @@ def print_preassumptions(
         raise UploadError("\nYou cannot report a torrent for lossy master without spectrals.")
 
 
-async def confirm_group_upload(gazelle_site: "BaseGazelleApi", group_id: int, source: str | None) -> None:
-    """Confirm upload to existing group.
+def skip_flac_upload_conflict(
+    group_id: int | None, request: str | None, spectrals_after: bool, trackers: list[str] | tuple[str, ...]
+) -> str | None:
+    """Why --skip-flac-upload cannot run with these options, or None when it can."""
+    if group_id is None:
+        return "--skip-flac-upload requires --group-id."
+    if request:
+        return "--skip-flac-upload cannot be used with --request."
+    if spectrals_after:
+        return "--skip-flac-upload cannot be used with --spectrals-after."
+    if len(set(trackers)) > 1:
+        return "--skip-flac-upload uploads to the one tracker that holds --group-id; pass a single --tracker."
+    return None
+
+
+async def confirm_group_upload(gazelle_site: "BaseGazelleApi", group_id: int, source: str | None) -> dict[str, Any]:
+    """Confirm upload to existing group and return the group, as the torrentgroup API returns it.
 
     Args:
         gazelle_site: The tracker API instance.
         group_id: The torrent group ID.
         source: Media source filter.
     """
-    await print_group_info(gazelle_site, group_id, source)
+    group = await print_group_info(gazelle_site, group_id, source)
     click.confirm(
         click.style("\nWould you like to continue to upload to this group?", fg="magenta"),
         default=True,
         abort=True,
     )
+    return group
 
 
-async def print_group_info(gazelle_site: "BaseGazelleApi", group_id: int, source: str | None) -> None:
+async def print_group_info(gazelle_site: "BaseGazelleApi", group_id: int, source: str | None) -> dict[str, Any]:
     """Print information about the torrent group that was passed as a CLI argument.
 
-    Also print all the torrents that are in that group.
+    Also print all the torrents that are in that group, and return the group.
 
     Args:
         gazelle_site: The tracker API instance.
@@ -117,3 +133,4 @@ async def print_group_info(gazelle_site: "BaseGazelleApi", group_id: int, source
                         f"{t['encoding']}"
                     )
                 )
+    return group
