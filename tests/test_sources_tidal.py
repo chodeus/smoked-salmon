@@ -324,7 +324,8 @@ def test_rate_limit_wait_of_exactly_the_cap_is_retried(
     responses = iter([_json({}, 429, {"Retry-After": cap}), _json({"data": []})])
     tidal.routes["ping"] = lambda request: next(responses)(request)
 
-    assert _run(tidal, monkeypatch, lambda: Scraper().get_json("/ping")) == {"data": []}
+    result = _run(tidal, monkeypatch, lambda: Scraper().get_json("/ping"))
+    assert result == {"data": []}
     assert sleeps == [tidal_source.MAX_RETRY_WAIT]
 
 
@@ -380,7 +381,8 @@ def test_rejected_token_another_request_already_replaced_is_kept(
     responses = iter([reject_after_a_replacement, _json({"data": []})])
     tidal.routes["ping"] = lambda request: next(responses)(request)
 
-    assert _run(tidal, monkeypatch, lambda: Scraper().get_json("/ping")) == {"data": []}
+    result = _run(tidal, monkeypatch, lambda: Scraper().get_json("/ping"))
+    assert result == {"data": []}
     assert len(tidal.token_requests) == 1
     assert [r.headers["Authorization"] for r in tidal.api_requests] == [
         "Bearer fake-token",

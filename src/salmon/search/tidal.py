@@ -49,7 +49,6 @@ class Searcher(TidalBase, SearchMixin):
             "/searchResults",
             params={"filter[query]": query, "countryCode": country_code, "include": include},
         )
-        # The document holds exactly one searchResults resource.
         results = resp["data"][0] if resp["data"] else {}
         return results, resp.get("included", [])
 
