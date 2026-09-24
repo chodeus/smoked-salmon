@@ -37,6 +37,7 @@ from salmon.errors import (
     DryRunComplete,
     EditedLogError,
     InvalidMetadataError,
+    LogCheckSkipped,
     RequestError,
     UploadError,
 )
@@ -304,12 +305,12 @@ async def _check_logs(path: str) -> None:
                     default=False,
                 ):
                     raise click.Abort() from e
-            except OSError as e:
-                # Audio that can't be read can't be verified or uploaded.
-                click.secho(f"Error reading files to check {filepath}: {e}", fg="red")
-                raise click.Abort() from e
-            except Exception as e:
+            except LogCheckSkipped as e:
                 click.secho(f"Error checking log: {e}", fg="red")
+            except Exception as e:
+                # Any other failure is one while verifying the audio, which must not pass as verified.
+                click.secho(f"Could not verify the audio against {filepath}: {e}", fg="red")
+                raise click.Abort() from e
 
 
 def _stage_library_source(path: str) -> str:

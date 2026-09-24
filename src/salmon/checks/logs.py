@@ -11,7 +11,7 @@ import av
 import cambia
 
 from salmon.common.files import process_files
-from salmon.errors import CRCMismatchError, EditedLogError
+from salmon.errors import CRCMismatchError, EditedLogError, LogCheckSkipped
 
 
 def _get_audio_duration_sectors(filepath: str) -> int:
@@ -168,8 +168,10 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         basepath: Base directory path containing audio files.
 
     Raises:
-        ValueError: If log parsing fails, log is edited, or CRC mismatch detected.
-        Exception: If any other error occurs during checking.
+        LogCheckSkipped: If the log can't be parsed or there is no audio to check.
+        EditedLogError: If a log's checksum shows it was edited.
+        CRCMismatchError: If the audio doesn't match the log's CRCs.
+        Exception: Any other error means the audio could not be verified.
     """
     try:
         cambia_output = cambia.parse_log_file(logpath)
@@ -180,8 +182,7 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         else:
             click.secho(f"Log Score: {score}", fg="green")
     except Exception as e:
-        click.secho(f"Error checking log {logpath}: {e}", fg="red")
-        raise
+        raise LogCheckSkipped(f"Could not read {logpath}: {e}") from e
 
     # Every appended log carries its own checksum; an edited rerip log must not pass on the first one's.
     parsed_logs = cambia_output.parsed.parsed_logs
@@ -226,7 +227,7 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
     files_to_check = files_to_check or _find_audio(basepath)
 
     if not files_to_check:
-        raise ValueError("No audio files found!")
+        raise LogCheckSkipped("No audio files found!")
 
     click.secho("\nVerifying audio file CRC values...", fg="cyan", bold=True)
     if multi_disc and len(files_to_check) < len(last_copy_hash):

@@ -6,7 +6,7 @@ import anyio
 import cambia
 import pytest
 
-from salmon.errors import CRCMismatchError, EditedLogError
+from salmon.errors import CRCMismatchError, EditedLogError, LogCheckSkipped
 
 # salmon.checks.__init__ likely defines click commands that could shadow submodules on the
 # package object, so importlib is used to get the module itself, matching test_checks_integrity.
@@ -170,6 +170,22 @@ def _write_discs(tmp_path, discs: dict[str, list[str]]) -> str:
         for name in names:
             (tmp_path / disc / name).write_bytes(b"audio")
     return str(tmp_path)
+
+
+def test_an_unparseable_log_is_skipped(tmp_path, monkeypatch) -> None:
+    def parse_log_file(_path):
+        raise RuntimeError("not a log")
+
+    monkeypatch.setattr(logs.cambia, "parse_log_file", parse_log_file)
+    with pytest.raises(LogCheckSkipped, match="not a log"):
+        anyio.run(logs.check_log_cambia, str(tmp_path / "rip.log"), str(tmp_path))
+
+
+def test_a_log_with_no_audio_is_skipped(tmp_path, monkeypatch) -> None:
+    output = FakeCambiaOutput(parsed=FakeParsedCombined(parsed_logs=[FakeParsedLog(tracks=[FakeTrack(1, "D1-1")])]))
+    _patch_cambia(monkeypatch, output)
+    with pytest.raises(LogCheckSkipped, match="No audio files found"):
+        anyio.run(logs.check_log_cambia, str(tmp_path / "rip.log"), str(tmp_path))
 
 
 def _fail_scandir(monkeypatch, folder: str, error: OSError) -> None:
