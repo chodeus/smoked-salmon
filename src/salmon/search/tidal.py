@@ -120,10 +120,7 @@ class Searcher(TidalBase, SearchMixin):
         return releases
 
     async def get_artist_releases(self, artiststr):
-        """
-        Get the releases of an artist on Tidal: find their artist page and request
-        all their releases (albums, EPs and singles).
-        """
+        """Get an artist's Tidal releases (albums, EPs and singles); raises ScrapeError if any page fails."""
         artist_ids = await self.get_artist_ids(artiststr)
         tasks = [self._get_artist_albums(artist_id, cc) for artist_id in artist_ids for cc in COUNTRIES]
         return (
@@ -147,25 +144,25 @@ class Searcher(TidalBase, SearchMixin):
         }
 
     async def _get_artist_albums(self, artist_id, country_code):
-        """Fetch an artist's releases of every album type."""
+        """Fetch an artist's releases of every album type; a failed page or the page cap raises ScrapeError."""
         albums: list[dict] = []
         included: list[dict] = []
         cursor = None
-        try:
-            for _ in range(MAX_PAGES):
-                params = {"countryCode": country_code, "include": "albums,albums.artists"}
-                if cursor:
-                    params["page[cursor]"] = cursor
-                resp = await self.get_json(f"/artists/{artist_id}/relationships/albums", params=params)
-                page_included = resp.get("included", [])
-                by_id = {obj["id"]: obj for obj in page_included if obj["type"] == "albums"}
-                albums += [by_id[rls["id"]] for rls in resp["data"] if rls["id"] in by_id]
-                included += page_included
-                cursor = self.next_cursor(resp.get("links", {}))
-                if not cursor:
-                    break
-        except ScrapeError:
-            return []
+        # One request covers every album type, so a failure must not read as "no releases".
+        for _ in range(MAX_PAGES):
+            params = {"countryCode": country_code, "include": "albums,albums.artists"}
+            if cursor:
+                params["page[cursor]"] = cursor
+            resp = await self.get_json(f"/artists/{artist_id}/relationships/albums", params=params)
+            page_included = resp.get("included", [])
+            by_id = {obj["id"]: obj for obj in page_included if obj["type"] == "albums"}
+            albums += [by_id[rls["id"]] for rls in resp["data"] if rls["id"] in by_id]
+            included += page_included
+            cursor = self.next_cursor(resp.get("links", {}))
+            if not cursor:
+                break
+        else:
+            raise ScrapeError(f"Tidal: artist {artist_id} has more than {MAX_PAGES} pages of releases.")
 
         return [
             ArtistRlsData(

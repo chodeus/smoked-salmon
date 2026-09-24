@@ -286,6 +286,7 @@ def test_rate_limit_with_a_non_numeric_wait_backs_off(tidal: FakeTidal, monkeypa
     assert len(tidal.api_requests) == 2
 
 
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset is POSIX-only")
 def test_retry_after_dates_count_from_utc_and_a_past_date_means_no_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     # A "-0000" date parses naive; read as local time it would be off by the zone's offset.
     monkeypatch.setenv("TZ", "Australia/Perth")
@@ -318,6 +319,25 @@ def test_token_rejected_twice_is_an_error(tidal: FakeTidal, monkeypatch: pytest.
         _run(tidal, monkeypatch, lambda: Scraper().get_json("/ping"))
     assert len(tidal.token_requests) == 2
     assert len(tidal.api_requests) == 2
+
+
+def test_artist_release_paging_fails_at_its_cap(tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch) -> None:
+    tidal.routes["artists/a1/relationships/albums"] = _json(
+        {"data": [], "links": {"self": "x", "meta": {"nextCursor": "again"}}}
+    )
+
+    with pytest.raises(ScrapeError):
+        _run(tidal, monkeypatch, lambda: Searcher()._get_artist_albums("a1", "US"))
+    assert len(tidal.api_requests) == MAX_PAGES
+
+
+def test_a_failed_artist_release_page_is_an_error_not_no_releases(
+    tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tidal.routes["artists/a1/relationships/albums"] = _json({}, 500)
+
+    with pytest.raises(ScrapeError):
+        _run(tidal, monkeypatch, lambda: Searcher()._get_artist_albums("a1", "US"))
 
 
 def test_search_uses_the_search_results_collection(tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch) -> None:

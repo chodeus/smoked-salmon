@@ -43,11 +43,7 @@ def parse_quality(media_tags: list[str]) -> str | None:
 
 
 def credentials_configured() -> bool:
-    """Check whether Tidal client credentials are set.
-
-    A config written for Tidal's retired API only has a ``token``, which no longer works;
-    the user is told once how to switch to client credentials.
-    """
+    """Whether Tidal client credentials are set; a leftover retired-API token prints a one-time notice."""
     tidal = cfg.metadata.tidal
     if tidal.client_id and tidal.client_secret:
         return True
@@ -155,12 +151,7 @@ class TidalBase(BaseScraper):
         return await super().handle_json_response(resp)
 
     async def get_json(self, url: str, params: dict | None = None, headers: dict | None = None) -> dict:
-        """Make an authenticated request to the Tidal API.
-
-        A rate-limited request is retried after the wait Tidal asks for (or a short
-        backoff when it names none), at most RATE_LIMIT_RETRIES times. A rejected
-        token is replaced once.
-        """
+        """Authenticated GET: a 429 is retried at most RATE_LIMIT_RETRIES times, a 401 once with a new token."""
         retries = 0
         token_replaced = False
         while True:
