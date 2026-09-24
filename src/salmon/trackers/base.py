@@ -466,7 +466,12 @@ class BaseGazelleApi:
                         location = resp.headers.get(aiohttp.hdrs.LOCATION)
                         if resp.status not in _REDIRECT_STATUSES or not location:
                             return HttpResponse(text=text, url=str(resp.url), status=resp.status)
-                        method, data, url = self._next_hop(str(resp.url), resp.status, method, data, location)
+                        try:
+                            method, data, url = self._next_hop(str(resp.url), resp.status, method, data, location)
+                        except RequestFailedError:
+                            # Refusing an off-site hop doesn't undo the redirect: the tracker has acted.
+                            redirected = True
+                            raise
                         params = None
                         redirected = True
 

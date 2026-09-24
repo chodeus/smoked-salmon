@@ -24,6 +24,7 @@ class _FakeRed:
     def __init__(self) -> None:
         self.authkey: str | None = None
         self.calls: list[tuple[str, str, dict]] = []
+        self.form: dict[str, object] = {}
         self.closed = False
         _FakeRed.made.append(self)
 
@@ -33,6 +34,8 @@ class _FakeRed:
 
     async def _request(self, method: str, url: str, params: dict, data) -> HttpResponse:
         self.calls.append((method, url, params))
+        # aiohttp.FormData keeps (options, headers, value) per field; recorded so tests see what was posted.
+        self.form = {options["name"]: value for options, _headers, value in data._fields}
         return HttpResponse(text=msgspec.json.encode(self.payload).decode(), url=url, status=200)
 
     async def close(self) -> None:
@@ -78,6 +81,7 @@ def test_red_returns_the_bare_image_url(monkeypatch, tmp_path) -> None:
         ("auth", "", {}),
         ("POST", "https://redacted.sh/ajax.php", {"action": "upload_image"}),
     ]
+    assert site.form == {"auth": "account-authkey", "file": b"png-data"}
     assert site.closed
 
 

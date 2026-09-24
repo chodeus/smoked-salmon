@@ -1024,6 +1024,23 @@ async def test_a_refused_hop_after_the_post_was_redirected_is_an_unknown_outcome
     assert len(captured["requests"]) <= 4
 
 
+async def test_a_post_redirected_straight_off_site_is_an_unknown_outcome(api, monkeypatch):
+    # The redirect is the tracker's answer, so it has acted, even though the hop is refused.
+    install_fake_aiohttp(monkeypatch, [_hop("https://dummy.example/upload.php", "https://evil.example/x")])
+    api._authenticated = True
+
+    with pytest.raises(UnknownOutcomeError):
+        await api._request("POST", "https://dummy.example/upload.php", data={"x": "1"})
+
+
+async def test_a_post_bounced_straight_to_login_stays_a_login_error(api, monkeypatch):
+    install_fake_aiohttp(monkeypatch, [_hop("https://dummy.example/upload.php", "/login.php")])
+    api._authenticated = True
+
+    with pytest.raises(LoginError):
+        await api._request("POST", "https://dummy.example/upload.php", data={"x": "1"})
+
+
 async def test_an_idempotent_post_keeps_retrying(api, monkeypatch):
     monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [aiohttp.ServerDisconnectedError()])
