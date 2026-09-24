@@ -121,7 +121,8 @@ def test_reload_does_not_upload_again_to_a_host_that_has_the_cover(monkeypatch) 
             for tracker in ("DIC", "RED")
         ]
 
-    assert anyio.run(run) == [(True, "https://imgbox/cover.jpg"), (True, "https://red/i/cover.jpg")]
+    result = anyio.run(run)
+    assert result == [(True, "https://imgbox/cover.jpg"), (True, "https://red/i/cover.jpg")]
     assert hosts == ["imgbox", "red", "red"]
 
 
@@ -137,6 +138,7 @@ def test_ops_reuses_the_red_cover_without_uploading(monkeypatch) -> None:
             for tracker in ("RED", "OPS")
         ]
 
-    assert anyio.run(run) == [(True, "https://red/i/cover.jpg"), (True, "https://red/i/cover.jpg")]
+    result = anyio.run(run)
+    assert result == [(True, "https://red/i/cover.jpg"), (True, "https://red/i/cover.jpg")]
     assert hosts == ["red"]
     assert asked == []
