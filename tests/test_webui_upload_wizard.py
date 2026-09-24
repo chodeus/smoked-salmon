@@ -1126,7 +1126,7 @@ async def test_a_leftover_staged_copy_neither_blocks_nor_is_deleted(skip_flac_ru
 
 
 def test_scratch_removal_refuses_anything_outside_the_staging_folder(tmp_path, monkeypatch):
-    from salmon.uploader import STAGING_DIR, _remove_scratch_dir
+    from salmon.uploader.staging import STAGING_DIR, _remove_scratch_dir
 
     monkeypatch.setattr(cfg.directory, "download_directory", str(tmp_path))
     source = tmp_path / "Album [FLAC]"

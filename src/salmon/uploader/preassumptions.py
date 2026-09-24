@@ -4,7 +4,9 @@ from typing import TYPE_CHECKING, Any
 import asyncclick as click
 
 from salmon import cfg
+from salmon.common import get_audio_files
 from salmon.errors import RequestError, UploadError
+from salmon.tagger.pre_data import parse_format
 
 if TYPE_CHECKING:
     from salmon.trackers.base import BaseGazelleApi
@@ -73,6 +75,21 @@ def skip_flac_upload_conflict(
     if len(set(trackers)) > 1:
         return "--skip-flac-upload uploads to the one tracker that holds --group-id; pass a single --tracker."
     return None
+
+
+def validate_skip_flac_source(path: str, rls_data: dict[str, Any] | None = None) -> str | None:
+    """Why --skip-flac-upload refuses this release, or None: from the files, then from the release data."""
+    if rls_data is None:
+        files = get_audio_files(path)
+        if files and all(parse_format(f) == "FLAC" for f in files):
+            return None
+        return f"--skip-flac-upload only uploads transcodes of a lossless FLAC, and {path} holds other audio."
+    if rls_data["format"] == "FLAC" and rls_data["encoding"] in ("Lossless", "24bit Lossless"):
+        return None
+    return (
+        "--skip-flac-upload only uploads transcodes of a lossless FLAC, "
+        f"and this release is {rls_data['format']} {rls_data['encoding']}."
+    )
 
 
 async def confirm_group_upload(gazelle_site: "BaseGazelleApi", group_id: int, source: str | None) -> dict[str, Any]:

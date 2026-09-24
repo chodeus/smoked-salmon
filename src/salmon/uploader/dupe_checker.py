@@ -576,3 +576,15 @@ async def choose_source_flac(group: dict, release: dict) -> dict | None:
         if choice.isdigit() and 1 <= int(choice) <= len(flacs):
             return flacs[int(choice) - 1]
         click.secho(f"Enter a number from 1 to {len(flacs)}, or a to abort.", fg="red")
+
+
+def held_downconversions(
+    group: dict, release: dict, source_flac: dict | None, formats: dict[str, tuple[str, str]]
+) -> set[str]:
+    """Names in `formats` (name: format, encoding) this release's edition already holds, the source FLAC aside."""
+    held = set()
+    for name, (fmt, encoding) in formats.items():
+        in_edition = matching_torrents(group, {**release, "format": fmt, "encoding": encoding})
+        if any(source_flac is None or t.get("id") != source_flac.get("id") for t in in_edition):
+            held.add(name)
+    return held

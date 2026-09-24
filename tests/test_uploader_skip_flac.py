@@ -1,5 +1,6 @@
 """--skip-flac-upload: only transcodes of a FLAC already in the group are uploaded."""
 
+import contextlib
 import os
 from typing import Any
 
@@ -168,6 +169,11 @@ def test_several_matching_flacs_stop_with_yes_all(monkeypatch) -> None:
     assert asked == []
 
 
+@contextlib.contextmanager
+def _staged_as_is(path: str, scratch: bool):
+    yield path, None
+
+
 def _stub(monkeypatch, fakes: dict[str, Any]) -> None:
     for name, fake in fakes.items():
         monkeypatch.setattr(salmon.uploader, name, fake)
@@ -208,7 +214,7 @@ def test_a_release_that_is_not_all_flac_stops_before_the_copy(monkeypatch, tmp_p
             "conversion_of": _returning(None),
             **{
                 name: _returning(None, calls, name)
-                for name in ("_stage_source", "gather_audio_info", "standardize_tags", "construct_rls_data")
+                for name in ("staged_source", "gather_audio_info", "standardize_tags", "construct_rls_data")
             },
         },
     )
@@ -322,10 +328,8 @@ def _flow(monkeypatch, group: dict[str, Any], source: str = "WEB", **fakes: Any)
         {
             "release_type_from_folder": _returning(None),
             "conversion_of": _returning(None),
-            "_is_flac_release": _returning(True),
-            "_new_scratch_dir": _returning("/scratch"),
-            "_stage_source": _returning("/release"),
-            "_remove_scratch_dir": _returning(),
+            "validate_skip_flac_source": _returning(None),
+            "staged_source": _staged_as_is,
             "gather_audio_info": _returning({}),
             "check_hybrid": _returning(False),
             "standardize_tags": _returning(),
@@ -462,4 +466,4 @@ def test_delete_music_folder_never_deletes_the_source(monkeypatch, capsys) -> No
 
     assert deleted == []
     assert transcoded == []
-    assert "Not deleting /release" in capsys.readouterr().out
+    assert "Not deleting the music folder" in capsys.readouterr().out

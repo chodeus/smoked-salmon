@@ -96,7 +96,7 @@ def test_library_source_is_staged_as_a_real_copy(tmp_path, monkeypatch) -> None:
     # Staging must produce an independent copy.
     import os
 
-    from salmon.uploader import _stage_source
+    from salmon.uploader.staging import _stage_source
 
     lib = tmp_path / "music"
     album = lib / "Artist - Album"
@@ -123,7 +123,7 @@ def test_library_source_is_staged_as_a_real_copy(tmp_path, monkeypatch) -> None:
 
 def test_staging_refuses_to_clobber_an_existing_folder(tmp_path, monkeypatch) -> None:
     from salmon.errors import UploadError
-    from salmon.uploader import _stage_source
+    from salmon.uploader.staging import _stage_source
 
     lib = tmp_path / "music"
     album = lib / "Album"

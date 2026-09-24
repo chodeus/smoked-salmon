@@ -231,7 +231,7 @@ def test_an_unreadable_sidecar_is_not_read_as_no_conversion(tmp_path, monkeypatc
 
 
 def test_staging_a_library_album_takes_its_record_along(tmp_path, monkeypatch) -> None:
-    from salmon.uploader import _stage_source
+    from salmon.uploader.staging import _stage_source
 
     library, downloads = tmp_path / "library", tmp_path / "downloads"
     album = library / "Illy" / "journaling [WEB FLAC]"

@@ -154,10 +154,6 @@
       error = 'Essential-only and scene cannot be combined.'
       return
     }
-    if (skipFlacUpload && (parsedGroupId === null || request || spectralsAfter || chosen.length > 1)) {
-      error = 'Transcodes only needs a Group-ID and one tracker, without a request or spectrals after upload.'
-      return
-    }
     starting = true
     try {
       const job = await apiPost<Job>('/upload', {
