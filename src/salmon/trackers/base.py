@@ -20,6 +20,7 @@ from torf import TorfError, Torrent
 
 from salmon import cfg
 from salmon.common import UploadFiles
+from salmon.common.urls import parse_retry_after
 from salmon.constants import RELEASE_TYPES
 from salmon.errors import (
     LoginError,
@@ -199,6 +200,9 @@ _REDIRECT_STATUSES = frozenset(
         HTTPStatus.PERMANENT_REDIRECT,
     }
 )
+# A 429 without a usable Retry-After waits this long; no server wait is taken past the cap.
+_RATE_LIMIT_WAIT = 20.0
+_MAX_SERVER_WAIT = 120.0
 # The request never left, so re-sending it is safe whatever it does.
 _NOT_SENT_ERRORS = (aiohttp.ClientConnectorError, aiohttp.ConnectionTimeoutError)
 _TRANSIENT_5XX = frozenset(
@@ -514,9 +518,10 @@ class BaseGazelleApi:
         with suppress(msgspec.DecodeError, ValueError):
             error_msg = msgspec.json.encode(msgspec.json.decode(text)["error"]).decode()
 
+        server_wait = parse_retry_after(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
         if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
-            retry_after = float(resp.headers.get("Retry-After", "20"))
-            click.secho(f"Rate limit exceeded, waiting {retry_after} seconds...", fg="yellow")
+            retry_after = min(_RATE_LIMIT_WAIT if server_wait is None else server_wait, _MAX_SERVER_WAIT)
+            click.secho(f"Rate limit exceeded, waiting {retry_after:g} seconds...", fg="yellow")
             await asyncio.sleep(retry_after)
             raise failure("Rate limit exceeded", not_acted_on=True)
 
@@ -529,6 +534,9 @@ class BaseGazelleApi:
 
         # Any 5xx may follow the tracker acting on a POST; a GET is resent only on these.
         if resp.status >= HTTPStatus.INTERNAL_SERVER_ERROR and (not idempotent or resp.status in _TRANSIENT_5XX):
+            if idempotent and server_wait:
+                # Only a request that will be resent waits for the server.
+                await asyncio.sleep(min(server_wait, _MAX_SERVER_WAIT))
             raise failure(f"Server error {resp.status}")
 
         click.secho(f"Request to {self.site_string} failed ({resp.status}): {error_msg}", fg="red")

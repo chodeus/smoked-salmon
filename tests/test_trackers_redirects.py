@@ -337,7 +337,8 @@ async def test_the_red_image_host_sends_only_the_api_key_when_one_is_set(serve, 
     image = tmp_path / "cover.png"
     image.write_bytes(b"png-data")
 
-    assert (await red_image_host.ImageUploader().upload_file(str(image)))[0] == "https://redacted.sh/i/x.png"
+    uploaded_url, _ = await red_image_host.ImageUploader().upload_file(str(image))
+    assert uploaded_url == "https://redacted.sh/i/x.png"
     [request] = seen
     assert request["query"] == {"action": "upload_image"}
     assert request["headers"]["Authorization"] == "SYNTH-API-KEY"

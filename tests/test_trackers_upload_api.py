@@ -967,6 +967,53 @@ async def test_a_post_that_never_connected_is_retried(api, monkeypatch):
     assert len(captured["requests"]) == 5
 
 
+def _record_sleeps(monkeypatch) -> list[float]:
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        # tenacity's own wait_fixed(0) between attempts sleeps too; only real waits count.
+        if seconds:
+            sleeps.append(seconds)
+
+    monkeypatch.setattr("salmon.trackers.base.asyncio.sleep", sleep)
+    return sleeps
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "expected"),
+    [(None, 20.0), ("7", 7.0), ("not a number", 20.0), ("Wed, 21 Oct 2099 07:28:00 GMT", 120.0)],
+    ids=["missing", "seconds", "garbage", "far-future date"],
+)
+async def test_a_429_waits_for_any_retry_after_form(api, monkeypatch, retry_after, expected):
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    sleeps = _record_sleeps(monkeypatch)
+    headers = {"Retry-After": retry_after} if retry_after else {}
+    install_fake_aiohttp(
+        monkeypatch, [FakeAiohttpResponse(status=429, headers=headers), FakeAiohttpResponse(text="ok")]
+    )
+    api._authenticated = True
+
+    resp = await api._request("GET", "https://dummy.example/ajax.php")
+    assert resp.text == "ok"
+    assert sleeps == [expected]
+
+
+@pytest.mark.parametrize(("method", "expected"), [("GET", [3.0]), ("POST", [])])
+async def test_a_5xx_retry_after_is_honoured_only_when_retried(api, monkeypatch, method, expected):
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    sleeps = _record_sleeps(monkeypatch)
+    install_fake_aiohttp(
+        monkeypatch, [FakeAiohttpResponse(status=503, headers={"Retry-After": "3"}), FakeAiohttpResponse(text="ok")]
+    )
+    api._authenticated = True
+
+    try:
+        await api._request(method, "https://dummy.example/ajax.php")
+    except UnknownOutcomeError:
+        assert method == "POST"
+    assert sleeps == expected
+
+
 async def test_a_post_refused_with_429_is_retried(api, monkeypatch):
     monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(

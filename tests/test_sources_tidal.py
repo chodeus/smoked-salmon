@@ -14,6 +14,7 @@ import pytest
 from aiohttp import web
 
 from salmon import cfg
+from salmon.common.urls import parse_retry_after
 from salmon.errors import ScrapeError
 from salmon.search.tidal import COUNTRIES, Searcher
 from salmon.sources import base as sources_base
@@ -351,16 +352,16 @@ def test_retry_after_dates_count_from_utc_and_a_past_date_means_no_wait(monkeypa
     time.tzset()
     try:
         offset = time.timezone
-        soon = tidal_source._parse_retry_after(formatdate(time.time() + 10))
-        past = tidal_source._parse_retry_after(formatdate(time.time() - 10))
+        soon = parse_retry_after(formatdate(time.time() + 10))
+        past = parse_retry_after(formatdate(time.time() - 10))
     finally:
         monkeypatch.undo()
         time.tzset()
     assert offset == -8 * 3600
     assert soon is not None and 5 < soon <= 10
     assert past is None
-    assert tidal_source._parse_retry_after("0") == 0.0
-    assert tidal_source._parse_retry_after("-5") == 0.0
+    assert parse_retry_after("0") == 0.0
+    assert parse_retry_after("-5") == 0.0
 
 
 def test_rejected_token_is_replaced_once(tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch) -> None:
