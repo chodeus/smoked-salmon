@@ -94,6 +94,12 @@ class CRCMismatchError(Exception):
     pass
 
 
+class LogCheckSkipped(Exception):
+    """Raised when a log's CRCs can't be checked against the audio; not a verdict on the rip."""
+
+    pass
+
+
 class DryRunComplete(BaseException):
     """Raised after a --dry-run validation to stop cleanly before any real upload.
 
