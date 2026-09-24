@@ -201,6 +201,7 @@ def test_lossy_release_stops_before_any_check_or_upload(monkeypatch, format_: st
         {
             "release_type_from_folder": _returning(None),
             "conversion_of": _returning(None),
+            "_stage_source": _returning("/release"),
             "gather_audio_info": _returning({}),
             "check_hybrid": _returning(False),
             "standardize_tags": _returning(),
@@ -321,6 +322,7 @@ def _flow(monkeypatch, group: dict[str, Any], source: str = "WEB", **fakes: Any)
         {
             "release_type_from_folder": _returning(None),
             "conversion_of": _returning(None),
+            "_stage_source": _returning("/release"),
             "gather_audio_info": _returning({}),
             "check_hybrid": _returning(False),
             "standardize_tags": _returning(),

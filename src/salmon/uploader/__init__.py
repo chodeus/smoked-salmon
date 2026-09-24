@@ -86,6 +86,9 @@ from salmon.uploader.upload import (
     prepare_and_upload,
 )
 
+# Where a copy goes when the source already holds its name in download_directory.
+STAGING_DIR = ".salmon-staging"
+
 if TYPE_CHECKING:
     from salmon.tagger.tagfile import TagFile
     from salmon.trackers.base import BaseGazelleApi
@@ -332,16 +335,19 @@ async def _check_logs(path: str) -> None:
                 raise click.Abort() from e
 
 
-def _stage_library_source(path: str) -> str:
-    """Copy a library album into download_directory before anything can mutate it.
+def _stage_source(path: str) -> str:
+    """Copy an album that must stay untouched into download_directory before anything can mutate it.
 
     Must be a real copy, not a hardlink: a hardlink shares the inode, so the tag
-    writes later in the flow would reach the library file too.
+    writes later in the flow would reach the source file too.
     """
-    dest = os.path.join(cfg.directory.download_directory, os.path.basename(path.rstrip(os.sep)))
+    name = os.path.basename(path.rstrip(os.sep))
+    dest = os.path.join(cfg.directory.download_directory, name)
+    if os.path.exists(dest) and os.path.samefile(dest, path):
+        dest = os.path.join(cfg.directory.download_directory, STAGING_DIR, name)
     if os.path.exists(dest):
-        raise UploadError(f"Cannot stage library source, {dest} already exists.")
-    click.secho(f"\nCopying from library to {dest} (library files are never modified)...", fg="cyan")
+        raise UploadError(f"Cannot stage the source, {dest} already exists.")
+    click.secho(f"\nCopying {path} to {dest} (the source is never modified)...", fg="cyan")
     shutil.copytree(path, dest)
     # The record lives beside the album, not in it, so the copy would otherwise leave it behind.
     carry_conversion(path, dest)
@@ -523,10 +529,11 @@ async def upload(
     folder_type = release_type_from_folder(path)
     # Looked up before any rename: the record knows the folder by the name the converter gave it.
     conversion = conversion_of(path)
-    # Stage before anything mutates: standardize_tags writes to the source directly,
-    # and a hardlinked copy would share the inode with it.
-    if cfg.directory.is_library_path(path):
-        path = _stage_library_source(path)
+    # Stage before anything mutates: standardize_tags writes to the source directly. A library
+    # album, and a FLAC that is already seeding (--skip-flac-upload), must never change.
+    source_path = path
+    if flac_group is not None or cfg.directory.is_library_path(path):
+        path = _stage_source(path)
     remove_downloaded_cover_image = scene or cfg.image.remove_auto_downloaded_cover_image
     if not source:
         source = await _prompt_source(detect_source(path))
@@ -609,6 +616,7 @@ async def upload(
             skip_initial_review,
             apply_ai_suggestions,
             rls_type_hint=suggest_release_type(folder_type, len(tags)),
+            keep_folder=source_path,
         )
 
         if not group_id:
@@ -831,6 +839,7 @@ async def edit_metadata(
     skip_initial_review: bool = False,
     apply_ai_suggestions: bool = False,
     rls_type_hint: str | None = None,
+    keep_folder: str | None = None,
 ) -> tuple[str, dict[str, Any], dict[str, "TagFile"], dict[str, dict[str, Any]]]:
     """Edit release metadata in an interactive loop until the user confirms.
 
@@ -850,6 +859,7 @@ async def edit_metadata(
         essential_only: If True, only essential extensions are allowed.
         skip_initial_review: Skip the first manual metadata review before AI review.
         apply_ai_suggestions: Automatically apply AI review suggestions when present.
+        keep_folder: A folder the rename must never replace: the source of a staged copy.
 
     Returns:
         A tuple of (path, metadata, tags, audio_info) after editing is complete.
@@ -873,7 +883,7 @@ async def edit_metadata(
         tags = await check_tags(path)
         if not metadata["scene"] and recompress:
             await recompress_path(path)
-        path = rename_folder(path, metadata, auto_rename)
+        path = rename_folder(path, metadata, auto_rename, keep=keep_folder)
         if not metadata["scene"]:
             rename_files(path, tags, metadata, auto_rename, spectral_ids, source)
         await check_folder_structure(path, metadata["scene"], essential_only=essential_only)

@@ -20,7 +20,7 @@ from salmon.tagger.audio_info import gather_audio_info
 
 
 def resolution(path: str) -> str:
-    """"24-96"-style bit depth and sample rate of the folder's first track; empty for lossy files and for 16/44.1."""
+    """ "24-96"-style bit depth and sample rate of the folder's first track; empty for lossy files and for 16/44.1."""
     first = next(iter(gather_audio_info(path, sort_by_tracknumber=True).values()), None)
     if not first:
         return ""
@@ -31,7 +31,7 @@ def resolution(path: str) -> str:
     return f"{bits}-{rate / 1000:g}"
 
 
-def rename_folder(path, metadata, auto_rename, check=True):
+def rename_folder(path, metadata, auto_rename, check=True, keep=None):
     """
     Create a revised folder name from the new metadata and present it to the
     user. Have them decide whether or not to accept the folder name.
@@ -39,6 +39,7 @@ def rename_folder(path, metadata, auto_rename, check=True):
     before the renaming occurs.
     For scene releases, the name of the original folder is kept untouched, and
     the folder is copied to the download folder.
+    A folder at `keep` is never replaced: the copy keeps its current name instead.
     """
     old_base = os.path.basename(path)
     template_fields = {name for _, name, _, _ in Formatter().parse(cfg.upload.formatting.folder_template) if name}
@@ -67,6 +68,9 @@ def rename_folder(path, metadata, auto_rename, check=True):
 
     new_path = os.path.join(cfg.directory.download_directory, new_base)
     if os.path.isdir(new_path) and not os.path.samefile(path, new_path):
+        if keep and os.path.isdir(keep) and os.path.samefile(new_path, keep):
+            click.secho(f"Keeping {path}: {new_path} is the source, which is never replaced.", fg="yellow")
+            return path
         if not check or click.confirm(
             click.style(
                 f"A folder already exists with the new folder name '{new_path}', would you like to replace it?",

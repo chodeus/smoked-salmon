@@ -346,7 +346,10 @@ select the lower formats to transcode and upload:
 ```bash
 salmon up /data/path/to/album -s WEB -g GROUP_ID --skip-flac-upload
 ```
-This only works from a lossless FLAC, and uploads to that one tracker. The usual checks still run. The transcode
+This only works from a lossless FLAC, and uploads to that one tracker. The usual checks still run, on a copy: the
+source folder is never modified, since it is likely seeding the FLAC. The copy goes into `download_directory`, or
+its `.salmon-staging` folder when the source already sits there under the same name, and stays there afterwards,
+as a copy staged from `library_dirs` does. The transcode
 descriptions link to the group's FLAC in this release's edition (same media, encoding, year, catalogue number and
 edition title); if there are several, salmon asks which one (with `--yes-all` it stops). Formats the edition already
 has are flagged as a dupe risk and left out unless you pick them by number. In the web interface this is the
