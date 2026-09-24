@@ -361,7 +361,7 @@ def test_retry_after_dates_count_from_utc_and_a_past_date_means_no_wait(monkeypa
     assert soon is not None and 5 < soon <= 10
     assert past is None
     assert parse_retry_after("0") == 0.0
-    assert parse_retry_after("-5") == 0.0
+    assert parse_retry_after("-5") is None
 
 
 def test_rejected_token_is_replaced_once(tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -44,7 +44,8 @@ def parse_retry_after(value: str | None) -> float | None:
     except ValueError:
         pass
     else:
-        return max(seconds, 0.0) if math.isfinite(seconds) else None
+        # A negative delay is invalid (RFC 9110), so the caller's fallback applies.
+        return seconds if math.isfinite(seconds) and seconds >= 0 else None
     try:
         when = parsedate_to_datetime(value)
     except (TypeError, ValueError):

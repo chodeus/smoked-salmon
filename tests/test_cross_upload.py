@@ -462,7 +462,7 @@ def _host_returning(url):
 
 def _red_source(fetched: list | None = None):
     def site_get(url, headers=None):
-        # Through the source tracker's client, so the fetch spends its rate limit.
+        # Stands in for BaseGazelleApi.site_get, which spends the source tracker's rate limit.
         if fetched is not None:
             fetched.append((url, headers))
         return _RedImageResponse()
