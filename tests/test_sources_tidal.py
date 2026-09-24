@@ -459,6 +459,19 @@ def test_a_hi_res_duplicate_of_a_lossless_release_is_dropped() -> None:
     assert [r.url for r in Searcher._filter_dupes(releases)] == ["a", "c"]
 
 
+@pytest.mark.parametrize(
+    ("links", "cursor"),
+    [
+        ({"self": "x", "meta": {"nextCursor": "abc"}}, "abc"),
+        ({"self": "x", "next": "/albums/1/relationships/items?countryCode=US&page[cursor]=abc%3D"}, "abc="),
+        ({"self": "x"}, None),
+    ],
+    ids=["meta cursor", "next link only", "last page"],
+)
+def test_next_cursor_reads_meta_or_the_next_link(links: dict, cursor: str | None) -> None:
+    assert TidalBase.next_cursor(links) == cursor
+
+
 def test_undated_artist_releases_sort_after_dated_ones() -> None:
     releases = [
         SimpleNamespace(url=url, quality="LOSSLESS", album=url, year=year)

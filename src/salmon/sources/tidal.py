@@ -5,6 +5,7 @@ from email.utils import parsedate_to_datetime
 from functools import cache
 from time import monotonic, time
 from typing import Any, ClassVar
+from urllib.parse import parse_qs, urlparse
 
 import aiohttp
 import anyio
@@ -194,8 +195,11 @@ class TidalBase(BaseScraper):
 
     @staticmethod
     def next_cursor(links: dict) -> str | None:
-        """Get the cursor of the next page from a JSON:API links object."""
-        return links.get("meta", {}).get("nextCursor")
+        """Get the next page's cursor from links.meta.nextCursor, else from the links.next URL."""
+        cursor = (links.get("meta") or {}).get("nextCursor")
+        if cursor or not links.get("next"):
+            return cursor
+        return (parse_qs(urlparse(links["next"]).query).get("page[cursor]") or [None])[0]
 
     @staticmethod
     def _parse_resource_artists(resource: dict, included: list[dict]) -> list[dict]:
