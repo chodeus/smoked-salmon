@@ -1,9 +1,4 @@
-"""ptpimg.me has shut down and is no longer a valid image host.
-
-These tests build a config file on disk (mirroring how tests/conftest.py sets up the
-shared test config) and load it through salmon.config._parse_config, so they exercise the
-same path an end user's config goes through, without ever contacting a real host.
-"""
+"""A config still naming ptpimg, which has shut down, loaded through _parse_config as a user's would be."""
 
 from pathlib import Path
 
