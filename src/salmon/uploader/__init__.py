@@ -368,6 +368,70 @@ def _cover_host_for_new_group(site_code: str, stored_cover_urls: dict[str, str])
     return cfg.image.resolve(site_code, "cover_uploader")
 
 
+async def _new_group_cover_url(
+    site_code: str, stored_cover_urls: dict[str, str], path: str, cover_source: str | None, remove_downloaded: bool
+) -> str | None:
+    """Cover URL for a new group on this tracker, uploading it unless its host already has it."""
+    cover_host = _cover_host_for_new_group(site_code, stored_cover_urls)
+    if cover_host not in stored_cover_urls:
+        cover_path, is_downloaded = await download_cover_if_nonexistent(path, cover_source)
+        uploaded = await upload_cover(cover_path, site_code)
+        if uploaded:
+            stored_cover_urls[cover_host] = uploaded
+        if is_downloaded and remove_downloaded and cover_path:
+            click.secho("Removing downloaded Cover Image File", fg="yellow")
+            os.remove(cover_path)
+    return stored_cover_urls.get(cover_host)
+
+
+async def resolve_cover_url(
+    site_code: str,
+    group_id: int | None,
+    stored_cover_urls: dict[str, str],
+    path: str,
+    cover_source: str | None,
+    remove_downloaded: bool,
+) -> tuple[bool, str | None]:
+    """Whether to upload to this tracker, and the cover URL; asks before a new group goes up without one."""
+    if group_id:
+        if not remove_downloaded:
+            await download_cover_if_nonexistent(path, cover_source)
+        return True, None
+
+    cover_url = await _new_group_cover_url(site_code, stored_cover_urls, path, cover_source, remove_downloaded)
+    if cover_url:
+        return True, cover_url
+
+    host = _cover_host_for_new_group(site_code, stored_cover_urls)
+    click.secho(
+        f"\nNo cover image for this new group on {site_code}: none was found, or the upload to {host} failed.",
+        fg="yellow",
+        bold=True,
+    )
+    if cfg.upload.yes_all:
+        click.secho("Not uploading a new group without a cover image with --yes-all.", fg="red", bold=True)
+        return False, None
+
+    while True:
+        raw_choice = await click.prompt(
+            click.style("Continue upload without a cover image? [y/N/reload]", fg="magenta"),
+            default="n",
+            show_default=False,
+        )
+        choice = raw_choice.strip().lower()
+        if choice in ("y", "yes"):
+            return True, None
+        if choice not in ("r", "reload"):
+            return False, None
+
+        click.secho("Checking for cover image again...", fg="cyan")
+        cover_url = await _new_group_cover_url(site_code, stored_cover_urls, path, cover_source, remove_downloaded)
+        if cover_url:
+            click.secho("Cover image found and uploaded.", fg="green")
+            return True, cover_url
+        click.secho("Still no cover image found. Add a cover.jpg to the release folder and try again.", fg="yellow")
+
+
 def follow_up_trackers(trackers: list[str] | None, current: str) -> list[str]:
     """Sites available for the follow-up offer after uploading to `current`.
 
@@ -608,74 +672,21 @@ async def upload(
                     tracker = None
                     continue
 
-            # Handle cover image for this tracker
-            if group_id:
-                if not remove_downloaded_cover_image:
-                    await download_cover_if_nonexistent(path, metadata["cover"])
-                # Don't need cover URL for existing groups
-                cover_url = None
-            else:
-                # For new groups, we need a cover URL
-                # If we already uploaded it for a previous tracker, reuse that URL
-                cover_host = _cover_host_for_new_group(gazelle_site.site_code, stored_cover_urls)
-                if cover_host not in stored_cover_urls:
-                    cover_path, is_downloaded = await download_cover_if_nonexistent(path, metadata["cover"])
-                    uploaded = await upload_cover(cover_path, gazelle_site.site_code)
-                    if uploaded:
-                        stored_cover_urls[cover_host] = uploaded
-                    if is_downloaded and remove_downloaded_cover_image and cover_path:
-                        click.secho("Removing downloaded Cover Image File", fg="yellow")
-                        os.remove(cover_path)
-                cover_url = stored_cover_urls.get(cover_host)
-
-                if not cover_url:
-                    click.secho("\nNo cover image is available for this new group upload.", fg="yellow", bold=True)
-                    if cfg.upload.yes_all:
-                        click.secho(
-                            "Aborting upload because --yes-all is enabled and cannot confirm uploading without cover.",
-                            fg="red",
-                            bold=True,
-                        )
-                        return
-
-                    while True:
-                        raw_choice = await click.prompt(
-                            click.style(
-                                "Continue upload without a cover image? [y/N/reload]",
-                                fg="magenta",
-                            ),
-                            default="n",
-                            show_default=False,
-                        )
-                        choice = raw_choice.strip().lower()
-
-                        if choice in ("r", "reload"):
-                            click.secho("Checking for cover image again...", fg="cyan")
-                            cover_path, is_downloaded = await download_cover_if_nonexistent(path, metadata["cover"])
-                            if cover_path:
-                                cover_host = _cover_host_for_new_group(gazelle_site.site_code, stored_cover_urls)
-                                uploaded = await upload_cover(cover_path, gazelle_site.site_code)
-                                if uploaded:
-                                    stored_cover_urls[cover_host] = uploaded
-                                if is_downloaded and remove_downloaded_cover_image and cover_path:
-                                    click.secho("Removing downloaded Cover Image File", fg="yellow")
-                                    os.remove(cover_path)
-                                cover_url = stored_cover_urls.get(cover_host)
-
-                            if cover_url:
-                                click.secho("Cover image found and uploaded.", fg="green")
-                                break
-                            else:
-                                click.secho(
-                                    "Still no cover image found. Add a cover.jpg to the release folder and try again.",
-                                    fg="yellow",
-                                )
-                                continue
-                        elif choice in ("y", "yes"):
-                            break
-                        else:
-                            click.secho("Aborting upload due to missing cover image.", fg="red", bold=True)
-                            return
+            proceed, cover_url = await resolve_cover_url(
+                gazelle_site.site_code,
+                group_id,
+                stored_cover_urls,
+                path,
+                metadata["cover"],
+                remove_downloaded_cover_image,
+            )
+            if not proceed:
+                # Like a failed upload: skip this tracker, and offer the next one.
+                click.secho(f"\nSkipping upload to {gazelle_site.site_string}.", fg="red", bold=True)
+                tracker = None
+                if not remaining_gazelle_sites or not cfg.upload.multi_tracker_upload:
+                    break
+                continue
 
             if not scene:
                 rewritten = bool(strip_oversized_pictures(path, track_data))

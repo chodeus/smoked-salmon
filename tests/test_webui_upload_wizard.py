@@ -507,6 +507,54 @@ async def test_abort_at_dupe_choice_is_swallowed_by_the_pipeline(jm, tracker, al
     assert path not in m._active_lock_keys
 
 
+async def test_declining_a_coverless_new_group_skips_only_that_tracker(
+    jm, tracker, album_dir, upload_world, monkeypatch
+):
+    ops = type(tracker)()
+    ops.site_code = ops.site_string = "OPS"
+    ops.base_url = "https://orpheus.network"
+    ops.release_types = tracker.release_types
+    ops.dot_torrents_dir = tracker.dot_torrents_dir
+    ops.api_responses = dict(tracker.api_responses)
+
+    async def ensure_authenticated():
+        pass
+
+    ops.ensure_authenticated = ensure_authenticated
+    monkeypatch.setattr(salmon.trackers, "get_class", lambda site: lambda: ops)
+
+    async def cover_fails_on_red(cover_path, site_code=None):
+        return None if site_code == "RED" else "https://img.example/ops-cover"
+
+    monkeypatch.setattr("salmon.uploader.upload_cover", cover_fails_on_red)
+
+    m = jm()
+    path = str(album_dir)
+    job = m.create_threaded("upload", "Upload to RED", wizard_factory(tracker, path), lock_key=path)
+
+    await drive(
+        job,
+        [
+            ("What is the source of this release?", "web"),
+            ("Would you like to upload to an existing group?", "n"),
+            ("Is this release lossy mastered?", "n"),
+            ("What spectral IDs would you like to upload", "*"),
+            ("Would you like to upload the torrent?", True),
+            ("Continue upload without a cover image?", "n"),
+            ("Your choices are OPS or [n]one.", "OPS"),
+            ("Would you like to upload to an existing group?", "n"),
+            ("Would you like to check downconversion options?", False),
+        ],
+    )
+    await join_job(job)
+
+    assert job.status == "done", job.error
+    assert tracker.uploads == []
+    assert len(ops.uploads) == 1
+    assert ops.uploads[0][0]["image"] == "https://img.example/ops-cover"
+    assert "Skipping upload to RED." in "\n".join(job.log_lines)
+
+
 # ---------------------------------------------------------------------------
 # 3. Answer validation
 # ---------------------------------------------------------------------------
