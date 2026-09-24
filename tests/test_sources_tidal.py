@@ -283,9 +283,16 @@ def test_rate_limit_with_a_non_numeric_wait_backs_off(tidal: FakeTidal, monkeypa
     responses = iter([_json({}, 429, {"Retry-After": "nan"}), _json({"data": []})])
     tidal.routes["ping"] = lambda request: next(responses)(request)
 
-    result = _run(tidal, monkeypatch, lambda: Scraper().get_json("/ping"))
+    async def body() -> tuple[dict, float]:
+        start = time.monotonic()
+        result = await Scraper().get_json("/ping")
+        return result, time.monotonic() - start
+
+    result, elapsed = _run(tidal, monkeypatch, body)
     assert result == {"data": []}
     assert len(tidal.api_requests) == 2
+    # The first backoff step, not an immediate retry.
+    assert elapsed >= 1
 
 
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset is POSIX-only")
@@ -398,5 +405,6 @@ def test_retired_token_alone_leaves_tidal_off_with_one_notice(
     assert out.count("developer.tidal.com") == (1 if notified else 0)
 
 
-def test_quality_is_the_best_tag_whatever_the_order() -> None:
-    assert tidal_source.parse_quality(["LOSSLESS", "HIRES_LOSSLESS"]) == "HI_RES"
+@pytest.mark.parametrize("tags", [["LOSSLESS", "HIRES_LOSSLESS"], ["HIRES_LOSSLESS", "LOSSLESS"]])
+def test_quality_is_the_best_tag_whatever_the_order(tags: list[str]) -> None:
+    assert tidal_source.parse_quality(tags) == "HI_RES"
