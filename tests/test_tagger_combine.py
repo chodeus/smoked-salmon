@@ -116,7 +116,7 @@ def test_combine_tracks_sorts_multi_disc_provider_tracks_and_discs():
 
 
 def test_extract_remixers_does_not_span_an_earlier_paren_group():
-    # Regression for #430: the old .*? was greedy across parens, pulling in the
+    # Regression for upstream #430: the old .*? was greedy across parens, pulling in the
     # preceding group and half its parentheses as part of the remixer name.
     title = "Still (I Got Summer On My Mind) (FORTELLA Remix)"
 

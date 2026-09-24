@@ -6,7 +6,7 @@ from salmon.tagger import foldername
 
 
 def test_hardlink_fallback_survives_a_partial_tree(tmp_path, monkeypatch) -> None:
-    # Regression for #356: when os.link fails partway through copytree, the plain-copy
+    # Regression for upstream #356: when os.link fails partway through copytree, the plain-copy
     # fallback used to hit SameFileError on the files that were already hardlinked.
     source = tmp_path / "source_folder"
     source.mkdir()
