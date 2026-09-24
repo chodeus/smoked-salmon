@@ -280,7 +280,8 @@ def test_rate_limit_with_a_non_numeric_wait_backs_off(tidal: FakeTidal, monkeypa
     responses = iter([_json({}, 429, {"Retry-After": "nan"}), _json({"data": []})])
     tidal.routes["ping"] = lambda request: next(responses)(request)
 
-    assert _run(tidal, monkeypatch, lambda: Scraper().get_json("/ping")) == {"data": []}
+    result = _run(tidal, monkeypatch, lambda: Scraper().get_json("/ping"))
+    assert result == {"data": []}
     assert len(tidal.api_requests) == 2
 
 
@@ -288,7 +289,8 @@ def test_rejected_token_is_replaced_once(tidal: FakeTidal, monkeypatch: pytest.M
     responses = iter([_json({}, 401), _json({"data": []})])
     tidal.routes["ping"] = lambda request: next(responses)(request)
 
-    assert _run(tidal, monkeypatch, lambda: Scraper().get_json("/ping")) == {"data": []}
+    result = _run(tidal, monkeypatch, lambda: Scraper().get_json("/ping"))
+    assert result == {"data": []}
     assert len(tidal.token_requests) == 2
     assert len(tidal.api_requests) == 2
 
@@ -328,8 +330,9 @@ def test_retired_token_alone_leaves_tidal_off_with_one_notice(
     monkeypatch.setattr(cfg.metadata.tidal, "token", token)
     tidal_source._notify_retired_token.cache_clear()
 
-    assert credentials_configured() is False
-    assert credentials_configured() is False
+    # Asked twice: the notice still prints only once.
+    configured = [credentials_configured(), credentials_configured()]
+    assert configured == [False, False]
 
     out = capsys.readouterr().out
     assert out.count("developer.tidal.com") == (1 if notified else 0)
