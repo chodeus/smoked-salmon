@@ -112,7 +112,7 @@ def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkey
     ],
 )
 def test_redact_masks_suffixed_option_names_and_sessions(text: str, expected: str) -> None:
-    assert seedbox._redact(text) == expected
+    assert seedbox.redact_secrets(text) == expected
 
 
 def test_a_credential_bearing_remote_never_reaches_the_log(monkeypatch) -> None:

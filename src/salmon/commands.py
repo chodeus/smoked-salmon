@@ -20,10 +20,10 @@ from salmon import cfg
 from salmon.checks.connection import check_tracker_connection
 from salmon.common import commandgroup
 from salmon.common import compress as recompress
+from salmon.common.redaction import redact_secrets
 from salmon.config import find_config_path, get_default_config_path, get_user_cfg_path
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.uploader.description import build_tracklist_description
-from salmon.uploader.redaction import redact_secrets
 from salmon.uploader.spectrals import (
     check_spectrals,
     get_spectrals_path,

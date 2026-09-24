@@ -8,7 +8,7 @@ import qbittorrentapi
 import transmission_rpc
 from deluge_client import DelugeRPCClient
 
-from salmon.uploader.redaction import redact_secrets
+from salmon.common.redaction import redact_secrets
 
 
 class TorrentClient:
