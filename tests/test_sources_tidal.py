@@ -346,14 +346,17 @@ def test_rate_limit_with_a_non_numeric_wait_backs_off(
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset is POSIX-only")
 def test_retry_after_dates_count_from_utc_and_a_past_date_means_no_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     # A "-0000" date parses naive; read as local time it would be off by the zone's offset.
-    monkeypatch.setenv("TZ", "Australia/Perth")
+    # A POSIX TZ string needs no zoneinfo files, so the offset is really in effect.
+    monkeypatch.setenv("TZ", "AWST-8")
     time.tzset()
     try:
+        offset = time.timezone
         soon = tidal_source._parse_retry_after(formatdate(time.time() + 10))
         past = tidal_source._parse_retry_after(formatdate(time.time() - 10))
     finally:
         monkeypatch.undo()
         time.tzset()
+    assert offset == -8 * 3600
     assert soon is not None and 5 < soon <= 10
     assert past is None
     assert tidal_source._parse_retry_after("0") == 0.0
