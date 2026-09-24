@@ -174,11 +174,34 @@ def _write_discs(tmp_path, discs: dict[str, list[str]]) -> str:
 
 def test_an_unparseable_log_is_skipped(tmp_path, monkeypatch) -> None:
     def parse_log_file(_path):
-        raise RuntimeError("not a log")
+        raise ValueError("not a log")
 
     monkeypatch.setattr(logs.cambia, "parse_log_file", parse_log_file)
     with pytest.raises(LogCheckSkipped, match="not a log"):
         anyio.run(logs.check_log_cambia, str(tmp_path / "rip.log"), str(tmp_path))
+
+
+def test_an_unreadable_log_file_is_an_error_not_a_skip(tmp_path, monkeypatch) -> None:
+    def parse_log_file(_path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(logs.cambia, "parse_log_file", parse_log_file)
+    with pytest.raises(PermissionError):
+        anyio.run(logs.check_log_cambia, str(tmp_path / "rip.log"), str(tmp_path))
+
+
+def test_a_log_without_a_score_is_still_checked(tmp_path, monkeypatch, capsys) -> None:
+    disc = _write_files(tmp_path, ["d1-01.flac"])
+    output = FakeCambiaOutput(
+        parsed=FakeParsedCombined(parsed_logs=[FakeParsedLog(tracks=[FakeTrack(1, "D1-1")])]),
+        evaluation_combined=[],
+    )
+    _patch_cambia(monkeypatch, output)
+    _patch_file_crcs(monkeypatch, {"d1-01.flac": "OTHER"})
+    with pytest.raises(CRCMismatchError):
+        anyio.run(logs.check_log_cambia, str(tmp_path / "rip.log"), disc)
+    out = capsys.readouterr().out
+    assert "Could not read the log score" in out
 
 
 def test_a_log_with_no_audio_is_skipped(tmp_path, monkeypatch) -> None:

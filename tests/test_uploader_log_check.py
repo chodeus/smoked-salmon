@@ -1,3 +1,5 @@
+import os
+
 import anyio
 import asyncclick as click
 import pytest
@@ -38,3 +40,17 @@ def test_a_log_that_cannot_be_checked_is_reported_not_fatal(tmp_path, monkeypatc
     anyio.run(uploader._check_logs, _album_with_a_log(tmp_path))
     out = capsys.readouterr().out
     assert "Error checking log: No audio files found!" in out
+
+
+def test_a_folder_that_cannot_be_scanned_for_logs_aborts_the_upload(tmp_path, monkeypatch) -> None:
+    (tmp_path / "CD2").mkdir()
+    real_scandir = os.scandir
+
+    def scandir(path):
+        if os.path.basename(path) == "CD2":
+            raise PermissionError(13, "Permission denied", path)
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    with pytest.raises(click.Abort):
+        anyio.run(uploader._check_logs, _album_with_a_log(tmp_path))

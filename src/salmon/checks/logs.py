@@ -168,21 +168,26 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         basepath: Base directory path containing audio files.
 
     Raises:
-        LogCheckSkipped: If the log can't be parsed or there is no audio to check.
+        LogCheckSkipped: If cambia can't parse the log, or there is no audio to check.
         EditedLogError: If a log's checksum shows it was edited.
         CRCMismatchError: If the audio doesn't match the log's CRCs.
         Exception: Any other error means the audio could not be verified.
     """
+    # cambia raises ValueError for a log it can't parse; an OSError reading it propagates.
     try:
         cambia_output = cambia.parse_log_file(logpath)
+    except ValueError as e:
+        raise LogCheckSkipped(f"Could not parse {logpath}: {e}") from e
 
+    try:
         score = int(cambia_output.evaluation_combined[0].combined_score)
+    except (IndexError, ValueError):
+        click.secho("Could not read the log score; checking its CRCs anyway.", fg="yellow")
+    else:
         if score < 100:
             click.secho(f"Log Score: {score} (The torrent will be trumpable)", fg="yellow", bold=True)
         else:
             click.secho(f"Log Score: {score}", fg="green")
-    except Exception as e:
-        raise LogCheckSkipped(f"Could not read {logpath}: {e}") from e
 
     # Every appended log carries its own checksum; an edited rerip log must not pass on the first one's.
     parsed_logs = cambia_output.parsed.parsed_logs

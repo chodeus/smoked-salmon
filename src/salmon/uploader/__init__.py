@@ -285,7 +285,13 @@ async def up(
 async def _check_logs(path: str) -> None:
     """Score every rip log under the album and check its CRCs against the audio."""
     click.secho("\nChecking logs", fg="green")
-    for root, _, files in os.walk(path):
+
+    def _abort_on_scan_error(error: OSError) -> None:
+        # os.walk would otherwise skip the folder, and its log, silently.
+        click.secho(f"Could not scan {error.filename} for logs: {error}", fg="red")
+        raise click.Abort() from error
+
+    for root, _, files in os.walk(path, onerror=_abort_on_scan_error):
         for f in files:
             if not f.lower().endswith(".log"):
                 continue
