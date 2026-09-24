@@ -281,6 +281,37 @@ async def up(
         click.secho(f"\nDry run complete ({tracker_name}). No torrents were uploaded.", fg="cyan", bold=True)
 
 
+async def _check_logs(path: str) -> None:
+    """Score every rip log under the album and check its CRCs against the audio."""
+    click.secho("\nChecking logs", fg="green")
+    for root, _, files in os.walk(path):
+        for f in files:
+            if not f.lower().endswith(".log"):
+                continue
+            filepath = os.path.join(root, f)
+            click.secho(f"\nScoring {filepath}...", fg="cyan", bold=True)
+            try:
+                await check_log_cambia(filepath, path)
+            except EditedLogError as e:
+                raise click.Abort() from e
+            except CRCMismatchError as e:
+                click.secho("Error: CRC mismatch between log and audio files!", fg="red", bold=True)
+                if not click.confirm(
+                    click.style(
+                        "Log file CRC does not match audio files. Do you want to continue upload anyway?",
+                        fg="magenta",
+                    ),
+                    default=False,
+                ):
+                    raise click.Abort() from e
+            except OSError as e:
+                # Audio that can't be read can't be verified or uploaded.
+                click.secho(f"Error reading files to check {filepath}: {e}", fg="red")
+                raise click.Abort() from e
+            except Exception as e:
+                click.secho(f"Error checking log: {e}", fg="red")
+
+
 def _stage_library_source(path: str) -> str:
     """Copy a library album into download_directory before anything can mutate it.
 
@@ -445,28 +476,7 @@ async def upload(
                 await upload_upconvert_test(path)
 
         if source == "CD" and not skip_log_check:
-            click.secho("\nChecking logs", fg="green")
-            for root, _, files in os.walk(path):
-                for f in files:
-                    if f.lower().endswith(".log"):
-                        filepath = os.path.join(root, f)
-                        click.secho(f"\nScoring {filepath}...", fg="cyan", bold=True)
-                        try:
-                            await check_log_cambia(filepath, path)
-                        except EditedLogError as e:
-                            raise click.Abort() from e
-                        except CRCMismatchError as e:
-                            click.secho("Error: CRC mismatch between log and audio files!", fg="red", bold=True)
-                            if not click.confirm(
-                                click.style(
-                                    "Log file CRC does not match audio files. Do you want to continue upload anyway?",
-                                    fg="magenta",
-                                ),
-                                default=False,
-                            ):
-                                raise click.Abort() from e
-                        except Exception as e:
-                            click.secho(f"Error checking log: {e}", fg="red")
+            await _check_logs(path)
 
         if group_id is None:
             searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])

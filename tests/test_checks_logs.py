@@ -254,6 +254,30 @@ def test_an_unreadable_disc_folder_is_an_error_not_a_skip(tmp_path, monkeypatch)
         (tmp_path / "CD2").chmod(0o755)
 
 
+def test_a_disc_folder_that_vanishes_mid_scan_is_an_error(tmp_path, monkeypatch) -> None:
+    basepath = _write_discs(tmp_path, {"CD1": ["d1-01.flac"], "CD2": ["d2-01.flac"]})
+    output = FakeCambiaOutput(
+        parsed=FakeParsedCombined(
+            parsed_logs=[
+                FakeParsedLog(toc_hash="disc-1", tracks=[FakeTrack(num=1, copy_hash="D1-1")]),
+                FakeParsedLog(toc_hash="disc-2", tracks=[FakeTrack(num=1, copy_hash="D2-1")]),
+            ]
+        )
+    )
+    _patch_cambia(monkeypatch, output)
+    _patch_file_crcs(monkeypatch, {"d1-01.flac": "D1-1", "d2-01.flac": "D2-1"})
+    real_scandir = os.scandir
+
+    def scandir(path):
+        if os.path.basename(path) == "CD2":
+            raise FileNotFoundError(2, "No such file or directory", path)
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    with pytest.raises(FileNotFoundError):
+        anyio.run(logs.check_log_cambia, str(tmp_path / "CD1" / "rip.log"), basepath)
+
+
 def test_checklog_on_a_folder_checks_each_log_against_that_folder(tmp_path, monkeypatch) -> None:
     basepath = _write_discs(tmp_path, {"CD1": ["d1-01.flac"], "CD2": ["d2-01.flac"]})
     (tmp_path / "CD1" / "rip.log").write_text("log")
