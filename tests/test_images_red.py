@@ -70,7 +70,8 @@ def test_red_returns_the_bare_image_url(monkeypatch, tmp_path) -> None:
     image = tmp_path / "image.png"
     image.write_bytes(b"png-data")
 
-    assert anyio.run(red.ImageUploader().upload_file, str(image)) == ("https://redacted.sh/i/image.png", None)
+    result = anyio.run(red.ImageUploader().upload_file, str(image))
+    assert result == ("https://redacted.sh/i/image.png", None)
     [site] = _FakeRed.made
     # Through the RED client, so both requests spend RED's rate limit, and its pool is closed.
     assert site.calls == [
