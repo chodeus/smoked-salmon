@@ -108,7 +108,7 @@ class Searcher(TidalBase, SearchMixin):
                         self.format_result(
                             artists,
                             title,
-                            f"{year} {copyright}",
+                            " ".join(str(part) for part in (year, copyright) if part),
                             track_count=track_count,
                             country_code=country_code,
                             explicit=explicit,

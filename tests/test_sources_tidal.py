@@ -1,6 +1,7 @@
 """Tidal's v2 API (issue #419), against a local fake server; never contacts Tidal."""
 
 import asyncio
+import copy
 import time
 from collections.abc import Callable
 from email.utils import formatdate
@@ -362,6 +363,19 @@ def test_search_uses_the_search_results_collection(tidal: FakeTidal, monkeypatch
     assert rls_id == "75194842"
     ident = releases[(cc, rls_id)][0]
     assert (ident.artist, ident.album, ident.year, ident.track_count) == ("Kordz", "Accept & Connect", 2018, 3)
+
+
+def test_an_undated_unlabelled_search_result_shows_no_none(tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch) -> None:
+    doc = copy.deepcopy(SEARCH_DOC)
+    attributes = doc["included"][1]["attributes"]
+    del attributes["releaseDate"], attributes["copyright"]
+    tidal.routes["searchResults"] = _json(doc)
+
+    _, releases = _run(tidal, monkeypatch, lambda: Searcher().search_releases("kordz accept", 5))
+
+    ((ident, shown),) = releases.values()
+    assert ident.year is None
+    assert "None" not in str(shown)
 
 
 @pytest.mark.parametrize(
