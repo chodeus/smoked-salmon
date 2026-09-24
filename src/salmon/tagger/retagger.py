@@ -194,11 +194,7 @@ def _disc_track_sort_key(value):
 
 
 def metadata_to_track_list(metadata):
-    """Flatten the {disc: {track: meta}} dict into a list in disc/track order.
-
-    Sorted to match the (disc, track) ordering of the tag side in
-    create_track_changes, so the two zip together onto the right files.
-    """
+    """Flatten the {disc: {track: meta}} dict into a list in disc/track order."""
     ordered = []
     for disc_key in sorted(metadata, key=_disc_track_sort_key):
         disc = metadata[disc_key]
