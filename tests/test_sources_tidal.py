@@ -133,7 +133,9 @@ class FakeTidal:
 
     async def _token(self, request: web.Request) -> web.Response:
         self.token_requests.append(dict(await request.post()))
-        return web.json_response({"access_token": "fake-token", "token_type": "Bearer", "expires_in": 86400})
+        # Each token is distinct, so a retry that reuses a rejected one shows in its header.
+        token = "fake-token" if len(self.token_requests) == 1 else f"fake-token-{len(self.token_requests)}"
+        return web.json_response({"access_token": token, "token_type": "Bearer", "expires_in": 86400})
 
     async def _api(self, request: web.Request) -> web.Response:
         self.api_requests.append(request)
@@ -319,6 +321,7 @@ def test_rejected_token_is_replaced_once(tidal: FakeTidal, monkeypatch: pytest.M
     assert result == {"data": []}
     assert len(tidal.token_requests) == 2
     assert len(tidal.api_requests) == 2
+    assert [r.headers["Authorization"] for r in tidal.api_requests] == ["Bearer fake-token", "Bearer fake-token-2"]
 
 
 def test_token_rejected_twice_is_an_error(tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch) -> None:
