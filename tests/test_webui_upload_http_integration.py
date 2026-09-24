@@ -287,7 +287,7 @@ def upload_world(monkeypatch, tmp_path):
     monkeypatch.setattr("salmon.uploader.review_metadata_with_ai", fake_review_metadata_with_ai)
     monkeypatch.setattr("salmon.uploader.tag_files", lambda *a, **k: None)
     monkeypatch.setattr("salmon.uploader.rename_files", lambda *a, **k: None)
-    monkeypatch.setattr("salmon.uploader.rename_folder", lambda path, metadata, auto_rename, keep=None: path)
+    monkeypatch.setattr("salmon.uploader.rename_folder", lambda path, metadata, auto_rename, parent=None: path)
     monkeypatch.setattr("salmon.uploader.check_folder_structure", fake_check_folder_structure)
     monkeypatch.setattr("salmon.uploader.download_cover_if_nonexistent", fake_download_cover)
     monkeypatch.setattr("salmon.uploader.upload_cover", fake_upload_cover)

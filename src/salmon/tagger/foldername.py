@@ -31,7 +31,7 @@ def resolution(path: str) -> str:
     return f"{bits}-{rate / 1000:g}"
 
 
-def rename_folder(path, metadata, auto_rename, check=True, keep=None):
+def rename_folder(path, metadata, auto_rename, check=True, parent=None):
     """
     Create a revised folder name from the new metadata and present it to the
     user. Have them decide whether or not to accept the folder name.
@@ -39,7 +39,7 @@ def rename_folder(path, metadata, auto_rename, check=True, keep=None):
     before the renaming occurs.
     For scene releases, the name of the original folder is kept untouched, and
     the folder is copied to the download folder.
-    A folder at `keep` is never replaced: the copy keeps its current name instead.
+    `parent` replaces the download folder as the directory the renamed folder goes into.
     """
     old_base = os.path.basename(path)
     template_fields = {name for _, name, _, _ in Formatter().parse(cfg.upload.formatting.folder_template) if name}
@@ -66,11 +66,8 @@ def rename_folder(path, metadata, auto_rename, check=True, keep=None):
     if os.sep in new_base or (os.altsep and os.altsep in new_base) or new_base in {"", ".", ".."}:
         raise UploadError(f"Invalid folder name: {new_base!r}")
 
-    new_path = os.path.join(cfg.directory.download_directory, new_base)
+    new_path = os.path.join(parent or cfg.directory.download_directory, new_base)
     if os.path.isdir(new_path) and not os.path.samefile(path, new_path):
-        if keep and os.path.isdir(keep) and os.path.samefile(new_path, keep):
-            click.secho(f"Keeping {path}: {new_path} is the source, which is never replaced.", fg="yellow")
-            return path
         if not check or click.confirm(
             click.style(
                 f"A folder already exists with the new folder name '{new_path}', would you like to replace it?",

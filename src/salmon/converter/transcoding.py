@@ -76,12 +76,13 @@ _TOT_MAP: dict[str, frozenset[str]] = {
 # ---------------------------------------------------------------------------
 
 
-def _build_output_path(path: str, bitrate: Bitrate) -> str:
+def _build_output_path(path: str, bitrate: Bitrate, output_dir: str | None = None) -> str:
     """Generate the output directory path for a transcoded release.
 
     Args:
         path: Source album directory path.
         bitrate: Target MP3 bitrate label (e.g. "V0", "320").
+        output_dir: Directory the output goes into; the source's own directory by default.
 
     Returns:
         The output directory path string.
@@ -104,7 +105,7 @@ def _build_output_path(path: str, bitrate: Bitrate) -> str:
     if to_append:
         foldername += f" [{' '.join(to_append)}]"
 
-    return os.path.join(os.path.dirname(path), foldername)
+    return os.path.join(output_dir or os.path.dirname(path), foldername)
 
 
 def _validate_lossless(path: str) -> None:
@@ -419,7 +420,9 @@ async def _transcode_audio_files(
 # ---------------------------------------------------------------------------
 
 
-async def transcode_folder(path: str, bitrate: Bitrate, essential_only: bool = False) -> str:
+async def transcode_folder(
+    path: str, bitrate: Bitrate, essential_only: bool = False, output_dir: str | None = None
+) -> str:
     """Transcode a lossless folder to MP3 at the specified bitrate.
 
     Args:
@@ -427,12 +430,13 @@ async def transcode_folder(path: str, bitrate: Bitrate, essential_only: bool = F
         bitrate: Target MP3 bitrate (e.g. "V0", "320").
         essential_only: If True, only image files are copied; all other extra
             files (scans, cues, logs, etc.) are skipped.
+        output_dir: Directory the output goes into; the source's own directory by default.
 
     Returns:
         Path to the newly created transcoded directory.
     """
     _validate_lossless(path)
-    new_path = _build_output_path(path, bitrate)
+    new_path = _build_output_path(path, bitrate, output_dir)
     # Collected before the overwrite branch so the channel check can run ahead of
     # the rmtree below: discovering the source cannot be transcoded after a prior
     # output has been deleted costs the thing that was already there.

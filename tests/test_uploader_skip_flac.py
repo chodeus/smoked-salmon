@@ -1,5 +1,6 @@
 """--skip-flac-upload: only transcodes of a FLAC already in the group are uploaded."""
 
+import os
 from typing import Any
 
 import anyio
@@ -190,26 +191,24 @@ def _returning_async(result: Any = None, calls: list[str] | None = None, record:
     return fake
 
 
-@pytest.mark.parametrize(
-    ("format_", "encoding"),
-    [("MP3", "320"), ("MP3", "V0 (VBR)"), ("AAC", "256")],
-)
-def test_lossy_release_stops_before_any_check_or_upload(monkeypatch, format_: str, encoding: str) -> None:
+@pytest.mark.parametrize("names", [["01.mp3", "02.mp3"], ["01.m4a"], ["01.flac", "02.mp3"]])
+def test_a_release_that_is_not_all_flac_stops_before_the_copy(monkeypatch, tmp_path, names: list[str]) -> None:
     calls: list[str] = []
+    release = tmp_path / "release"
+    release.mkdir()
+    for name in names:
+        (release / name).write_bytes(b"audio")
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    monkeypatch.setattr(salmon.uploader.cfg.directory, "download_directory", str(downloads))
     _stub(
         monkeypatch,
         {
             "release_type_from_folder": _returning(None),
             "conversion_of": _returning(None),
-            "_stage_source": _returning("/release"),
-            "gather_audio_info": _returning({}),
-            "check_hybrid": _returning(False),
-            "standardize_tags": _returning(),
-            "gather_tags": _returning({}),
-            "construct_rls_data": _returning({"format": format_, "encoding": encoding}, calls, "rls_data"),
             **{
-                name: _returning_async(None, calls, name)
-                for name in ("mqa_test", "choose_source_flac", "check_existing_group", "upload_and_report")
+                name: _returning(None, calls, name)
+                for name in ("_stage_source", "gather_audio_info", "standardize_tags", "construct_rls_data")
             },
         },
     )
@@ -218,7 +217,7 @@ def test_lossy_release_stops_before_any_check_or_upload(monkeypatch, format_: st
     anyio.run(
         lambda: salmon.uploader.upload(
             site,  # type: ignore[arg-type]
-            "/release",
+            str(release),
             5,
             "WEB",
             None,
@@ -228,7 +227,8 @@ def test_lossy_release_stops_before_any_check_or_upload(monkeypatch, format_: st
         )
     )
 
-    assert calls == ["rls_data"]
+    assert calls == []
+    assert os.listdir(downloads) == []
     assert site.torrentgroup_calls == 0
 
 
@@ -322,7 +322,10 @@ def _flow(monkeypatch, group: dict[str, Any], source: str = "WEB", **fakes: Any)
         {
             "release_type_from_folder": _returning(None),
             "conversion_of": _returning(None),
+            "_is_flac_release": _returning(True),
+            "_new_scratch_dir": _returning("/scratch"),
             "_stage_source": _returning("/release"),
+            "_remove_scratch_dir": _returning(),
             "gather_audio_info": _returning({}),
             "check_hybrid": _returning(False),
             "standardize_tags": _returning(),
@@ -446,3 +449,17 @@ def _default_answer(asked: list[str]):
         return default
 
     return fake_prompt
+
+
+def test_delete_music_folder_never_deletes_the_source(monkeypatch, capsys) -> None:
+    deleted: list[str] = []
+    monkeypatch.setattr(salmon.uploader.shutil, "rmtree", lambda path, *_a, **_k: deleted.append(path))
+
+    async def delete_answer(*_args, **_kwargs):
+        raise salmon.uploader.AbortAndDeleteFolder
+
+    calls, transcoded = _flow(monkeypatch, _group(_torrent(11)), check_spectrals=delete_answer)
+
+    assert deleted == []
+    assert transcoded == []
+    assert "Not deleting /release" in capsys.readouterr().out

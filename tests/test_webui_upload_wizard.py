@@ -19,6 +19,7 @@ tests for the answer endpoint and spectral image serving).
 
 import asyncio
 import os
+import shutil
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -313,7 +314,7 @@ def upload_world(monkeypatch, tmp_path):
     monkeypatch.setattr("salmon.uploader.review_metadata_with_ai", fake_review_metadata_with_ai)
     monkeypatch.setattr("salmon.uploader.tag_files", lambda *a, **k: None)
     monkeypatch.setattr("salmon.uploader.rename_files", lambda *a, **k: None)
-    monkeypatch.setattr("salmon.uploader.rename_folder", lambda path, metadata, auto_rename, keep=None: path)
+    monkeypatch.setattr("salmon.uploader.rename_folder", lambda path, metadata, auto_rename, parent=None: path)
     monkeypatch.setattr("salmon.uploader.check_folder_structure", fake_check_folder_structure)
     monkeypatch.setattr("salmon.uploader.download_cover_if_nonexistent", fake_download_cover)
     monkeypatch.setattr("salmon.uploader.upload_cover", fake_upload_cover)
@@ -856,8 +857,8 @@ def test_http_answer_endpoint_and_spectral_serving(client, tmp_path):
 async def test_skip_flac_upload_sends_only_transcodes_linked_to_the_group_flac(
     jm, tracker, album_dir, upload_world, monkeypatch, tmp_path
 ):
-    async def fake_transcode(path, bitrate):
-        target = f"{path} [MP3 {bitrate}]"
+    async def fake_transcode(path, bitrate, output_dir=None):
+        target = os.path.join(output_dir or os.path.dirname(path), f"{os.path.basename(path)} [MP3 {bitrate}]")
         os.makedirs(target)
         for fn in TRACK_FILES:
             Path(target, fn.replace(".flac", ".mp3")).write_bytes(b"ID3" + bytes(2000))
@@ -907,7 +908,7 @@ async def test_skip_flac_upload_sends_only_transcodes_linked_to_the_group_flac(
     ]
     assert all("torrentid=1001" in d["release_desc"] for d, _files in tracker.uploads)
     assert "torrentgroup" not in [action for action, _ in tracker.api_calls]
-    assert integrity_checked == [str(tmp_path / "downloads" / album_dir.name)]
+    assert len(integrity_checked) == 1 and ".salmon-staging" in integrity_checked[0]
 
 
 def _flac_with_art(path: Path, title: str, number: int, art_bytes: int) -> None:
@@ -936,14 +937,9 @@ def _snapshot(folder: Path) -> dict[str, str]:
     }
 
 
-@pytest.mark.parametrize("beside_downloads", [False, True])
-async def test_skip_flac_upload_never_modifies_the_source_folder(
-    jm, tracker, upload_world, monkeypatch, tmp_path, beside_downloads
-):
-    """The source is the folder seeding the group's FLAC: retag, rename, art strip and cover
-    extraction all happen on a copy, and nothing is written in or beside the source."""
-    from mutagen.flac import FLAC
-
+@pytest.fixture
+def skip_flac_run(jm, tracker, upload_world, monkeypatch, tmp_path):
+    """Run --skip-flac-upload with the real steps that write into the folder, on a source with 1.1 MiB art."""
     from salmon.converter.conversions import record_conversion
     from salmon.converter.transcoding import _build_output_path
     from salmon.tagger import audio_info, retagger, tags
@@ -952,17 +948,6 @@ async def test_skip_flac_upload_never_modifies_the_source_folder(
     downloads = tmp_path / "downloads"
     downloads.mkdir()
     monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
-    # Either the source already has the name the rename picks, in the download folder, or it sits elsewhere.
-    parent = downloads if beside_downloads else tmp_path / "seeding"
-    parent.mkdir(exist_ok=True)
-    name = generate_folder_name(upload_world.metadata) if beside_downloads else "testartist - testalbum (FLAC)"
-    source = parent / name
-    source.mkdir()
-    for number, title in enumerate(TRACK_TITLES, 1):
-        _flac_with_art(source / f"track{number}.flac", title, number, 1100 * 1024)
-    before, parent_before = _snapshot(source), sorted(os.listdir(parent))
-
-    # The world stubs these out; the real ones are the steps that write into the folder.
     for fn_name, real in {
         "gather_audio_info": audio_info.gather_audio_info,
         "standardize_tags": tags.standardize_tags,
@@ -973,67 +958,189 @@ async def test_skip_flac_upload_never_modifies_the_source_folder(
         "rename_folder": rename_folder,
     }.items():
         monkeypatch.setattr(f"salmon.uploader.{fn_name}", real)
-    transcoded_from = []
-
-    async def fake_transcode(path, bitrate):
-        transcoded_from.append(path)
-        target = _build_output_path(path, bitrate)
-        os.makedirs(target)
-        for flac in Path(path).glob("*.flac"):
-            Path(target, flac.stem + ".mp3").write_bytes(b"ID3" + bytes(2000))
-        record_conversion(target, source=path, kind="transcode", bitrate=bitrate)
-        return target
-
-    integrity_checked = []
-
-    async def fake_integrity(path, scene, assume_yes):
-        integrity_checked.append(path)  # the real one may re-encode the FLACs in place
-
-    monkeypatch.setattr("salmon.uploader.transcode_folder", fake_transcode)
-    monkeypatch.setattr("salmon.uploader.resolve_integrity_for_upload", fake_integrity)
     upload_world.metadata["tracks"] = {
         "1": {
             str(i): {"title": t, "artists": [("Testartist", "main")], "track#": str(i), "disc#": "1"}
             for i, t in enumerate(TRACK_TITLES, 1)
         }
     }
+    run = SimpleNamespace(downloads=downloads, transcoded=[], integrity_checked=[], integrity_error=None)
 
-    async def run(job):
-        await run_upload(
-            tracker,
-            str(source),
-            2002,
-            "WEB",
-            False,
-            (0,),
-            None,
-            skip_up=True,
-            skip_mqa=True,
-            flac_group=TORRENTGROUP_RESPONSE,
-        )
+    async def fake_transcode(path, bitrate, output_dir=None):
+        target = _build_output_path(path, bitrate, output_dir)
+        run.transcoded.append((path, target))
+        os.makedirs(target)
+        for flac in Path(path).glob("*.flac"):
+            Path(target, flac.stem + ".mp3").write_bytes(b"ID3" + bytes(2000))
+        record_conversion(target, source=path, kind="transcode", bitrate=bitrate)
+        return target
 
-    script = [
+    async def fake_integrity(path, scene, assume_yes):
+        run.integrity_checked.append(path)  # the real one may re-encode the FLACs in place
+        if run.integrity_error:
+            raise run.integrity_error
+
+    monkeypatch.setattr("salmon.uploader.transcode_folder", fake_transcode)
+    monkeypatch.setattr("salmon.uploader.resolve_integrity_for_upload", fake_integrity)
+
+    def make_source(beside_downloads: bool) -> Path:
+        parent = downloads if beside_downloads else tmp_path / "seeding"
+        parent.mkdir(exist_ok=True)
+        name = generate_folder_name(upload_world.metadata) if beside_downloads else "testartist - testalbum (FLAC)"
+        source = parent / name
+        source.mkdir()
+        for number, title in enumerate(TRACK_TITLES, 1):
+            _flac_with_art(source / f"track{number}.flac", title, number, 1100 * 1024)
+        return source
+
+    async def start(source: Path, script: list, group: dict = TORRENTGROUP_RESPONSE):
+        async def upload_job(job):
+            await run_upload(
+                tracker,
+                str(source),
+                2002,
+                "WEB",
+                False,
+                (0,),
+                None,
+                skip_up=True,
+                skip_mqa=True,
+                flac_group=group,
+            )
+
+        job = jm().create_threaded("upload", "Upload to RED", upload_job, lock_key=str(source))
+        await drive(job, script)
+        await join_job(job)
+        return job
+
+    run.make_source, run.start = make_source, start
+    return run
+
+
+def _staged_copies(downloads: Path) -> list[str]:
+    staging = downloads / ".salmon-staging"
+    return sorted(os.listdir(staging)) if staging.exists() else []
+
+
+def _rename_script(beside_downloads: bool) -> list:
+    return [
         ("auto-tag the files", True),
         *([] if beside_downloads else [("replace the original folder name", True), ("folder name acceptable", True)]),
         ("rename the files", True),
-        ("Would you like to upload the torrent?", True),
-        ("Select formats to convert", "*"),
     ]
-    m = jm()
-    job = m.create_threaded("upload", "Upload to RED", run, lock_key=str(source))
-    await drive(job, script)
-    await join_job(job)
+
+
+@pytest.mark.parametrize("beside_downloads", [False, True])
+async def test_skip_flac_upload_never_modifies_the_source_folder(skip_flac_run, beside_downloads):
+    """The source is the folder seeding the group's FLAC: retag, rename, art strip and cover
+    extraction happen on a scratch copy, and nothing is written in or beside the source."""
+    from mutagen.flac import FLAC
+
+    source = skip_flac_run.make_source(beside_downloads)
+    parent = source.parent
+    before, parent_before = _snapshot(source), sorted(os.listdir(parent))
+    stripped = []
+    real_rmtree = shutil.rmtree
+
+    def looking_rmtree(path, *args, **kwargs):
+        # The copy the transcodes came from is inspected just before the run removes it.
+        if ".salmon-staging" in str(path) and skip_flac_run.transcoded:
+            copy = Path(skip_flac_run.transcoded[0][0])
+            stripped.append((copy / "cover.jpg").is_file() and all(not FLAC(f).pictures for f in copy.glob("*.flac")))
+        real_rmtree(path, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(shutil, "rmtree", looking_rmtree)
+        job = await skip_flac_run.start(
+            source,
+            [
+                *_rename_script(beside_downloads),
+                ("Would you like to upload the torrent?", True),
+                ("Select formats to convert", "*"),
+            ],
+        )
 
     assert job.status == "done", job.error
     assert _snapshot(source) == before
     if not beside_downloads:
         assert sorted(os.listdir(parent)) == parent_before
-    assert not (parent / ".salmon-conversions" / f"{name}.json").exists()
-    # The transcodes come from the copy, which went through the art strip and cover extraction.
-    assert len(transcoded_from) == 2 and len(set(transcoded_from)) == 1
-    copy = Path(transcoded_from[0])
-    assert not os.path.samefile(copy, source)
-    assert (copy / "cover.jpg").is_file()
-    assert sorted(p.name for p in copy.glob("*.flac")) == TRACK_FILES
-    assert all(not FLAC(p).pictures for p in copy.glob("*.flac"))
-    assert integrity_checked == [str(copy)]
+    assert not (parent / ".salmon-conversions" / f"{source.name}.json").exists()
+    # Made from the scratch copy after the art strip and cover extraction, then the copy is gone.
+    assert stripped == [True]
+    assert all(".salmon-staging" in src for src, _target in skip_flac_run.transcoded)
+    assert all(".salmon-staging" in checked for checked in skip_flac_run.integrity_checked)
+    assert _staged_copies(skip_flac_run.downloads) == []
+    # The transcodes and their records land in download_directory itself, as for any upload.
+    targets = [Path(target) for _src, target in skip_flac_run.transcoded]
+    assert [t.parent for t in targets] == [skip_flac_run.downloads] * 2
+    assert all((skip_flac_run.downloads / ".salmon-conversions" / f"{t.name}.json").is_file() for t in targets)
+
+
+async def test_skip_flac_upload_removes_the_copy_on_abort(skip_flac_run):
+    source = skip_flac_run.make_source(beside_downloads=False)
+    before = _snapshot(source)
+    other_edition = {**TORRENTGROUP_RESPONSE, "torrents": [{**TORRENTGROUP_RESPONSE["torrents"][0], "media": "CD"}]}
+
+    job = await skip_flac_run.start(
+        source, [*_rename_script(False), ("Would you like to upload the torrent?", True)], group=other_edition
+    )
+
+    assert job.status == "done", job.error
+    assert "Aborting upload..." in "\n".join(job.log_lines)
+    assert skip_flac_run.integrity_checked  # the copy was made and worked on before the abort
+    assert _staged_copies(skip_flac_run.downloads) == []
+    assert _snapshot(source) == before
+
+
+async def test_skip_flac_upload_removes_the_copy_on_an_error(skip_flac_run):
+    source = skip_flac_run.make_source(beside_downloads=False)
+    before = _snapshot(source)
+    skip_flac_run.integrity_error = RuntimeError("decoder crashed")
+
+    job = await skip_flac_run.start(source, _rename_script(False))
+
+    assert job.status == "error"
+    assert "decoder crashed" in job.error
+    assert _staged_copies(skip_flac_run.downloads) == []
+    assert _snapshot(source) == before
+
+
+async def test_a_leftover_staged_copy_neither_blocks_nor_is_deleted(skip_flac_run):
+    source = skip_flac_run.make_source(beside_downloads=False)
+    leftover = skip_flac_run.downloads / ".salmon-staging" / source.name
+    leftover.mkdir(parents=True)
+    (leftover / "track1.flac").write_bytes(b"left by a crashed run")
+
+    job = await skip_flac_run.start(
+        source,
+        [
+            *_rename_script(False),
+            ("Would you like to upload the torrent?", True),
+            ("Select formats to convert", "*"),
+        ],
+    )
+
+    assert job.status == "done", job.error
+    assert _staged_copies(skip_flac_run.downloads) == [source.name]
+    assert (leftover / "track1.flac").read_bytes() == b"left by a crashed run"
+
+
+def test_scratch_removal_refuses_anything_outside_the_staging_folder(tmp_path, monkeypatch):
+    from salmon.uploader import STAGING_DIR, _remove_scratch_dir
+
+    monkeypatch.setattr(cfg.directory, "download_directory", str(tmp_path))
+    source = tmp_path / "Album [FLAC]"
+    source.mkdir()
+    (source / "01.flac").write_bytes(b"seeding")
+    staging = tmp_path / STAGING_DIR
+    staging.mkdir()
+    link = staging / "run-link"
+    link.symlink_to(source, target_is_directory=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+
+    for target in (link, outside, source, staging):
+        _remove_scratch_dir(str(target), str(source))
+
+    assert (source / "01.flac").read_bytes() == b"seeding"
+    assert link.is_symlink() and outside.is_dir() and staging.is_dir()
