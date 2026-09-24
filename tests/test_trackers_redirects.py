@@ -364,3 +364,14 @@ async def test_the_red_image_host_never_repeats_a_credential(serve, monkeypatch,
     shown = str(excinfo.value) + "".join(capsys.readouterr())
     assert "rejected" in shown
     assert [secret for secret in _SECRETS if secret in shown] == []
+
+
+async def test_an_api_failure_never_repeats_the_session_cookie(serve, api_for):
+    async def ajax(request: web.Request) -> web.Response:
+        return web.json_response({"status": "failure", "error": f"bad session {request.headers.get('Cookie')}"})
+
+    url = await serve(ajax=ajax)
+    with pytest.raises(RequestFailedError) as excinfo:
+        await api_for(url, cookie="SYNTH-SESSION-COOKIE").api_call("index")
+    assert "bad session" in str(excinfo.value)
+    assert "SYNTH-SESSION-COOKIE" not in str(excinfo.value)

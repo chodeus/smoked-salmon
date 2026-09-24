@@ -583,7 +583,7 @@ class BaseGazelleApi:
             resp_json = {"status": "error", "error": resp.text}
 
         if resp_json.get("status") != "success":
-            raise RequestFailedError(str(resp_json.get("error", resp.text)))
+            raise RequestFailedError(self._scrub(str(resp_json.get("error", resp.text))))
         return cast("dict", resp_json["response"])
 
     async def torrentgroup(self, group_id: int) -> dict:
@@ -810,7 +810,7 @@ class BaseGazelleApi:
 
         try:
             if resp["status"] != "success":
-                raise RequestError(f"API upload failed: {resp.get('error', resp)}")
+                raise RequestError(f"API upload failed: {self._scrub(str(resp.get('error', resp)))}")
             if ("requestid" in resp["response"] and resp["response"]["requestid"]) or (
                 "fillRequest" in resp["response"]
                 and resp["response"]["fillRequest"]
@@ -834,10 +834,12 @@ class BaseGazelleApi:
                 torrent_id = resp["response"]["torrentId"]
                 group_id = resp["response"]["groupId"]
             elif "requestid" not in resp["response"] and "fillRequest" not in resp["response"]:
-                raise UploadError(f"API upload succeeded but returned no torrent id, response: {resp}")
+                raise UploadError(
+                    f"API upload succeeded but returned no torrent id, response: {self._scrub(str(resp))}"
+                )
             return torrent_id, group_id
         except TypeError as err:
-            raise RequestError(f"API upload failed, response: {resp}") from err
+            raise RequestError(f"API upload failed, response: {self._scrub(str(resp))}") from err
 
     async def site_page_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Upload torrent via upload.php.
@@ -1004,7 +1006,7 @@ class BaseGazelleApi:
         edit_error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
         if edit_error and edit_error.parent and edit_error.parent.parent:
             p_tag = edit_error.parent.parent.find("p")
-            error_message = p_tag.text if p_tag else "Unknown error"
+            error_message = self._scrub(p_tag.text) if p_tag else "Unknown error"
             raise RequestError(f"Failed to edit torrent: {error_message}")
         else:
             click.secho("Added spectrals to the torrent description.", fg="green")
