@@ -11,9 +11,7 @@ from salmon.release_notification import FORK_URL, UPSTREAM_URL, upload_footer
 
 @pytest.fixture(autouse=True)
 def pinned_version(monkeypatch):
-    monkeypatch.setattr(
-        importlib.import_module("salmon.release_notification"), "get_version", lambda: "1.0.0-test"
-    )
+    monkeypatch.setattr(importlib.import_module("salmon.release_notification"), "get_version", lambda: "1.0.0-test")
 
 
 def test_footer_names_the_fork_and_credits_upstream():
@@ -33,7 +31,6 @@ def test_footer_names_the_fork_and_credits_upstream():
 )
 def test_converter_descriptions_end_with_the_shared_footer(description):
     assert description().endswith(upload_footer())
-
 
 
 @pytest.mark.parametrize(

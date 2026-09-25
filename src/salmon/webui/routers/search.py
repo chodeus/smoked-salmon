@@ -11,6 +11,7 @@ from salmon.webui.validation import assert_public_url
 
 router = APIRouter(tags=["search"])
 
+
 @router.get("/search")
 async def search(q: str, limit: int = 10, track_count: int | None = None) -> dict:
     """Search all configured metadata providers for a release."""
