@@ -79,9 +79,7 @@ class AuthMiddleware:
             await receive()  # consume websocket.connect, then reject the handshake
             await send({"type": "websocket.close", "code": 1008})
             return
-        await send(
-            {"type": "http.response.start", "status": 401, "headers": [(b"content-type", b"application/json")]}
-        )
+        await send({"type": "http.response.start", "status": 401, "headers": [(b"content-type", b"application/json")]})
         await send({"type": "http.response.body", "body": b'{"detail":"Authentication required."}'})
 
 
@@ -109,7 +107,5 @@ def login(req: LoginRequest, request: Request, response: Response) -> dict:
         return {"required": False, "authenticated": True}
     if not token_matches(req.token, token):
         raise HTTPException(status_code=401, detail="Invalid token.")
-    response.set_cookie(
-        COOKIE_NAME, token, httponly=True, samesite="strict", max_age=60 * 60 * 24 * 30, path="/"
-    )
+    response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="strict", max_age=60 * 60 * 24 * 30, path="/")
     return {"required": True, "authenticated": True}

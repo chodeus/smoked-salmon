@@ -76,9 +76,7 @@ def test_ws_rejects_without_token_but_accepts_with_cookie():
             rejected = True
         assert rejected, "ws without a token should be rejected"
         # A browser sends the cookie automatically on a same-origin ws; TestClient needs it explicit.
-        with c.websocket_connect(
-            "/api/ws", headers={"host": "localhost", "cookie": "salmon_web_token=s3cret"}
-        ):
+        with c.websocket_connect("/api/ws", headers={"host": "localhost", "cookie": "salmon_web_token=s3cret"}):
             pass  # handshake accepted with the cookie
 
 

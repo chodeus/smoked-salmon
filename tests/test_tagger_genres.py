@@ -95,9 +95,16 @@ def test_standardize_genres_preserves_input_order():
 
 def _md():
     return {
-        "artists": [("Real Artist", "main")], "title": "Real Title", "group_year": "2004",
-        "year": "2004", "edition_title": "Deluxe", "label": "Real Label", "catno": "CAT-1",
-        "upc": "123456789012", "genres": ["Electronic"], "urls": [],
+        "artists": [("Real Artist", "main")],
+        "title": "Real Title",
+        "group_year": "2004",
+        "year": "2004",
+        "edition_title": "Deluxe",
+        "label": "Real Label",
+        "catno": "CAT-1",
+        "upc": "123456789012",
+        "genres": ["Electronic"],
+        "urls": [],
     }
 
 
