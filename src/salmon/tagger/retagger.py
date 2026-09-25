@@ -107,8 +107,9 @@ def create_track_changes(tags, metadata):
     if len(set(disc_track_keys)) == len(disc_track_keys):
         ordered_tags = sorted(tags.items(), key=lambda item: disc_track_key(item[1]))
     else:
-        # Colliding pairs (e.g. CD1/CD2 folders with no DISCNUMBER) can't identify files; keep file order.
-        ordered_tags = list(tags.items())
+        # Colliding pairs (e.g. CD1/CD2 folders with no DISCNUMBER) can't identify files; use path order,
+        # compared naturally so CD2 comes before CD10 as the metadata's discs do.
+        ordered_tags = sorted(tags.items(), key=lambda item: _natural_key(item[0]))
 
     if len(ordered_tags) != len(tracks):
         raise UploadError(
@@ -191,6 +192,11 @@ def _remap_spectral_ids(spectral_ids, to_rename):
 def _disc_track_sort_key(value):
     s = str(value)
     return (0, int(s)) if s.isdigit() else (1, s.lower())
+
+
+def _natural_key(path: str) -> list[int | str]:
+    """Sort key that compares the digit runs in a path as numbers."""
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", path)]
 
 
 def metadata_to_track_list(metadata):

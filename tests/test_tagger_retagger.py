@@ -8,6 +8,7 @@ from salmon.errors import UploadError
 from salmon.tagger.retagger import (
     Change,
     _get_tag_number,
+    _natural_key,
     _remap_spectral_ids,
     create_track_changes,
     move_non_audio_files,
@@ -312,6 +313,28 @@ def test_create_track_changes_keeps_file_order_when_discnumber_tags_are_missing(
     assert Change("title", "Old CD1 2", "New CD1 2") in changes["CD1/02.flac"]
     assert Change("title", "Old CD2 1", "New CD2 1") in changes["CD2/01.flac"]
     assert Change("title", "Old CD2 2", "New CD2 2") in changes["CD2/02.flac"]
+
+
+def test_the_file_order_fallback_puts_disc_10_after_disc_2():
+    # gather_tags lists CD10 before CD2 (a path with no leading number sorts as text).
+    tags = {f"CD{disc}/01.flac": _tagset(f"Old CD{disc}", tracknumber="1", discnumber=None) for disc in (1, 10, 2)}
+    metadata = {"tracks": {str(disc): {"1": _trackmeta(f"New CD{disc}", "1", str(disc))} for disc in (1, 2, 10)}}
+
+    changes = create_track_changes(tags, metadata)
+
+    for disc in (1, 2, 10):
+        assert Change("title", f"Old CD{disc}", f"New CD{disc}") in changes[f"CD{disc}/01.flac"]
+
+
+def test_natural_key_orders_digit_runs_as_numbers():
+    paths = ["CD10/01.flac", "Disc 2/10.flac", "CD2/01.flac", "Disc 2/9.flac", "CD1/01.flac"]
+    assert sorted(paths, key=_natural_key) == [
+        "CD1/01.flac",
+        "CD2/01.flac",
+        "CD10/01.flac",
+        "Disc 2/9.flac",
+        "Disc 2/10.flac",
+    ]
 
 
 def test_get_tag_number_reads_the_number_part_of_a_slash_pair():
