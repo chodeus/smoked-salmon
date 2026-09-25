@@ -1,4 +1,8 @@
 import ipaddress
+import math
+from datetime import UTC
+from email.utils import parsedate_to_datetime
+from time import time
 
 from yarl import URL
 
@@ -29,3 +33,25 @@ def is_public_ip(address: str) -> bool:
     # Both: is_global refuses CGNAT, which the denylist allows; the denylist refuses NAT64,
     # which is_global allows.
     return ip.is_global and not any(getattr(ip, attr) for attr in _NON_PUBLIC_IP_ATTRS)
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """Get the wait in seconds from a Retry-After header (delay-seconds or HTTP-date)."""
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        pass
+    else:
+        # A negative delay is invalid (RFC 9110), so the caller's fallback applies.
+        return seconds if math.isfinite(seconds) and seconds >= 0 else None
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:  # a "-0000" date: UTC, not local time
+        when = when.replace(tzinfo=UTC)
+    wait = when.timestamp() - time()
+    # A date already past names no wait, so the normal backoff applies.
+    return wait if wait > 0 else None

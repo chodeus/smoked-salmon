@@ -4,15 +4,15 @@ A variant of test_webui_upload_wizard.py that does not mock the tracker at the
 object seam: the fake Gazelle server from tests/fake_gazelle.py runs in-process
 on an ephemeral port (aiohttp AppRunner on the test's event loop) and a real
 salmon.trackers.red.RedApi talks to it over TCP. Cookie/API-key auth headers,
-the tenacity retry decorator, the aiolimiter rate limiter, multipart form
+the tenacity retry decorator, the tracker rate limiter, multipart form
 composition and JSON decoding in BaseGazelleApi._request/api_call/upload all
 execute for real — no mocks of api_call/_request/upload.
 
 Threading model: the upload job runs in a JobManager worker thread with its
 own event loop while the fake server serves on the test loop; the two only
 meet through a real TCP socket. The RedApi is instantiated INSIDE the job
-thread (see make_red_api / http_wizard_factory) so its per-instance
-AsyncLimiter binds to the job loop, mirroring tools/dev_web_with_fake_tracker.py
+thread (see make_red_api / http_wizard_factory) so its pool belongs to the
+job loop, mirroring tools/dev_web_with_fake_tracker.py
 — but as instance attributes only, never class-level mutation.
 
 The non-tracker world (metadata providers, tagger plumbing, spectral
@@ -319,13 +319,7 @@ def upload_world(monkeypatch, tmp_path):
 
 
 def make_red_api(base_url: str, torrents_dir: str) -> RedApi:
-    """A real RedApi pointed at the in-process fake Gazelle server.
-
-    Must be called inside the job thread: BaseGazelleApi's AsyncLimiter binds
-    to the first event loop that uses it, and threaded jobs run on their own
-    loop. URLs and credentials are instance attributes, exactly like
-    tools/dev_web_with_fake_tracker.py wires them.
-    """
+    """A real RedApi on the fake server; call it inside the job thread, whose loop owns its pool."""
     api = RedApi()
     api.base_url = base_url
     api.tracker_url = base_url

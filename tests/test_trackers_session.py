@@ -8,14 +8,13 @@ from typing import Any, cast
 import asyncclick as click
 import pytest
 from aiohttp import web
-from aiolimiter import AsyncLimiter
 from tenacity import wait_fixed
 
 import salmon.trackers
 from salmon import cfg
 from salmon.checks.connection import check_tracker_connection
 from salmon.errors import RequestFailedError, UnknownOutcomeError
-from salmon.trackers.base import BaseGazelleApi, _open_pools
+from salmon.trackers.base import BaseGazelleApi, SharedLimiter, _open_pools
 from salmon.webui.jobs import JobManager
 
 
@@ -28,14 +27,14 @@ class FakeApi(BaseGazelleApi):
     def __init__(self, base_url: str = "http://127.0.0.1:1") -> None:
         self.base_url = base_url
         super().__init__()
-        # Measures connection reuse, not throttling.
-        self._rate_limiter = AsyncLimiter(100, 1)
         self._authenticated = True
 
 
 @pytest.fixture(autouse=True)
 def _quiet(monkeypatch):
     monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
+    # Measures connection reuse, not throttling.
+    monkeypatch.setattr("salmon.trackers.base.SharedLimiter", lambda *_a, **_k: SharedLimiter(100, 1))
 
 
 @pytest.fixture
@@ -204,7 +203,7 @@ async def test_a_session_cookie_follows_a_redirect_on_the_tracker_only(serve):
     finally:
         await api.close()
     assert received["/landed"] == "session=fake-cookie"
-    assert received["elsewhere"] is None
+    assert "elsewhere" not in received
 
 
 async def test_a_web_job_closes_its_tracker_pool(serve):

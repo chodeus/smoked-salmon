@@ -1,9 +1,6 @@
-import math
 import re
-from datetime import UTC
-from email.utils import parsedate_to_datetime
 from functools import cache
-from time import monotonic, time
+from time import monotonic
 from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
@@ -13,6 +10,7 @@ import asyncclick as click
 import msgspec
 
 from salmon import cfg
+from salmon.common.urls import parse_retry_after
 from salmon.errors import ScrapeError
 from salmon.sources.base import BaseScraper
 
@@ -60,27 +58,6 @@ def _notify_retired_token() -> None:
         "Register a client at https://developer.tidal.com and set client_id and client_secret instead.",
         fg="yellow",
     )
-
-
-def _parse_retry_after(value: str | None) -> float | None:
-    """Get the wait in seconds from a Retry-After header (delay-seconds or HTTP-date)."""
-    if not value:
-        return None
-    try:
-        seconds = float(value)
-    except ValueError:
-        pass
-    else:
-        return max(seconds, 0.0) if math.isfinite(seconds) else None
-    try:
-        when = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return None
-    if when.tzinfo is None:  # a "-0000" date: UTC, not local time
-        when = when.replace(tzinfo=UTC)
-    wait = when.timestamp() - time()
-    # A date already past names no wait, so the normal backoff applies.
-    return wait if wait > 0 else None
 
 
 class _RateLimitedError(ScrapeError):
@@ -146,7 +123,7 @@ class TidalBase(BaseScraper):
 
     async def handle_json_response(self, resp: aiohttp.ClientResponse) -> dict:
         if resp.status == 429:
-            raise _RateLimitedError(_parse_retry_after(resp.headers.get("Retry-After")))
+            raise _RateLimitedError(parse_retry_after(resp.headers.get("Retry-After")))
         if resp.status == 401:
             raise _UnauthorizedError()
         return await super().handle_json_response(resp)

@@ -38,7 +38,7 @@ dottorrents_dir = '.torrents'
 # ===============================
 # Image hosters: ptscreens, oeimg, imgbb, catbox, imgbox, red
 # catbox and imgbox need no API key.
-# red = RED's own host (uses the tracker.red session), for album artwork only: opt in under
+# red = RED's own host (uses tracker.red.api_key, else the session), for album artwork only: opt in under
 # [image.red]; anywhere else ("red" for description images, spectrals, OPS/DIC) is refused.
 [image]
 image_uploader = "catbox"
