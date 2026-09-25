@@ -319,13 +319,7 @@ def upload_world(monkeypatch, tmp_path):
 
 
 def make_red_api(base_url: str, torrents_dir: str) -> RedApi:
-    """A real RedApi pointed at the in-process fake Gazelle server.
-
-    Must be called inside the job thread: its connection pool belongs to the
-    event loop that opens it, and threaded jobs run on their own loop. URLs and
-    credentials are instance attributes, exactly like tools/dev_web_with_fake_tracker.py
-    wires them.
-    """
+    """A real RedApi on the fake server; call it inside the job thread, whose loop owns its pool."""
     api = RedApi()
     api.base_url = base_url
     api.tracker_url = base_url

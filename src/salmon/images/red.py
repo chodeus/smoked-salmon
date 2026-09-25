@@ -20,14 +20,14 @@ BASE_URL = "https://redacted.sh"
 
 
 def bare_image_url(url: str) -> str:
-    """Drop RED's per-viewer query credentials from an image URL; other hosts pass through untouched."""
+    """Drop RED's per-viewer query credentials, and any userinfo, from an image URL; other hosts pass through."""
     try:
         parsed = URL(html.unescape(url))
         if parsed.origin() != URL(BASE_URL).origin():
             return url
     except ValueError:
         return url
-    return str(parsed.with_query(None).with_fragment(None))
+    return str(parsed.with_user(None).with_query(None).with_fragment(None))
 
 
 class ImageUploader(BaseImageUploader):
@@ -75,9 +75,13 @@ class ImageUploader(BaseImageUploader):
             raise ImageUploadFailed("RED did not return an image URL") from error
         # The URL is server-controlled; only a RED-origin URL may be handed on as a cover.
         try:
-            image_origin = URL(image_url).origin()
+            parsed = URL(image_url)
+            image_origin = parsed.origin()
         except ValueError as error:
             raise ImageUploadFailed("RED returned an unusable image URL") from error
+        # Printed and stored downstream, so a URL with userinfo is refused, and not shown.
+        if parsed.user or parsed.password:
+            raise ImageUploadFailed("RED returned an image URL carrying credentials; refusing it")
         if image_origin != URL(BASE_URL).origin():
             raise ImageUploadFailed(f"RED returned an image URL on {image_origin.host}; refusing it")
         return bare_image_url(image_url), None

@@ -84,7 +84,7 @@ def test_red_returns_the_bare_image_url(monkeypatch, tmp_path) -> None:
     result = anyio.run(red.ImageUploader().upload_file, str(image))
     assert result == ("https://redacted.sh/i/image.png", None)
     [site] = _FakeRed.made
-    # Through the RED client, so both requests spend RED's rate limit, and its pool is closed.
+    # Both requests go through the RED client (the fake records them), and its pool is closed.
     assert site.calls == [
         ("auth", "", {}),
         ("POST", "https://redacted.sh/ajax.php", {"action": "upload_image"}),
@@ -114,12 +114,25 @@ def test_with_an_api_key_the_upload_uses_it_and_skips_the_authkey(monkeypatch, t
         ("https://redacted.sh/i/a.jpg?h=hash&e=1700000000&u=12345", "https://redacted.sh/i/a.jpg"),
         ("https://redacted.sh/i/a.jpg?h=hash&amp;e=1700000000&amp;u=12345", "https://redacted.sh/i/a.jpg"),
         ("https://redacted.sh/t/thumb.jpg", "https://redacted.sh/t/thumb.jpg"),
+        ("https://user:SYNTH-KEY@redacted.sh/i/a.jpg?h=hash", "https://redacted.sh/i/a.jpg"),
         ("https://files.catbox.moe/x.jpg?keep=1", "https://files.catbox.moe/x.jpg?keep=1"),
         ("not a url", "not a url"),
     ],
 )
 def test_bare_image_url_strips_only_red_credentials(url, expected) -> None:
     assert red.bare_image_url(url) == expected
+
+
+def test_red_refuses_an_image_url_carrying_credentials(monkeypatch, tmp_path) -> None:
+    _patch_red_env(
+        monkeypatch, {"status": "success", "response": {"url": "https://user:SYNTH-KEY@redacted.sh/i/x.png"}}
+    )
+    image = tmp_path / "image.png"
+    image.write_bytes(b"png-data")
+
+    with pytest.raises(ImageUploadFailed, match="credentials") as excinfo:
+        anyio.run(red.ImageUploader().upload_file, str(image))
+    assert "SYNTH-KEY" not in "".join(traceback.format_exception(excinfo.value))
 
 
 def test_red_refuses_off_origin_image_url(monkeypatch, tmp_path) -> None:
