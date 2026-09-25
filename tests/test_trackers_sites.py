@@ -501,9 +501,7 @@ def red_upload_paths(monkeypatch) -> list[tuple[str, dict]]:
     return calls
 
 
-async def test_red_upload_with_log_files_forces_site_page_upload_despite_api_key(
-    red_tracker, red_upload_paths
-) -> None:
+async def test_red_upload_with_log_files_forces_site_page_upload_despite_api_key(red_tracker, red_upload_paths) -> None:
     red_tracker.api_key = "red-api-key"
     files = UploadFiles(torrent_data=b"torrent", log_files=[("rip.log", b"log data")])
 
@@ -625,9 +623,7 @@ def test_red_parse_upload_form_select_without_selected_option_defaults_to_main()
 
 def test_red_parse_upload_form_skips_artists_without_value() -> None:
     html = (
-        '<form><input name="artists[]" value=""/>'
-        '<input name="artists[]"/>'
-        '<input name="artists[]" value="Kept"/></form>'
+        '<form><input name="artists[]" value=""/><input name="artists[]"/><input name="artists[]" value="Kept"/></form>'
     )
 
     data = _parse({}, html)
