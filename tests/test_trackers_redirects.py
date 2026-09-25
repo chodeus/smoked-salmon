@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import asyncclick as click
 import pytest
 from aiohttp import web
 
@@ -15,7 +16,7 @@ import salmon.cross_upload as cross_upload
 from salmon import cfg
 from salmon.errors import ImageUploadFailed, LoginError, RequestFailedError, UnknownOutcomeError
 from salmon.images import red as red_image_host
-from salmon.trackers.base import BaseGazelleApi, SharedLimiter, _tracker_limiter
+from salmon.trackers.base import BaseGazelleApi, SharedLimiter, _same_origin, _tracker_limiter
 
 
 class CountingLimiter(SharedLimiter):
@@ -427,3 +428,27 @@ async def test_a_post_redirected_with_its_body_kept_is_not_sent_again(serve, api
     with pytest.raises(UnknownOutcomeError):
         await api_for(url)._request("POST", f"{url}/upload.php", data={"x": "1"})
     assert posts == ["/upload.php"]
+
+
+@pytest.mark.parametrize(
+    ("url", "same"),
+    [
+        ("https://Redacted.SH/i/x.jpg", True),
+        ("https://redacted.sh:443/i/x.jpg", True),
+        ("http://redacted.sh/i/x.jpg", False),
+        ("https://redacted.sh:8443/i/x.jpg", False),
+        ("https://evil.example/i/x.jpg", False),
+        ("not a url", False),
+    ],
+)
+def test_same_origin_ignores_host_case_and_the_default_port(url, same):
+    assert _same_origin(url, "https://redacted.sh") is same
+
+
+async def test_a_refused_rehost_fetch_is_a_clean_error(monkeypatch):
+    site = FakeApi("https://redacted.sh")
+    try:
+        with pytest.raises(click.ClickException, match="Could not download RED image"):
+            await cross_upload._rehost_red_image("https://evil.example/i/x.jpg", site, "catbox")
+    finally:
+        await site.close()

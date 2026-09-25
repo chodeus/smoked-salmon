@@ -18,6 +18,7 @@ from aiohttp import FormData
 from bs4 import BeautifulSoup
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential, wait_random
 from torf import TorfError, Torrent
+from yarl import URL
 
 from salmon import cfg
 from salmon.common import UploadFiles
@@ -178,9 +179,12 @@ class SearchReleaseData(msgspec.Struct, frozen=True):
 
 
 def _same_origin(url: str, other: str) -> bool:
-    """Whether two URLs share a scheme and host (with port)."""
-    first, second = urlparse(url), urlparse(other)
-    return (first.scheme, first.netloc) == (second.scheme, second.netloc)
+    """Whether two URLs share scheme, host and port; host case and an explicit default port don't matter."""
+    try:
+        first, second = URL(url), URL(other)
+    except ValueError:
+        return False
+    return (first.scheme, first.host, first.port) == (second.scheme, second.host, second.port)
 
 
 class SharedLimiter:
@@ -325,7 +329,7 @@ class BaseGazelleApi:
 
     @property
     def _rate_limiter(self) -> SharedLimiter:
-        """This tracker's request budget on the running event loop."""
+        """This tracker's request budget, shared process-wide by site_code."""
         return _tracker_limiter(self.site_code)
 
     def _http_session(self) -> aiohttp.ClientSession:

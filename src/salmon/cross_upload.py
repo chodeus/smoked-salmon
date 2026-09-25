@@ -17,6 +17,7 @@ from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
 from salmon.constants import ARTIST_IMPORTANCES
 from salmon.converter.downconverting import convert_folder, generate_conversion_description
 from salmon.converter.transcoding import Bitrate, generate_transcode_description, transcode_folder
+from salmon.errors import RequestError
 from salmon.images import HOSTS
 from salmon.images.red import bare_image_url
 from salmon.release_notification import FORK_URL, get_version, has_upload_footer, upload_footer
@@ -449,7 +450,7 @@ async def _rehost_red_image(url: str, source_site: "BaseGazelleApi", image_host:
                 content += chunk
                 if len(content) > max_bytes:
                     raise click.ClickException(f"RED image {shown} exceeds the {max_bytes}-byte limit.")
-    except (aiohttp.ClientError, TimeoutError) as error:
+    except (aiohttp.ClientError, TimeoutError, RequestError) as error:
         # aiohttp's error text repeats the request URL, signature included; name the type only.
         raise click.ClickException(f"Could not download RED image {shown} ({type(error).__name__}).") from error
 
