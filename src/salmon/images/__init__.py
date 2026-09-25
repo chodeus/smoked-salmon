@@ -9,10 +9,9 @@ import pyperclip
 from salmon import cfg
 from salmon.common import AliasedCommands, commandgroup, is_http_url
 from salmon.errors import ImageUploadFailed
-from salmon.images import catbox, imgbb, imgbox, oeimg, ptpimg, ptscreens, red
+from salmon.images import catbox, imgbb, imgbox, oeimg, ptscreens, red
 
 HOSTS = {
-    "ptpimg": ptpimg,
     "catbox": catbox,
     "ptscreens": ptscreens,
     "oeimg": oeimg,

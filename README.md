@@ -20,7 +20,7 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 > - `--dry-run`, RED↔OPS cross-upload, and a single-mount (`/config` + `/data`) container layout.
 > - Fixes for upstream issues #353, #356, #358, #429, #430, #432, #433, plus Apple Music / Tidal repairs and multi-disc log handling.
 >
-> **Defaults that differ from upstream:** the recent-uploads check is **off** (#432 — it could flood `login.php` and get an IP firewalled), and image hosts default to keyless **catbox** instead of the defunct ptpimg, with RED's own image host available for RED covers as an opt-in.
+> **Defaults that differ from upstream:** the recent-uploads check is **off** (#432 — it could flood `login.php` and get an IP firewalled), and RED's own image host is available for RED covers as an opt-in.
 
 ## 🌟 Features  
 
