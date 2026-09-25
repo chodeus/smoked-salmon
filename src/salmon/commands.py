@@ -360,7 +360,10 @@ async def _test_seedbox_connections() -> None:
                     # Test access to the configured remote, not just local config presence.
                     try:
                         with anyio.fail_after(10):
-                            result = await anyio.run_process(["rclone", "lsd", f"{seedbox_config.url}:"], check=False)
+                            # With the upload's own extra_args, e.g. a --config it relies on.
+                            result = await anyio.run_process(
+                                ["rclone", "lsd", f"{seedbox_config.url}:", *seedbox_config.extra_args], check=False
+                            )
                         if result.returncode == 0:
                             click.secho(f"    ✔ Rclone remote '{remote}' is accessible", fg="green", bold=True)
                         else:

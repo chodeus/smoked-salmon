@@ -89,7 +89,13 @@ def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkey
         seedbox._rclone_upload_folder,
         Seedbox(
             url="seedbox",
-            extra_args=["--ftp-pass", "hunter2", "--sftp-pass=hunter2", "--sftp-key-pem", "-----BEGIN-hunter2"],
+            extra_args=[
+                "--ftp-pass",
+                "hunter2",
+                "--sftp-pass=hunter2",
+                "--sftp-key-pem",
+                "-----BEGIN KEY----- hunter2 -----END KEY-----",
+            ],
         ),
         "/music",
         "/tmp/Artist - Album",
@@ -109,6 +115,9 @@ def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkey
         ("token=hunter2", "token=[REDACTED]"),
         ("sftp://dean:hunter2@box/x", "sftp://[REDACTED]@box/x"),
         ("copy /music sbox:storage/red --transfers 4", "copy /music sbox:storage/red --transfers 4"),
+        # rclone connection strings may quote a value that has spaces in it, such as a PEM key.
+        (":sftp,key_pem='-----BEGIN KEY----- hunter2 -----END KEY-----',user=x:", ":sftp,key_pem=[REDACTED],user=x:"),
+        ('--sftp-key-pem "-----BEGIN KEY----- hunter2"', "--sftp-key-pem [REDACTED]"),
     ],
 )
 def test_redact_masks_suffixed_option_names_and_sessions(text: str, expected: str) -> None:
@@ -135,7 +144,7 @@ def test_a_credential_bearing_remote_never_reaches_the_log(monkeypatch) -> None:
     shown = ":ftp,host=box.example,user=dean,pass=[REDACTED]"
     assert ok is True
     assert messages[0] == f"Starting Rclone upload to {shown}"
-    assert messages[1].startswith(f"Executing: rclone copy /tmp/Artist - Album {shown}")
+    assert messages[1].startswith(f"Executing: rclone copy '/tmp/Artist - Album' '{shown}")
     assert messages[2].startswith(f"Rclone upload successful: /tmp/Artist - Album to {shown}")
     assert not any("hunter2" in message for message in messages)
 
