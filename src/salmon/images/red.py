@@ -58,6 +58,8 @@ class ImageUploader(BaseImageUploader):
                 data=form,
                 prefer_api_key=use_api_key,
                 needs_authkey=not use_api_key,
+                # An image takes RED longer than a page; a timeout here is an unknown outcome.
+                timeout_secs=30,
             )
             # Decoded while the client still knows its credentials, so an echoed one is masked.
             payload = _decode_response(resp.text, site._scrub)

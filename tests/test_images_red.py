@@ -90,6 +90,7 @@ def test_red_returns_the_bare_image_url(monkeypatch, tmp_path) -> None:
         ("POST", "https://redacted.sh/ajax.php", {"action": "upload_image"}),
     ]
     assert site.form == {"auth": "account-authkey", "file": b"png-data"}
+    assert site.request_options == {"prefer_api_key": False, "needs_authkey": True, "timeout_secs": 30}
     assert site.closed
 
 
@@ -105,7 +106,7 @@ def test_with_an_api_key_the_upload_uses_it_and_skips_the_authkey(monkeypatch, t
     # No index call for an authkey, and no auth field: the key authenticates the POST.
     assert site.calls == [("POST", "https://redacted.sh/ajax.php", {"action": "upload_image"})]
     assert site.form == {"file": b"png-data"}
-    assert site.request_options == {"prefer_api_key": True, "needs_authkey": False}
+    assert site.request_options == {"prefer_api_key": True, "needs_authkey": False, "timeout_secs": 30}
 
 
 @pytest.mark.parametrize(
