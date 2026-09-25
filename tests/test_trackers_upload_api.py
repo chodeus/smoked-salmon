@@ -984,9 +984,11 @@ def _record_sleeps(monkeypatch) -> list[float]:
     [(None, 20.0), ("7", 7.0), ("-5", 20.0), ("not a number", 20.0), ("Wed, 21 Oct 2099 07:28:00 GMT", 120.0)],
     ids=["missing", "seconds", "negative", "garbage", "far-future date"],
 )
-async def test_a_429_waits_for_any_retry_after_form(api, monkeypatch, retry_after, expected):
+async def test_a_429_pauses_the_tracker_for_any_retry_after_form(api, monkeypatch, retry_after, expected):
     monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
-    sleeps = _record_sleeps(monkeypatch)
+    pauses: list[float] = []
+    # Recorded, not applied, so the retry is not held for real time.
+    monkeypatch.setattr(SharedLimiter, "pause", lambda _self, seconds: pauses.append(seconds))
     headers = {"Retry-After": retry_after} if retry_after else {}
     install_fake_aiohttp(
         monkeypatch, [FakeAiohttpResponse(status=429, headers=headers), FakeAiohttpResponse(text="ok")]
@@ -995,7 +997,7 @@ async def test_a_429_waits_for_any_retry_after_form(api, monkeypatch, retry_afte
 
     resp = await api._request("GET", "https://dummy.example/ajax.php")
     assert resp.text == "ok"
-    assert sleeps == [expected]
+    assert pauses == [expected]
 
 
 @pytest.mark.parametrize(("method", "expected"), [("GET", [3.0]), ("POST", [])])

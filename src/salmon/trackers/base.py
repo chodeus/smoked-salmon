@@ -194,6 +194,7 @@ class SharedLimiter:
         self._max_rate = max_rate
         self._period = period
         self._entered: deque[float] = deque()
+        self._paused_until = 0.0
         # A thread lock, not an asyncio one: web UI jobs each run their own event loop.
         self._lock = threading.Lock()
 
@@ -201,12 +202,19 @@ class SharedLimiter:
         """Take a slot and return 0, or return how long until one frees up."""
         with self._lock:
             now = time.monotonic()
+            if now < self._paused_until:
+                return self._paused_until - now
             while self._entered and now - self._entered[0] >= self._period:
                 self._entered.popleft()
             if len(self._entered) < self._max_rate:
                 self._entered.append(now)
                 return 0.0
             return self._period - (now - self._entered[0])
+
+    def pause(self, seconds: float) -> None:
+        """Hold every entry for `seconds`, as when the tracker answers 429."""
+        with self._lock:
+            self._paused_until = max(self._paused_until, time.monotonic() + seconds)
 
     async def __aenter__(self) -> None:
         while (wait := self._wait()) > 0:
@@ -567,7 +575,8 @@ class BaseGazelleApi:
         if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
             retry_after = min(_RATE_LIMIT_WAIT if server_wait is None else server_wait, _MAX_SERVER_WAIT)
             click.secho(f"Rate limit exceeded, waiting {retry_after:g} seconds...", fg="yellow")
-            await asyncio.sleep(retry_after)
+            # Every request to this tracker waits, not just this one; its retry waits in the limiter.
+            self._rate_limiter.pause(retry_after)
             raise failure("Rate limit exceeded", not_acted_on=True)
 
         if resp.status == HTTPStatus.UNAUTHORIZED:

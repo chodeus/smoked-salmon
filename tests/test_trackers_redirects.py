@@ -6,15 +6,16 @@ import time
 import traceback
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import asyncclick as click
 import pytest
 from aiohttp import web
+from tenacity import stop_after_attempt
 
 import salmon.cross_upload as cross_upload
 from salmon import cfg
-from salmon.errors import ImageUploadFailed, LoginError, RequestFailedError, UnknownOutcomeError
+from salmon.errors import ImageUploadFailed, LoginError, RequestError, RequestFailedError, UnknownOutcomeError
 from salmon.images import red as red_image_host
 from salmon.trackers.base import BaseGazelleApi, SharedLimiter, _same_origin, _tracker_limiter
 
@@ -452,3 +453,39 @@ async def test_a_refused_rehost_fetch_is_a_clean_error(monkeypatch):
             await cross_upload._rehost_red_image("https://evil.example/i/x.jpg", site, "catbox")
     finally:
         await site.close()
+
+
+def test_a_paused_budget_holds_every_request_until_the_pause_ends():
+    limiter = SharedLimiter(100, 1)
+
+    async def run() -> float:
+        limiter.pause(0.3)
+        start = time.monotonic()
+        async with limiter:
+            return time.monotonic() - start
+
+    assert asyncio.run(run()) >= 0.25
+
+
+async def test_a_429_pauses_the_tracker_for_every_client(serve, api_for, monkeypatch):
+    monkeypatch.setattr("salmon.trackers.base.SharedLimiter", SharedLimiter)
+    hits: list[float] = []
+
+    async def ajax(request: web.Request) -> web.Response:
+        hits.append(time.monotonic())
+        if len(hits) == 1:
+            return web.json_response({"error": "rate limit"}, status=429, headers={"Retry-After": "1"})
+        return web.json_response({"status": "success", "response": {}})
+
+    url = await serve(ajax=ajax)
+    first, second = api_for(url), api_for(url)
+    once = cast("Any", BaseGazelleApi._request).retry_with(stop=stop_after_attempt(1))
+    rate_limited = asyncio.create_task(once(first, "GET", f"{url}/ajax.php", params={"action": "a"}))
+    while not hits:
+        await asyncio.sleep(0.01)
+    # Sent while the first client is still handling its 429.
+    await second.api_call("b")
+    with pytest.raises(RequestError):
+        await rate_limited
+    # The other client waited out the pause the first one was told about.
+    assert hits[1] - hits[0] >= 0.9
