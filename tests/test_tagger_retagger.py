@@ -285,9 +285,9 @@ def test_create_track_changes_matches_files_by_disc_and_track_number():
     assert Change("title", "Old Third", "New Third") in changes["2-01 Third.flac"]
 
 
-def test_create_track_changes_keeps_file_order_when_discnumber_tags_are_missing():
+def test_create_track_changes_uses_path_order_when_discnumber_tags_are_missing():
     # No DISCNUMBER anywhere: CD1 and CD2 track 1 both key as (1, 1), so the
-    # file order from get_audio_files must win over the colliding sort.
+    # paths, in natural order, decide instead of the colliding sort.
     tags = {
         "CD1/01.flac": _tagset("Old CD1 1", tracknumber="1", discnumber=None),
         "CD1/02.flac": _tagset("Old CD1 2", tracknumber="2", discnumber=None),
