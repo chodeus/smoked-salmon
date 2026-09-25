@@ -22,6 +22,7 @@ from salmon.common import commandgroup
 from salmon.common import compress as recompress
 from salmon.common.redaction import redact_secrets
 from salmon.config import find_config_path, get_default_config_path, get_user_cfg_path
+from salmon.sources.tidal import credentials_configured as tidal_credentials_configured
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.uploader.description import build_tracklist_description
 from salmon.uploader.spectrals import (
@@ -291,7 +292,7 @@ async def _test_metadata_sources() -> None:
         "Tidal": {
             "class": salmon.sources.TidalBase,
             "test_url": "http://www.tidal.com/album/75194842",
-            "config_check": lambda: bool(cfg.metadata.tidal.client_id and cfg.metadata.tidal.client_secret),
+            "config_check": tidal_credentials_configured,
         },
         "Qobuz": {
             "class": salmon.sources.QobuzBase,
