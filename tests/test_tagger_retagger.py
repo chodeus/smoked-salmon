@@ -341,7 +341,7 @@ def test_a_flat_folder_without_disc_tags_is_refused_not_guessed():
         name: _tagset(f"Old {name}", tracknumber=name[1], discnumber=None)
         for name in ("01-CD1.flac", "01-CD2.flac", "02-CD1.flac", "02-CD2.flac")
     }
-    with pytest.raises(UploadError, match="DISCNUMBER"):
+    with pytest.raises(UploadError, match="DISCNUMBER and TRACKNUMBER"):
         create_track_changes(tags, _two_discs_of_two())
 
 
@@ -352,7 +352,7 @@ def test_disc_folders_that_do_not_match_the_discs_are_refused():
         "CD1/03.flac": _tagset("c", tracknumber="3", discnumber=None),
         "CD2/01.flac": _tagset("d", tracknumber="1", discnumber=None),
     }
-    with pytest.raises(UploadError, match="DISCNUMBER"):
+    with pytest.raises(UploadError, match="DISCNUMBER and TRACKNUMBER"):
         create_track_changes(tags, _two_discs_of_two())
 
 
@@ -374,6 +374,23 @@ def test_one_disc_without_track_tags_pairs_by_file_name():
     changes = create_track_changes(tags, metadata)
     for n in (1, 2, 10):
         assert Change("title", f"Old {n}", f"New {n}") in changes[f"{n:02d} x.flac"]
+
+
+@pytest.mark.parametrize(
+    "numbers",
+    [("3", "1", "3"), ("1", None, "3")],
+    ids=["a repeated track tag", "a missing track tag"],
+)
+def test_a_disc_whose_track_tags_do_not_name_each_file_is_refused(numbers):
+    # b.flac's track 1 is unambiguous, so file-name order must not override it.
+    tags = {
+        name: _tagset(f"Old {name}", tracknumber=number, discnumber="1")
+        for name, number in zip(("a.flac", "b.flac", "z.flac"), numbers, strict=True)
+    }
+    tags["other.flac"] = _tagset("Old other", tracknumber="1", discnumber="1")
+    metadata = {"tracks": {"1": {str(n): _trackmeta(f"New {n}", str(n), "1") for n in range(1, 5)}}}
+    with pytest.raises(UploadError, match="track"):
+        create_track_changes(tags, metadata)
 
 
 def test_natural_key_orders_digit_runs_as_numbers():

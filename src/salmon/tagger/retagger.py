@@ -194,7 +194,7 @@ def _disc_track_sort_key(value):
 
 
 def _order_by_disc_folders(tags, discs):
-    """Pair files lacking DISCNUMBER one folder per disc, or raise when the layout can't say which disc is which."""
+    """Pair files whose disc/track tags collide one folder per disc, or raise when that can't identify each file."""
     by_path = sorted(tags.items(), key=lambda item: _natural_key(item[0]))
     if len(by_path) != sum(len(tracks) for tracks in discs.values()):
         return by_path  # create_track_changes reports the count mismatch itself
@@ -203,19 +203,27 @@ def _order_by_disc_folders(tags, discs):
         folders.setdefault(os.path.dirname(item[0]), []).append(item)
     groups = [folders[folder] for folder in sorted(folders, key=_natural_key)]
     if [len(group) for group in groups] != [len(discs[disc]) for disc in sorted(discs, key=_disc_track_sort_key)]:
-        raise UploadError(
-            "Can't tell which disc each file is on: the files have no DISCNUMBER tags and aren't one folder per "
-            "disc. Tag DISCNUMBER, or put each disc in its own folder, before retagging."
-        )
+        raise _ambiguous_tracks()
     return [item for group in groups for item in _order_within_disc(group)]
 
 
 def _order_within_disc(group):
-    """By track tag when it names each file, else by file name."""
-    numbers = [_get_tag_number(tagset, "tracknumber") for _, tagset in group]
-    if len(set(numbers)) != len(numbers):
+    """By track tag when every file has its own; by file name when none has one; otherwise raise."""
+    if all(getattr(tagset, "tracknumber", None) is None for _, tagset in group):
         return group
+    numbers = [_get_tag_number(tagset, "tracknumber") for _, tagset in group]
+    if any(getattr(tagset, "tracknumber", None) is None for _, tagset in group) or len(set(numbers)) != len(numbers):
+        raise _ambiguous_tracks()
     return sorted(group, key=lambda item: _get_tag_number(item[1], "tracknumber"))
+
+
+def _ambiguous_tracks() -> UploadError:
+    """The error for a retag whose files the tags and folders can't pair with tracks."""
+    return UploadError(
+        "Can't tell which file is which track: some files share a disc and track number (or lack one), and the "
+        "folders don't hold one disc each. Fix their DISCNUMBER and TRACKNUMBER tags, or put each disc in its own "
+        "folder, before retagging."
+    )
 
 
 def _natural_key(path: str) -> list[int | str]:
