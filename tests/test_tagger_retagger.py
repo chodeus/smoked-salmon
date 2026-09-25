@@ -326,6 +326,56 @@ def test_the_file_order_fallback_puts_disc_10_after_disc_2():
         assert Change("title", f"Old CD{disc}", f"New CD{disc}") in changes[f"CD{disc}/01.flac"]
 
 
+def _two_discs_of_two():
+    return {
+        "tracks": {
+            str(disc): {str(track): _trackmeta(f"New {disc}-{track}", str(track), str(disc)) for track in (1, 2)}
+            for disc in (1, 2)
+        }
+    }
+
+
+def test_a_flat_folder_without_disc_tags_is_refused_not_guessed():
+    # Track-first names in one folder: no path order lines up with disc-first metadata.
+    tags = {
+        name: _tagset(f"Old {name}", tracknumber=name[1], discnumber=None)
+        for name in ("01-CD1.flac", "01-CD2.flac", "02-CD1.flac", "02-CD2.flac")
+    }
+    with pytest.raises(UploadError, match="DISCNUMBER"):
+        create_track_changes(tags, _two_discs_of_two())
+
+
+def test_disc_folders_that_do_not_match_the_discs_are_refused():
+    tags = {
+        "CD1/01.flac": _tagset("a", tracknumber="1", discnumber=None),
+        "CD1/02.flac": _tagset("b", tracknumber="2", discnumber=None),
+        "CD1/03.flac": _tagset("c", tracknumber="3", discnumber=None),
+        "CD2/01.flac": _tagset("d", tracknumber="1", discnumber=None),
+    }
+    with pytest.raises(UploadError, match="DISCNUMBER"):
+        create_track_changes(tags, _two_discs_of_two())
+
+
+def test_disc_folders_pair_by_track_tag_not_file_name():
+    tags = {
+        "CD1/b.flac": _tagset("Old 1-2", tracknumber="2", discnumber=None),
+        "CD1/a.flac": _tagset("Old 1-1", tracknumber="1", discnumber=None),
+        "CD2/z.flac": _tagset("Old 2-1", tracknumber="1", discnumber=None),
+        "CD2/y.flac": _tagset("Old 2-2", tracknumber="2", discnumber=None),
+    }
+    changes = create_track_changes(tags, _two_discs_of_two())
+    for name, title in (("CD1/a.flac", "1-1"), ("CD1/b.flac", "1-2"), ("CD2/z.flac", "2-1"), ("CD2/y.flac", "2-2")):
+        assert Change("title", f"Old {title}", f"New {title}") in changes[name]
+
+
+def test_one_disc_without_track_tags_pairs_by_file_name():
+    tags = {f"{n:02d} x.flac": _tagset(f"Old {n}", tracknumber=None, discnumber=None) for n in (1, 10, 2)}
+    metadata = {"tracks": {"1": {str(n): _trackmeta(f"New {n}", str(n), "1") for n in (1, 2, 10)}}}
+    changes = create_track_changes(tags, metadata)
+    for n in (1, 2, 10):
+        assert Change("title", f"Old {n}", f"New {n}") in changes[f"{n:02d} x.flac"]
+
+
 def test_natural_key_orders_digit_runs_as_numbers():
     paths = ["CD10/01.flac", "Disc 2/10.flac", "CD2/01.flac", "Disc 2/9.flac", "CD1/01.flac"]
     assert sorted(paths, key=_natural_key) == [

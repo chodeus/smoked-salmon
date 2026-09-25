@@ -107,9 +107,8 @@ def create_track_changes(tags, metadata):
     if len(set(disc_track_keys)) == len(disc_track_keys):
         ordered_tags = sorted(tags.items(), key=lambda item: disc_track_key(item[1]))
     else:
-        # Colliding pairs (e.g. CD1/CD2 folders with no DISCNUMBER) can't identify files; use path order,
-        # compared naturally so CD2 comes before CD10 as the metadata's discs do.
-        ordered_tags = sorted(tags.items(), key=lambda item: _natural_key(item[0]))
+        # Colliding pairs (e.g. CD1/CD2 folders with no DISCNUMBER) can't identify files by tags alone.
+        ordered_tags = _order_by_disc_folders(tags, metadata["tracks"])
 
     if len(ordered_tags) != len(tracks):
         raise UploadError(
@@ -192,6 +191,31 @@ def _remap_spectral_ids(spectral_ids, to_rename):
 def _disc_track_sort_key(value):
     s = str(value)
     return (0, int(s)) if s.isdigit() else (1, s.lower())
+
+
+def _order_by_disc_folders(tags, discs):
+    """Pair files lacking DISCNUMBER one folder per disc, or raise when the layout can't say which disc is which."""
+    by_path = sorted(tags.items(), key=lambda item: _natural_key(item[0]))
+    if len(by_path) != sum(len(tracks) for tracks in discs.values()):
+        return by_path  # create_track_changes reports the count mismatch itself
+    folders: dict[str, list] = {}
+    for item in by_path:
+        folders.setdefault(os.path.dirname(item[0]), []).append(item)
+    groups = [folders[folder] for folder in sorted(folders, key=_natural_key)]
+    if [len(group) for group in groups] != [len(discs[disc]) for disc in sorted(discs, key=_disc_track_sort_key)]:
+        raise UploadError(
+            "Can't tell which disc each file is on: the files have no DISCNUMBER tags and aren't one folder per "
+            "disc. Tag DISCNUMBER, or put each disc in its own folder, before retagging."
+        )
+    return [item for group in groups for item in _order_within_disc(group)]
+
+
+def _order_within_disc(group):
+    """By track tag when it names each file, else by file name."""
+    numbers = [_get_tag_number(tagset, "tracknumber") for _, tagset in group]
+    if len(set(numbers)) != len(numbers):
+        return group
+    return sorted(group, key=lambda item: _get_tag_number(item[1], "tracknumber"))
 
 
 def _natural_key(path: str) -> list[int | str]:
