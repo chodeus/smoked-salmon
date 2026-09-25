@@ -1,31 +1,33 @@
 """Tracker redirects and the site log, against real local servers."""
 
 import asyncio
+import threading
+import time
+import traceback
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
 from aiohttp import web
-from aiolimiter import AsyncLimiter
 
 import salmon.cross_upload as cross_upload
 from salmon import cfg
-from salmon.errors import ImageUploadFailed, LoginError, RequestFailedError
+from salmon.errors import ImageUploadFailed, LoginError, RequestFailedError, UnknownOutcomeError
 from salmon.images import red as red_image_host
-from salmon.trackers.base import BaseGazelleApi, _tracker_limiter
+from salmon.trackers.base import BaseGazelleApi, SharedLimiter, _tracker_limiter
 
 
-class CountingLimiter(AsyncLimiter):
+class CountingLimiter(SharedLimiter):
     """A limiter loose enough not to slow the tests, which counts the slots taken."""
 
     def __init__(self, *_args) -> None:
         super().__init__(100, 1)
         self.slots = 0
 
-    async def acquire(self, amount: float = 1) -> None:
+    async def __aenter__(self) -> None:
         self.slots += 1
-        await super().acquire(amount)
+        await super().__aenter__()
 
 
 class FakeApi(BaseGazelleApi):
@@ -43,7 +45,7 @@ class FakeApi(BaseGazelleApi):
 @pytest.fixture(autouse=True)
 def _counting_limiter(monkeypatch):
     monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
-    monkeypatch.setattr("salmon.trackers.base.AsyncLimiter", CountingLimiter)
+    monkeypatch.setattr("salmon.trackers.base.SharedLimiter", CountingLimiter)
 
 
 @pytest.fixture
@@ -362,7 +364,8 @@ async def test_the_red_image_host_never_repeats_a_credential(serve, monkeypatch,
 
     with pytest.raises(ImageUploadFailed) as excinfo:
         await red_image_host.ImageUploader().upload_file(str(image))
-    shown = str(excinfo.value) + "".join(capsys.readouterr())
+    # The whole traceback, chained causes included, as a crash report would print it.
+    shown = "".join(traceback.format_exception(excinfo.value)) + "".join(capsys.readouterr())
     assert "rejected" in shown
     assert [secret for secret in _SECRETS if secret in shown] == []
 
@@ -376,3 +379,51 @@ async def test_an_api_failure_never_repeats_the_session_cookie(serve, api_for):
         await api_for(url, cookie="SYNTH-SESSION-COOKIE").api_call("index")
     assert "bad session" in str(excinfo.value)
     assert "SYNTH-SESSION-COOKIE" not in str(excinfo.value)
+
+
+def test_one_tracker_budget_holds_across_threads_and_loops():
+    # Web UI jobs run in worker threads, each on its own event loop, against one account.
+    limiter = SharedLimiter(5, 0.3)
+    started: list[float] = []
+
+    def job() -> None:
+        async def run() -> None:
+            for _ in range(3):
+                async with limiter:
+                    started.append(time.monotonic())
+
+        asyncio.run(run())
+
+    threads = [threading.Thread(target=job) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    started.sort()
+    # 5 per 0.3 s: the sixth request, from either thread, waits for the window.
+    assert len(started) == 6
+    assert started[5] - started[0] >= 0.25
+
+
+async def test_a_raw_site_fetch_refuses_another_host(api_for):
+    with pytest.raises(RequestFailedError):
+        async with api_for("https://tracker.example").site_get("https://elsewhere.example/i/x.png"):
+            pass
+
+
+@pytest.mark.parametrize("status", [307, 308])
+async def test_a_post_redirected_with_its_body_kept_is_not_sent_again(serve, api_for, status):
+    posts: list[str] = []
+
+    async def upload(request: web.Request) -> web.Response:
+        posts.append(request.path)
+        raise web.HTTPTemporaryRedirect("/again.php") if status == 307 else web.HTTPPermanentRedirect("/again.php")
+
+    async def again(request: web.Request) -> web.Response:
+        posts.append(request.path)
+        return web.Response(text="ok")
+
+    url = await serve(upload=upload, again=again)
+    with pytest.raises(UnknownOutcomeError):
+        await api_for(url)._request("POST", f"{url}/upload.php", data={"x": "1"})
+    assert posts == ["/upload.php"]

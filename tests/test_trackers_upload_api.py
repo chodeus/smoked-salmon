@@ -17,7 +17,6 @@ import pytest
 import torf
 from aiohttp import web
 from aiohttp.client_reqrep import ConnectionKey
-from aiolimiter import AsyncLimiter
 from tenacity import wait_fixed
 
 from salmon import cfg
@@ -27,6 +26,7 @@ from salmon.trackers.base import (
     BaseGazelleApi,
     HttpResponse,
     RetryableError,
+    SharedLimiter,
     _redact,
 )
 from salmon.trackers.ops import OpsApi
@@ -50,7 +50,7 @@ class DummyGazelleApi(BaseGazelleApi):
 def _deterministic_cfg(monkeypatch):
     """Keep debug output off and neutralize the per-instance rate limiter."""
     monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
-    monkeypatch.setattr("salmon.trackers.base.AsyncLimiter", lambda *_a, **_k: AsyncLimiter(100_000, 1))
+    monkeypatch.setattr("salmon.trackers.base.SharedLimiter", lambda *_a, **_k: SharedLimiter(100_000, 1))
 
 
 @pytest.fixture
@@ -1002,15 +1002,19 @@ async def test_a_429_waits_for_any_retry_after_form(api, monkeypatch, retry_afte
 async def test_a_5xx_retry_after_is_honoured_only_when_retried(api, monkeypatch, method, expected):
     monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
     sleeps = _record_sleeps(monkeypatch)
-    install_fake_aiohttp(
+    captured = install_fake_aiohttp(
         monkeypatch, [FakeAiohttpResponse(status=503, headers={"Retry-After": "3"}), FakeAiohttpResponse(text="ok")]
     )
     api._authenticated = True
 
-    try:
-        await api._request(method, "https://dummy.example/ajax.php")
-    except UnknownOutcomeError:
-        assert method == "POST"
+    if method == "POST":
+        # Never re-sent: the tracker may have acted on it.
+        with pytest.raises(UnknownOutcomeError):
+            await api._request(method, "https://dummy.example/ajax.php")
+        assert len(captured["requests"]) == 1
+    else:
+        resp = await api._request(method, "https://dummy.example/ajax.php")
+        assert resp.text == "ok"
     assert sleeps == expected
 
 

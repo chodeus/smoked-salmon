@@ -1,4 +1,5 @@
 import sys
+import traceback
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -184,3 +185,22 @@ def test_a_failed_request_closes_the_client_and_cannot_leak_credentials(monkeypa
         anyio.run(red.ImageUploader().upload_file, str(image))
     assert "SYNTHETIC-AUTHKEY-VALUE" not in str(excinfo.value)
     assert _FakeRed.made[0].closed
+
+
+def test_a_failed_upload_does_not_chain_the_raw_error(monkeypatch, tmp_path) -> None:
+    # A crash report prints chained causes too, and the cause's message is not scrubbed.
+    _patch_red_env(monkeypatch)
+
+    async def refuse(*_args, **_kwargs):
+        raise RequestFailedError("rejected SYNTH-RAW-SECRET")
+
+    monkeypatch.setattr(_FakeRed, "_request", refuse)
+    monkeypatch.setattr(_FakeRed, "_scrub", lambda _self, text: text.replace("SYNTH-RAW-SECRET", "[REDACTED]"))
+    image = tmp_path / "cover.jpg"
+    image.write_bytes(b"\xff\xd8\xff")
+
+    with pytest.raises(ImageUploadFailed) as excinfo:
+        anyio.run(red.ImageUploader().upload_file, str(image))
+    report = "".join(traceback.format_exception(excinfo.value))
+    assert "rejected" in report
+    assert "SYNTH-RAW-SECRET" not in report

@@ -8,14 +8,13 @@ from typing import Any, cast
 import asyncclick as click
 import pytest
 from aiohttp import web
-from aiolimiter import AsyncLimiter
 from tenacity import wait_fixed
 
 import salmon.trackers
 from salmon import cfg
 from salmon.checks.connection import check_tracker_connection
 from salmon.errors import RequestFailedError, UnknownOutcomeError
-from salmon.trackers.base import BaseGazelleApi, _open_pools
+from salmon.trackers.base import BaseGazelleApi, SharedLimiter, _open_pools
 from salmon.webui.jobs import JobManager
 
 
@@ -35,7 +34,7 @@ class FakeApi(BaseGazelleApi):
 def _quiet(monkeypatch):
     monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
     # Measures connection reuse, not throttling.
-    monkeypatch.setattr("salmon.trackers.base.AsyncLimiter", lambda *_a, **_k: AsyncLimiter(100, 1))
+    monkeypatch.setattr("salmon.trackers.base.SharedLimiter", lambda *_a, **_k: SharedLimiter(100, 1))
 
 
 @pytest.fixture

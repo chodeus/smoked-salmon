@@ -2,6 +2,8 @@ import asyncio
 import html
 import re
 import threading
+import time
+from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from http import HTTPStatus
@@ -13,7 +15,6 @@ import aiohttp
 import asyncclick as click
 import msgspec
 from aiohttp import FormData
-from aiolimiter import AsyncLimiter
 from bs4 import BeautifulSoup
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential, wait_random
 from torf import TorfError, Torrent
@@ -176,17 +177,52 @@ class SearchReleaseData(msgspec.Struct, frozen=True):
     url: str
 
 
-# The tracker limits the account, so every client of one tracker shares a budget. Per event
-# loop: an AsyncLimiter binds to the first loop that uses it, and web UI jobs run their own.
-_limiters: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, AsyncLimiter]] = WeakKeyDictionary()
+def _same_origin(url: str, other: str) -> bool:
+    """Whether two URLs share a scheme and host (with port)."""
+    first, second = urlparse(url), urlparse(other)
+    return (first.scheme, first.netloc) == (second.scheme, second.netloc)
 
 
-def _tracker_limiter(site_code: str) -> AsyncLimiter:
-    """5 requests per 10 seconds for one tracker on the running loop."""
-    per_loop = _limiters.setdefault(asyncio.get_running_loop(), {})
-    if site_code not in per_loop:
-        per_loop[site_code] = AsyncLimiter(5, 10)
-    return per_loop[site_code]
+class SharedLimiter:
+    """At most max_rate entries per period, shared by every thread and event loop."""
+
+    def __init__(self, max_rate: int, period: float) -> None:
+        self._max_rate = max_rate
+        self._period = period
+        self._entered: deque[float] = deque()
+        # A thread lock, not an asyncio one: web UI jobs each run their own event loop.
+        self._lock = threading.Lock()
+
+    def _wait(self) -> float:
+        """Take a slot and return 0, or return how long until one frees up."""
+        with self._lock:
+            now = time.monotonic()
+            while self._entered and now - self._entered[0] >= self._period:
+                self._entered.popleft()
+            if len(self._entered) < self._max_rate:
+                self._entered.append(now)
+                return 0.0
+            return self._period - (now - self._entered[0])
+
+    async def __aenter__(self) -> None:
+        while (wait := self._wait()) > 0:
+            await asyncio.sleep(wait)
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
+# The tracker limits the account, so every client of one tracker, in any job, shares a budget.
+_limiters: dict[str, SharedLimiter] = {}
+_limiters_lock = threading.Lock()
+
+
+def _tracker_limiter(site_code: str) -> SharedLimiter:
+    """5 requests per 10 seconds for one tracker, process-wide."""
+    with _limiters_lock:
+        if site_code not in _limiters:
+            _limiters[site_code] = SharedLimiter(5, 10)
+        return _limiters[site_code]
 
 
 # An upload that fills a request takes two hops; one spare.
@@ -288,7 +324,7 @@ class BaseGazelleApi:
         self._pool_owner: set[aiohttp.ClientSession] | None = None
 
     @property
-    def _rate_limiter(self) -> AsyncLimiter:
+    def _rate_limiter(self) -> SharedLimiter:
         """This tracker's request budget on the running event loop."""
         return _tracker_limiter(self.site_code)
 
@@ -333,6 +369,9 @@ class BaseGazelleApi:
         self, url: str, headers: dict[str, str] | None = None, timeout_secs: int = 30
     ) -> AsyncIterator[aiohttp.ClientResponse]:
         """GET a raw file off the tracker, inside its rate limit, without following redirects."""
+        # The tracker's cookies go with this request, so it may only go to the tracker itself.
+        if not _same_origin(url, self.base_url):
+            raise RequestFailedError(f"Refusing to send {self.site_string} cookies to {urlparse(url).netloc}")
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=timeout_secs, sock_read=timeout_secs)
         async with (
             self._rate_limiter,
@@ -473,7 +512,9 @@ class BaseGazelleApi:
                         if resp.status not in _REDIRECT_STATUSES or not location:
                             return HttpResponse(text=text, url=str(resp.url), status=resp.status)
                         try:
-                            method, data, url = self._next_hop(str(resp.url), resp.status, method, data, location)
+                            method, data, url = self._next_hop(
+                                str(resp.url), resp.status, method, data, location, idempotent
+                            )
                         except RequestFailedError:
                             # Refusing an off-site hop doesn't undo the redirect: the tracker has acted.
                             redirected = True
@@ -542,7 +583,9 @@ class BaseGazelleApi:
         click.secho(f"Request to {self.site_string} failed ({resp.status}): {error_msg}", fg="red")
         raise RequestFailedError(error_msg)
 
-    def _next_hop(self, current: str, status: int, method: str, data: Any, location: str) -> tuple[str, Any, str]:
+    def _next_hop(
+        self, current: str, status: int, method: str, data: Any, location: str, idempotent: bool
+    ) -> tuple[str, Any, str]:
         """The method, body and URL a tracker redirect sends a request on to."""
         target = urlparse(urljoin(current, location))
         if target.path.endswith("/login.php"):
@@ -553,8 +596,7 @@ class BaseGazelleApi:
                 bold=True,
             )
             raise LoginError(f"{self.site_string} redirected to its login page")
-        origin = urlparse(current)
-        if (target.scheme, target.netloc) != (origin.scheme, origin.netloc):
+        if not _same_origin(target.geturl(), current):
             click.secho(f"{self.site_string} redirected to {target.scheme}://{target.netloc}, not following.", fg="red")
             raise RequestFailedError(f"{self.site_string} redirected to another site")
         # As browsers and aiohttp do, a redirected POST is fetched with GET.
@@ -562,6 +604,9 @@ class BaseGazelleApi:
             status in (HTTPStatus.MOVED_PERMANENTLY, HTTPStatus.FOUND) and method.upper() == "POST"
         ):
             method, data = "GET", None
+        elif not idempotent and data is not None:
+            # 307/308 would send the body again: the tracker has acted, so never replay it.
+            raise RequestFailedError(f"{self.site_string} asked for this request to be sent again elsewhere")
         return method, data, target._replace(fragment="").geturl()
 
     async def api_call(self, action: str, params: dict[str, Any] | None = None) -> dict:

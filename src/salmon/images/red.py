@@ -62,9 +62,10 @@ class ImageUploader(BaseImageUploader):
             # Decoded while the client still knows its credentials, so an echoed one is masked.
             payload = _decode_response(resp.text, site._scrub)
         except RequestError as error:
+            # Not chained: the original message isn't scrubbed, and a traceback would print it.
             raise ImageUploadFailed(
                 f"RED image upload failed: {_safe_response_excerpt(site._scrub(str(error)))}"
-            ) from error
+            ) from None
         finally:
             await site.close()
 
