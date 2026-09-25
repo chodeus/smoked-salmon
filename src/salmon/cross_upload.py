@@ -17,6 +17,7 @@ from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
 from salmon.constants import ARTIST_IMPORTANCES
 from salmon.converter.downconverting import convert_folder, generate_conversion_description
 from salmon.converter.transcoding import Bitrate, generate_transcode_description, transcode_folder
+from salmon.errors import RequestError
 from salmon.images import HOSTS
 from salmon.images.red import bare_image_url
 from salmon.release_notification import FORK_URL, get_version, has_upload_footer, upload_footer
@@ -435,35 +436,27 @@ async def _rehost_red_images(
 async def _rehost_red_image(url: str, source_site: "BaseGazelleApi", image_host: str) -> str:
     shown = bare_image_url(url)  # the stored URL may carry RED's per-viewer signature; never print it
     suffix = Path(urlparse(url).path).suffix or ".jpg"
-    timeout = aiohttp.ClientTimeout(total=30)
-    headers = {**source_site.headers, "Referer": f"{source_site.base_url}/"}
     try:
-        async with (
-            aiohttp.ClientSession(
-                timeout=timeout,
-                headers=headers,
-                cookies=source_site._get_cookies(),
-            ) as session,
-            # No redirects: aiohttp's empty-domain cookie jar would send the RED session
-            # cookie to whatever host a redirect points at.
-            session.get(url, allow_redirects=False) as response,
-        ):
+        async with source_site.site_get(url, headers={"Referer": f"{source_site.base_url}/"}) as response:
             if response.status >= 400 or not response.content_type.startswith("image/"):
                 raise click.ClickException(f"Could not download RED image {shown} (HTTP {response.status}).")
             # Cap the fetch so tracker-supplied metadata can't make us buffer a huge body.
             max_bytes = 25 * 1024 * 1024  # RED accepts up to 20 MiB
             if response.content_length is not None and response.content_length > max_bytes:
                 raise click.ClickException(f"RED image {shown} is too large ({response.content_length} bytes).")
-            content = await response.content.read(max_bytes + 1)
-            if len(content) > max_bytes:
-                raise click.ClickException(f"RED image {shown} exceeds the {max_bytes}-byte limit.")
-    except (aiohttp.ClientError, TimeoutError) as error:
+            # read(n) returns what is buffered so far, not n bytes, so read to the end.
+            content = bytearray()
+            async for chunk in response.content.iter_chunked(64 * 1024):
+                content += chunk
+                if len(content) > max_bytes:
+                    raise click.ClickException(f"RED image {shown} exceeds the {max_bytes}-byte limit.")
+    except (aiohttp.ClientError, TimeoutError, RequestError) as error:
         # aiohttp's error text repeats the request URL, signature included; name the type only.
         raise click.ClickException(f"Could not download RED image {shown} ({type(error).__name__}).") from error
 
     with TemporaryDirectory() as directory:
         image_path = Path(directory) / f"image{suffix}"
-        await anyio.Path(image_path).write_bytes(content)
+        await anyio.Path(image_path).write_bytes(bytes(content))
         uploaded_url, _ = await HOSTS[image_host].ImageUploader().upload_file(str(image_path))
     if not is_http_url(uploaded_url):
         raise click.ClickException(f"{image_host} returned no usable URL for {shown}.")

@@ -108,3 +108,11 @@ def album_dir(tmp_path: Path) -> Path:
     for i, title in enumerate(["Intro", "Mittelteil", "Outro"], start=1):
         (album / f"{i:02d}. {title}.flac").write_bytes(b"fLaC" + bytes(2000))
     return album
+
+
+@pytest.fixture(autouse=True)
+def _fresh_tracker_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test starts with unspent tracker rate limits; the real ones are shared process-wide."""
+    import salmon.trackers.base as tracker_base
+
+    monkeypatch.setattr(tracker_base, "_limiters", {})
