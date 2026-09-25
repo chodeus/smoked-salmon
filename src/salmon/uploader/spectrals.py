@@ -75,9 +75,9 @@ async def check_spectrals(
             await view_spectrals(spectrals_path, all_spectral_ids)
             if lossy_master is None and check_lma:
                 lossy_master = await prompt_lossy_master(
-                force_prompt_lossy_master or measured == "suspect",
-                suggested="y" if measured == "suspect" else "n",
-            )
+                    force_prompt_lossy_master or measured == "suspect",
+                    suggested="y" if measured == "suspect" else "n",
+                )
                 if lossy_master is not None:
                     break
             else:

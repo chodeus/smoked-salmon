@@ -101,9 +101,7 @@ def pinned_cfg(monkeypatch):
     monkeypatch.setattr(cfg.upload.compression, "lma_comment_in_t_desc", False)
     monkeypatch.setattr(cfg.upload.compression, "use_upc_as_catno", True)
     # The footer is built in release_notification now, so pin the version there.
-    monkeypatch.setattr(
-        importlib.import_module("salmon.release_notification"), "get_version", lambda: "1.0.0-test"
-    )
+    monkeypatch.setattr(importlib.import_module("salmon.release_notification"), "get_version", lambda: "1.0.0-test")
 
 
 @pytest.fixture
@@ -214,9 +212,7 @@ def test_compile_data_new_group_maps_artist_roles_to_importances(tracker, pinned
             ("DJ Comp", "djcompiler"),
         ]
     )
-    data = compile_data_new_group(
-        tracker, "/p", metadata, make_track_data(), False, COVER_URL, None, None, None, None
-    )
+    data = compile_data_new_group(tracker, "/p", metadata, make_track_data(), False, COVER_URL, None, None, None, None)
     assert data["artists[]"] == ["Main Guy", "Feature Gal", "Remix Kid", "Composer Person", "DJ Comp"]
     assert data["importance[]"] == [1, 2, 3, 4, 6]
 
@@ -241,7 +237,15 @@ def test_compile_data_new_group_maps_release_types(tracker, pinned_cfg, rls_type
 def test_compile_data_new_group_unmapped_release_type_raises_keyerror(tracker, pinned_cfg):
     with pytest.raises(KeyError):
         compile_data_new_group(
-            tracker, "/p", make_metadata(rls_type="Nonsense"), make_track_data(), False, COVER_URL, None, None, None,
+            tracker,
+            "/p",
+            make_metadata(rls_type="Nonsense"),
+            make_track_data(),
+            False,
+            COVER_URL,
+            None,
+            None,
+            None,
             None,
         )
 
@@ -249,9 +253,7 @@ def test_compile_data_new_group_unmapped_release_type_raises_keyerror(tracker, p
 def test_compile_data_scene_true_adds_scene_key_in_both_forms(tracker, pinned_cfg):
     metadata = make_metadata(scene=True)
     new = compile_data_new_group(tracker, "/p", metadata, make_track_data(), False, COVER_URL, None, None, None, None)
-    existing = compile_data_existing_group(
-        tracker, "/p", 1, metadata, make_track_data(), False, None, None, None, None
-    )
+    existing = compile_data_existing_group(tracker, "/p", 1, metadata, make_track_data(), False, None, None, None, None)
     assert new["scene"] is True
     assert existing["scene"] is True
 
@@ -285,8 +287,16 @@ def test_compile_data_hybrid_forces_tracklist_and_drops_encode_specifics(tracker
 
 def test_compile_data_new_group_year_and_group_year_go_to_different_fields(tracker, pinned_cfg):
     data = compile_data_new_group(
-        tracker, "/p", make_metadata(group_year=1999, year=2010), make_track_data(), False, COVER_URL, None, None,
-        None, None,
+        tracker,
+        "/p",
+        make_metadata(group_year=1999, year=2010),
+        make_track_data(),
+        False,
+        COVER_URL,
+        None,
+        None,
+        None,
+        None,
     )
     assert data["year"] == 1999
     assert data["remaster_year"] == 2010
@@ -294,8 +304,16 @@ def test_compile_data_new_group_year_and_group_year_go_to_different_fields(track
 
 def test_compile_data_new_group_missing_label_and_empty_tags_pass_through(tracker, pinned_cfg):
     data = compile_data_new_group(
-        tracker, "/p", make_metadata(label=None, tags="", catno=None, upc=None), make_track_data(), False, COVER_URL,
-        None, None, None, None,
+        tracker,
+        "/p",
+        make_metadata(label=None, tags="", catno=None, upc=None),
+        make_track_data(),
+        False,
+        COVER_URL,
+        None,
+        None,
+        None,
+        None,
     )
     assert data["record_label"] is None
     assert data["remaster_record_label"] is None
@@ -429,8 +447,16 @@ def test_generate_description_includes_comment_and_more_info(monkeypatch, pinned
 # ---------------------------------------------------------------------------
 
 
-def t_desc(metadata=None, track_data=None, hybrid=False, urls=None, spectral_urls=None,
-           spectral_ids=None, lossy_comment=None, source_url=None):
+def t_desc(
+    metadata=None,
+    track_data=None,
+    hybrid=False,
+    urls=None,
+    spectral_urls=None,
+    spectral_ids=None,
+    lossy_comment=None,
+    source_url=None,
+):
     return generate_t_description(
         metadata or make_metadata(),
         track_data or make_track_data(),
@@ -741,8 +767,14 @@ async def test_upload_and_report_forwards_arguments_to_prepare_and_upload(monkey
     state = install_fakes(monkeypatch)
     metadata = make_metadata()
     await upload_and_report(
-        **uar_args(fake_tracker, RecordingSeedbox(), group_id=99, metadata=metadata, request_id=1234,
-                   source_url="https://example.com/x")
+        **uar_args(
+            fake_tracker,
+            RecordingSeedbox(),
+            group_id=99,
+            metadata=metadata,
+            request_id=1234,
+            source_url="https://example.com/x",
+        )
     )
     call = state["prepare_calls"][0]
     assert call["gazelle_site"] is fake_tracker
@@ -804,9 +836,7 @@ async def test_upload_and_report_override_lossy_comment_wins(monkeypatch, fake_t
 
 async def test_upload_and_report_lossy_false_does_not_report(monkeypatch, fake_tracker):
     state = install_fakes(monkeypatch)
-    await upload_and_report(
-        **uar_args(fake_tracker, RecordingSeedbox(), lossy_master=False, lossy_comment="ignored")
-    )
+    await upload_and_report(**uar_args(fake_tracker, RecordingSeedbox(), lossy_master=False, lossy_comment="ignored"))
     assert state["reports"] == []
 
 
@@ -849,9 +879,7 @@ async def test_upload_and_report_clipboard_disabled_does_not_copy(monkeypatch, f
 
 
 @pytest.mark.parametrize("error_cls", [UploadError, RequestError])
-async def test_upload_and_report_propagates_prepare_errors_without_side_effects(
-    monkeypatch, fake_tracker, error_cls
-):
+async def test_upload_and_report_propagates_prepare_errors_without_side_effects(monkeypatch, fake_tracker, error_cls):
     state = install_fakes(monkeypatch, error=error_cls("upload failed"), clipboard=True, seedbox=True)
     seedbox = RecordingSeedbox()
     with pytest.raises(error_cls, match="upload failed"):
