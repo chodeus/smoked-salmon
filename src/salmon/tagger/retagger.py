@@ -220,9 +220,8 @@ def _order_within_disc(group):
 def _ambiguous_tracks() -> UploadError:
     """The error for a retag whose files the tags and folders can't pair with tracks."""
     return UploadError(
-        "Can't tell which file is which track: some files share a disc and track number (or lack one), and the "
-        "folders don't hold one disc each. Fix their DISCNUMBER and TRACKNUMBER tags, or put each disc in its own "
-        "folder, before retagging."
+        "Can't tell which file is which track: some files share a disc and track number, or lack one, and neither "
+        "the tags nor a folder per disc sort them out. Fix their DISCNUMBER and TRACKNUMBER tags before retagging."
     )
 
 
