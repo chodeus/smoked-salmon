@@ -149,10 +149,20 @@ ORACLE_GROUP = {
     "groupName": "Oracle (feat. Jem Cooke)",
     "groupYear": 2026,
     "torrents": [
-        {"media": "WEB", "format": "FLAC", "encoding": "Lossless", "remasterYear": 2026,
-         "remasterCatalogueNumber": "1200214726676"},
-        {"media": "WEB", "format": "MP3", "encoding": "320", "remasterYear": 2026,
-         "remasterCatalogueNumber": "1200214726676"},
+        {
+            "media": "WEB",
+            "format": "FLAC",
+            "encoding": "Lossless",
+            "remasterYear": 2026,
+            "remasterCatalogueNumber": "1200214726676",
+        },
+        {
+            "media": "WEB",
+            "format": "MP3",
+            "encoding": "320",
+            "remasterYear": 2026,
+            "remasterCatalogueNumber": "1200214726676",
+        },
     ],
 }
 

@@ -154,14 +154,32 @@ def test_cross_upload_data_maps_source_to_target() -> None:
 def test_cross_upload_does_not_duplicate_a_footer_the_source_already_has() -> None:
     """A source uploaded with this tool already ends with our footer; it must not gain a second."""
     response: Any = {
-        "group": {"name": "Album", "year": 2020, "releaseType": 17, "recordLabel": "L",
-                  "catalogueNumber": "C", "tags": ["rock"], "wikiImage": "", "wikiBBcode": "",
-                  "musicInfo": {"artists": [{"name": "A"}], "with": []}},
-        "torrent": {"id": 42, "username": "u", "userId": 7,
-                    "description": "Release notes\n" + upload_footer(),
-                    "filePath": "A - Album", "remasterYear": 2021, "remasterTitle": "",
-                    "remasterRecordLabel": "", "remasterCatalogueNumber": "", "format": "FLAC",
-                    "encoding": "Lossless", "media": "WEB", "scene": False},
+        "group": {
+            "name": "Album",
+            "year": 2020,
+            "releaseType": 17,
+            "recordLabel": "L",
+            "catalogueNumber": "C",
+            "tags": ["rock"],
+            "wikiImage": "",
+            "wikiBBcode": "",
+            "musicInfo": {"artists": [{"name": "A"}], "with": []},
+        },
+        "torrent": {
+            "id": 42,
+            "username": "u",
+            "userId": 7,
+            "description": "Release notes\n" + upload_footer(),
+            "filePath": "A - Album",
+            "remasterYear": 2021,
+            "remasterTitle": "",
+            "remasterRecordLabel": "",
+            "remasterCatalogueNumber": "",
+            "format": "FLAC",
+            "encoding": "Lossless",
+            "media": "WEB",
+            "scene": False,
+        },
     }
     target: Any = SimpleNamespace(site_code="OPS", release_types={"Demo": 10, "Unknown": 21})
 

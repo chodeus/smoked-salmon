@@ -142,9 +142,7 @@ class UploadManager:
         """
         return self._client_cache[seedbox.torrent_client]
 
-    def add_upload_task(
-        self, directory: str, task_type: str, is_flac: bool, site_code: str | None = None
-    ) -> None:
+    def add_upload_task(self, directory: str, task_type: str, is_flac: bool, site_code: str | None = None) -> None:
         """Queue upload tasks for a path across all configured seedboxes.
 
         Args:
