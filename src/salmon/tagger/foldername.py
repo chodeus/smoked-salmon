@@ -20,7 +20,7 @@ from salmon.tagger.audio_info import gather_audio_info
 
 
 def resolution(path: str) -> str:
-    """"24-96"-style bit depth and sample rate of the folder's first track; empty for lossy files and for 16/44.1."""
+    """Bit depth and sample rate of the folder's first track, like "24-96"; empty for lossy files and for 16/44.1."""
     first = next(iter(gather_audio_info(path, sort_by_tracknumber=True).values()), None)
     if not first:
         return ""

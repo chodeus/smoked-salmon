@@ -21,10 +21,10 @@ def test_red_covers_need_opting_in():
 
 def test_resolve_per_tracker_override():
     i = ImageUploader(cover_uploader="catbox", red=ImageHostOverride(cover_uploader="imgbox"))
-    assert i.resolve("RED", "cover_uploader") == "imgbox"    # per-tracker override wins
-    assert i.resolve("OPS", "cover_uploader") == "catbox"     # OPS falls back to global
-    assert i.resolve("RED", "image_uploader") == "catbox"     # unset field falls back
-    assert i.resolve(None, "cover_uploader") == "catbox"      # no site -> global
+    assert i.resolve("RED", "cover_uploader") == "imgbox"  # per-tracker override wins
+    assert i.resolve("OPS", "cover_uploader") == "catbox"  # OPS falls back to global
+    assert i.resolve("RED", "image_uploader") == "catbox"  # unset field falls back
+    assert i.resolve(None, "cover_uploader") == "catbox"  # no site -> global
 
 
 def test_red_allowed_as_red_cover_host():

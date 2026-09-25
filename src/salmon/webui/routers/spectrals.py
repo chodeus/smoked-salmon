@@ -137,7 +137,10 @@ async def upload(req: UploadRequest) -> dict:
     title = f"Upload spectrals: {os.path.basename(source_job.result['album_path'])}"
     try:
         job = manager.create_threaded(
-            "spectrals-upload", title, run, {"job_id": req.job_id, "host": host_name},
+            "spectrals-upload",
+            title,
+            run,
+            {"job_id": req.job_id, "host": host_name},
             lock_key=f"spectrals-upload:{req.job_id}",
         )
     except JobConflictError as e:
