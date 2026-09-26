@@ -419,3 +419,19 @@ def test_upload_rejects_an_unknown_tracker_in_the_list(client, album_dir, monkey
     )
     assert resp.status_code == 422
     assert "NOPE" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({}, "requires --group-id"),
+        ({"group_id": 5, "request": "7"}, "--request"),
+        ({"group_id": 5, "spectrals_after": True}, "--spectrals-after"),
+        ({"group_id": 5, "trackers": ["RED", "OPS"]}, "single --tracker"),
+    ],
+)
+def test_upload_rejects_skip_flac_upload_where_the_cli_does(client, album, monkeypatch, extra, message):
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
+    r = client.post("/api/upload", json={"path": album, "tracker": "RED", "skip_flac_upload": True, **extra})
+    assert r.status_code == 422
+    assert message in r.json()["detail"]

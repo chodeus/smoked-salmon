@@ -27,6 +27,7 @@
   let skipLogCheck = $state(false)
   let skipIntegrityCheck = $state(false)
   let essentialOnly = $state(false)
+  let skipFlacUpload = $state(false)
   let dryRun = $state(false)
   let overwrite = $state(false)
   let encoding = $state('')
@@ -54,6 +55,7 @@
     skipLogCheck: "Skip scoring CD rip logs and verifying their checksums against the audio.",
     skipIntegrityCheck: "Skip verifying that every audio file decodes cleanly (flac -wt / mp3val).",
     essentialOnly: "Upload only audio, logs, cues and artwork; strip nfo, sfv, md5, txt and other extras. Cannot be combined with scene.",
+    skipFlacUpload: "The FLAC is already in the Group-ID group: do not upload it, only transcodes of it into that group. Needs a Group-ID and one tracker; cannot be combined with a request or spectrals after upload.",
     overwrite: "Ignore the artists, year, label, catalogue number and genres already in the file tags and take them from the scraped sources instead.",
     skipInitialReview: "Skip the manual metadata review that runs before the AI review. Only does anything when upload.ai_review.enabled is set.",
     applyAiSuggestions: "Runs the AI metadata review without asking, applies its edits, and skips your manual check of what it changed. Needs upload.ai_review.enabled and an API key in config; does nothing otherwise.",
@@ -172,6 +174,7 @@
         skip_log_check: skipLogCheck,
         skip_integrity_check: skipIntegrityCheck,
         essential_only: essentialOnly,
+        skip_flac_upload: skipFlacUpload,
         dry_run: dryRun,
         overwrite,
         encoding: encoding || null,
@@ -280,6 +283,7 @@
       <div class="opt"><label class="check" title={HELP.skipLogCheck}><input type="checkbox" bind:checked={skipLogCheck} /> Skip log check</label>{#if showHelp}<small class="hint">{HELP.skipLogCheck}</small>{/if}</div>
       <div class="opt"><label class="check" title={HELP.skipIntegrityCheck}><input type="checkbox" bind:checked={skipIntegrityCheck} /> Skip integrity check</label>{#if showHelp}<small class="hint">{HELP.skipIntegrityCheck}</small>{/if}</div>
       <div class="opt"><label class="check" title={HELP.essentialOnly}><input type="checkbox" bind:checked={essentialOnly} /> Essential files only</label>{#if showHelp}<small class="hint">{HELP.essentialOnly}</small>{/if}</div>
+      <div class="opt"><label class="check" title={HELP.skipFlacUpload}><input type="checkbox" bind:checked={skipFlacUpload} /> Transcodes only (FLAC already in group)</label>{#if showHelp}<small class="hint">{HELP.skipFlacUpload}</small>{/if}</div>
       <div class="opt"><label class="check" title={HELP.overwrite}><input type="checkbox" bind:checked={overwrite} /> Overwrite metadata</label>{#if showHelp}<small class="hint">{HELP.overwrite}</small>{/if}</div>
       <div class="opt"><label class="check" title={HELP.skipInitialReview}><input type="checkbox" bind:checked={skipInitialReview} /> Skip initial review</label>{#if showHelp}<small class="hint">{HELP.skipInitialReview}</small>{/if}</div>
       <div class="opt"><label class="check" title={HELP.applyAiSuggestions}><input type="checkbox" bind:checked={applyAiSuggestions} /> Apply AI suggestions</label>{#if showHelp}<small class="hint">{HELP.applyAiSuggestions}</small>{/if}</div>
