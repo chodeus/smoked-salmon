@@ -96,7 +96,7 @@ def test_library_source_is_staged_as_a_real_copy(tmp_path, monkeypatch) -> None:
     # Staging must produce an independent copy.
     import os
 
-    from salmon.uploader import _stage_library_source
+    from salmon.uploader.staging import _stage_source
 
     lib = tmp_path / "music"
     album = lib / "Artist - Album"
@@ -109,7 +109,7 @@ def test_library_source_is_staged_as_a_real_copy(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
     monkeypatch.setattr(cfg.directory, "download_directory", str(staging))
 
-    dest = _stage_library_source(str(album))
+    dest = _stage_source(str(album))
 
     assert dest == str(staging / "Artist - Album")
     copied = staging / "Artist - Album" / "01.flac"
@@ -123,7 +123,7 @@ def test_library_source_is_staged_as_a_real_copy(tmp_path, monkeypatch) -> None:
 
 def test_staging_refuses_to_clobber_an_existing_folder(tmp_path, monkeypatch) -> None:
     from salmon.errors import UploadError
-    from salmon.uploader import _stage_library_source
+    from salmon.uploader.staging import _stage_source
 
     lib = tmp_path / "music"
     album = lib / "Album"
@@ -135,7 +135,7 @@ def test_staging_refuses_to_clobber_an_existing_folder(tmp_path, monkeypatch) ->
     monkeypatch.setattr(cfg.directory, "download_directory", str(staging))
 
     with pytest.raises(UploadError, match="already exists"):
-        _stage_library_source(str(album))
+        _stage_source(str(album))
 
 
 @pytest.mark.parametrize("field", ["download_directory", "dottorrents_dir", "tmp_dir"])
