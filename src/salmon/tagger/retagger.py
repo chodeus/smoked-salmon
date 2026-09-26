@@ -103,6 +103,8 @@ def create_track_changes(tags, metadata):
     def disc_track_key(tagset):
         return (_get_tag_number(tagset, "discnumber"), _get_tag_number(tagset, "tracknumber"))
 
+    # Deliberately positional: the tags are what a retag corrects, so they can't be required to match the
+    # metadata. Only an order the tags or folders can't settle is refused; the confirm step shows every change.
     disc_track_keys = [disc_track_key(tagset) for tagset in tags.values()]
     if len(set(disc_track_keys)) == len(disc_track_keys):
         ordered_tags = sorted(tags.items(), key=lambda item: disc_track_key(item[1]))
