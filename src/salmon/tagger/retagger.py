@@ -210,7 +210,9 @@ def _order_by_disc_folders(tags, discs):
     for item in by_path:
         folders.setdefault(os.path.dirname(item[0]), []).append(item)
     groups = [folders[folder] for folder in sorted(folders, key=_natural_key)]
-    if [len(group) for group in groups] != [len(discs[disc]) for disc in sorted(discs, key=_disc_track_sort_key)]:
+    if not _names_distinct(folders) or [len(group) for group in groups] != [
+        len(discs[disc]) for disc in sorted(discs, key=_disc_track_sort_key)
+    ]:
         raise _ambiguous_tracks()
     return [item for group in groups for item in _order_within_disc(group)]
 
@@ -218,11 +220,19 @@ def _order_by_disc_folders(tags, discs):
 def _order_within_disc(group):
     """By track tag when every file has its own; by file name when none has one; otherwise raise."""
     if all(getattr(tagset, "tracknumber", None) is None for _, tagset in group):
+        if not _names_distinct(filename for filename, _ in group):
+            raise _ambiguous_tracks()
         return group
     numbers = [_parse_tag_number(tagset, "tracknumber") for _, tagset in group]
     if None in numbers or len(set(numbers)) != len(numbers):
         raise _ambiguous_tracks()
     return sorted(group, key=lambda item: _get_tag_number(item[1], "tracknumber"))
+
+
+def _names_distinct(names) -> bool:
+    """Whether natural order tells these names apart ("01.flac" and "1.flac" tie)."""
+    keys = [tuple(_natural_key(name)) for name in names]
+    return len(set(keys)) == len(keys)
 
 
 def _ambiguous_tracks() -> UploadError:

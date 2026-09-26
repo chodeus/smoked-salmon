@@ -417,6 +417,20 @@ def test_a_malformed_track_tag_is_not_taken_as_track_1():
         create_track_changes(tags, metadata)
 
 
+@pytest.mark.parametrize(
+    "names",
+    [("01.flac", "1.flac"), ("CD01/01.flac", "CD1/01.flac")],
+    ids=["files", "disc folders"],
+)
+def test_names_that_sort_the_same_are_refused(names):
+    # Without track tags the names decide, and these two can't be told apart.
+    tags = {name: _tagset(name, tracknumber=None, discnumber=None) for name in names}
+    discs = {str(d): {"1": _trackmeta(f"New {d}", "1", str(d))} for d in (1, 2)} if "/" in names[0] else None
+    metadata = {"tracks": discs or {"1": {str(n): _trackmeta(f"New {n}", str(n), "1") for n in (1, 2)}}}
+    with pytest.raises(UploadError, match="track"):
+        create_track_changes(tags, metadata)
+
+
 def test_natural_key_orders_digit_runs_as_numbers():
     paths = ["CD10/01.flac", "Disc 2/10.flac", "CD2/01.flac", "Disc 2/9.flac", "CD1/01.flac"]
     assert sorted(paths, key=_natural_key) == [
