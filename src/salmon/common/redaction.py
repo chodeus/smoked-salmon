@@ -27,6 +27,27 @@ _SHOWN_FLAGS = frozenset(
         "--multi-thread-streams",
     }
 )
+# Switches that take no value. Any other flag takes the next argument as its value, whatever that looks
+# like ("-abc" can be a password), so an unlisted switch at worst hides the argument after it.
+_SWITCHES = frozenset(
+    {
+        "-v",
+        "-vv",
+        "-q",
+        "-P",
+        "--progress",
+        "--quiet",
+        "--dry-run",
+        "--checksum",
+        "--size-only",
+        "--update",
+        "--inplace",
+        "--ignore-existing",
+        "--no-traverse",
+        "--no-check-certificate",
+        "--stats-one-line",
+    }
+)
 # A flag is -x or --name; a value may itself start with dashes (a PEM key's -----BEGIN).
 _FLAG = re.compile(r"--?[A-Za-z]")
 # A header line such as rclone's --dump auth prints ("Authorization: Bearer ..."): the value is masked.
@@ -55,14 +76,15 @@ def _hidden_flag(arg: str) -> bool:
     return _FLAG.match(arg) is not None and arg not in _SHOWN_FLAGS
 
 
+def _takes_hidden_value(arg: str) -> bool:
+    """A hidden flag given as "--flag value", whose next argument is its value."""
+    return _hidden_flag(arg) and "=" not in arg and arg not in _SWITCHES
+
+
 def secret_values(args: Iterable[str], connection: str = "") -> list[str]:
     """Values given to a command that aren't known harmless, plus connection-string secrets, to mask wherever echoed."""
     args = list(args)
-    found = [
-        value
-        for flag, value in zip(args, args[1:], strict=False)
-        if _hidden_flag(flag) and "=" not in flag and not _FLAG.match(value)
-    ]
+    found = [value for flag, value in zip(args, args[1:], strict=False) if _takes_hidden_value(flag)]
     for arg in args:
         name, equals, value = arg.partition("=")
         if equals and _hidden_flag(name):
@@ -84,7 +106,7 @@ def redact_command(args: list[str], known: Iterable[str | None] = ()) -> str:
     hide_next = False
     for arg in args:
         name, equals, _ = arg.partition("=")
-        if hide_next and not _FLAG.match(arg):
+        if hide_next:
             shown.append("[REDACTED]")
             hide_next = False
             continue
@@ -92,5 +114,5 @@ def redact_command(args: list[str], known: Iterable[str | None] = ()) -> str:
             shown.append(f"{name}=[REDACTED]")
         else:
             shown.append(redact_secrets(arg, known))
-        hide_next = _hidden_flag(arg) and not equals
+        hide_next = _takes_hidden_value(arg)
     return shlex.join(shown)

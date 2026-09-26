@@ -334,3 +334,12 @@ def test_a_dumped_auth_header_is_masked() -> None:
     shown = redact_secrets(dumped)
     assert "UNIQUETOKEN" not in shown
     assert "User-Agent: rclone/v1.72.0" in shown
+
+
+def test_a_secret_value_that_looks_like_a_flag_is_still_masked() -> None:
+    args = ["rclone", "copy", "a", "b", "--sftp-pass", "-UNIQUEMATERIAL", "--progress", "--transfers", "4"]
+    shown = redact_command(args)
+    assert "UNIQUEMATERIAL" not in shown
+    # A known switch takes no value, so what follows it is shown as usual.
+    assert "--progress --transfers 4" in shown
+    assert "-UNIQUEMATERIAL" in secret_values(args)

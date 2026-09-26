@@ -134,7 +134,8 @@ def test_rclone_failure_output_never_contains_the_password(monkeypatch, capsys) 
     _run_seedbox_check()
 
     out = capsys.readouterr().out
-    assert "failed" in out.lower()
+    # rclone's own stderr must be shown, masked, not just the probe's verdict.
+    assert "authentication failed" in out
     assert "hunter2" not in out
 
 
