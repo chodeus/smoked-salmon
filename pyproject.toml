@@ -23,7 +23,7 @@ dependencies = [
     "numpy>=2.5.3",
     "openai>=3.17.0",
     "pillow>=12.3.0",
-    "platformdirs>=4.11.12",
+    "platformdirs>=4.11.15",
     "pycambia>=0.2.0",
     "pyimgbox>=1.0.7",
     "pyoxipng>=9.1.1",
@@ -44,7 +44,7 @@ dependencies = [
 salmon = "salmon.run:main"
 
 [build-system]
-requires = ["uv_build>=0.12.17,<0.12.18"]
+requires = ["uv_build>=0.12.19,<0.12.20"]
 build-backend = "uv_build"
 
 [dependency-groups]
@@ -53,7 +53,7 @@ dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
-    "ruff>=0.16.8",
+    "ruff>=0.16.9",
 ]
 
 [tool.pytest.ini_options]
