@@ -100,21 +100,31 @@ def create_track_changes(tags, metadata):
     changes = {}
     tracks = metadata_to_track_list(metadata["tracks"])
 
-    sorted_tags = sorted(
-        tags.items(),
-        key=lambda item: (
-            _get_tag_number(item[1], "discnumber"),
-            _get_tag_number(item[1], "tracknumber"),
-        ),
-    )
+    def disc_track_key(tagset):
+        return (_get_tag_number(tagset, "discnumber"), _get_tag_number(tagset, "tracknumber"))
 
-    if len(sorted_tags) != len(tracks):
+    # Deliberately positional: the tags are what a retag corrects, so they can't be required to match the
+    # metadata. Only an order the tags or folders can't settle is refused; the confirm step shows every change.
+    disc_track_keys = [disc_track_key(tagset) for tagset in tags.values()]
+    # An unparseable tag reads as 1, so it can't vouch for a file's place.
+    readable = all(
+        _parse_tag_number(tagset, "tracknumber") is not None
+        and (getattr(tagset, "discnumber", None) is None or _parse_tag_number(tagset, "discnumber") is not None)
+        for tagset in tags.values()
+    )
+    if readable and len(set(disc_track_keys)) == len(disc_track_keys):
+        ordered_tags = sorted(tags.items(), key=lambda item: disc_track_key(item[1]))
+    else:
+        # Colliding pairs (e.g. CD1/CD2 folders with no DISCNUMBER) can't identify files by tags alone.
+        ordered_tags = _order_by_disc_folders(tags, metadata["tracks"])
+
+    if len(ordered_tags) != len(tracks):
         raise UploadError(
-            f"Track count mismatch: {len(sorted_tags)} audio files but {len(tracks)} metadata tracks. "
+            f"Track count mismatch: {len(ordered_tags)} audio files but {len(tracks)} metadata tracks. "
             "Fix the folder or the metadata before uploading."
         )
 
-    for (filename, tagset), trackmeta in zip(sorted_tags, tracks, strict=False):
+    for (filename, tagset), trackmeta in zip(ordered_tags, tracks, strict=False):
         changes[filename] = []
 
         try:
@@ -191,12 +201,55 @@ def _disc_track_sort_key(value):
     return (0, int(s)) if s.isdigit() else (1, s.lower())
 
 
-def metadata_to_track_list(metadata):
-    """Flatten the {disc: {track: meta}} dict into a list in disc/track order.
+def _order_by_disc_folders(tags, discs):
+    """Pair files whose disc/track tags collide one folder per disc, or raise when that can't identify each file."""
+    by_path = sorted(tags.items(), key=lambda item: _natural_key(item[0]))
+    if len(by_path) != sum(len(tracks) for tracks in discs.values()):
+        return by_path  # create_track_changes reports the count mismatch itself
+    folders: dict[str, list] = {}
+    for item in by_path:
+        folders.setdefault(os.path.dirname(item[0]), []).append(item)
+    groups = [folders[folder] for folder in sorted(folders, key=_natural_key)]
+    if not _names_distinct(folders) or [len(group) for group in groups] != [
+        len(discs[disc]) for disc in sorted(discs, key=_disc_track_sort_key)
+    ]:
+        raise _ambiguous_tracks()
+    return [item for group in groups for item in _order_within_disc(group)]
 
-    Sorted to match the (disc, track) ordering of the tag side in
-    create_track_changes, so the two zip together onto the right files.
-    """
+
+def _order_within_disc(group):
+    """By track tag when every file has its own; by file name when none has one; otherwise raise."""
+    if all(getattr(tagset, "tracknumber", None) is None for _, tagset in group):
+        if not _names_distinct(filename for filename, _ in group):
+            raise _ambiguous_tracks()
+        return group
+    numbers = [_parse_tag_number(tagset, "tracknumber") for _, tagset in group]
+    if None in numbers or len(set(numbers)) != len(numbers):
+        raise _ambiguous_tracks()
+    return sorted(group, key=lambda item: _get_tag_number(item[1], "tracknumber"))
+
+
+def _names_distinct(names) -> bool:
+    """Whether natural order tells these names apart ("01.flac" and "1.flac" tie)."""
+    keys = [tuple(_natural_key(name)) for name in names]
+    return len(set(keys)) == len(keys)
+
+
+def _ambiguous_tracks() -> UploadError:
+    """The error for a retag whose files the tags and folders can't pair with tracks."""
+    return UploadError(
+        "Can't tell which file is which track: some files share a disc and track number, or lack one, and neither "
+        "the tags nor a folder per disc sort them out. Fix their DISCNUMBER and TRACKNUMBER tags before retagging."
+    )
+
+
+def _natural_key(path: str) -> list[int | str]:
+    """Sort key that compares the digit runs in a path as numbers."""
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", path)]
+
+
+def metadata_to_track_list(metadata):
+    """Flatten the {disc: {track: meta}} dict into a list in disc/track order."""
     ordered = []
     for disc_key in sorted(metadata, key=_disc_track_sort_key):
         disc = metadata[disc_key]
@@ -511,6 +564,12 @@ def _parse_integer(value, width=2):
 
 
 def _get_tag_number(tracktags, field):
+    number = _parse_tag_number(tracktags, field)
+    return 1 if number is None else number
+
+
+def _parse_tag_number(tracktags, field):
+    """The tag's number, or None when it is absent or not a number."""
     if isinstance(tracktags, dict):
         value = tracktags.get(field)
         if isinstance(value, list) and value:
@@ -519,15 +578,15 @@ def _get_tag_number(tracktags, field):
         value = getattr(tracktags, field, None)
 
     if value is None:
-        return 1
+        return None
     if isinstance(value, list) and value:
         value = value[0]
     if isinstance(value, str):
         value = value.split("/")[0]
-        return int(value) if value.isdigit() else 1
+        return int(value) if value.isdigit() else None
     if isinstance(value, int):
         return value
-    return 1
+    return None
 
 
 def move_non_audio_files(directory_move_pairs, directory_disc_map=None):
