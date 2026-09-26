@@ -3,7 +3,7 @@ import subprocess
 import anyio
 import pytest
 
-from salmon.common.redaction import redact_command
+from salmon.common.redaction import redact_command, redact_secrets
 from salmon.config.validations import Seedbox
 from salmon.uploader import seedbox
 
@@ -285,3 +285,38 @@ def test_redact_command_masks_an_equals_form_secret_whole() -> None:
     shown = redact_command(["rclone", "copy", "a", "b", "--sftp-key-pem=BEGIN KEY PRIVATEPART DATA"])
     assert "PRIVATEPART" not in shown
     assert "--sftp-key-pem=[REDACTED]" in shown
+
+
+def test_redact_command_shows_only_allowlisted_flag_values() -> None:
+    shown = redact_command(
+        ["rclone", "copy", "a", "b", "--transfers", "4", "--http-headers", '"Authorization","hunter2"', "--bwlimit=8M"]
+    )
+    assert "--transfers 4" in shown
+    assert "--bwlimit=8M" in shown
+    assert "hunter2" not in shown
+    assert "Authorization" not in shown
+
+
+def test_an_echoed_header_credential_never_reaches_the_log(monkeypatch) -> None:
+    messages: list[str] = []
+
+    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(commands, 1, stdout=b"", stderr=b"401 for Authorization: hunter2\n")
+
+    monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
+    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
+
+    anyio.run(
+        seedbox._rclone_upload_folder,
+        Seedbox(url="web", extra_args=["--http-headers", "Authorization,hunter2"]),
+        "/music",
+        "/tmp/Album",
+    )
+
+    assert messages
+    assert not any("hunter2" in message for message in messages)
+
+
+def test_a_short_known_secret_is_masked_as_a_whole_word() -> None:
+    assert redact_secrets("authentication failed for ab", known=["ab"]) == "authentication failed for [REDACTED]"
+    assert redact_secrets("about tabs", known=["ab"]) == "about tabs"
