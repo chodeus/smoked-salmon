@@ -3,6 +3,7 @@ import shlex
 from collections.abc import Iterable
 
 _URL_USERINFO = re.compile(r"(://)[^/\s@]+@")
+_USERINFO_PASSWORD = re.compile(r"://[^/\s@:]*:([^/\s@']+)@")
 _SECRET_WORDS = r"(?:pass|password|token|secret|key|session|header|cookie|auth)"
 # A quoted value is masked whole, doubled quotes included: rclone quotes values with spaces (a PEM key).
 _SECRET_VALUE = r"""(?:'(?:[^']|'')*'|"(?:[^"]|"")*"|\S+)"""
@@ -89,13 +90,15 @@ def secret_values(args: Iterable[str], connection: str = "") -> list[str]:
         name, equals, value = arg.partition("=")
         if equals and _hidden_flag(name):
             found.append(value)
-    # rclone takes some values as comma-separated lists (--http-headers Name,Value), echoed one part at a time.
-    found += [part.strip(" '\"") for value in found if "," in value for part in value.split(",")]
     for match in _CONNECTION_SECRET.finditer(connection):
         value = match.group(1)
         if value[:1] in "'\"" and len(value) > 1:
             value = value[1:-1].replace(value[0] * 2, value[0])
         found.append(value)
+    # A URL anywhere (an argument, a connection-string url= field) can carry user:password@.
+    found += [match.group(1) for text in [*args, connection] for match in _USERINFO_PASSWORD.finditer(text)]
+    # rclone takes some values as comma-separated lists (--http-headers Name,Value), echoed one part at a time.
+    found += [part.strip(" '\"") for value in found if "," in value for part in value.split(",")]
     return found
 
 

@@ -343,3 +343,17 @@ def test_a_secret_value_that_looks_like_a_flag_is_still_masked() -> None:
     # A known switch takes no value, so what follows it is shown as usual.
     assert "--progress --transfers 4" in shown
     assert "-UNIQUEMATERIAL" in secret_values(args)
+
+
+@pytest.mark.parametrize(
+    ("args", "remote", "secret"),
+    [
+        ([], ":http,headers='Authorization,UNIQUETOKEN':", "UNIQUETOKEN"),
+        ([], ":http,url='https://user:UNIQUEMATERIAL@example.com':", "UNIQUEMATERIAL"),
+        (["--http-url", "https://user:UNIQUEARGPASS@example.com"], "web", "UNIQUEARGPASS"),
+    ],
+    ids=["connection-string header list", "connection-string url", "url argument"],
+)
+def test_embedded_credentials_are_collected_for_echoed_errors(args, remote, secret) -> None:
+    assert secret in secret_values(args, remote)
+    assert secret not in redact_secrets(f"401 for {secret}", secret_values(args, remote))
