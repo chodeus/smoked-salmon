@@ -27,6 +27,10 @@ _SHOWN_FLAGS = frozenset(
         "--multi-thread-streams",
     }
 )
+# A flag is -x or --name; a value may itself start with dashes (a PEM key's -----BEGIN).
+_FLAG = re.compile(r"--?[A-Za-z]")
+# A header line such as rclone's --dump auth prints ("Authorization: Bearer ..."): the value is masked.
+_SECRET_HEADER = re.compile(rf"(?im)^([^\S\n]*[\w-]*{_SECRET_WORDS}[\w-]*[^\S\n]*:)[^\n]*")
 # A secret field of an rclone connection string (":sftp,pass=x,user=y:"); a bare value ends at , or :.
 _CONNECTION_SECRET = re.compile(
     rf"""(?:^|[,:])[\w-]*{_SECRET_WORDS}[\w-]*=('(?:[^']|'')*'|"(?:[^"]|"")*"|[^,:\s]+)""", re.IGNORECASE
@@ -40,6 +44,7 @@ def redact_secrets(text: str, known: Iterable[str | None] = ()) -> str:
         # A short one only as a whole word, so "ab" doesn't eat "about".
         pattern = re.escape(secret) if len(secret) >= 3 else rf"(?<!\w){re.escape(secret)}(?!\w)"
         text = re.sub(pattern, "[REDACTED]", text)
+    text = _SECRET_HEADER.sub(r"\1 [REDACTED]", text)
     text = _URL_USERINFO.sub(r"\1[REDACTED]@", text)
     text = _SECRET_FLAG.sub(r"\1[REDACTED]", text)
     return _SECRET_ASSIGNMENT.sub(r"\1=[REDACTED]", text)
@@ -47,7 +52,7 @@ def redact_secrets(text: str, known: Iterable[str | None] = ()) -> str:
 
 def _hidden_flag(arg: str) -> bool:
     """A flag whose value isn't on the shown list."""
-    return arg.startswith("-") and arg not in _SHOWN_FLAGS
+    return _FLAG.match(arg) is not None and arg not in _SHOWN_FLAGS
 
 
 def secret_values(args: Iterable[str], connection: str = "") -> list[str]:
@@ -56,7 +61,7 @@ def secret_values(args: Iterable[str], connection: str = "") -> list[str]:
     found = [
         value
         for flag, value in zip(args, args[1:], strict=False)
-        if _hidden_flag(flag) and "=" not in flag and not value.startswith("-")
+        if _hidden_flag(flag) and "=" not in flag and not _FLAG.match(value)
     ]
     for arg in args:
         name, equals, value = arg.partition("=")
@@ -79,7 +84,7 @@ def redact_command(args: list[str], known: Iterable[str | None] = ()) -> str:
     hide_next = False
     for arg in args:
         name, equals, _ = arg.partition("=")
-        if hide_next and not arg.startswith("-"):
+        if hide_next and not _FLAG.match(arg):
             shown.append("[REDACTED]")
             hide_next = False
             continue

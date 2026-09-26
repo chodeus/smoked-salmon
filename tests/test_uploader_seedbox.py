@@ -3,7 +3,7 @@ import subprocess
 import anyio
 import pytest
 
-from salmon.common.redaction import redact_command, redact_secrets
+from salmon.common.redaction import redact_command, redact_secrets, secret_values
 from salmon.config.validations import Seedbox
 from salmon.uploader import seedbox
 
@@ -313,10 +313,24 @@ def test_an_echoed_header_credential_never_reaches_the_log(monkeypatch) -> None:
         "/tmp/Album",
     )
 
-    assert messages
+    assert any(message.startswith("  rclone:") and "401 for" in message for message in messages)
     assert not any("hunter2" in message for message in messages)
 
 
 def test_a_short_known_secret_is_masked_as_a_whole_word() -> None:
     assert redact_secrets("authentication failed for ab", known=["ab"]) == "authentication failed for [REDACTED]"
     assert redact_secrets("about tabs", known=["ab"]) == "about tabs"
+
+
+def test_a_pem_value_starting_with_dashes_is_masked_and_collected() -> None:
+    pem = "-----BEGIN OPENSSH PRIVATE KEY----- UNIQUEKEYMATERIAL -----END OPENSSH PRIVATE KEY-----"
+    args = ["rclone", "copy", "a", "b", "--sftp-key-pem", pem]
+    assert "UNIQUEKEYMATERIAL" not in redact_command(args)
+    assert pem in secret_values(args)
+
+
+def test_a_dumped_auth_header_is_masked() -> None:
+    dumped = "2026/09/26 DEBUG : HTTP REQUEST\nAuthorization: Bearer UNIQUETOKEN\nUser-Agent: rclone/v1.72.0"
+    shown = redact_secrets(dumped)
+    assert "UNIQUETOKEN" not in shown
+    assert "User-Agent: rclone/v1.72.0" in shown
