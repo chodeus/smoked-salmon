@@ -7,7 +7,7 @@ import anyio
 import asyncclick as click
 
 from salmon import cfg
-from salmon.common.redaction import redact_command, redact_secrets
+from salmon.common.redaction import redact_command, redact_secrets, secret_values
 from salmon.config.validations import Seedbox
 from salmon.uploader.torrent_client import TorrentClient, TorrentClientGenerator
 
@@ -33,24 +33,32 @@ def _resolve_shell_path(remote_folder: str, extra_args: list[str]) -> str:
     return override
 
 
+def seedbox_secrets(seedbox: Seedbox) -> list[str]:
+    """The secrets a seedbox's rclone remote and extra_args carry, masked wherever rclone echoes them."""
+    return secret_values(seedbox.extra_args, seedbox.url)
+
+
 async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str) -> bool:
     """Upload a local folder to the rclone remote and return whether rclone succeeded."""
     remote_path = posixpath.join(remote_folder, os.path.basename(path))
     commands = ["rclone", "copy", path, f"{seedbox.url}:{remote_path}", *seedbox.extra_args]
-    click.secho(redact_secrets(f"Starting Rclone upload to {seedbox.url}:{remote_folder}"), fg="cyan")
-    click.secho(f"Executing: {redact_command(commands)}", fg="yellow")
+    secrets = seedbox_secrets(seedbox)
+    click.secho(redact_secrets(f"Starting Rclone upload to {seedbox.url}:{remote_folder}", secrets), fg="cyan")
+    click.secho(f"Executing: {redact_command(commands, secrets)}", fg="yellow")
     # Captured rather than passed to the terminal: the job log is where a failure has to be readable.
     try:
         result = await anyio.run_process(commands, check=False)
     except OSError as error:
-        click.secho(f"rclone could not start: {redact_secrets(str(error))}", fg="red")
+        click.secho(f"rclone could not start: {redact_secrets(str(error), secrets)}", fg="red")
         return False
     if result.returncode == 0:
-        click.secho(redact_secrets(f"Rclone upload successful: {path} to {seedbox.url}:{remote_path}"), fg="green")
+        click.secho(
+            redact_secrets(f"Rclone upload successful: {path} to {seedbox.url}:{remote_path}", secrets), fg="green"
+        )
         return True
     click.secho(f"Rclone upload failed with exit code {result.returncode}", fg="red")
     for line in _output_tail(result.stderr) or _output_tail(result.stdout):
-        click.secho(f"  rclone: {redact_secrets(line)}", fg="red")
+        click.secho(f"  rclone: {redact_secrets(line, secrets)}", fg="red")
     return False
 
 

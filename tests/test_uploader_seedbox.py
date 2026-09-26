@@ -3,6 +3,7 @@ import subprocess
 import anyio
 import pytest
 
+from salmon.common.redaction import redact_command
 from salmon.config.validations import Seedbox
 from salmon.uploader import seedbox
 
@@ -77,7 +78,10 @@ def test_rclone_upload_folder_treats_a_launch_failure_as_a_failed_copy(monkeypat
 
 def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkeypatch) -> None:
     messages: list[str] = []
-    stderr = b"2026/09/09 15:52:18 ERROR : ftp://dean:hunter2@box.example/music: 530 Login incorrect\n"
+    stderr = (
+        b"2026/09/09 15:52:18 ERROR : ftp://dean:hunter2@box.example/music: 530 Login incorrect\n"
+        b"authentication failed for hunter2\n"
+    )
 
     async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         return subprocess.CompletedProcess(commands, 1, stdout=b"", stderr=stderr)
@@ -97,6 +101,7 @@ def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkey
                 "-----BEGIN KEY----- hunter2 -----END KEY-----",
                 "--ftp-pass",
                 "it's hunter2",
+                "--sftp-key-pem=BEGIN KEY hunter2 DATA",
             ],
         ),
         "/music",
@@ -274,3 +279,9 @@ def test_seedbox_trackers_are_uppercased() -> None:
 def test_seedbox_rejects_unknown_tracker() -> None:
     with pytest.raises(ValueError, match="Unknown tracker"):
         Seedbox(name="typo", trackers=["REDD"])
+
+
+def test_redact_command_masks_an_equals_form_secret_whole() -> None:
+    shown = redact_command(["rclone", "copy", "a", "b", "--sftp-key-pem=BEGIN KEY PRIVATEPART DATA"])
+    assert "PRIVATEPART" not in shown
+    assert "--sftp-key-pem=[REDACTED]" in shown

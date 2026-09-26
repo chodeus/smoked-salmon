@@ -45,7 +45,9 @@ def test_torrent_client_login_success_reports_successful(monkeypatch, capsys) ->
     _run_seedbox_check()
 
     out = capsys.readouterr().out.lower()
-    assert "successful" in out
+    # The seedbox check's own verdict, not the client library's "Successfully connected".
+    assert "torrent client connection successful" in out
+    assert "connection failed" not in out
 
 
 def test_rclone_lsd_success_reports_accessible(monkeypatch, capsys) -> None:
@@ -122,7 +124,7 @@ def test_rclone_failure_output_never_contains_the_password(monkeypatch, capsys) 
     class FakeResult:
         returncode = 1
         stdout = b""
-        stderr = b"couldn't connect to sftp://dean:hunter2@box --sftp-pass hunter2"
+        stderr = b"couldn't connect to sftp://dean:hunter2@box --sftp-pass hunter2\nauthentication failed for hunter2"
 
     async def fake_run_process(cmd, check=True):
         return FakeResult()
@@ -174,4 +176,21 @@ def test_an_unstructured_login_error_never_contains_the_password(monkeypatch, ca
 
     out = capsys.readouterr().out
     assert "authentication failed" in out
+    assert "hunter2" not in out
+
+
+def test_a_failed_probe_never_repeats_a_configured_secret(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cfg, "seedbox", [_seedbox(extra_args=["--sftp-pass", "hunter2"])])
+    monkeypatch.setattr(QBittorrentClient, "login", lambda self: object())
+    monkeypatch.setattr(commands_module.shutil, "which", lambda name: "/usr/bin/rclone")
+
+    async def fake_run_process(cmd, check=True):
+        raise OSError("rclone refused hunter2")
+
+    monkeypatch.setattr(commands_module.anyio, "run_process", fake_run_process)
+
+    _run_seedbox_check()
+
+    out = capsys.readouterr().out
+    assert "rclone refused" in out
     assert "hunter2" not in out

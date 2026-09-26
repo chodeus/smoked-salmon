@@ -25,6 +25,7 @@ from salmon.config import find_config_path, get_default_config_path, get_user_cf
 from salmon.sources.tidal import credentials_configured as tidal_credentials_configured
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.uploader.description import build_tracklist_description
+from salmon.uploader.seedbox import seedbox_secrets
 from salmon.uploader.spectrals import (
     check_spectrals,
     get_spectrals_path,
@@ -343,7 +344,8 @@ async def _test_seedbox_connections() -> None:
         click.secho(f"\n  Testing Seedbox {i + 1} ({seedbox_config.name})...", fg="yellow")
         click.secho(f"    Type: {seedbox_config.type}", fg="cyan")
         # An rclone remote can be a connection string carrying a password.
-        remote = redact_secrets(seedbox_config.url)
+        secrets = seedbox_secrets(seedbox_config)
+        remote = redact_secrets(seedbox_config.url, secrets)
         click.secho(f"    URL: {remote}", fg="cyan")
 
         try:
@@ -369,15 +371,19 @@ async def _test_seedbox_connections() -> None:
                         else:
                             error = result.stderr.decode(errors="replace").strip() or f"exit code {result.returncode}"
                             click.secho(
-                                f"    ✖ Rclone remote '{remote}' failed: {redact_secrets(error)}", fg="red", bold=True
+                                f"    ✖ Rclone remote '{remote}' failed: {redact_secrets(error, secrets)}",
+                                fg="red",
+                                bold=True,
                             )
                     except Exception as rclone_e:
-                        click.secho(f"    ✖ Rclone test failed: {redact_secrets(str(rclone_e))}", fg="red", bold=True)
+                        click.secho(
+                            f"    ✖ Rclone test failed: {redact_secrets(str(rclone_e), secrets)}", fg="red", bold=True
+                        )
                 else:
                     click.secho("    ✖ Rclone executable not found", fg="red", bold=True)
 
         except Exception as e:
-            click.secho(f"    ✖ Seedbox test failed: {redact_secrets(str(e))}", fg="red", bold=True)
+            click.secho(f"    ✖ Seedbox test failed: {redact_secrets(str(e), secrets)}", fg="red", bold=True)
 
     click.secho("-" * 50, fg="yellow")
 
