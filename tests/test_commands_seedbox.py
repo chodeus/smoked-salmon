@@ -157,3 +157,21 @@ def test_the_rclone_probe_uses_the_seedbox_extra_args(monkeypatch, capsys) -> No
     _run_seedbox_check()
 
     assert commands == [["rclone", "lsd", "myremote:", "--config", "/data/rclone.conf"]]
+
+
+def test_an_unstructured_login_error_never_contains_the_password(monkeypatch, capsys) -> None:
+    # No URL or password= for a pattern to find: only the configured value itself identifies it.
+    monkeypatch.setattr(
+        cfg, "seedbox", [_seedbox(type="local", torrent_client="qbittorrent+http://user:hunter2@box:8080")]
+    )
+
+    def refuse(self):
+        raise qbittorrentapi.APIConnectionError("authentication failed for hunter2")
+
+    monkeypatch.setattr(qbittorrentapi.Client, "auth_log_in", refuse)
+
+    _run_seedbox_check()
+
+    out = capsys.readouterr().out
+    assert "authentication failed" in out
+    assert "hunter2" not in out

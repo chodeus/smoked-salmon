@@ -95,6 +95,8 @@ def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkey
                 "--sftp-pass=hunter2",
                 "--sftp-key-pem",
                 "-----BEGIN KEY----- hunter2 -----END KEY-----",
+                "--ftp-pass",
+                "it's hunter2",
             ],
         ),
         "/music",
@@ -118,6 +120,8 @@ def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkey
         # rclone connection strings may quote a value that has spaces in it, such as a PEM key.
         (":sftp,key_pem='-----BEGIN KEY----- hunter2 -----END KEY-----',user=x:", ":sftp,key_pem=[REDACTED],user=x:"),
         ('--sftp-key-pem "-----BEGIN KEY----- hunter2"', "--sftp-key-pem [REDACTED]"),
+        # rclone doubles a quote inside a quoted value.
+        (":sftp,pass='hunter''2',user=x:", ":sftp,pass=[REDACTED],user=x:"),
     ],
 )
 def test_redact_masks_suffixed_option_names_and_sessions(text: str, expected: str) -> None:

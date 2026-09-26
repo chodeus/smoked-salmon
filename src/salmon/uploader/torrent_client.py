@@ -31,6 +31,10 @@ class TorrentClient:
         click.secho(f"Initializing {self.__class__.__name__} client...", fg="cyan")
         self.client = self.login()
 
+    def _redact(self, text: str) -> str:
+        """Mask this client's password wherever an error repeats it, then the usual patterns."""
+        return redact_secrets(text, known=[self.password])
+
     def login(self):
         raise NotImplementedError
 
@@ -53,10 +57,10 @@ class QBittorrentClient(TorrentClient):
             click.secho("INCORRECT QBIT LOGIN CREDENTIALS", fg="red", bold=True)
             return None
         except qbittorrentapi.APIConnectionError as e:
-            click.secho(f"APIConnectionError: {redact_secrets(str(e))}", fg="red", bold=True)
+            click.secho(f"APIConnectionError: {self._redact(str(e))}", fg="red", bold=True)
             return None
         except Exception as e:
-            click.secho(f"Connect to qBittorrent failed: {redact_secrets(str(e))}", fg="red", bold=True)
+            click.secho(f"Connect to qBittorrent failed: {self._redact(str(e))}", fg="red", bold=True)
             return None
 
     def add_to_downloader(self, remote_folder, torrent, is_paused, label):
@@ -94,7 +98,7 @@ class TransmissionClient(TorrentClient):
             click.secho("Successfully connected to Transmission", fg="green")
             return trt
         except Exception as e:
-            click.secho(f"Connect to Transmission failed: {redact_secrets(str(e))}", fg="red", bold=True)
+            click.secho(f"Connect to Transmission failed: {self._redact(str(e))}", fg="red", bold=True)
             return None
 
     def add_to_downloader(self, remote_folder, torrent, is_paused, label):
@@ -132,7 +136,7 @@ class DelugeClient(TorrentClient):
                 click.secho("Deluge connection failed: Not connected", fg="red", bold=True)
                 return None
         except Exception as e:
-            click.secho(f"Connect to Deluge failed: {redact_secrets(str(e))}", fg="red", bold=True)
+            click.secho(f"Connect to Deluge failed: {self._redact(str(e))}", fg="red", bold=True)
             return None
 
     def add_to_downloader(self, remote_folder, torrent, is_paused, label):
@@ -189,7 +193,7 @@ class RuTorrentClient(TorrentClient):
             click.secho(f"Successfully connected to ruTorrent, version: {version}", fg="green")
             return rt_client
         except Exception as e:
-            click.secho(f"Connect to ruTorrent failed: {redact_secrets(str(e))}", fg="red", bold=True)
+            click.secho(f"Connect to ruTorrent failed: {self._redact(str(e))}", fg="red", bold=True)
             return None
 
     def add_to_downloader(self, remote_folder, torrent, is_paused, label):

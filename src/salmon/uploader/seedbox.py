@@ -2,13 +2,12 @@ import argparse
 import collections
 import os
 import posixpath
-import shlex
 
 import anyio
 import asyncclick as click
 
 from salmon import cfg
-from salmon.common.redaction import redact_secrets
+from salmon.common.redaction import redact_command, redact_secrets
 from salmon.config.validations import Seedbox
 from salmon.uploader.torrent_client import TorrentClient, TorrentClientGenerator
 
@@ -39,8 +38,7 @@ async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str)
     remote_path = posixpath.join(remote_folder, os.path.basename(path))
     commands = ["rclone", "copy", path, f"{seedbox.url}:{remote_path}", *seedbox.extra_args]
     click.secho(redact_secrets(f"Starting Rclone upload to {seedbox.url}:{remote_folder}"), fg="cyan")
-    # shlex.join quotes an argument with spaces, so the redactor masks it whole.
-    click.secho(f"Executing: {redact_secrets(shlex.join(commands))}", fg="yellow")
+    click.secho(f"Executing: {redact_command(commands)}", fg="yellow")
     # Captured rather than passed to the terminal: the job log is where a failure has to be readable.
     try:
         result = await anyio.run_process(commands, check=False)
