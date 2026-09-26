@@ -106,7 +106,13 @@ def create_track_changes(tags, metadata):
     # Deliberately positional: the tags are what a retag corrects, so they can't be required to match the
     # metadata. Only an order the tags or folders can't settle is refused; the confirm step shows every change.
     disc_track_keys = [disc_track_key(tagset) for tagset in tags.values()]
-    if len(set(disc_track_keys)) == len(disc_track_keys):
+    # An unparseable tag reads as 1, so it can't vouch for a file's place.
+    readable = all(
+        _parse_tag_number(tagset, "tracknumber") is not None
+        and (getattr(tagset, "discnumber", None) is None or _parse_tag_number(tagset, "discnumber") is not None)
+        for tagset in tags.values()
+    )
+    if readable and len(set(disc_track_keys)) == len(disc_track_keys):
         ordered_tags = sorted(tags.items(), key=lambda item: disc_track_key(item[1]))
     else:
         # Colliding pairs (e.g. CD1/CD2 folders with no DISCNUMBER) can't identify files by tags alone.
@@ -213,8 +219,8 @@ def _order_within_disc(group):
     """By track tag when every file has its own; by file name when none has one; otherwise raise."""
     if all(getattr(tagset, "tracknumber", None) is None for _, tagset in group):
         return group
-    numbers = [_get_tag_number(tagset, "tracknumber") for _, tagset in group]
-    if any(getattr(tagset, "tracknumber", None) is None for _, tagset in group) or len(set(numbers)) != len(numbers):
+    numbers = [_parse_tag_number(tagset, "tracknumber") for _, tagset in group]
+    if None in numbers or len(set(numbers)) != len(numbers):
         raise _ambiguous_tracks()
     return sorted(group, key=lambda item: _get_tag_number(item[1], "tracknumber"))
 
@@ -548,6 +554,12 @@ def _parse_integer(value, width=2):
 
 
 def _get_tag_number(tracktags, field):
+    number = _parse_tag_number(tracktags, field)
+    return 1 if number is None else number
+
+
+def _parse_tag_number(tracktags, field):
+    """The tag's number, or None when it is absent or not a number."""
     if isinstance(tracktags, dict):
         value = tracktags.get(field)
         if isinstance(value, list) and value:
@@ -556,15 +568,15 @@ def _get_tag_number(tracktags, field):
         value = getattr(tracktags, field, None)
 
     if value is None:
-        return 1
+        return None
     if isinstance(value, list) and value:
         value = value[0]
     if isinstance(value, str):
         value = value.split("/")[0]
-        return int(value) if value.isdigit() else 1
+        return int(value) if value.isdigit() else None
     if isinstance(value, int):
         return value
-    return 1
+    return None
 
 
 def move_non_audio_files(directory_move_pairs, directory_disc_map=None):
