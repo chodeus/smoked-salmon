@@ -11,7 +11,7 @@ dependencies = [
     "aiohttp[speedups]>=3.14.3; sys_platform != 'win32'",
     "anyio>=4.15.1",
     "asyncclick>=8.4.2.1",
-    "av>=18.1.0",
+    "av>=19.0.1",
     "beautifulsoup4[lxml]>=4.15.0",
     "deluge-client>=1.10.2",
     "fastapi>=0.142.2",
