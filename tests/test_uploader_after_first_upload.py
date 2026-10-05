@@ -171,6 +171,7 @@ def test_a_failed_group_fetch_after_the_upload_still_runs_the_spectral_check(flo
     _upload(None)
     names = [name for name, _site, _kw in calls]
     assert names.count("post_upload_spectral_check") == 1
+    assert names.index("post_upload_spectral_check") < names.index("print_torrents")
     assert executed == [True]
 
 
