@@ -104,3 +104,14 @@ class DryRunRefused(Exception):
     """A step that would send something ran in a dry run and was stopped; not a RequestError, so no "failed upload"."""
 
     pass
+
+
+class UploadRefusedError(RequestError):
+    """The tracker's upload form has no value that describes this torrent.
+
+    Raised while the upload form data is built, before the upload request and the authentication
+    it needs, so the torrent is not uploaded to that tracker and other trackers are not affected.
+    Earlier requests to that tracker (group search, request check) may already have been sent.
+    """
+
+    pass

@@ -50,6 +50,9 @@ class FakeGazelleApi:
 
     unsupported_artist_roles: frozenset[str] = frozenset()
 
+    def upload_form_fields(self, metadata, track_data) -> dict[str, str]:
+        return {}
+
     def __init__(self):
         self.site_code = "RED"
         self.site_string = "RED"
