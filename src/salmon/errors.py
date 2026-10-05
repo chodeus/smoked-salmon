@@ -72,6 +72,10 @@ class RequestFailedError(RequestError):
     pass
 
 
+class ApiFailureError(RequestFailedError):
+    """The tracker's API answered status "failure", as it does for an ID it does not have."""
+
+
 class LoginError(RequestError):
     pass
 

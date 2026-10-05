@@ -25,6 +25,7 @@ from salmon.common import UploadFiles
 from salmon.common.urls import parse_retry_after
 from salmon.constants import RELEASE_TYPES
 from salmon.errors import (
+    ApiFailureError,
     LoginError,
     RequestError,
     RequestFailedError,
@@ -649,7 +650,9 @@ class BaseGazelleApi:
             resp_json = {"status": "error", "error": resp.text}
 
         if resp_json.get("status") != "success":
-            raise RequestFailedError(self._scrub(str(resp_json.get("error", resp.text))))
+            # Only the API's own failure answer speaks about the item; a page in its place (an outage) does not.
+            failure = ApiFailureError if resp_json.get("status") == "failure" else RequestFailedError
+            raise failure(self._scrub(str(resp_json.get("error", resp.text))))
         return cast("dict", resp_json["response"])
 
     async def torrentgroup(self, group_id: int) -> dict:

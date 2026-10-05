@@ -12,7 +12,7 @@ import pytest
 
 import salmon.trackers
 from salmon import cfg
-from salmon.errors import RequestError
+from salmon.errors import ApiFailureError, RequestError, RequestFailedError
 from salmon.uploader.request_checker import (
     _confirm_request_id,
     _print_request_details,
@@ -417,12 +417,28 @@ async def test_confirm_yes_all_skips_prompt(fake_tracker, monkeypatch):
 
 
 async def test_confirm_nonexistent_request_aborts(fake_tracker, monkeypatch, capsys):
-    fake_tracker.api_responses["request"] = RequestError("request not found")
+    fake_tracker.api_responses["request"] = ApiFailureError("request not found")
     patch_prompt(monkeypatch, [])
 
     with pytest.raises(click.Abort):
         await _confirm_request_id(fake_tracker, 424242)
-    assert "424242 does not exist." in capsys.readouterr().out
+    assert "424242 does not exist on RED (request not found)." in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "error",
+    [RequestError("Server error 503"), RequestFailedError("<html>cloudflare origin timeout authkey=SECRET</html>")],
+)
+async def test_confirm_request_failure_does_not_claim_it_is_gone(fake_tracker, monkeypatch, capsys, error):
+    fake_tracker.api_responses["request"] = error
+    patch_prompt(monkeypatch, [])
+
+    with pytest.raises(click.Abort):
+        await _confirm_request_id(fake_tracker, 424242)
+    out = capsys.readouterr().out
+    assert f"Could not fetch request 424242 from RED ({type(error).__name__})." in out
+    assert "does not exist" not in out
+    assert "<html>" not in out
 
 
 async def test_confirm_more_than_three_artists_shows_various(fake_tracker, monkeypatch, capsys):

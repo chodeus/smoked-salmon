@@ -21,7 +21,14 @@ from tenacity import wait_fixed
 
 from salmon import cfg
 from salmon.common import UploadFiles
-from salmon.errors import LoginError, RequestError, RequestFailedError, UnknownOutcomeError, UploadError
+from salmon.errors import (
+    ApiFailureError,
+    LoginError,
+    RequestError,
+    RequestFailedError,
+    UnknownOutcomeError,
+    UploadError,
+)
 from salmon.trackers.base import (
     BaseGazelleApi,
     HttpResponse,
@@ -287,7 +294,7 @@ async def test_api_call_success_returns_response_and_merges_params(api):
 
 async def test_api_call_error_status_raises_request_failed_with_message(api):
     script_requests(api, [http(text='{"status": "failure", "error": "bad parameters"}')])
-    with pytest.raises(RequestFailedError) as excinfo:
+    with pytest.raises(ApiFailureError) as excinfo:
         await api.api_call("browse")
     assert str(excinfo.value) == "bad parameters"
 
@@ -297,6 +304,8 @@ async def test_api_call_non_json_body_raises_request_failed_with_body(api):
     with pytest.raises(RequestFailedError) as excinfo:
         await api.api_call("index")
     assert "<html>maintenance</html>" in str(excinfo.value)
+    # A page in place of the API's answer says nothing about the item asked for.
+    assert not isinstance(excinfo.value, ApiFailureError)
 
 
 async def test_api_call_persistent_network_error_raises_retryable_error(api, monkeypatch):
