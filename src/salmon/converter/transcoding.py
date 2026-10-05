@@ -18,6 +18,7 @@ from salmon.constants import TAG_TRUMP_SIZE
 from salmon.converter.conversions import record_conversion
 from salmon.errors import UploadError
 from salmon.release_notification import upload_footer
+from salmon.tagger.audio_info import gather_audio_info
 
 Bitrate = Literal["V0", "320"]
 
@@ -89,6 +90,15 @@ def _build_output_path(path: str, bitrate: Bitrate, output_dir: str | None = Non
     """
     to_append: list[str] = []
     foldername = os.path.basename(path)
+    # Drop a stale resolution token before deriving the new name: an MP3 transcode must not keep
+    # claiming a FLAC resolution such as "24-96". The token is computed from the source's actual
+    # files, not guessed at with a pattern, so it cannot also eat unrelated digits from the title.
+    # Imported here: foldername imports this package, through salmon.converter.conversions.
+    from salmon.tagger.foldername import drop_resolution_token, resolution_token
+
+    current_token = resolution_token(gather_audio_info(path))
+    if current_token:
+        foldername = drop_resolution_token(foldername, current_token)
 
     if FLAC_FOLDER_RE.search(foldername):
         if LOSSLESS_FOLDER_RE.search(foldername):
