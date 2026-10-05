@@ -6,6 +6,7 @@ import msgspec
 
 from salmon import cfg
 from salmon.errors import ImageUploadFailed
+from salmon.images import base as images_base
 from salmon.images.base import BaseImageUploader
 
 HEADERS: dict[str, str] = {"X-API-Key": cfg.image.ptscreens_key or ""}
@@ -35,7 +36,7 @@ class ImageUploader(BaseImageUploader):
         url = "https://ptscreens.com/api/1/upload"
         try:
             async with (
-                aiohttp.ClientSession() as session,
+                self._http_session() as session,
                 session.post(url, headers=HEADERS, data=data) as resp,
             ):
                 body = await resp.text()
@@ -45,5 +46,7 @@ class ImageUploader(BaseImageUploader):
                 return r["image"]["url"], None
         except (msgspec.DecodeError, ValueError, KeyError, TypeError) as e:
             raise ImageUploadFailed(f"Failed decoding body: {e}") from e
+        except TimeoutError as e:
+            raise ImageUploadFailed(images_base.describe_upload_timeout(e)) from e
         except aiohttp.ClientError as e:
             raise ImageUploadFailed(f"Network error: {e}") from e

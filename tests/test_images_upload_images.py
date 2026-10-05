@@ -1,19 +1,22 @@
 """upload_images: the description/spectral path must refuse a host response the cover path would refuse."""
 
 from types import SimpleNamespace
+from typing import Any
 
 import anyio
 import pytest
 
 from salmon.errors import ImageUploadFailed
 from salmon.images import upload_images
+from salmon.images.base import BaseImageUploader
 
 
-class _FakeUploader:
+class _FakeUploader(BaseImageUploader):
     def __init__(self, url: str | None):
+        super().__init__()
         self._url = url
 
-    async def upload_file(self, _filename: str):
+    async def upload_file(self, filename: str) -> tuple[Any, None]:
         return self._url, None
 
 
