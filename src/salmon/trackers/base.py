@@ -172,7 +172,7 @@ _UNSUBMITTED_INPUT_TYPES = frozenset({"file", "submit", "button", "reset", "imag
 
 
 def _submitted_fields(form: Tag) -> list[tuple[str, str]]:
-    """The (name, value) pairs a browser submits for this form as shown, in page order."""
+    """The form's (name, value) pairs in page order, disabled fields kept: RED's onsubmit enables them all."""
     fields: list[tuple[str, str]] = []
     for control in form.find_all(["input", "select", "textarea"]):
         if not isinstance(control, Tag) or not control.get("name"):

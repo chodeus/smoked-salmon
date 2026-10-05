@@ -345,7 +345,7 @@ second line</textarea>
 </form>"""
 
 
-def test_form_fields_are_the_ones_a_browser_submits() -> None:
+def test_form_fields_follow_the_tracker_forms_submit_rules() -> None:
     from salmon.trackers.base import _submitted_fields  # Imported here: a missing helper fails this test only.
 
     form = BeautifulSoup(BROWSER_RULES_FORM, "lxml").find("form")
