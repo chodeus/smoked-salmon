@@ -15,7 +15,7 @@ import aiohttp
 import asyncclick as click
 import msgspec
 from aiohttp import FormData
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential, wait_random
 from torf import TorfError, Torrent
 from yarl import URL
@@ -165,6 +165,62 @@ def _compose_form_data(files: UploadFiles, data: dict[str, Any]) -> FormData:
         else:
             _add_form_field(form, key, value)
     return form
+
+
+# Inputs a browser does not submit as text: a file input sends a file, a button only its own name when clicked.
+_UNSUBMITTED_INPUT_TYPES = frozenset({"file", "submit", "button", "reset", "image"})
+
+
+def _submitted_fields(form: Tag) -> list[tuple[str, str]]:
+    """The (name, value) pairs a browser submits for this form as shown, in page order."""
+    fields: list[tuple[str, str]] = []
+    for control in form.find_all(["input", "select", "textarea"]):
+        if not isinstance(control, Tag) or not control.get("name"):
+            continue
+        name = str(control["name"])
+        if control.name == "input":
+            input_type = str(control.get("type", "text")).lower()
+            if input_type in _UNSUBMITTED_INPUT_TYPES:
+                continue
+            if input_type not in ("checkbox", "radio"):
+                fields.append((name, str(control.get("value", ""))))
+            elif control.has_attr("checked"):
+                fields.append((name, str(control.get("value", "on"))))
+        elif control.name == "select":
+            options = [option for option in control.find_all("option") if isinstance(option, Tag)]
+            selected = [option for option in options if option.has_attr("selected")]
+            if not control.has_attr("multiple"):
+                # The last selected option wins; with none, the first one not disabled.
+                selected = selected[-1:] or [option for option in options if not option.has_attr("disabled")][:1]
+            for option in selected:
+                value = option.get("value")
+                fields.append((name, " ".join(option.get_text().split()) if value is None else str(value)))
+        else:
+            # A newline right after the opening tag is not part of the text.
+            fields.append((name, control.get_text().removeprefix("\n")))
+    return fields
+
+
+def _torrent_edit_fields(page: str, torrent_id: int) -> list[tuple[str, str]]:
+    """The torrent edit form's fields as a browser submits them; RequestError unless it is exactly this torrent's."""
+    soup = BeautifulSoup(page, "lxml")
+    # The page also holds forms that move the torrent to another group; only one posts action=takeedit.
+    forms = [
+        form
+        for form in soup.find_all("form", attrs={"name": "torrent"})
+        if isinstance(form, Tag) and form.find("input", attrs={"type": "hidden", "name": "action", "value": "takeedit"})
+    ]
+    if len(forms) != 1:
+        raise RequestError(f"expected one edit form on the page, found {len(forms)}")
+    fields = _submitted_fields(forms[0])
+    descriptions = [name for name, _ in fields].count("release_desc")
+    if descriptions != 1:
+        raise RequestError(f"expected one description field in the edit form, found {descriptions}")
+    if ("torrentid", str(torrent_id)) not in fields:
+        raise RequestError(f"the edit form is not for torrent {torrent_id}")
+    if not dict(fields).get("auth"):
+        raise RequestError("the edit form has no auth field")
+    return fields
 
 
 class SearchReleaseData(msgspec.Struct, frozen=True):
@@ -1040,35 +1096,22 @@ class BaseGazelleApi:
         raise RequestError(f"Failed to report the torrent for lossy master, code {resp.status}.")
 
     async def append_to_torrent_description(self, torrent_id: int, description_addition: str) -> None:
-        """Add text to start of torrent description.
-
-        Args:
-            torrent_id: The torrent ID.
-            description_addition: Text to prepend to description.
-
-        Raises:
-            RequestError: If edit fails.
-        """
-        current_details = await self.api_call("torrent", params={"id": torrent_id})
-        new_data = {
-            "action": "takeedit",
-            "torrentid": torrent_id,
-            "type": 1,
-            "groupremasters": 0,
-            "remaster_year": current_details["torrent"]["remasterYear"],
-            "remaster_title": current_details["torrent"]["remasterTitle"],
-            "remaster_record_label": current_details["torrent"]["remasterRecordLabel"],
-            "remaster_catalogue_number": current_details["torrent"]["remasterCatalogueNumber"],
-            "format": current_details["torrent"]["format"],
-            "bitrate": current_details["torrent"]["encoding"],
-            "other_bitrate": "",
-            "media": current_details["torrent"]["media"],
-            "release_desc": description_addition + current_details["torrent"]["description"],
-            "auth": self.authkey,
-        }
+        """Prepend text to a torrent's description; RequestError if the form is unreadable or the edit refused."""
         url = self.base_url + "/torrents.php"
-        # Every field is rebuilt from the torrent's current state, so sending it twice is harmless.
-        resp = await self._request("POST", url, data=new_data, idempotent=True)
+        # The edit form sets every field, so one rebuilt from the API cleared the flags, the DIC edition, and
+        # turned RED's escaped & into &amp;. Send the tracker's own form back with only the description changed.
+        # Authenticated first: the page holds the authkey in its auth input, and only a known authkey is masked.
+        page = await self._request("GET", url, params={"action": "edit", "id": torrent_id})
+        try:
+            fields = _torrent_edit_fields(page.text, torrent_id)
+        except RequestError as err:
+            raise RequestError(
+                f"Could not read the edit form of torrent {torrent_id} on {self.site_string} ({err}). "
+                "Nothing was sent: its description is unchanged."
+            ) from err
+        new_data = [(name, description_addition + value if name == "release_desc" else value) for name, value in fields]
+        # Every field is the one the form showed, or the description above, so sending it twice is harmless.
+        resp = await self._request("POST", url, data=new_data, idempotent=True, needs_authkey=False)
         resp_text = resp.text
 
         soup = BeautifulSoup(resp_text, "lxml")

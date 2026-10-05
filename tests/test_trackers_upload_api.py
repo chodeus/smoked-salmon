@@ -74,7 +74,16 @@ def script_requests(api, outcomes):
     """
     calls = []
 
-    async def fake_request(method, url, params=None, data=None, timeout_secs=10, prefer_api_key=False, idempotent=None):
+    async def fake_request(
+        method,
+        url,
+        params=None,
+        data=None,
+        timeout_secs=10,
+        prefer_api_key=False,
+        idempotent=None,
+        needs_authkey=True,
+    ):
         calls.append(
             {
                 "method": method,
@@ -84,6 +93,7 @@ def script_requests(api, outcomes):
                 "timeout_secs": timeout_secs,
                 "prefer_api_key": prefer_api_key,
                 "idempotent": idempotent,
+                "needs_authkey": needs_authkey,
             }
         )
         outcome = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
@@ -786,11 +796,10 @@ async def test_report_lossy_master_failure_raises_request_error(api):
 # append_to_torrent_description
 # ---------------------------------------------------------------------------
 
-TORRENT_DETAILS_JSON = (
-    '{"status": "success", "response": {"torrent": {'
-    '"remasterYear": 2020, "remasterTitle": "", "remasterRecordLabel": "", '
-    '"remasterCatalogueNumber": "", "format": "FLAC", "encoding": "Lossless", '
-    '"media": "WEB", "description": "Old description"}}}'
+EDIT_PAGE = (
+    '<html><body><form name="torrent" method="post"><input type="hidden" name="action" value="takeedit">'
+    '<input type="hidden" name="auth" value="AK"><input type="hidden" name="torrentid" value="42">'
+    '<textarea name="release_desc">Old description</textarea></form></body></html>'
 )
 
 
@@ -798,24 +807,25 @@ async def test_append_to_torrent_description_success_prepends_text(api, capsys):
     calls = script_requests(
         api,
         [
-            http(text=TORRENT_DETAILS_JSON),
+            http(text=EDIT_PAGE),
             http(text="<html><body><h2>Edit successful</h2></body></html>"),
         ],
     )
-    api.authkey = "AK"
 
     await api.append_to_torrent_description(42, "Spectrals: ")
 
+    assert (calls[0]["method"], calls[0]["params"]) == ("GET", {"action": "edit", "id": 42})
     assert calls[1]["method"] == "POST"
     assert calls[1]["url"] == "https://dummy.example/torrents.php"
-    assert calls[1]["data"]["release_desc"] == "Spectrals: Old description"
+    assert dict(calls[1]["data"])["release_desc"] == "Spectrals: Old description"
+    # Authenticated before the page is read, so _scrub knows the authkey the form repeats.
+    assert [call["needs_authkey"] for call in calls] == [True, False]
     assert "Added spectrals to the torrent description." in capsys.readouterr().out
 
 
 async def test_append_to_torrent_description_error_page_raises_request_error(api):
     error_html = "<html><body><div><div><h2>Error</h2></div><p>No changes detected</p></div></body></html>"
-    script_requests(api, [http(text=TORRENT_DETAILS_JSON), http(text=error_html)])
-    api.authkey = "AK"
+    script_requests(api, [http(text=EDIT_PAGE), http(text=error_html)])
 
     with pytest.raises(RequestError) as excinfo:
         await api.append_to_torrent_description(42, "Spectrals: ")
@@ -1156,15 +1166,9 @@ async def test_a_lost_upload_not_found_says_it_may_have_gone_through(api, tmp_pa
 
 
 async def test_the_description_edit_is_sent_as_idempotent(api):
-    torrent = (
-        '{"remasterYear": 2020, "remasterTitle": "", "remasterRecordLabel": "", "remasterCatalogueNumber": "",'
-        ' "format": "FLAC", "encoding": "Lossless", "media": "WEB", "description": "old"}'
-    )
-    group = '{"status": "success", "response": {"torrent": ' + torrent + ', "group": {"id": 1}}}'
-    calls = script_requests(api, [http(text=group), http(text="<html></html>")])
-    api.authkey = "AK"
+    calls = script_requests(api, [http(text=EDIT_PAGE), http(text="<html></html>")])
 
-    await api.append_to_torrent_description(7, "addition")
+    await api.append_to_torrent_description(42, "addition")
 
     assert calls[-1]["method"] == "POST"
     assert calls[-1]["idempotent"] is True
