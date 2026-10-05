@@ -100,11 +100,7 @@ class LogCheckSkipped(Exception):
     pass
 
 
-class DryRunComplete(BaseException):
-    """Raised after a --dry-run validation to stop cleanly before any real upload.
-
-    BaseException so ordinary ``except Exception`` handlers in the upload flow can't
-    swallow it; only the up() command catches it.
-    """
+class DryRunRefused(Exception):
+    """A step that would send something ran in a dry run and was stopped; not a RequestError, so no "failed upload"."""
 
     pass

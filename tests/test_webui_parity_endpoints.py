@@ -463,6 +463,33 @@ def test_upload_forwards_the_selected_trackers(client, album_dir, monkeypatch) -
     assert seen["trackers"] == ["RED", "OPS"]
 
 
+def test_a_web_dry_run_runs_the_upload_as_a_dry_run(client, album_dir, monkeypatch) -> None:
+    from salmon import dryrun
+    from salmon.webui.routers import upload as upload_router
+
+    seen: dict = {}
+
+    async def fake_upload(*_args, **_kwargs):
+        seen["dry_run"] = dryrun.active()
+
+    monkeypatch.setattr(upload_router, "run_upload", fake_upload)
+    resp = client.post("/api/upload", json={"path": str(album_dir), "tracker": "RED", "source": "WEB", "dry_run": True})
+    assert resp.status_code == 200
+    body = _wait(client, resp.json()["id"])
+    assert body["status"] == "done", body
+    assert seen == {"dry_run": True}
+    assert not dryrun.active(), "the flag ends with the job"
+
+
+def test_a_web_dry_run_refuses_spectrals_after(client, album_dir) -> None:
+    resp = client.post(
+        "/api/upload",
+        json={"path": str(album_dir), "tracker": "RED", "source": "WEB", "dry_run": True, "spectrals_after": True},
+    )
+    assert resp.status_code == 422
+    assert "spectrals_after" in resp.json()["detail"]
+
+
 def test_upload_omitting_trackers_keeps_the_cli_behaviour(client, album_dir, monkeypatch) -> None:
     seen = _capture_upload(monkeypatch)
     resp = client.post("/api/upload", json={"path": str(album_dir), "tracker": "RED", "source": "WEB"})

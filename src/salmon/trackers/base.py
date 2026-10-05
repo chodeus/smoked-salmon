@@ -16,11 +16,12 @@ import asyncclick as click
 import msgspec
 from aiohttp import FormData
 from bs4 import BeautifulSoup, Tag
+from humanfriendly import format_size
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential, wait_random
 from torf import TorfError, Torrent
 from yarl import URL
 
-from salmon import cfg
+from salmon import cfg, dryrun
 from salmon.common import UploadFiles
 from salmon.common.urls import parse_retry_after
 from salmon.constants import RELEASE_TYPES
@@ -112,57 +113,32 @@ def _build_tracker_cookies(session_cookie: str, keeplogged_cookie: str | None = 
     return cookies
 
 
-def _add_form_field(form: FormData, key: str, value: Any) -> None:
-    """Add a single value to FormData, coercing types as needed.
-
-    aiohttp FormData only accepts str/bytes/IO types, so bool and int
-    values are converted accordingly. False and None are skipped.
-
-    Args:
-        form: The FormData instance to add the field to.
-        key: The field name.
-        value: The field value.
-    """
-    if value is True:
-        form.add_field(key, "on")
-    elif value is False or value is None:
-        return
-    elif isinstance(value, int):
-        form.add_field(key, str(value))
-    else:
-        form.add_field(key, value)
+def _form_parts(files: UploadFiles, data: dict[str, Any]) -> list[tuple[str, Any, str | None]]:
+    """The upload form's (name, value, file name or None) parts, in the order they are sent."""
+    # aiohttp FormData only takes str/bytes/IO: True goes as "on", an int as its digits, False and None not at all.
+    parts: list[tuple[str, Any, str | None]] = [("file_input", files.torrent_data, "meowmeow.torrent")]
+    parts += [("logfiles[]", log_data, log_name) for log_name, log_data in files.log_files]
+    for key, value in data.items():
+        for item in value if isinstance(value, list) else [value]:
+            if item is True:
+                parts.append((key, "on", None))
+            elif item is False or item is None:
+                continue
+            elif isinstance(item, int):
+                parts.append((key, str(item), None))
+            else:
+                parts.append((key, item, None))
+    return parts
 
 
 def _compose_form_data(files: UploadFiles, data: dict[str, Any]) -> FormData:
-    """Compose FormData by converting UploadFiles and adding data fields.
-
-    Args:
-        files: The UploadFiles object containing file uploads.
-        data: Dictionary of field names and values to add.
-
-    Returns:
-        A new FormData object with all files and fields added.
-    """
+    """The upload's FormData, built from _form_parts."""
     form = FormData()
-    form.add_field(
-        "file_input",
-        files.torrent_data,
-        filename="meowmeow.torrent",
-        content_type="application/octet-stream",
-    )
-    for log_name, log_data in files.log_files:
-        form.add_field(
-            "logfiles[]",
-            log_data,
-            filename=log_name,
-            content_type="application/octet-stream",
-        )
-    for key, value in data.items():
-        if isinstance(value, list):
-            for item in value:
-                _add_form_field(form, key, item)
+    for name, value, filename in _form_parts(files, data):
+        if filename is None:
+            form.add_field(name, value)
         else:
-            _add_form_field(form, key, value)
+            form.add_field(name, value, filename=filename, content_type="application/octet-stream")
     return form
 
 
@@ -372,7 +348,6 @@ class BaseGazelleApi:
     api_key: str = ""  # Optional, only for API key upload
     api_key_prefix: str = ""  # OPS wants "token <key>"; RED wants the bare key
     keeplogged: str | None = None
-    dry_run: bool = False  # when True, validate the upload but never actually send it
 
     def __init__(self) -> None:
         """Initialize the API client. Subclasses should call this after setting cookie/base_url."""
@@ -537,6 +512,9 @@ class BaseGazelleApi:
                 return RetryableError(message)
             return UnknownOutcomeError(message)
 
+        # A dry run only reads from the tracker; each sending step skips itself, and this stops any that was missed.
+        if method != "GET" and dryrun.active():
+            dryrun.refuse(f"send {method} {self._scrub(url)} to {self.site_string}")
         # An api key request that sends no auth field needs no index call for the authkey.
         if needs_authkey and not (params and params.get("action") == "index"):
             await self.ensure_authenticated()
@@ -919,6 +897,8 @@ class BaseGazelleApi:
         """
         url = self.base_url + "/ajax.php?action=upload"
         data["auth"] = self.authkey
+        if dryrun.active():
+            return self._dry_run_upload(url, data, files, prefer_api_key=True)
 
         try:
             response = await self._request(
@@ -985,6 +965,8 @@ class BaseGazelleApi:
         else:
             url = self.base_url + "/upload.php"
         data["auth"] = self.authkey
+        if dryrun.active():
+            return self._dry_run_upload(url, data, files, prefer_api_key=False)
 
         try:
             response = await self._request("POST", url, data=_compose_form_data(files, data), timeout_secs=30)
@@ -1053,19 +1035,27 @@ class BaseGazelleApi:
 
         return await self.site_page_upload(data, files)
 
-    async def dry_run_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
-        """Build the upload locally and send nothing.
-
-        Never call a tracker-side dryrun here: posting the form to validate it is
-        still posting it, which is not what --dry-run promises.
-        """
-        click.secho(
-            f"\n[DRY RUN] {self.site_string}: prepared the torrent and upload form locally. "
-            f"Nothing was sent to {self.site_string}.",
-            fg="cyan",
-            bold=True,
+    def _dry_run_upload(self, url: str, data: dict, files: UploadFiles, prefer_api_key: bool) -> tuple[int, int]:
+        """Print the upload a dry run does not send, part by part, and return the IDs it stands in for."""
+        # Every value is redacted as the debug output is: the form holds the authkey.
+        auth = "the API key" if prefer_api_key and self.api_key else "the session cookie"
+        dryrun.say(f"not uploading to {self.site_string}. It would send POST {self._scrub(url)} with {auth}:")
+        for name, value, filename in _form_parts(files, data):
+            shown = f"{filename} ({format_size(len(value), binary=True)})" if filename else self._scrub(str(value))
+            first, *more = shown.split("\n")
+            click.echo(f"  {name}: {first}")
+            for line in more:
+                click.echo(f"      {line}")
+        torrent = Torrent.read_stream(files.torrent_data)
+        click.echo(
+            f"  The torrent: {torrent.name}, {len(torrent.files)} file(s), {format_size(torrent.size, binary=True)}, "
+            f"piece size {format_size(torrent.piece_size, binary=True)}, source {torrent.source}"
         )
-        return 0, 0
+        for file in torrent.files:
+            # The first part of a path in a torrent of several files is the torrent's name.
+            click.echo(f"    {'/'.join(file.parts[1:]) or file}  ({format_size(file.size, binary=True)})")
+        group_id = data.get("groupid")
+        return dryrun.NEW_TORRENT_ID, group_id if group_id else dryrun.NEW_GROUP_ID
 
     async def report_lossy_master(self, torrent_id: int, comment: str, source: str) -> bool:
         """Report torrent for lossy master/web approval.

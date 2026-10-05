@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 import salmon.trackers
+from salmon import dryrun
 from salmon.constants import SOURCES as SOURCE_CODES
 from salmon.constants import TAG_ENCODINGS
 from salmon.uploader import upload as run_upload
@@ -81,6 +82,12 @@ async def start(req: UploadStartRequest) -> dict:
         conflict := skip_flac_upload_conflict(req.group_id, req.request, req.spectrals_after, sites)
     ):
         raise HTTPException(status_code=422, detail=conflict)
+    if req.dry_run and req.spectrals_after:
+        raise HTTPException(
+            status_code=422,
+            detail="dry_run cannot be used with spectrals_after: that step edits the uploaded torrent, and a dry run "
+            "uploads none.",
+        )
 
     request_id = req.request
     if request_id:
@@ -90,8 +97,13 @@ async def start(req: UploadStartRequest) -> dict:
             raise HTTPException(status_code=422, detail=e.message) from e
 
     async def run(job: Job) -> dict:
+        # Set in this job's own context, so it covers this upload and every task it starts, nothing else.
+        with dryrun.mode(req.dry_run):
+            await _run_upload_job()
+        return {"album_path": path, "tracker": req.tracker, "dry_run": req.dry_run}
+
+    async def _run_upload_job() -> None:
         gazelle_site = salmon.trackers.get_class(req.tracker)()
-        gazelle_site.dry_run = req.dry_run
         spectrals = tuple(req.spectrals)
         print_preassumptions(
             gazelle_site, path, req.group_id, req.source, req.lossy, spectrals, req.encoding, req.spectrals_after
@@ -125,7 +137,6 @@ async def start(req: UploadStartRequest) -> dict:
             trackers=req.trackers or None,
             apply_ai_suggestions=req.apply_ai_suggestions,
         )
-        return {"album_path": path, "tracker": req.tracker, "dry_run": req.dry_run}
 
     title = f"Upload to {req.tracker}: {os.path.basename(path)}"
     try:

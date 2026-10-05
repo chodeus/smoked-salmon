@@ -8,7 +8,7 @@ from contextlib import contextmanager
 
 import asyncclick as click
 
-from salmon import cfg
+from salmon import cfg, dryrun
 from salmon.common.files import rewrite_refusal
 from salmon.converter.conversions import carry_conversion
 from salmon.errors import UploadError
@@ -46,6 +46,8 @@ def _copy_into(path: str, into: str, scratch: bool, reason: str | None) -> str:
     dest = os.path.join(into, os.path.basename(path.rstrip(os.sep)))
     if not scratch:
         why = f"salmon works on a copy and never modifies the album, as {reason}."
+    elif dryrun.active():
+        why = "A dry run works on a copy, so the source is never modified."
     else:
         why = "--skip-flac-upload works on a copy, so the source is never modified."
     try:
