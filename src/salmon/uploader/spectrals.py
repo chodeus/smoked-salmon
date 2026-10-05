@@ -339,6 +339,15 @@ def get_spectrals_path(path):
     return os.path.join(path, "Spectrals")
 
 
+# Spectrals folders salmon made, by real path: a rename moves only these, never a folder of the user's own.
+_made_specs_folders: set[str] = set()
+
+
+def made_by_salmon(spectrals_path: str) -> bool:
+    """Whether salmon made this spectrals folder in this process."""
+    return os.path.realpath(spectrals_path) in _made_specs_folders
+
+
 def create_specs_folder(path, spectrals_path=None):
     """Create the spectrals folder, emptying it first.
 
@@ -351,6 +360,7 @@ def create_specs_folder(path, spectrals_path=None):
     if os.path.isdir(spectrals_path):
         shutil.rmtree(spectrals_path)
     os.mkdir(spectrals_path)
+    _made_specs_folders.add(os.path.realpath(spectrals_path))
     return spectrals_path
 
 
