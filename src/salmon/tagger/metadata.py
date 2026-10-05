@@ -12,7 +12,7 @@ from salmon.checks.source import tag_urls
 from salmon.common import handle_scrape_errors, make_searchstrs, re_strip
 from salmon.common.strings import comparable
 from salmon.search import SEARCHSOURCES, run_metasearch
-from salmon.sources.deezer import album_upc
+from salmon.sources.deezer import DeezerBase, album_upc
 from salmon.tagger.combine import combine_metadatas, get_source_from_link
 from salmon.tagger.sources import METASOURCES
 from salmon.tagger.sources.base import generate_artists, standardize_genres
@@ -53,7 +53,8 @@ async def get_metadata(path: str, tags: dict[str, Any], rls_data: dict[str, Any]
     default = suggest_choice(choices, search_results, rls_data, len(tags), store)
     _explain_default(default, choices)
     metadata, source_url = await _select_choice(choices, rls_data, default=default)
-    await fill_upc_from_store(metadata, store)
+    await fill_upc_from_deezer(metadata, path)
+    _dedupe_catno_against_upc(metadata)
     remove_various_artists(metadata["tracks"])
     metadata = fix_hardcore_genre(metadata)
     return metadata, source_url
@@ -72,11 +73,36 @@ def _explain_default(default: str | None, choices: dict[int, tuple[str, str]]) -
             )
 
 
-async def fill_upc_from_store(metadata: dict[str, Any], store: str | None) -> None:
-    """Take a missing UPC from the files' own Deezer album; another store's release may carry a different barcode."""
-    if metadata.get("upc") or not store:
+async def fill_upc_from_deezer(metadata: dict[str, Any], path: str) -> None:
+    """Take a missing UPC from the files' own Deezer album; another store's release may carry a different barcode.
+
+    Makes one request, and only when the UPC is still empty and the files carry a Deezer album URL.
+    """
+    if metadata.get("upc"):
         return
-    metadata["upc"] = await album_upc(store)
+    sourced, other = tag_urls(path)
+    url = _first_deezer_album_url(sourced) or _first_deezer_album_url(other)
+    if not url:
+        return
+    metadata["upc"] = await album_upc(url)
+
+
+def _first_deezer_album_url(urls: list[str]) -> str | None:
+    for url in urls:
+        match = DeezerBase.regex.search(url)
+        if match and match[1] == "album":
+            return url
+    return None
+
+
+def _dedupe_catno_against_upc(metadata: dict[str, Any]) -> None:
+    """Clear the catalogue number when it is really just the UPC repeated.
+
+    Uses `.get` rather than indexing: manually edited metadata can omit either key entirely.
+    """
+    catno = metadata.get("catno")
+    if catno and catno.replace(" ", "") == str(metadata.get("upc")):
+        metadata["catno"] = None
 
 
 def _print_search_results(results, rls_data=None):
@@ -343,6 +369,5 @@ def clean_metadata(metadata):
                     else:
                         metadata["tracks"][disc][num]["artists"].remove((artist, importance))
 
-    if metadata["catno"] and metadata["catno"].replace(" ", "") == str(metadata["upc"]):
-        metadata["catno"] = None
+    _dedupe_catno_against_upc(metadata)
     return metadata

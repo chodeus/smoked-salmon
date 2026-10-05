@@ -9,6 +9,8 @@ import os
 import re
 
 from mutagen import File as MutagenFile
+from mutagen.id3 import TextFrame
+from mutagen.mp4 import AtomDataType, MP4FreeForm
 
 from salmon.common.files import get_audio_files
 
@@ -72,10 +74,28 @@ def field_name(key) -> str:
     return _FRAME_FIELDS.get(name.split(":", 1)[0], name)
 
 
+def _decode_bytes(item: bytes) -> str:
+    """Decode a raw tag value: an MP4 freeform's own `dataformat` when it says UTF-16, else UTF-8.
+
+    iTunes writes UTF-16 freeform data big-endian with no BOM; only trust the "utf-16" codec's own
+    byte-order guess when a BOM is actually present, otherwise decode it as big-endian explicitly.
+    """
+    if isinstance(item, MP4FreeForm) and item.dataformat == AtomDataType.UTF16:
+        encoding = "utf-16" if item[:2] in (b"\xfe\xff", b"\xff\xfe") else "utf-16-be"
+        return item.decode(encoding, "ignore")
+    return item.decode("utf-8", "ignore")
+
+
 def tag_texts(value) -> list[str]:
-    """A tag value as plain strings, whether a list, an ID3 frame or MP4 freeform bytes."""
+    """A tag value as plain strings, whether a list, an ID3 frame or MP4 freeform bytes.
+
+    An ID3 text frame gives each of its values: as one string, they would be joined with NULs.
+    """
+    if isinstance(value, TextFrame):
+        # mutagen sets a frame's attributes from its spec at runtime, so its types do not know `text`.
+        value = getattr(value, "text", [])
     items = value if isinstance(value, list) else [value]
-    return [(item.decode("utf-8", "ignore") if isinstance(item, bytes) else str(item)).strip() for item in items]
+    return [(_decode_bytes(item) if isinstance(item, bytes) else str(item)).strip() for item in items]
 
 
 def _tags(mut) -> list:
