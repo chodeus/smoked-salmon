@@ -19,7 +19,7 @@ from aiohttp import web
 import salmon.images as images
 import salmon.images.base as images_base
 from salmon.errors import ImageUploadFailed
-from salmon.images import catbox, imgbb, oeimg, ptscreens
+from salmon.images import catbox, imgbb, oeimg, ptscreens, ra
 
 REAL_HOSTS = ("https://catbox.moe", "https://ptscreens.com")
 
@@ -29,6 +29,7 @@ TIMEOUT_MODULES = {
     "imgbb": (imgbb, "https://api.imgbb.com"),
     "oeimg": (oeimg, "https://imgoe.download"),
     "ptscreens": (ptscreens, "https://ptscreens.com"),
+    "ra": (ra, "https://thesungod.xyz"),
 }
 
 TINY_TIMEOUT = aiohttp.ClientTimeout(total=0.1, sock_connect=0.1)
@@ -36,8 +37,9 @@ TINY_TIMEOUT = aiohttp.ClientTimeout(total=0.1, sock_connect=0.1)
 
 @pytest.fixture(autouse=True)
 def _imgbb_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The config refuses imgbb without a key; the test config has none.
+    # The config refuses imgbb and ra without a key; the test config has none.
     monkeypatch.setattr(imgbb.cfg.image, "imgbb_key", "key")
+    monkeypatch.setattr(imgbb.cfg.image, "ra_key", "key")
 
 
 class FakeHost:

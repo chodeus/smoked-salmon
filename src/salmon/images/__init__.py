@@ -8,8 +8,9 @@ import pyperclip
 
 from salmon import cfg, dryrun
 from salmon.common import AliasedCommands, commandgroup, is_http_url
+from salmon.config.validations import SPECTRALS_REFUSED
 from salmon.errors import ImageUploadFailed
-from salmon.images import catbox, imgbb, imgbox, oeimg, ptscreens, red
+from salmon.images import catbox, imgbb, imgbox, oeimg, ptscreens, ra, red
 from salmon.images.base import BaseImageUploader
 
 HOSTS = {
@@ -18,6 +19,7 @@ HOSTS = {
     "oeimg": oeimg,
     "imgbb": imgbb,
     "imgbox": imgbox,
+    "ra": ra,
     "red": red,
 }
 
@@ -236,8 +238,7 @@ async def _handle_failed_spectrals(spectrals, successful) -> dict:
     Returns:
         Dictionary of uploaded URLs.
     """
-    # RED's rules forbid spectrals on its image host, so it is never a spectral option.
-    spec_hosts = {k: v for k, v in HOSTS.items() if k != "red"}
+    spec_hosts = {k: v for k, v in HOSTS.items() if k not in SPECTRALS_REFUSED}
     while True:
         host_input: str = await click.prompt(
             click.style(
@@ -249,7 +250,9 @@ async def _handle_failed_spectrals(spectrals, successful) -> dict:
             default="catbox",
         )
         host = host_input.lower()
-        if host not in spec_hosts:
+        if host in SPECTRALS_REFUSED:
+            click.secho(f"{host} can't be used for spectrals: {SPECTRALS_REFUSED[host]}.", fg="red")
+        elif host not in spec_hosts:
             click.secho(f"{host} is an invalid image host. Please choose another one.", fg="red")
         else:
             return await upload_spectrals(spectrals, uploader=spec_hosts[host], successful=successful)
