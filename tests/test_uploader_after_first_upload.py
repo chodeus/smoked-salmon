@@ -1,6 +1,7 @@
 """After the first upload: spectrals checked once, no offer to delete the uploaded folder, a clean abort."""
 
 import contextlib
+import os
 from typing import Any
 
 import anyio
@@ -280,3 +281,29 @@ def test_a_refused_lossy_master_report_is_printed_to_file_by_hand(monkeypatch, c
     out = capsys.readouterr().out
     assert "did not take the lossy master report" in out
     assert "lossy note" in out
+
+
+def _nothing_picked(monkeypatch, tmp_path) -> str:
+    async def check_spectrals(*_args, **_kwargs):
+        return False, None
+
+    monkeypatch.setattr(spectrals, "check_spectrals", check_spectrals)
+    monkeypatch.setattr(spectrals.cfg.directory, "tmp_dir", None)
+    album = tmp_path / "Album"
+    album.mkdir()
+    return str(album)
+
+
+def test_spectrals_nobody_picked_are_removed_before_a_later_torrent(monkeypatch, tmp_path) -> None:
+    album = _nothing_picked(monkeypatch, tmp_path)
+    made = spectrals.create_specs_folder(album)
+    anyio.run(lambda: spectrals.post_upload_spectral_check(FakeSite(), album, 1, None, {}, "WEB", None))  # type: ignore[arg-type]
+    assert not os.path.exists(made)
+
+
+def test_a_spectrals_folder_salmon_did_not_make_is_kept_when_nothing_is_picked(monkeypatch, tmp_path) -> None:
+    album = _nothing_picked(monkeypatch, tmp_path)
+    theirs = os.path.join(album, "Spectrals")
+    os.mkdir(theirs)
+    anyio.run(lambda: spectrals.post_upload_spectral_check(FakeSite(), album, 1, None, {}, "WEB", None))  # type: ignore[arg-type]
+    assert os.path.isdir(theirs)

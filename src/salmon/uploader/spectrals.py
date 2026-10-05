@@ -733,6 +733,9 @@ async def post_upload_spectral_check(
         path, track_data, None, spectral_ids, force_prompt_lossy_master=True, format=format, offer_deletion=False
     )
     if not lossy_master and not spectral_ids:
+        # Nothing to upload: the spectrals made for the check go before a later torrent can take them.
+        if made_by_salmon(spectrals_path := get_spectrals_path(path)):
+            await handle_spectrals_upload_and_deletion(spectrals_path, None)
         return False, None, None, None
 
     lossy_comment = None
