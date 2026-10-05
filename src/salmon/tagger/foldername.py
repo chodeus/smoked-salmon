@@ -121,7 +121,7 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
 
         if specs_in_source:
             # Moved, not copied: the source must not keep a Spectrals folder the upload never deletes.
-            _move_folder(specs_path, get_spectrals_path(new_path))
+            _move_specs_folder(specs_path, get_spectrals_path(new_path))
 
         if cfg.upload.formatting.remove_source_dir:
             shutil.rmtree(path)
@@ -137,7 +137,7 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
         elif os.path.exists(tmp_new_specs_path) and os.path.samefile(tmp_old_specs_path, tmp_new_specs_path):
             click.secho(f"Skipping move, same location already for '{tmp_new_specs_path}'", fg="yellow")
         else:
-            _move_folder(tmp_old_specs_path, tmp_new_specs_path)
+            _move_specs_folder(tmp_old_specs_path, tmp_new_specs_path)
             click.secho(f"Moved temporary spectrals folder to '{tmp_new_specs_path}'.", fg="yellow")
 
     return new_path
@@ -158,11 +158,16 @@ def _ignoring_top_level(top: str, name: str):
     return ignore
 
 
-def _move_folder(src: str, dst: str) -> None:
-    """Move a folder to `dst`, replacing a stale one there; works across volumes."""
+def _move_specs_folder(src: str, dst: str) -> None:
+    """Move a spectrals folder to `dst`, replacing a stale one there, and carry salmon's claim on it."""
+    # Imported here: the uploader package imports this module.
+    from salmon.uploader.spectrals import carry_specs_claim
+
+    old_real = os.path.realpath(src)
     if os.path.isdir(dst):
         shutil.rmtree(dst)
     shutil.move(src, dst)
+    carry_specs_claim(old_real, dst)
 
 
 def generate_folder_name(metadata):

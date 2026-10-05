@@ -348,6 +348,13 @@ def made_by_salmon(spectrals_path: str) -> bool:
     return os.path.realpath(spectrals_path) in _made_specs_folders
 
 
+def carry_specs_claim(old_real: str, new_path: str) -> None:
+    """After a move, salmon's claim on the folder at old_real (a real path) moves to new_path."""
+    if old_real in _made_specs_folders:
+        _made_specs_folders.discard(old_real)
+        _made_specs_folders.add(os.path.realpath(new_path))
+
+
 def create_specs_folder(path, spectrals_path=None):
     """Create the spectrals folder, emptying it first.
 

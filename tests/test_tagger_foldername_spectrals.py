@@ -1,4 +1,4 @@
-"""A folder rename never leaves the spectrals of the old name behind (#569, #573)."""
+"""A folder rename moves the spectrals salmon made to the new name; a folder it did not make stays."""
 
 import hashlib
 from pathlib import Path
@@ -188,3 +188,31 @@ def test_a_spectrals_folder_salmon_did_not_make_stays_in_the_source(monkeypatch,
 
     assert _listing(album) == before
     assert (new_path / "Spectrals" / "theirs.png").read_bytes() == b"theirs"
+
+
+def test_a_second_rename_still_moves_salmons_spectrals(monkeypatch, dirs) -> None:
+    _downloads, seeding = dirs
+    album = _album(seeding / "Old Name")
+    _write_spectrals(Path(get_spectrals_path(str(album))))
+    first = Path(foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False))
+    monkeypatch.setattr(foldername, "generate_folder_name", lambda _metadata: "Second Name")
+
+    second = Path(foldername.rename_folder(str(first), _metadata(), auto_rename=True, check=False))
+
+    assert not (first / "Spectrals").exists()
+    assert _files(second / "Spectrals") == SPECTRAL_FILES
+
+
+def test_a_folder_made_later_at_the_old_path_is_not_salmons(monkeypatch, dirs) -> None:
+    _downloads, seeding = dirs
+    album = _album(seeding / "Old Name")
+    _write_spectrals(Path(get_spectrals_path(str(album))))
+    foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False)
+    (album / "Spectrals").mkdir()
+    (album / "Spectrals" / "theirs.png").write_bytes(b"theirs")
+    before = _listing(album)
+    monkeypatch.setattr(foldername, "generate_folder_name", lambda _metadata: "Second Name")
+
+    foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False)
+
+    assert _listing(album) == before
