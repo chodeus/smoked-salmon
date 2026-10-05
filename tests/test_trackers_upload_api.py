@@ -22,7 +22,6 @@ from tenacity import wait_fixed
 from salmon import cfg
 from salmon.common import UploadFiles
 from salmon.errors import (
-    ApiFailureError,
     LoginError,
     RequestError,
     RequestFailedError,
@@ -304,7 +303,7 @@ async def test_api_call_success_returns_response_and_merges_params(api):
 
 async def test_api_call_error_status_raises_request_failed_with_message(api):
     script_requests(api, [http(text='{"status": "failure", "error": "bad parameters"}')])
-    with pytest.raises(ApiFailureError) as excinfo:
+    with pytest.raises(RequestFailedError) as excinfo:
         await api.api_call("browse")
     assert str(excinfo.value) == "bad parameters"
 
@@ -314,8 +313,6 @@ async def test_api_call_non_json_body_raises_request_failed_with_body(api):
     with pytest.raises(RequestFailedError) as excinfo:
         await api.api_call("index")
     assert "<html>maintenance</html>" in str(excinfo.value)
-    # A page in place of the API's answer says nothing about the item asked for.
-    assert not isinstance(excinfo.value, ApiFailureError)
 
 
 async def test_api_call_persistent_network_error_raises_retryable_error(api, monkeypatch):
@@ -345,6 +342,24 @@ async def test_request_http_400_raises_request_failed(api, monkeypatch):
     with pytest.raises(RequestFailedError) as excinfo:
         await api._request("GET", "https://dummy.example/ajax.php")
     assert "no such action" in str(excinfo.value)
+
+
+async def test_an_error_page_is_masked_and_capped_before_anyone_prints_it(api, monkeypatch, capsys):
+    # Callers print what they catch, so the page must already be safe when it is raised.
+    page = (
+        "<html><a href='torrents.php?action=download&id=1&authkey=DEADBEEFDEAD'>x</a>"
+        "https://announce.example/PASSKEYPASSKEY1/announce" + "y" * 5000 + "</html>"
+    )
+    install_fake_aiohttp(monkeypatch, [FakeAiohttpResponse(text=page, status=403)])
+    api._authenticated = True
+    api.passkey = "PASSKEYPASSKEY1"
+
+    with pytest.raises(RequestFailedError) as excinfo:
+        await api._request("GET", "https://dummy.example/torrents.php")
+    shown = str(excinfo.value) + capsys.readouterr().out
+    assert "DEADBEEFDEAD" not in shown
+    assert "PASSKEYPASSKEY1" not in shown
+    assert len(str(excinfo.value)) < 600
 
 
 async def test_request_with_api_key_uses_authorization_header_and_no_cookie(api, monkeypatch):

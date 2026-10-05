@@ -8,7 +8,7 @@ import asyncclick as click
 import pytest
 
 from salmon import cfg
-from salmon.errors import AbortAndDeleteFolder, ApiFailureError, RequestError, RequestFailedError
+from salmon.errors import AbortAndDeleteFolder, RequestError, RequestFailedError
 from salmon.uploader.dupe_checker import (
     _confirm_group_id,
     _prompt_for_group_id,
@@ -784,25 +784,22 @@ async def test_print_torrents_remaster_prefix(fake_tracker, capsys):
     assert "> 2020 / Deluxe / Label / CAT-1 / CD / FLAC / Lossless" in capsys.readouterr().out
 
 
-async def test_print_torrents_missing_group_raises_abort(fake_tracker, capsys):
-    fake_tracker.api_responses["torrentgroup"] = ApiFailureError("bad id parameter")
-    with pytest.raises(click.Abort):
-        await print_torrents(fake_tracker, 999)
-    assert "999 does not exist on RED (bad id parameter)." in capsys.readouterr().out
-
-
 @pytest.mark.parametrize(
     "error",
-    [RequestError("Server error 503"), RequestFailedError("<html>cloudflare origin timeout authkey=SECRET</html>")],
+    [
+        RequestFailedError("bad id parameter"),
+        RequestFailedError("rate limit exceeded"),
+        RequestError("Server error 503"),
+    ],
 )
-async def test_print_torrents_failure_does_not_claim_the_group_is_gone(fake_tracker, capsys, error):
+async def test_print_torrents_failure_never_claims_the_group_is_gone(fake_tracker, capsys, error):
+    # Gazelle answers an unknown id and a rate limit alike, with status "failure": only its reason tells them apart.
     fake_tracker.api_responses["torrentgroup"] = error
     with pytest.raises(click.Abort):
         await print_torrents(fake_tracker, 999)
     out = capsys.readouterr().out
-    assert f"Could not fetch group 999 from RED ({type(error).__name__})." in out
+    assert f"Could not fetch group 999 from RED: {error}" in out
     assert "does not exist" not in out
-    assert "<html>" not in out
 
 
 # ---------------------------------------------------------------------------

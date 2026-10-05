@@ -25,7 +25,6 @@ from salmon.common import UploadFiles
 from salmon.common.urls import parse_retry_after
 from salmon.constants import RELEASE_TYPES
 from salmon.errors import (
-    ApiFailureError,
     LoginError,
     RequestError,
     RequestFailedError,
@@ -627,6 +626,8 @@ class BaseGazelleApi:
         error_msg = text
         with suppress(msgspec.DecodeError, ValueError):
             error_msg = msgspec.json.encode(msgspec.json.decode(text)["error"]).decode()
+        # An error page can repeat the authkey or passkey, and callers print what they catch.
+        shown = _safe_response_excerpt(self._scrub(error_msg))
 
         server_wait = parse_retry_after(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
         if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
@@ -638,10 +639,10 @@ class BaseGazelleApi:
 
         if resp.status == HTTPStatus.UNAUTHORIZED:
             click.secho(
-                f"Authentication to {self.site_string} failed: {error_msg}.\nYour API key may be invalid.",
+                f"Authentication to {self.site_string} failed: {shown}.\nYour API key may be invalid.",
                 fg="red",
             )
-            raise LoginError(error_msg)
+            raise LoginError(shown)
 
         # Any 5xx may follow the tracker acting on a POST; a GET is resent only on these.
         if resp.status >= HTTPStatus.INTERNAL_SERVER_ERROR and (not idempotent or resp.status in _TRANSIENT_5XX):
@@ -650,8 +651,8 @@ class BaseGazelleApi:
                 await asyncio.sleep(min(server_wait, _MAX_SERVER_WAIT))
             raise failure(f"Server error {resp.status}")
 
-        click.secho(f"Request to {self.site_string} failed ({resp.status}): {error_msg}", fg="red")
-        raise RequestFailedError(error_msg)
+        click.secho(f"Request to {self.site_string} failed ({resp.status}): {shown}", fg="red")
+        raise RequestFailedError(shown)
 
     def _next_hop(
         self, current: str, status: int, method: str, data: Any, location: str, idempotent: bool
@@ -706,9 +707,7 @@ class BaseGazelleApi:
             resp_json = {"status": "error", "error": resp.text}
 
         if resp_json.get("status") != "success":
-            # Only the API's own failure answer speaks about the item; a page in its place (an outage) does not.
-            failure = ApiFailureError if resp_json.get("status") == "failure" else RequestFailedError
-            raise failure(self._scrub(str(resp_json.get("error", resp.text))))
+            raise RequestFailedError(self._scrub(str(resp_json.get("error", resp.text))))
         return cast("dict", resp_json["response"])
 
     async def torrentgroup(self, group_id: int) -> dict:

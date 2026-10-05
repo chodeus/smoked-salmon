@@ -9,7 +9,7 @@ import asyncclick as click
 from salmon import cfg
 from salmon.common import RE_FEAT, make_searchstrs
 from salmon.common.strings import comparable
-from salmon.errors import AbortAndDeleteFolder, ApiFailureError, RequestError
+from salmon.errors import AbortAndDeleteFolder, RequestError
 from salmon.uploader.upload import generate_catno
 
 if TYPE_CHECKING:
@@ -401,14 +401,9 @@ async def print_torrents(
             fetched_rset["groupId"] = fetched_rset["group"]["id"]
             fetched_rset["groupYear"] = fetched_rset["group"]["year"]
             rset = fetched_rset
-        except ApiFailureError as err:
-            click.secho(f"{group_id} does not exist on {gazelle_site.site_string} ({err}).", fg="red")
-            raise click.Abort from None
         except RequestError as err:
-            # Any other failure says nothing about the group; named by type, as its text can be a whole error page.
-            click.secho(
-                f"Could not fetch group {group_id} from {gazelle_site.site_string} ({type(err).__name__}).", fg="red"
-            )
+            # The tracker's reason, never a claim that the group is gone: Gazelle answers a rate limit as a failure too.
+            click.secho(f"Could not fetch group {group_id} from {gazelle_site.site_string}: {err}", fg="red")
             raise click.Abort from None
 
     # At this point rset is guaranteed to be non-None
