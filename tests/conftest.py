@@ -48,6 +48,8 @@ class FakeGazelleApi:
     and the ``upload_result`` / ``upload_error`` attributes.
     """
 
+    unsupported_artist_roles: frozenset[str] = frozenset()
+
     def __init__(self):
         self.site_code = "RED"
         self.site_string = "RED"
