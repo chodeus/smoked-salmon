@@ -341,6 +341,21 @@ async def test_ops_report_lossy_master_unexpected_redirect_raises(ops_tracker, m
         await ops_tracker.report_lossy_master(555, "comment", source="CD")
 
 
+async def test_ops_report_lossy_master_masks_its_credentials_in_the_redirect(ops_tracker, monkeypatch) -> None:
+    ops_tracker.authkey = "ops-authkey-placeholder"
+
+    async def fake_request(method, url, params=None, data=None, **kwargs):
+        return HttpResponse(
+            text="", url=f"https://orpheus.network/reportsv2.php?id=5&key={ops_tracker.authkey}", status=200
+        )
+
+    monkeypatch.setattr(ops_tracker, "_request", fake_request)
+
+    with pytest.raises(RequestError, match="reportsv2.php") as excinfo:
+        await ops_tracker.report_lossy_master(555, "comment", source="CD")
+    assert ops_tracker.authkey not in str(excinfo.value)
+
+
 # ---------------------------------------------------------------------------
 # DIC: constructor and mark prompts
 # ---------------------------------------------------------------------------

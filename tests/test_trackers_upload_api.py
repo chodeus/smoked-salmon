@@ -315,6 +315,26 @@ async def test_api_call_non_json_body_raises_request_failed_with_body(api):
     assert "<html>maintenance</html>" in str(excinfo.value)
 
 
+async def test_api_call_non_json_body_is_masked_and_capped(api):
+    script_requests(api, [http(text=f"<html>{'x' * 2000}{api.cookie}</html>")])
+    with pytest.raises(RequestFailedError) as excinfo:
+        await api.api_call("index")
+    assert api.cookie not in str(excinfo.value)
+    assert len(str(excinfo.value)) < 600
+
+
+async def test_a_network_error_masks_the_clients_credentials(api, monkeypatch):
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    install_fake_aiohttp(monkeypatch, [aiohttp.ClientConnectionError(f"failed: https://dummy.example/x/{api.cookie}")])
+    api._authenticated = True
+
+    with pytest.raises(RetryableError) as excinfo:
+        await api.api_call("index")
+
+    assert api.cookie not in str(excinfo.value)
+    assert "Network error: failed: https://dummy.example/x/" in str(excinfo.value)
+
+
 async def test_api_call_persistent_network_error_raises_retryable_error(api, monkeypatch):
     # After 5 attempts the network failure surfaces as RetryableError, which
     # is part of the RequestError hierarchy so callers catching RequestError
@@ -577,6 +597,20 @@ async def test_site_page_upload_failure_page_extracts_red_error(api):
     with pytest.raises(RequestError) as excinfo:
         await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
     assert "Site upload failed: No torrent file uploaded, or file empty." in str(excinfo.value)
+
+
+async def test_site_page_upload_failure_masks_the_clients_credentials(api):
+    api.passkey = "PK"
+    failure_html = (
+        f"<html><body><input value='{api.announce}' />"
+        f'<p style="color: red; text-align: center;">Bad session {api.cookie}</p>'
+        "</body></html>"
+    )
+    script_requests(api, [http(text=failure_html, url="https://dummy.example/upload.php", status=200)])
+
+    with pytest.raises(RequestError) as excinfo:
+        await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
+    assert "Site upload failed: Bad session [REDACTED]" in str(excinfo.value)
 
 
 async def test_site_page_upload_unparseable_page_raises_request_error(api):
