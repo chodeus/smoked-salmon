@@ -366,6 +366,38 @@ def test_empty_check_selection_is_not_reported_as_running_everything(client, alb
     assert "integrity" in omitted.json()["title"]
 
 
+def test_compress_recompresses_only_the_flacs(client, album, monkeypatch) -> None:
+    for name in ("01.flac", "02.mp3", "cover.jpg"):
+        open(os.path.join(album, name), "wb").close()
+    seen: list[list[str] | None] = []
+
+    async def fake_recompress_path(path, files=None):
+        seen.append(files)
+
+    monkeypatch.setattr("salmon.webui.routers.convert.recompress_path", fake_recompress_path)
+    r = client.post("/api/convert/compress", json={"path": album})
+    assert r.status_code == 200, r.text
+    body = _wait(client, r.json()["id"])
+    assert body["status"] == "done", body
+    assert seen == [["01.flac"]]
+
+
+def test_compress_reports_a_failed_recompress_as_an_error(client, album, monkeypatch) -> None:
+    from salmon.errors import UploadError
+
+    open(os.path.join(album, "01.flac"), "wb").close()
+
+    async def failing_recompress_path(path, files=None):
+        raise UploadError("Failed to recompress 1 file(s).")
+
+    monkeypatch.setattr("salmon.webui.routers.convert.recompress_path", failing_recompress_path)
+    r = client.post("/api/convert/compress", json={"path": album})
+    assert r.status_code == 200, r.text
+    body = _wait(client, r.json()["id"])
+    assert body["status"] == "error"
+    assert "Failed to recompress 1 file(s)." in (body.get("error") or "")
+
+
 def _wait(client, job_id, tries=200):
     for _ in range(tries):
         body = client.get(f"/api/jobs/{job_id}").json()

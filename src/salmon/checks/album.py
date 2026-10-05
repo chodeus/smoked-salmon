@@ -16,7 +16,7 @@ from salmon.checks.integrity import check_integrity
 from salmon.checks.mqa import check_mqa
 from salmon.checks.provenance import gather_provenance
 from salmon.checks.upconverts import check_upconvert
-from salmon.common.files import get_audio_files
+from salmon.common.files import get_audio_files, get_flac_files
 from salmon.common.progress import report_progress
 from salmon.errors import UpconvertCheckNotApplicable
 
@@ -103,5 +103,5 @@ async def run_upconvert_check(path: str) -> dict:
         except Exception as e:
             return {"file": f, "error": str(e)}
 
-    flacs = [f for f in get_audio_files(path, True) if f.lower().endswith(".flac")]
+    flacs = get_flac_files(path, True)
     return {"files": await _map_files(flacs, one, "Checking for upconversion")}
