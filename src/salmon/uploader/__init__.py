@@ -719,18 +719,12 @@ async def _upload_staged(
     searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
 
     seedbox_uploader = UploadManager()
+    uploaded: list[str] = []  # The URL of each torrent uploaded, for an abort to list
 
     try:
         while True:
             # Loop until we don't want to upload to any more sites.
             if not tracker:
-                if spectrals_after and torrent_id:
-                    # Here we are checking the spectrals after uploading to the first site
-                    # if they were not done before.
-                    lossy_master, lossy_comment, spectral_urls, spectral_ids = await post_upload_spectral_check(
-                        gazelle_site, path, torrent_id, None, track_data, source, source_url, format=rls_data["format"]
-                    )
-                    spectrals_after = False
                 tracker = await next_tracker(bool(trackers), remaining_gazelle_sites)
                 if not tracker:
                     click.secho("\nDone with this release.", fg="green")
@@ -740,7 +734,8 @@ async def _upload_staged(
                 click.secho(f"Uploading to {gazelle_site.base_url}", fg="cyan", bold=True)
                 searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
                 # The reviewed metadata, not the tags: an edit to artist, title or year must move the match with it.
-                group_id = await check_existing_group(gazelle_site, searchstrs, release=metadata)
+                # A torrent already seeds from the folder: never offer to delete it.
+                group_id = await check_existing_group(gazelle_site, searchstrs, offer_deletion=False, release=metadata)
 
             remaining_gazelle_sites.remove(tracker)
             # The source FLAC's group is on this tracker only.
@@ -820,8 +815,24 @@ async def _upload_staged(
 
                     request_id = None
                     held = set()
+                    uploaded.append(url)
 
                     await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
+
+                    if spectrals_after:
+                        # Once, on the first torrent up, whether or not the run goes on to another tracker.
+                        # Its transcodes, and the later trackers' uploads, then carry what it found.
+                        spectrals_after = False
+                        lossy_master, lossy_comment, spectral_urls, spectral_ids = await post_upload_spectral_check(
+                            gazelle_site,
+                            path,
+                            torrent_id,
+                            None,
+                            track_data,
+                            source,
+                            source_url,
+                            format=rls_data["format"],
+                        )
 
                 if get_downconversion_options(rls_data, track_data) and (
                     source_flac is not None
@@ -857,6 +868,7 @@ async def _upload_staged(
                             seedbox_uploader,
                             source,
                             url,
+                            uploaded=uploaded,
                         )
             except RequestError as e:
                 click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
@@ -866,6 +878,13 @@ async def _upload_staged(
                 click.secho("\nDone uploading this release.", fg="green")
                 break
 
+    except click.Abort:
+        if not uploaded:
+            raise
+        # What is up stays up and is seeded below: the run only stops offering more.
+        click.secho("\nAborting: nothing more is uploaded. Already uploaded:", fg="red")
+        for line in uploaded:
+            click.echo(f"  {line}")
     finally:
         await seedbox_uploader.execute_upload()
 
@@ -1205,6 +1224,8 @@ async def execute_downconversion_tasks(
     seedbox_uploader: UploadManager,
     source: str | None,
     base_url: str,
+    *,
+    uploaded: list[str] | None = None,
 ) -> None:
     """Execute the selected downconversion tasks.
 
@@ -1226,7 +1247,10 @@ async def execute_downconversion_tasks(
         seedbox_uploader: Seedbox upload manager.
         source: Media source.
         base_url: Base URL for the original upload.
+        uploaded: Where to add the URL of each torrent uploaded.
     """
+    if uploaded is None:
+        uploaded = []
 
     base_path = path
 
@@ -1278,6 +1302,7 @@ async def execute_downconversion_tasks(
                 override_description=description,
                 override_lossy_comment=override_lossy_comment,
             )
+            uploaded.append(new_url)
 
             click.secho(f"  ✓ {task['name']} conversion completed", fg="green")
 
@@ -1321,6 +1346,7 @@ async def execute_downconversion_tasks(
                 override_description=description,
                 override_lossy_comment=override_lossy_comment,
             )
+            uploaded.append(new_url)
 
             click.secho(f"  ✓ {task['name']} transcode completed", fg="green")
 

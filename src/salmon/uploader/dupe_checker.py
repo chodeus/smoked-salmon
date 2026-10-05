@@ -218,7 +218,7 @@ async def check_existing_group(
             gazelle_site, results, offer_deletion, default=suggest_group(results, release)
         )
     if group_id is not None:
-        confirmation = await _confirm_group_id(gazelle_site, group_id, results, release)
+        confirmation = await _confirm_group_id(gazelle_site, group_id, results, release, offer_deletion)
         if confirmation is True:
             return group_id
         return None
@@ -502,7 +502,11 @@ def matching_torrents(rset: dict, release: dict | None) -> list[dict]:
 
 
 async def _confirm_group_id(
-    gazelle_site: "BaseGazelleApi", group_id: int, results: list[dict], release: dict | None = None
+    gazelle_site: "BaseGazelleApi",
+    group_id: int,
+    results: list[dict],
+    release: dict | None = None,
+    offer_deletion: bool = True,
 ) -> bool:
     """Confirm the upload; abort is pre-typed when this edition already holds the same media, format and encoding."""
     rset = None
@@ -526,7 +530,7 @@ async def _confirm_group_id(
             await click.prompt(
                 click.style(
                     "\nAre you sure you would you like to upload this torrent to this group? [Y]es, "
-                    "[n]ew group, [a]bort, [d]elete music folder",
+                    f"[n]ew group, [a]bort{', [d]elete music folder' if offer_deletion else ''}",
                     fg="magenta",
                 ),
                 default="a" if dupes else "Y",
@@ -534,7 +538,7 @@ async def _confirm_group_id(
         )[0].lower()
         if resp == "a":
             raise click.Abort
-        elif resp == "d":
+        elif resp == "d" and offer_deletion:
             raise AbortAndDeleteFolder
         elif resp == "y":
             return True
