@@ -42,6 +42,7 @@ def _torrent(
     encoding: str = "Lossless",
     catno: str = "CAT1",
     title: str = "",
+    year: int = 2020,
 ) -> dict:
     return {
         "id": torrent_id,
@@ -49,7 +50,7 @@ def _torrent(
         "format": format_,
         "encoding": encoding,
         "remastered": True,
-        "remasterYear": 2020,
+        "remasterYear": year,
         "remasterTitle": title,
         "remasterRecordLabel": "Label",
         "remasterCatalogueNumber": catno,
@@ -134,10 +135,19 @@ def test_no_matching_flac_stops(monkeypatch) -> None:
     assert asked == []
 
 
-def test_a_flac_of_another_catalogue_number_is_not_a_source(monkeypatch) -> None:
+def test_flacs_differing_only_by_catalogue_number_are_both_offered(monkeypatch) -> None:
+    """Catalogue numbers come in different conventions (a label's number, a UPC): they never tell editions apart."""
+    asked = _answers(monkeypatch, "2")
+    group = _group(_torrent(11, catno="0123456789012"), _torrent(12))
+
+    assert _choose(group) == 12
+    assert len(asked) == 1
+
+
+def test_a_flac_of_another_year_is_not_a_source(monkeypatch) -> None:
     asked = _answers(monkeypatch)
 
-    assert _choose(_group(_torrent(11, catno="OTHER-9"))) is None
+    assert _choose(_group(_torrent(11, year=2011))) is None
     assert asked == []
 
 
@@ -145,6 +155,14 @@ def test_a_flac_of_another_edition_title_is_not_a_source() -> None:
     group = _group(_torrent(11, title="Deluxe"), _torrent(12, title="Remastered"))
 
     assert _choose(group, edition_title="Remastered") == 12
+
+
+def test_a_remaster_with_no_year_matches_any_year() -> None:
+    """The group's year is the original release's; a remaster missing its own year does not take it."""
+    group = _group(_torrent(11, year=0))
+    group["group"]["year"] = 2011
+
+    assert _choose(group) == 11
 
 
 def test_several_matching_flacs_ask_which_one(monkeypatch) -> None:
@@ -382,7 +400,7 @@ def _flow(monkeypatch, group: dict[str, Any], source: str = "WEB", **fakes: Any)
 
 def test_transcodes_are_uploaded_as_transcodes_of_the_chosen_flac(monkeypatch) -> None:
     _answers(monkeypatch, "*")
-    group = _group(_torrent(10, format_="MP3", encoding="320", catno="OTHER-9"), _torrent(11))
+    group = _group(_torrent(10, format_="MP3", encoding="320", year=2011), _torrent(11))
 
     calls, transcoded = _flow(monkeypatch, group)
 
@@ -392,7 +410,7 @@ def test_transcodes_are_uploaded_as_transcodes_of_the_chosen_flac(monkeypatch) -
 
 
 def test_no_source_flac_in_the_edition_stops_before_any_upload(monkeypatch) -> None:
-    calls, transcoded = _flow(monkeypatch, _group(_torrent(11, catno="OTHER-9")))
+    calls, transcoded = _flow(monkeypatch, _group(_torrent(11, year=2011)))
 
     assert transcoded == []
     assert "upload_and_report" not in calls
@@ -441,7 +459,7 @@ def test_held_formats_are_left_out_with_yes_all(monkeypatch) -> None:
 
 def test_a_held_format_of_another_edition_is_offered(monkeypatch) -> None:
     monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
-    group = _group(_torrent(11), _torrent(12, format_="MP3", encoding="320", catno="OTHER-9"))
+    group = _group(_torrent(11), _torrent(12, format_="MP3", encoding="320", year=2011))
 
     _calls, transcoded = _flow(monkeypatch, group)
 

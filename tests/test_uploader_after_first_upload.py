@@ -96,7 +96,7 @@ def flow(monkeypatch):
         "encoding": "Lossless",
         "year": 2020,
     }
-    metadata = {"artists": [("Artist", "main")], "title": "Album", "label": "Label", "cover": None}
+    metadata = {"artists": [("Artist", "main")], "title": "Album", "label": "Label", "catno": None, "cover": None}
     for name, fake in {
         "release_type_from_folder": _sync(None),
         "conversion_of": _sync(None),

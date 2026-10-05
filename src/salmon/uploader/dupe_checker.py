@@ -1,14 +1,15 @@
 import asyncio
+import html
 import re
 from difflib import SequenceMatcher
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib import parse
 
 import asyncclick as click
 
 from salmon import cfg
-from salmon.common import RE_FEAT, make_searchstrs
-from salmon.common.strings import comparable
+from salmon.common import RE_FEAT, make_searchstrs, normalize_accents, re_strip
+from salmon.common.strings import artist_keys, comparable
 from salmon.errors import AbortAndDeleteFolder, RequestError
 from salmon.uploader.upload import generate_catno
 
@@ -16,18 +17,27 @@ if TYPE_CHECKING:
     from salmon.trackers.base import BaseGazelleApi
 
 
-async def dupe_check_recent_torrents(gazelle_site: "BaseGazelleApi", searchstrs: list[str]) -> list[tuple]:
+LOG_DUPE_WORD_OVERLAP_THRESHOLD = 0.5
+
+
+async def dupe_check_recent_torrents(
+    gazelle_site: "BaseGazelleApi", searchstrs: list[str], our_title: str | None = None
+) -> list[tuple]:
     """Check site log for recent uploads similar to ours.
 
     Args:
         gazelle_site: The tracker API instance.
         searchstrs: Search strings to match against.
+        our_title: Our release's title, used to require actual title overlap on top of the
+            search string comparison (see _recent_upload_matches). None skips that extra check,
+            for callers that cannot supply a title.
 
     Returns:
         List of matching upload tuples (id, artist, title).
     """
     recent_uploads = await gazelle_site.get_uploads_from_log()
     # Each upload in this list is best guess at (id,artist,title) from log
+    our_title_words = _title_words(our_title) if our_title is not None else None
     hits = []
     seen = []
     for upload in recent_uploads:
@@ -40,15 +50,93 @@ async def dupe_check_recent_torrents(gazelle_site: "BaseGazelleApi", searchstrs:
         title = upload[2]
         artist = [[artist, "main"]]
         possible_comparisons = generate_dupe_check_searchstrs(artist, title)
-        ratio = 0
-        for searchstr in searchstrs:
-            for comparison_string in possible_comparisons:
-                new_ratio = SequenceMatcher(None, searchstr, comparison_string).ratio()
-                ratio = max(ratio, new_ratio)
-        # Default tolerance is 0.5
-        if ratio > cfg.upload.log_dupe_tolerance:
+        if _recent_upload_matches(
+            searchstrs, possible_comparisons, cfg.upload.log_dupe_tolerance, our_title_words, _title_words(title)
+        ):
             hits.append(upload)
     return hits
+
+
+def _title_words(title: str | None) -> set[str]:
+    """Normalized words of a title, cleaned up the same way make_searchstrs cleans the album.
+
+    Two releases can share every artist word and still be unrelated if their titles have nothing
+    in common: comparing the full search strings alone lets a shared multi-word artist outweigh a
+    completely different one-word title, since SequenceMatcher and the word-overlap ratio both
+    look at artist and title text together. Comparing title words on their own closes that gap.
+
+    Args:
+        title: A release title, our own or a logged upload's.
+
+    Returns:
+        The set of normalized words in the title, empty if there is no title.
+    """
+    album = _sanitize_album_for_dupe_check(title)
+    album = re.sub(r" ?(- )? (EP|Single)", "", album)
+    album = re.sub(r"\(?[Ff]eat(\.|uring)? [^\)]+\)?", "", album)
+    normalized = re_strip(album, filter_nonscrape=False)
+    accented = normalize_accents(normalized)
+    return set(accented.split()) if isinstance(accented, str) else set()
+
+
+def _recent_upload_matches(
+    searchstrs: list[str],
+    possible_comparisons: list[str],
+    tolerance: float,
+    our_title_words: set[str] | None = None,
+    candidate_title_words: set[str] | None = None,
+) -> bool:
+    """Return True when a logged upload is genuinely similar enough to be a likely dupe.
+
+    Comparing against only the first search string, and on SequenceMatcher's ratio alone,
+    overweights a shared artist prefix between two otherwise unrelated releases (#509). Every
+    generated search string is checked, and a high ratio is also required to share enough words
+    with the candidate to suggest actual title overlap, not just a shared artist.
+
+    A shared artist can still carry a high ratio and word-overlap fraction on its own when the
+    artist has more words than the title (#518): "A B C song" vs "A B C other" shares 3 of 4
+    words. Requiring the titles themselves to share at least one word, checked separately from the
+    artist, closes that gap while still matching same-title collab releases.
+
+    Args:
+        searchstrs: Search strings generated for our release.
+        possible_comparisons: Search strings generated for the logged upload.
+        tolerance: The configured similarity tolerance (cfg.upload.log_dupe_tolerance).
+        our_title_words: Normalized words of our release's title, or None to skip the title check.
+        candidate_title_words: Normalized words of the logged upload's title.
+
+    Returns:
+        True if any pair of strings is similar enough, shares enough words, and (when title words
+        are given) shares at least one title word.
+    """
+    if our_title_words and candidate_title_words and not (our_title_words & candidate_title_words):
+        return False
+    for searchstr in searchstrs:
+        for comparison_string in possible_comparisons:
+            ratio = SequenceMatcher(None, searchstr, comparison_string).ratio()
+            if ratio <= tolerance:
+                continue
+            if _word_overlap_ratio(searchstr, comparison_string) < LOG_DUPE_WORD_OVERLAP_THRESHOLD:
+                continue
+            return True
+    return False
+
+
+def _word_overlap_ratio(left: str, right: str) -> float:
+    """Fraction of words shared between two normalized search strings, relative to the larger side.
+
+    Args:
+        left: A normalized search string.
+        right: Another normalized search string.
+
+    Returns:
+        The overlap ratio, 0.0 if either side has no words.
+    """
+    left_words = set(left.split())
+    right_words = set(right.split())
+    if not left_words or not right_words:
+        return 0.0
+    return len(left_words & right_words) / max(len(left_words), len(right_words))
 
 
 def print_recent_upload_results(gazelle_site: "BaseGazelleApi", recent_uploads: list[tuple], searchstr: str) -> None:
@@ -104,9 +192,15 @@ async def _prompt_for_recent_upload_results(
     # Now prompt for user action
     while True:
         pick = "Type an upload's number from the list above (1 is the first), or p" if recent_uploads else "P"
+        prompt_header = (
+            "\nThese are similar recent uploads from the site log, not exact group matches.\n"
+            "Pick one only if it is actually the same group.\n"
+            if recent_uploads
+            else "\nWould you like to upload to an existing group?\n"
+        )
         prompt_text = (
-            "\nWould you like to upload to an existing group?\n"
-            f"{pick}aste a group URL, or [N]ew group / [a]bort {'/ [d]elete music folder ' if offer_deletion else ''}"
+            prompt_header
+            + f"{pick}aste a group URL, or [N]ew group / [a]bort {'/ [d]elete music folder ' if offer_deletion else ''}"
         )
 
         group_id = await click.prompt(
@@ -168,25 +262,25 @@ async def _prompt_for_recent_upload_results(
             return None
 
 
-def suggest_group(results: list[dict] | None, release: dict | None) -> str:
-    """Pre-typed dupe answer: the listed result whose artist, title and year all match, else a new group."""
+def suggest_group(results: list[dict] | None, release: dict[str, Any] | None) -> str:
+    """Pre-typed group answer: the one listed result with our artist, title and year, else "N" for a new group."""
     if not results or not release:
         return "N"
-    wanted_artists = {comparable(name) for name, _importance in release.get("artists") or []} - {""}
     title = comparable(release.get("title"))
-    if not title:
+    artists = artist_keys(release.get("artists"))
+    # A group is keyed on the original year: our group year when we have one, our (edition) year otherwise.
+    year = str(release.get("group_year") or release.get("year") or "").strip()
+    if not title or not artists or not year:
         return "N"
-    year = str(release.get("year") or release.get("group_year") or "")
-    for index, result in enumerate(results, 1):
-        if result.get("groupId") is None:
-            continue
-        if (
-            comparable(result.get("groupName")) == title
-            and str(result.get("groupYear") or "") == year
-            and comparable(result.get("artist")) in wanted_artists
-        ):
-            return str(index)
-    return "N"
+    matches = [
+        str(number)
+        for number, result in enumerate(results, 1)
+        if result.get("groupId") is not None
+        and comparable(html.unescape(str(result.get("groupName") or ""))) == title
+        and comparable(html.unescape(str(result.get("artist") or ""))) in artists
+        and str(result.get("groupYear") or "").strip() == year
+    ]
+    return matches[0] if len(matches) == 1 else "N"
 
 
 async def check_existing_group(
@@ -208,7 +302,7 @@ async def check_existing_group(
     """
     results = await get_search_results(gazelle_site, searchstrs)
     if not results and cfg.upload.requests.check_recent_uploads:
-        recent_uploads = await dupe_check_recent_torrents(gazelle_site, searchstrs)
+        recent_uploads = await dupe_check_recent_torrents(gazelle_site, searchstrs, (release or {}).get("title"))
         group_id = await _prompt_for_recent_upload_results(
             gazelle_site, recent_uploads, " / ".join(searchstrs), offer_deletion
         )
@@ -466,34 +560,59 @@ def _edition_catno(torrent: dict, rset: dict) -> str:
     return ((rset.get("group") or {}).get("catalogueNumber") or "").strip()
 
 
-def matching_torrents(rset: dict, release: dict | None) -> list[dict]:
-    """Group torrents in the release's edition with its media, format and encoding: uploading it again is a dupe."""
-    if not release:
-        return []
+def matching_torrents(group: dict, release: dict) -> list[dict]:
+    """Find the group's torrents in the release's edition with its media, format and encoding.
+
+    The edition is the year and edition title. Either missing on either side still matches. The catalogue
+    number is not compared: trackers and uploaders write it in different conventions (the label's number,
+    a UPC, a store id), so the same release often carries a different one on each side.
+
+    Args:
+        group: The group, as the tracker's torrentgroup API returns it.
+        release: The release metadata, with its source, format and encoding.
+
+    Returns:
+        The matching torrents, in the group's order.
+    """
     wanted = (release.get("source"), release.get("format"), release.get("encoding"))
     if not all(wanted):
         return []
     year = str(release.get("year") or "")
-    catno = comparable(generate_catno(release))
     edition_title = comparable(release.get("edition_title"))
-    # A torrentgroup response has the year under "group"; a search result has groupYear.
-    group_year = rset.get("groupYear") or (rset.get("group") or {}).get("year")
+    group_year = (group.get("group") or {}).get("year")
     matches = []
-    for torrent in rset.get("torrents") or []:
+    for torrent in group.get("torrents") or []:
         if (torrent.get("media"), torrent.get("format"), torrent.get("encoding")) != wanted:
             continue
-        edition_year = str(torrent.get("remasterYear") or group_year or "")
+        # Only an original release takes the group's year; a remaster with no year of its own matches any.
+        edition_year = str((torrent.get("remasterYear") if _is_remaster(torrent) else group_year) or "")
         if year and edition_year and edition_year != year:
-            continue
-        # Another catalogue number or edition title is another release; one missing on either side still counts.
-        held_catno = comparable(_edition_catno(torrent, rset))
-        if catno and held_catno and held_catno != catno:
             continue
         held_title = comparable(torrent.get("remasterTitle"))
         if edition_title and held_title and held_title != edition_title:
             continue
         matches.append(torrent)
     return matches
+
+
+def _held_in_group(rset: dict, release: dict[str, Any] | None) -> list[dict]:
+    """The torrents of a printed group that already hold our release's edition, media, format and encoding.
+
+    rset is a search result or a fetched group: a search result has the group's year as groupYear.
+    """
+    if not release:
+        return []
+    group = rset if "group" in rset else {**rset, "group": {"year": rset.get("groupYear")}}
+    return matching_torrents(group, release)
+
+
+def _catno_note(torrent: dict, group: dict, release: dict) -> str:
+    """Say when a matching torrent's catalogue number differs from ours, naming ours, or give ""."""
+    ours = generate_catno(release)
+    held = comparable(_edition_catno(torrent, group))
+    if comparable(ours) and held and held != comparable(ours):
+        return f" (catalogue number differs: ours {ours})"
+    return ""
 
 
 async def _confirm_group_id(
@@ -510,13 +629,14 @@ async def _confirm_group_id(
             rset = r
             break
 
+    # The match reads the group just printed: it sends no request of its own.
     rset = await print_torrents(gazelle_site, group_id, rset)
-    dupes = matching_torrents(rset, release)
-    if dupes:
-        held = dupes[0]
+    held = _held_in_group(rset, release)
+    for torrent in held:
+        note = _catno_note(torrent, rset, release or {})
         click.secho(
-            f"\nDUPE RISK: this edition already has {held['media']} / {held['format']} / {held['encoding']}; "
-            "the site removes exact duplicates.",
+            f"\nDUPE RISK: this edition already has {describe_torrent(torrent, rset)}{note}; "
+            "the site removes exact duplicates unless this upload trumps it.",
             fg="red",
             bold=True,
         )
@@ -528,7 +648,7 @@ async def _confirm_group_id(
                     f"[n]ew group, [a]bort{', [d]elete music folder' if offer_deletion else ''}",
                     fg="magenta",
                 ),
-                default="a" if dupes else "Y",
+                default="a" if held else "Y",
             )
         )[0].lower()
         if resp == "a":
@@ -548,8 +668,7 @@ async def choose_source_flac(group: dict, release: dict) -> dict | None:
     wanted = f"{release.get('source')} / FLAC / {release.get('encoding')}"
     if not flacs:
         click.secho(
-            f"\nGroup {group_id} has no {wanted} in this release's edition (year, catalogue number, edition title) "
-            "to transcode from.",
+            f"\nGroup {group_id} has no {wanted} in this release's edition (year, edition title) to transcode from.",
             fg="red",
             bold=True,
         )
