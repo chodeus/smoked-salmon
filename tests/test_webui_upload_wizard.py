@@ -290,7 +290,7 @@ def upload_world(monkeypatch, tmp_path):
     async def fake_review_metadata_with_ai(metadata, *args, **kwargs):
         return metadata
 
-    async def fake_check_folder_structure(path, scene, essential_only=False):
+    async def fake_check_folder_structure(path, scene, essential_only=False, max_path_length=None):
         return None
 
     async def fake_download_cover(path, cover_url):

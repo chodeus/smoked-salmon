@@ -5,7 +5,15 @@ but folderstructure's blocking check measures the same way — two measurements 
 disagree is how a folder passed one gate and failed the other.
 """
 
+import os
+
+from mutagen import MutagenError
+from mutagen.flac import FLAC
+from mutagen.id3 import ID3
+
+from salmon.common import get_audio_files
 from salmon.constants import TAG_TRUMP_SIZE
+from salmon.tagger.audio_info import has_id3_tag
 
 # Max full in-torrent path: the top-level torrent folder, any subfolders, and the
 # filename — nested folders and long classical filenames all count against it.
@@ -74,3 +82,70 @@ def collect_upload_warnings(site_code: str, folder_name: str, track_data: dict) 
             else:
                 warnings.append(f"16-bit above 48 kHz is trumpable on RED — downsample to 16/44.1 or 16/48: {filename}")
     return warnings
+
+
+def path_limit_for(site_codes) -> int:
+    """The strictest in-torrent path limit among these trackers; the strictest of all for an unknown one."""
+    return min((MAX_PATH_LENGTH.get(code, STRICTEST_PATH_LENGTH) for code in site_codes), default=STRICTEST_PATH_LENGTH)
+
+
+def _has_id3v1_block(filepath: str) -> bool:
+    with open(filepath, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() < 128:
+            return False
+        handle.seek(-128, os.SEEK_END)
+        return handle.read(3) == b"TAG"
+
+
+def _has_id3v2_header(filepath: str) -> bool:
+    with open(filepath, "rb") as handle:
+        return handle.read(3) == b"ID3"
+
+
+def has_blank_id3v2_alongside_id3v1(filepath: str) -> bool:
+    """True for an MP3 with a filled-in ID3v1 tag next to an ID3v2 tag that carries no frames.
+
+    Reading only the ID3v1 tag, or only a filled-in ID3v2 tag, is ordinary and not flagged; nor is
+    an ID3v2 tag with real content sitting next to an ID3v1 tag. When both a v1 tag and a v2
+    header exist, mutagen reads the v2 tag: it is the blank one that matters here, not the
+    presence of v1 by itself, so both a v1 block and a v2 header must be found on disk first.
+    """
+    if not (_has_id3v1_block(filepath) and _has_id3v2_header(filepath)):
+        return False
+    try:
+        tags = ID3(filepath)
+    except (MutagenError, OSError):
+        return False
+    return not any(tags.getall(key) for key in tags)
+
+
+def process_tag_issues(path: str, *, scene: bool) -> list[str]:
+    """Strip a FLAC's ID3 tag in place, and note a dual-ID3 MP3; one line per file, empty when nothing to report.
+
+    A scene release is never touched and only gets a note. An uncompressed FLAC is reported with the other
+    rules at upload (collect_upload_warnings), from the files as they are after any recompress.
+    """
+    messages: list[str] = []
+    for filename in get_audio_files(path):
+        filepath = os.path.join(path, filename)
+        lower = filename.lower()
+        if lower.endswith(".flac") and has_id3_tag(filepath):
+            if scene:
+                messages.append(
+                    f"{filename}: FLAC file contains an ID3 tag (RED and OPS do not allow ID3 tags in FLAC files)."
+                )
+                continue
+            try:
+                FLAC(filepath).save(deleteid3=True)
+            except (MutagenError, OSError) as e:
+                messages.append(f"{filename}: could not remove its ID3 tag ({e}); remove it by hand.")
+            else:
+                messages.append(
+                    f"Removed an ID3 tag from {filename} (RED and OPS do not allow ID3 tags in FLAC files)."
+                )
+        elif lower.endswith(".mp3") and has_blank_id3v2_alongside_id3v1(filepath):
+            messages.append(
+                f"{filename}: MP3 file has a filled-in ID3v1 tag and a blank ID3v2 tag (RED and OPS can trump it)."
+            )
+    return messages

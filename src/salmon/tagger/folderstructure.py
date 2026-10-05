@@ -9,11 +9,13 @@ from salmon.errors import NoncompliantFolderStructure
 from salmon.tagger.mutation import rename_all_or_none
 
 
-async def check_folder_structure(path: str, scene: bool, *, essential_only: bool = False) -> None:
+async def check_folder_structure(
+    path: str, scene: bool, *, essential_only: bool = False, max_path_length: int | None = None
+) -> None:
     """Run through every filesystem check that causes uploads to violate the rules
     or be rejected on the upload form.
 
-    Verifies that path lengths are <180 characters, that there are no zero length
+    Verifies that path lengths are within the tracker's limit, that there are no zero length
     folders, and that the file extensions are valid. Loops until the user has fixed
     all issues or the upload is aborted.
 
@@ -23,6 +25,7 @@ async def check_folder_structure(path: str, scene: bool, *, essential_only: bool
             automatically fixed and require manual intervention.
         essential_only: If True, only essential extensions are allowed;
             files like nfo, sfv, md5, txt, etc. are flagged for removal.
+        max_path_length: The longest in-torrent path allowed; None for the strictest tracker's.
 
     Raises:
         click.Abort: If the user aborts, or if a scene release has structural issues.
@@ -31,7 +34,7 @@ async def check_folder_structure(path: str, scene: bool, *, essential_only: bool
         click.secho("\nChecking folder structure...", fg="cyan", bold=True)
         try:
             await _check_illegal_folders(path)
-            _check_path_lengths(path, scene)
+            _check_path_lengths(path, scene, max_path_length)
             _check_zero_len_folder(path)
             await _check_extensions(path, scene, essential_only=essential_only)
             return
@@ -88,8 +91,8 @@ async def _check_illegal_folders(path: str) -> None:
                         break
 
 
-def _check_path_lengths(path: str, scene: bool) -> None:
-    """Verify that no in-torrent path exceeds the strictest tracker limit (180).
+def _check_path_lengths(path: str, scene: bool, max_path_length: int | None = None) -> None:
+    """Verify that no in-torrent path exceeds max_path_length, or the strictest tracker's limit (180).
 
     Paths are measured as the tracker counts them — the torrent's top-level folder
     plus what sits under it — not against the download directory, which only matches
@@ -107,7 +110,7 @@ def _check_path_lengths(path: str, scene: bool) -> None:
     """
     from salmon.checks.tag_rules import STRICTEST_PATH_LENGTH, in_torrent_path
 
-    limit = STRICTEST_PATH_LENGTH
+    limit = max_path_length or STRICTEST_PATH_LENGTH
     offending_files, really_offending_files = [], []
     # basename of a path with a trailing slash is "", which would drop the folder out
     # of every measurement below.
