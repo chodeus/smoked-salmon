@@ -15,7 +15,7 @@ from salmon.search import SEARCHSOURCES, run_metasearch
 from salmon.sources.deezer import album_upc
 from salmon.tagger.combine import combine_metadatas, get_source_from_link
 from salmon.tagger.sources import METASOURCES
-from salmon.tagger.sources.base import generate_artists
+from salmon.tagger.sources.base import generate_artists, standardize_genres
 
 
 def store_url(path: str) -> str | None:
@@ -266,6 +266,8 @@ def _get_manual_metadata(rls_data):
             metadata_dict = msgspec.json.decode(metadata)
             if isinstance(metadata_dict["genres"], str):
                 metadata_dict["genres"] = [metadata_dict["genres"]]
+            # Typed genres go through the same splitting and whitelist as scraped ones.
+            metadata_dict["genres"] = standardize_genres(metadata_dict["genres"])
             return metadata_dict
         except (TypeError, msgspec.DecodeError):
             click.confirm(
