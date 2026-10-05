@@ -188,6 +188,9 @@ session = 'get-from-site-cookie'
 
 # # enable seedbox uploading
 # upload_to_seedbox = true
+# # Normalize file names in generated .torrent files to "NFC" or "NFD".
+# # Use this if you tag on macOS (NFD file names) and seed from Linux (NFC), or the reverse.
+# torrent_name_normalization = ""
 
 # [upload.search]
 # limit = 3
@@ -226,6 +229,8 @@ session = 'get-from-site-cookie'
 # icons_in_descriptions = true
 # fullwidth_replacements = false
 # empty_track_comment_tag = true
+# # Wrap artist names in [artist][/artist] BBCode in the group description's tracklist.
+# artist_tags_in_tracklist = false
 
 # [upload.web_interface]
 # # web interface settings

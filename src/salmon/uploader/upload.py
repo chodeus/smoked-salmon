@@ -1,6 +1,7 @@
 import os
 import re
-from typing import TYPE_CHECKING, Any
+import unicodedata
+from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 import asyncclick as click
@@ -354,6 +355,25 @@ def generate_catno(metadata: dict[str, Any]) -> str:
     return ""
 
 
+def _normalize_torrent_names(t: Torrent, form: Literal["NFC", "NFD"]) -> None:
+    """Normalize the Unicode form of every file path component in a torrent's info dict.
+
+    Only the names change: piece hashes cover file contents, so they stay valid. The caller
+    is responsible for writing the torrent with validate=False and reloading it from disk
+    afterwards, since the normalized names no longer match the on-disk file names that
+    Torrent.validate() checks against.
+
+    Args:
+        t: The generated torrent, still pointing at the source folder on disk.
+        form: "NFC" or "NFD".
+    """
+    info = t.metainfo["info"]
+    info["name"] = unicodedata.normalize(form, info["name"])
+    if "files" in info:
+        for fileinfo in info["files"]:
+            fileinfo["path"] = [unicodedata.normalize(form, part) for part in fileinfo["path"]]
+
+
 def generate_torrent(gazelle_site: "BaseGazelleApi", path: str) -> tuple[str, Torrent]:
     """Generate torrent file for the album.
 
@@ -377,9 +397,37 @@ def generate_torrent(gazelle_site: "BaseGazelleApi", path: str) -> tuple[str, To
         dryrun.scratch_dir() if dryrun.active() else gazelle_site.dot_torrents_dir,
         f"{os.path.basename(path)} - {gazelle_site.site_string}.torrent",
     )
-    t.write(tpath, overwrite=True)
+    normalization = cfg.upload.torrent_name_normalization
+    if normalization in ("", "none"):
+        t.write(tpath, overwrite=True)
+    else:
+        form: Literal["NFC", "NFD"] = "NFC" if normalization == "NFC" else "NFD"
+        _normalize_torrent_names(t, form)
+        # The normalized names no longer match the file names on disk, so validation
+        # against the source folder would fail; skip it, then reload from the written
+        # file so later use (dump, write, infohash) does not re-validate against disk.
+        t.write(tpath, overwrite=True, validate=False)
+        t = Torrent.read(tpath)
     click.secho(" done!", fg="yellow")
     return tpath, t
+
+
+def format_tracklist_artists(artists: list[str]) -> str:
+    """Format a track's artist list for the group description's tracklist.
+
+    Args:
+        artists: Track artist names.
+
+    Returns:
+        The joined artist names, wrapped in [artist][/artist] BBCode when the
+        `artist_tags_in_tracklist` setting is on. A name containing "[" or "]" is
+        left plain, since wrapping it could break the tag.
+    """
+    if not cfg.upload.description.artist_tags_in_tracklist:
+        return ", ".join(artists)
+    return ", ".join(
+        f"[artist]{artist}[/artist]" if "[" not in artist and "]" not in artist else artist for artist in artists
+    )
 
 
 def generate_description(track_data: dict[str, Any], metadata: dict[str, Any]) -> str:
@@ -413,7 +461,7 @@ def generate_description(track_data: dict[str, Any], metadata: dict[str, Any]) -
         else:
             description += f"[b]{str_to_int_if_int(track['t'].tracknumber, zpad=True)}.[/b] "
 
-        description += f"{', '.join(track['t'].artist)} - {track['t'].title} [i]({length})[/i]\n"
+        description += f"{format_tracklist_artists(track['t'].artist)} - {track['t'].title} [i]({length})[/i]\n"
 
     if len(track_data.values()) > 1:
         description += f"\n[b]Total length: [/b]{total_duration // 60}:{total_duration % 60:02d}\n"
