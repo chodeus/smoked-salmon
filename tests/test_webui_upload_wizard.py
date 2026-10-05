@@ -922,7 +922,14 @@ def _flac_with_art(path: Path, title: str, number: int, art_bytes: int) -> None:
     audio = FLAC(path)
     audio.update({"TITLE": title.lower(), "ARTIST": "testartist", "ALBUM": "testalbum", "TRACKNUMBER": str(number)})
     picture = Picture()
-    picture.type, picture.mime, picture.data = PictureType.COVER_FRONT, "image/jpeg", b"\xff\xd8" + bytes(art_bytes)
+    import io
+
+    from PIL import Image
+
+    jpeg = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(jpeg, "jpeg")
+    # A real JPEG, padded after its end marker to the size the test needs.
+    picture.type, picture.mime, picture.data = PictureType.COVER_FRONT, "image/jpeg", jpeg.getvalue() + bytes(art_bytes)
     audio.add_picture(picture)
     audio.save()
 
