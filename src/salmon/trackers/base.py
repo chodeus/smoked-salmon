@@ -594,9 +594,10 @@ class BaseGazelleApi:
             raise RequestFailedError(f"Too many redirects from {self.site_string}")
         except (TimeoutError, aiohttp.ClientError) as err:
             # Checked by type: ConnectionTimeoutError is also a TimeoutError, and never connected is safe to resend.
-            # An aiohttp error can repeat the URL, and a download link carries secrets.
+            # An aiohttp error can repeat the URL, and a download link carries secrets: not chained, as a traceback
+            # would print the original.
             reason = self._scrub(str(err))
-            raise failure(f"Network error: {reason}", not_acted_on=isinstance(err, _NOT_SENT_ERRORS)) from err
+            raise failure(f"Network error: {reason}", not_acted_on=isinstance(err, _NOT_SENT_ERRORS)) from None
         except RequestError as err:
             # After a redirect the tracker has acted, so a refused later hop is an unknown outcome.
             if idempotent or not redirected or isinstance(err, UnknownOutcomeError):
@@ -996,7 +997,9 @@ class BaseGazelleApi:
         if self.announce in resp_text:
             match = re.search(r'<p style="color: red; text-align: center;">(.+)<\/p>', resp_text)
             if match:
-                raise RequestError(f"Site upload failed: {self._scrub(match[1])} ({response.status})")
+                raise RequestError(
+                    f"Site upload failed: {_safe_response_excerpt(self._scrub(match[1]))} ({response.status})"
+                )
         if "requests.php" in resp_url:
             try:
                 torrent_id = self.parse_torrent_id_from_filled_request_page(resp_text)
