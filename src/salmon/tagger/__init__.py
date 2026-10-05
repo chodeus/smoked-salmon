@@ -4,7 +4,7 @@ from pprint import pprint
 
 import asyncclick as click
 
-from salmon.common import commandgroup
+from salmon.common import AlbumPath, commandgroup
 from salmon.constants import (
     ARTIST_IMPORTANCES,
     RELEASE_TYPES,
@@ -59,7 +59,7 @@ def validate_encoding(ctx, param, value):
 
 
 @commandgroup.command()
-@click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True))
+@click.argument("path", type=AlbumPath(exists=True, file_okay=False))
 @click.option(
     "--source",
     "-s",

@@ -9,6 +9,7 @@ from contextlib import contextmanager
 import asyncclick as click
 
 from salmon import cfg
+from salmon.common.files import rewrite_refusal
 from salmon.converter.conversions import carry_conversion
 from salmon.errors import UploadError
 
@@ -19,16 +20,16 @@ STAGING_DIR = ".salmon-staging"
 @contextmanager
 def staged_source(path: str, scratch: bool) -> Iterator[tuple[str, str | None]]:
     """Yield (folder to work on, dir its rename stays in or None); UploadError if path holds a library."""
-    in_library = cfg.directory.is_library_path(path)
-    if not in_library and (library := cfg.directory.library_inside(path)) is not None:
+    if not cfg.directory.is_library_path(path) and (library := cfg.directory.library_inside(path)) is not None:
         raise UploadError(f"{path} holds the library folder {library}: run salmon on one album folder of it.")
-    if not scratch and not in_library:
+    reason = rewrite_refusal(path)
+    if not scratch and reason is None:
         yield path, None
         return
-    # A library album is copied into a run directory too, but its rename goes into download_directory, to be seeded.
+    # A protected album is copied into a run directory too, but its rename goes into download_directory, to be seeded.
     scratch_dir = _new_scratch_dir()
     try:
-        yield _copy_into(path, scratch_dir, scratch), (scratch_dir if scratch else None)
+        yield _copy_into(path, scratch_dir, scratch, reason), (scratch_dir if scratch else None)
     finally:
         _remove_scratch_dir(scratch_dir, path)
 
@@ -40,11 +41,11 @@ def _new_scratch_dir() -> str:
     return tempfile.mkdtemp(dir=root, prefix="run-")
 
 
-def _copy_into(path: str, into: str, scratch: bool) -> str:
+def _copy_into(path: str, into: str, scratch: bool, reason: str | None) -> str:
     """Copy the album folder into `into` and return the copy's path."""
     dest = os.path.join(into, os.path.basename(path.rstrip(os.sep)))
     if not scratch:
-        why = "It is in library_dirs, so salmon works on a copy and never modifies the library album."
+        why = f"salmon works on a copy and never modifies the album, as {reason}."
     else:
         why = "--skip-flac-upload works on a copy, so the source is never modified."
     try:
@@ -60,7 +61,7 @@ def _copy_into(path: str, into: str, scratch: bool) -> str:
     if not scratch:
         click.secho(f"The renamed copy goes into {cfg.directory.download_directory} and stays there.", fg="cyan")
     try:
-        # A real copy: a hardlink shares the inode, so a later tag write would reach the source.
+        # A real copy: a hardlink shares the inode, so a later tag write would reach the source; symlinks are followed.
         shutil.copytree(path, dest)
     except OSError as error:
         raise UploadError(f"Could not copy {path} to {dest}: {error}") from error

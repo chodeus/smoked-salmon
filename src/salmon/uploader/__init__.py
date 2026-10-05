@@ -17,7 +17,7 @@ from salmon.checks.logs import check_log_cambia
 from salmon.checks.source import detect_source
 from salmon.checks.tag_rules import collect_upload_warnings
 from salmon.checks.upconverts import upload_upconvert_test
-from salmon.common import commandgroup, decade_tag, tagify
+from salmon.common import AlbumPath, commandgroup, decade_tag, tagify
 from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
 from salmon.constants import ENCODINGS, FORMATS, SOURCES, TAG_ENCODINGS
 from salmon.converter.conversions import conversion_of
@@ -98,7 +98,7 @@ if TYPE_CHECKING:
 
 
 @commandgroup.command()
-@click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True))
+@click.argument("path", type=AlbumPath(exists=True, file_okay=False))
 @click.option("--group-id", "-g", default=None, help="Group ID to upload torrent to")
 @click.option(
     "--skip-flac-upload",
@@ -545,7 +545,7 @@ async def upload(
             folder_type=folder_type,
             conversion=conversion,
             rename_into=rename_into,
-            library_album=path if cfg.directory.is_library_path(path) else None,
+            kept_source=None if staged == path else path,
         )
 
 
@@ -578,7 +578,7 @@ async def _upload_staged(
     folder_type: str | None,
     conversion: dict[str, Any] | None,
     rename_into: str | None,
-    library_album: str | None = None,
+    kept_source: str | None = None,
 ) -> None:
     """upload() on a folder that is safe to change; see upload() for the arguments."""
     remove_downloaded_cover_image = scene or cfg.image.remove_auto_downloaded_cover_image
@@ -682,9 +682,9 @@ async def _upload_staged(
         if cfg.directory.protects(path):
             click.secho(f"\nNot deleting {path}: it is in library_dirs, or holds one.", fg="yellow", bold=True)
             return click.secho("\nAborting upload...", fg="red")
-        if library_album is not None:
+        if kept_source is not None:
             click.secho(
-                f"\nDeleting the copy the upload worked on. The library album {library_album} is kept.",
+                f"\nDeleting the copy the upload worked on. {kept_source} is kept.",
                 fg="yellow",
                 bold=True,
             )

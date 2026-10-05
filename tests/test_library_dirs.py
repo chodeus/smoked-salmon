@@ -246,6 +246,70 @@ def test_a_folder_holding_a_library_is_refused(dirs) -> None:
         pytest.fail("the upload ran on a folder holding a library")
 
 
+def _link(album: Path, library: Path, how: str) -> None:
+    """Share one file of album with the library the way how says."""
+    twin = library / "Artist" / "Album"
+    twin.mkdir(parents=True)
+    if how == "hardlinked file":
+        os.link(album / "01 - one.flac", twin / "01 - one.flac")
+    elif how == "symlinked file":
+        (album / "01 - one.flac").rename(twin / "01 - one.flac")
+        (album / "01 - one.flac").symlink_to(twin / "01 - one.flac")
+    else:
+        (album / "CD1").rename(twin / "CD1")
+        (album / "CD1").symlink_to(twin / "CD1")
+
+
+@pytest.mark.parametrize("how", ["hardlinked file", "symlinked file", "symlinked folder"])
+def test_an_album_sharing_files_is_staged_as_a_real_copy(dirs, capsys, how: str) -> None:
+    library, downloads = dirs
+    album = _album(downloads / "Album")
+    _link(album, library, how)
+    before = _snapshot(library)
+
+    with staging.staged_source(str(album), scratch=False) as (staged, rename_into):
+        assert rename_into is None
+        assert os.path.dirname(os.path.dirname(staged)) == str(downloads / staging.STAGING_DIR)
+        assert not any(entry.is_symlink() for entry in Path(staged).rglob("*"))
+        assert _inodes(Path(staged)).isdisjoint(_inodes(library))
+        for flac in Path(staged).rglob("*.flac"):
+            flac.write_bytes(b"changed")
+
+    assert _snapshot(library) == before
+    assert "hardlink or symlink" in capsys.readouterr().out
+
+
+def test_an_album_sharing_no_file_is_worked_on_in_place(dirs) -> None:
+    _library, downloads = dirs
+    album = _album(downloads / "Album")
+
+    with staging.staged_source(str(album), scratch=False) as (staged, rename_into):
+        assert (staged, rename_into) == (str(album), None)
+
+
+def test_an_unreadable_folder_counts_as_sharing_files(dirs) -> None:
+    from salmon.common.files import shares_files
+
+    _library, downloads = dirs
+    album = _album(downloads / "Album")
+    (album / "CD1").chmod(0)
+    try:
+        assert shares_files(str(album))
+    finally:
+        (album / "CD1").chmod(0o755)
+
+
+def test_an_album_symlinked_into_a_library_is_in_it(dirs, tmp_path) -> None:
+    library, _downloads = dirs
+    elsewhere = _album(tmp_path / "elsewhere" / "Album")
+    (library / "Artist").mkdir()
+    (library / "Artist" / "Linked").symlink_to(elsewhere)
+
+    assert cfg.directory.is_library_path(str(library / "Artist" / "Linked"))
+    assert cfg.directory.protects(str(library / "Artist" / "Linked"))
+    assert not cfg.directory.is_library_path(str(elsewhere))
+
+
 # salmon up
 
 
@@ -397,6 +461,38 @@ def test_up_leaves_a_library_album_byte_identical_and_uploads_a_copy(
     assert all(os.stat(file).st_nlink == 1 for file in library.rglob("*") if file.is_file())
 
 
+@pytest.mark.parametrize("how", ["hardlinked file", "symlinked file", "symlinked folder"])
+def test_up_leaves_an_album_sharing_files_and_what_it_shares_byte_identical(monkeypatch, dirs, how: str) -> None:
+    library, downloads = dirs
+    album = _album(downloads / "Album")
+    _link(album, library, how)
+    before = _snapshot(library), _snapshot(album)
+    monkeypatch.setattr(cfg.upload.formatting, "remove_source_dir", True)
+
+    result, uploads, _transcodes = _run_up(monkeypatch, album)
+
+    assert result.exit_code == 0, result.output
+    assert (_snapshot(library), _snapshot(album)) == before
+    assert uploads[0] == str(downloads / RENAMED)
+    assert _inodes(downloads / RENAMED).isdisjoint(_inodes(library))
+
+
+def test_up_on_an_album_symlinked_into_a_library_leaves_its_target_byte_identical(monkeypatch, dirs, tmp_path) -> None:
+    library, downloads = dirs
+    elsewhere = _album(tmp_path / "elsewhere" / "Album")
+    (library / "Artist").mkdir()
+    (library / "Artist" / "Linked").symlink_to(elsewhere)
+    before = _snapshot(elsewhere)
+    monkeypatch.setattr(cfg.upload.formatting, "remove_source_dir", True)
+
+    result, uploads, _transcodes = _run_up(monkeypatch, library / "Artist" / "Linked")
+
+    assert result.exit_code == 0, result.output
+    assert _snapshot(elsewhere) == before
+    assert (library / "Artist" / "Linked").is_symlink()
+    assert uploads[0] == str(downloads / RENAMED)
+
+
 @pytest.mark.parametrize("when", ["before the rename", "after the rename"])
 def test_abort_and_delete_keeps_the_library_album_and_deletes_the_copy(monkeypatch, dirs, when: str) -> None:
     library, downloads = dirs
@@ -418,7 +514,7 @@ def test_abort_and_delete_keeps_the_library_album_and_deletes_the_copy(monkeypat
     assert result.exit_code == 0, result.output
     assert uploads == []
     assert _snapshot(library) == before
-    assert f"The library album {album} is kept" in result.output
+    assert f"{album} is kept" in result.output
     assert "Deleted folder" in result.output
     # What was deleted is the copy: nothing of this run is left in download_directory.
     assert os.listdir(downloads) == [staging.STAGING_DIR]
@@ -559,6 +655,51 @@ def test_compress_refuses_a_library_album(monkeypatch, dirs) -> None:
     assert result.exit_code != 0
     assert "library_dirs" in result.output
     assert recompressed == []
+
+
+@pytest.mark.parametrize("how", ["hardlinked file", "symlinked file", "symlinked folder"])
+def test_compress_refuses_an_album_sharing_files(monkeypatch, dirs, how: str) -> None:
+    library, downloads = dirs
+    album = _album(downloads / "Album")
+    _link(album, library, how)
+    recompressed: list[str] = []
+
+    async def fake_recompress_path(path: str, files=None) -> None:
+        recompressed.append(path)
+
+    monkeypatch.setattr(salmon.commands, "recompress_path", fake_recompress_path)
+
+    async def run():
+        return await CliRunner().invoke(salmon.commands.compress, [str(album)])
+
+    result = anyio.run(run)
+
+    assert result.exit_code != 0
+    assert "hardlink or symlink" in result.output
+    assert recompressed == []
+
+
+def test_check_integrity_does_not_offer_to_sanitize_a_file_hardlinked_into_a_library(monkeypatch, dirs) -> None:
+    library, downloads = dirs
+    album = _album(downloads / "Album")
+    _link(album, library, "hardlinked file")
+    sanitized: list[str] = []
+
+    async def sanitize(path: str) -> None:
+        sanitized.append(path)
+
+    integrity = sys.modules["salmon.checks.integrity"]
+    monkeypatch.setattr(integrity, "check_integrity", _returning_async(integrity.IntegrityResult(passed=False)))
+    monkeypatch.setattr(integrity, "sanitize_and_verify", sanitize)
+
+    async def run():
+        return await CliRunner().invoke(salmon.checks.check, ["integrity", str(album / "01 - one.flac")], input="y\n")
+
+    result = anyio.run(run)
+
+    assert result.exit_code == 0, result.output
+    assert "Not offering to sanitize" in result.output
+    assert sanitized == []
 
 
 @pytest.mark.parametrize("target", ["folder", "file"])

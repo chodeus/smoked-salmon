@@ -5,13 +5,13 @@ from typing import get_args
 import asyncclick as click
 
 from salmon import cfg
-from salmon.common import commandgroup
+from salmon.common import AlbumPath, commandgroup
 from salmon.converter.downconverting import convert_folder
 from salmon.converter.transcoding import Bitrate, transcode_folder
 
 
 @commandgroup.command()
-@click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True), nargs=1)
+@click.argument("path", type=AlbumPath(exists=True, file_okay=False), nargs=1)
 @click.option(
     "--bitrate",
     "-b",
@@ -37,7 +37,7 @@ async def transcode(path: str, bitrate: Bitrate, essential_only: bool) -> None:
 
 
 @commandgroup.command()
-@click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True), nargs=1)
+@click.argument("path", type=AlbumPath(exists=True, file_okay=False), nargs=1)
 @click.option(
     "--essential-only",
     "-eo",

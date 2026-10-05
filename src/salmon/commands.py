@@ -18,7 +18,8 @@ import salmon.trackers
 import salmon.uploader
 from salmon import cfg
 from salmon.checks.connection import check_tracker_connection
-from salmon.common import commandgroup, get_flac_files
+from salmon.common import AlbumPath, commandgroup, get_flac_files
+from salmon.common.files import rewrite_refusal
 from salmon.common.redaction import redact_secrets
 from salmon.config import find_config_path, get_default_config_path, get_user_cfg_path
 from salmon.errors import UploadError
@@ -36,7 +37,7 @@ from salmon.uploader.torrent_client import TorrentClientGenerator
 
 
 @commandgroup.command()
-@click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True), nargs=1)
+@click.argument("path", type=AlbumPath(exists=True, file_okay=False), nargs=1)
 @click.option("--no-delete-specs", "-nd", is_flag=True)
 @click.option("--format-output", "-f", is_flag=True)
 async def specs(path: str, no_delete_specs: bool, format_output: bool) -> None:
@@ -79,11 +80,11 @@ async def descgen(urls: tuple[str, ...]) -> None:
 
 
 @commandgroup.command()
-@click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True))
+@click.argument("path", type=AlbumPath(exists=True, file_okay=False))
 async def compress(path: str) -> None:
     """Recompress a directory of FLACs to the configured level; exits 1 if any file fails."""
-    if cfg.directory.protects(path):
-        click.secho(f"Not recompressing {path}: it is in library_dirs, or holds one.", fg="red")
+    if (reason := rewrite_refusal(path)) is not None:
+        click.secho(f"Not recompressing {path}: {reason}.", fg="red")
         raise click.Abort
     flac_files = get_flac_files(path)
     if not flac_files:

@@ -1,16 +1,51 @@
 import os
 import re
+import stat
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TypeVar, cast
+from typing import Any, TypeVar, cast
 
 import anyio
+import asyncclick as click
 from tqdm import tqdm
 
 from salmon import cfg
 from salmon.common.progress import report_progress
 
 T = TypeVar("T")
+
+
+class AlbumPath(click.Path):
+    """A click.Path made absolute without resolving symlinks, so an album symlinked into a library is seen there."""
+
+    def convert(self, value: Any, param: click.Parameter | None, ctx: click.Context | None) -> Any:
+        return os.path.abspath(super().convert(value, param, ctx))
+
+
+def shares_files(path: str) -> bool:
+    """Whether path is a symlink, or holds a symlink or a file with another hardlink."""
+    if os.path.islink(path):
+        return True
+    if not os.path.isdir(path):
+        return os.path.isfile(path) and os.stat(path).st_nlink > 1
+    errors: list[OSError] = []
+    for root, folders, files in os.walk(path, onerror=errors.append):
+        for name in (*folders, *files):
+            entry = os.lstat(os.path.join(root, name))
+            if stat.S_ISLNK(entry.st_mode) or (stat.S_ISREG(entry.st_mode) and entry.st_nlink > 1):
+                return True
+    return bool(errors)  # An unreadable folder could hide a link.
+
+
+def rewrite_refusal(path: str) -> str | None:
+    """Why salmon must not rewrite the files of path in place, or None."""
+    if cfg.directory.is_library_path(path):
+        return "it is in library_dirs"
+    if (library := cfg.directory.library_inside(path)) is not None:
+        return f"it holds the library folder {library}"
+    if shares_files(path):
+        return "it shares files with another folder through a hardlink or symlink"
+    return None
 
 
 def get_audio_files(path, sort_by_tracknumber=False):

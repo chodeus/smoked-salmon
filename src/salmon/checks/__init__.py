@@ -7,7 +7,7 @@ from salmon.checks.integrity import handle_integrity_check
 from salmon.checks.logs import check_log_cambia
 from salmon.checks.mqa import check_mqa
 from salmon.checks.upconverts import test_upconverted
-from salmon.common import commandgroup
+from salmon.common import AlbumPath, commandgroup
 from salmon.constants import SOURCES
 from salmon.errors import CRCMismatchError, EditedLogError, LogCheckSkipped
 
@@ -63,7 +63,7 @@ async def upconv(path: str) -> None:
 
 
 @check.command()
-@click.argument("path", type=click.Path(exists=True, resolve_path=True))
+@click.argument("path", type=AlbumPath(exists=True))
 async def integrity(path: str) -> None:
     """Check the integrity of audio files.
 

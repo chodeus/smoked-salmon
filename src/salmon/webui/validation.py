@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from salmon import cfg
 from salmon.common import http_url_hostname, is_public_ip
+from salmon.common.files import rewrite_refusal
 
 
 def allowed_roots() -> list[str]:
@@ -66,6 +67,13 @@ def validate_album_dir(raw_path: str) -> str:
         )
     if not os.path.isdir(path):
         raise HTTPException(status_code=404, detail=f"Not a directory: {raw_path}")
+    # The job gets the resolved path, so a link into a library from outside it would lose the copy salmon works on.
+    given = os.path.abspath(os.path.expanduser(raw_path))
+    if cfg.directory.is_library_path(given) and not cfg.directory.is_library_path(path):
+        raise HTTPException(
+            status_code=403,
+            detail="Refusing an album symlinked into a library from outside it: run salmon up on it in a terminal.",
+        )
     return path
 
 
@@ -81,13 +89,10 @@ def validate_source_album_dir(raw_path: str) -> str:
 
 
 def validate_writable_album_dir(raw_path: str) -> str:
-    """Like validate_album_dir, but refuses a folder in a library or holding one, for jobs that rewrite it in place."""
+    """Like validate_album_dir, but refuses an album rewrite_refusal protects, for jobs that rewrite it in place."""
     path = validate_album_dir(raw_path)
-    if cfg.directory.protects(path):
-        raise HTTPException(
-            status_code=403,
-            detail="Refusing to write inside a read-only library directory.",
-        )
+    if (refusal := rewrite_refusal(path)) is not None:
+        raise HTTPException(status_code=403, detail=f"Refusing to rewrite this album in place: {refusal}.")
     return path
 
 

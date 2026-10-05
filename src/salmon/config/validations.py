@@ -12,13 +12,20 @@ def _real(path: str) -> str:
     return os.path.realpath(os.path.expanduser(path))
 
 
+def _lexical(path: str) -> str:
+    return os.path.abspath(os.path.expanduser(path))
+
+
 def _holds(folder: str, path: str) -> bool:
-    """Whether the resolved path is the resolved folder or inside it (commonpath: /music-old is not in /music)."""
-    folder, path = _real(folder), _real(path)
-    try:
-        return os.path.commonpath([folder, path]) == folder
-    except ValueError:  # Different drives on Windows.
-        return False
+    """Whether path is folder or inside it, resolved or as given (commonpath: /music-old is not in /music)."""
+    # As given too: an album symlinked into a library is in it, wherever the link points.
+    for norm in (_real, _lexical):
+        try:
+            if os.path.commonpath([norm(folder), norm(path)]) == norm(folder):
+                return True
+        except ValueError:  # Different drives on Windows.
+            continue
+    return False
 
 
 class Directory(BaseStruct):
@@ -54,11 +61,11 @@ class Directory(BaseStruct):
                     raise ValueError(f"library_dirs entry {entry} must not be inside {name} ({folder})")
 
     def library_of(self, path: str) -> str | None:
-        """The library_dirs entry path is or is inside, compared on resolved paths, or None."""
+        """The library_dirs entry path is or is inside, compared resolved and as given, or None."""
         return next((entry for entry in self.library_dirs if _holds(entry, path)), None)
 
     def is_library_path(self, path: str) -> bool:
-        """Whether path is a library_dirs entry or inside one, compared on resolved paths."""
+        """Whether path is a library_dirs entry or inside one, compared resolved and as given."""
         return self.library_of(path) is not None
 
     def library_inside(self, path: str) -> str | None:
