@@ -679,7 +679,9 @@ async def _upload_staged(
             essential_only,
             skip_initial_review,
             apply_ai_suggestions,
-            rls_type_hint=suggest_release_type(folder_type, len(tags)),
+            rls_type_hint=suggest_release_type(
+                folder_type, rls_data.get("title"), [info.get("duration") or 0 for info in audio_info.values()]
+            ),
             rename_into=rename_into,
         )
 

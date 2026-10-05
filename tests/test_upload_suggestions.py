@@ -114,12 +114,35 @@ def test_release_type_from_folder_reads_the_library_layout() -> None:
     assert review.release_type_from_folder("/data/torrents/salmon/(2022) journaling") is None
 
 
+def test_the_library_folder_names_the_release_type_whatever_the_files_imply() -> None:
+    assert review.suggest_release_type("EP", "Album", [200] * 12) == "EP"
+
+
+# Ported from upstream (smokin-salmon/smoked-salmon#595): with no library folder, the files decide.
 @pytest.mark.parametrize(
-    ("folder_hint", "track_count", "expected"),
-    [("EP", 12, "EP"), (None, 1, "Single"), (None, 2, "Single"), (None, 6, "EP"), (None, 7, "Album")],
+    ("title", "durations", "expected"),
+    [
+        ("Album", [200], "Single"),
+        ("Album", [200, 200, 200], "Single"),
+        ("Album", [200] * 4, "EP"),
+        ("Album", [200] * 6, "EP"),
+        ("Album", [200] * 7, "Album"),
+        # Past 30 minutes, an album; a single's track past 10 minutes makes it an EP.
+        ("Album", [400] * 5, "Album"),
+        ("Album", [700, 200], "EP"),
+        # Unknown lengths: the count alone.
+        ("Album", [0, 0], "Single"),
+        # The title agrees.
+        ("Album EP", [200] * 4, "EP"),
+        ("Album (Single)", [200], "Single"),
+        # The title names another type.
+        ("Album EP", [200] * 12, None),
+        ("Album (Single)", [200] * 5, None),
+        ("Album", [], None),
+    ],
 )
-def test_suggest_release_type(folder_hint, track_count, expected) -> None:
-    assert review.suggest_release_type(folder_hint, track_count) == expected
+def test_the_release_type_follows_the_track_count(title, durations, expected) -> None:
+    assert review.suggest_release_type(None, title, durations) == expected
 
 
 def test_release_type_prompt_pretypes_the_hint(monkeypatch) -> None:
