@@ -767,11 +767,26 @@ async def _upload_staged(
                 click.secho(f"Uploading to {gazelle_site.base_url}", fg="cyan", bold=True)
                 # The reviewed metadata, not the tags: an edit to artist, title or year must move the match with it.
                 # A torrent already seeds from the folder: never offer to delete it.
-                group_id = await check_existing_group(gazelle_site, searchstrs, offer_deletion=False, release=metadata)
+                try:
+                    group_id = await check_existing_group(
+                        gazelle_site, searchstrs, offer_deletion=False, release=metadata
+                    )
+                except RequestError as e:
+                    # Like a failed upload: skip this tracker, and offer the next one.
+                    click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
+                    remaining_gazelle_sites.remove(tracker)
+                    tracker = None
+                    if not remaining_gazelle_sites or not (trackers or cfg.upload.multi_tracker_upload):
+                        break
+                    continue
 
             remaining_gazelle_sites.remove(tracker)
-            # The source FLAC's group is on this tracker only.
-            last_site = source_flac is not None or not remaining_gazelle_sites or not cfg.upload.multi_tracker_upload
+            # The source FLAC's group is on this tracker only; trackers named up front are all gone through.
+            last_site = (
+                source_flac is not None
+                or not remaining_gazelle_sites
+                or not (trackers or cfg.upload.multi_tracker_upload)
+            )
 
             # RED bans specific releases from being uploaded; block RED here (OPS is unaffected).
             if gazelle_site.site_code == "RED":

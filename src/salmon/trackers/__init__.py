@@ -83,11 +83,16 @@ async def validate_tracker(ctx, param, value):
 
 
 async def validate_trackers(ctx, param, value):
-    """Validate each entry of a repeated -t flag in order; an empty flag runs the first-time flow."""
-    if not value:
+    """Validate every tracker given with -t, in the order given; none given runs the first-time choice.
+
+    Each -t takes one tracker or a comma-separated list, and may be repeated: `-t RED,OPS` and
+    `-t RED -t OPS` both give ("RED", "OPS"). A tracker named twice counts once.
+    """
+    entries = [entry.strip() for item in value or () for entry in item.split(",") if entry.strip()]
+    if not entries:
         codes = [await choose_tracker_first_time()]
     else:
-        codes = [await validate_tracker(ctx, param, entry) for entry in value]
+        codes = [await validate_tracker(ctx, param, entry) for entry in entries]
     chosen = tuple(dict.fromkeys(code for code in codes if code))
     if not chosen:
         click.secho("No tracker selected.", fg="red")
