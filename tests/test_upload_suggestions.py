@@ -6,15 +6,12 @@ from typing import Any, cast
 import anyio
 import asyncclick as click
 import pytest
-from mutagen.id3 import TXXX, WXXX
-from mutagen.mp4 import MP4FreeForm
 
 import salmon.trackers as trackers
 import salmon.uploader as uploader
 from salmon import cfg
 from salmon.checks import source as src
 from salmon.common.strings import comparable
-from salmon.search.base import IdentData
 from salmon.tagger import metadata as metadata_mod
 from salmon.tagger import review
 from salmon.uploader import dupe_checker
@@ -48,33 +45,17 @@ def test_comparable_ignores_case_accents_and_punctuation() -> None:
     assert comparable(None) == ""
 
 
-def test_store_url_reads_the_files_store_tag(album_dir, monkeypatch) -> None:
+def test_files_store_url_reads_the_files_store_tag(album_dir, monkeypatch) -> None:
     monkeypatch.setattr(src, "MutagenFile", lambda _path: _FakeAudio({"SOURCE": [QOBUZ_URL]}))
 
-    assert metadata_mod.store_url(str(album_dir)) == QOBUZ_URL
+    assert metadata_mod.files_store_url(str(album_dir)) == QOBUZ_URL
 
 
-def test_store_url_ignores_tags_that_are_not_urls(album_dir, monkeypatch) -> None:
+def test_files_store_url_ignores_tags_that_are_not_urls(album_dir, monkeypatch) -> None:
     tags = {"source": "Qobuz", "url": "not a url", "comment": f"Bought at {QOBUZ_URL}"}
     monkeypatch.setattr(src, "MutagenFile", lambda _path: _FakeAudio(tags))
 
-    assert metadata_mod.store_url(str(album_dir)) is None
-
-
-@pytest.mark.parametrize(
-    "tags",
-    [
-        {"QOBUZ URL": [QOBUZ_URL]},
-        {"TXXX:SOURCE": TXXX(encoding=3, desc="SOURCE", text=[QOBUZ_URL])},
-        {"WXXX:Qobuz URL": WXXX(encoding=3, desc="Qobuz URL", url=QOBUZ_URL)},
-        {"----:com.apple.iTunes:SOURCE": [MP4FreeForm(QOBUZ_URL.encode())]},
-    ],
-    ids=["vorbis-any-key", "id3-txxx", "id3-wxxx", "mp4-freeform"],
-)
-def test_store_url_reads_any_tag_in_any_container(album_dir, monkeypatch, tags) -> None:
-    monkeypatch.setattr(src, "MutagenFile", lambda _path: _FakeAudio(tags))
-
-    assert metadata_mod.store_url(str(album_dir)) == QOBUZ_URL
+    assert metadata_mod.files_store_url(str(album_dir)) is None
 
 
 TIDAL_TRACK = "https://tidal.com/browse/track/497503885"
@@ -82,31 +63,6 @@ TIDAL_ALBUM = "https://tidal.com/browse/album/497503881"
 AMAZON_URL = "https://www.amazon.com/dp/B000123456"
 MB_RELEASE = "https://musicbrainz.org/release/0a1b2c3d-0000-4000-8000-000000000000"
 DISCOGS_RELEASE = "https://www.discogs.com/release/1234567"
-
-
-@pytest.mark.parametrize(
-    ("tags", "expected"),
-    [
-        ({"QOBUZ URL": [QOBUZ_URL], "SOURCE": [DEEZER_URL]}, DEEZER_URL),
-        ({"URL": [TIDAL_TRACK], "COMMENT": [TIDAL_ALBUM]}, TIDAL_ALBUM),
-        ({"URL": [AMAZON_URL], "COMMENT": [AMAZON_URL + "?ref=x"]}, AMAZON_URL),
-        ({"MUSICBRAINZ_RELATIONSHIP_URL__PURCHASE FOR DOWNLOAD": [QOBUZ_URL], "COMMENT": [MB_RELEASE]}, None),
-        ({"SOURCE": [MB_RELEASE]}, None),
-        ({"WOAS": [MB_RELEASE], "URL": [DISCOGS_RELEASE]}, None),
-    ],
-    ids=[
-        "source-key-wins",
-        "scrapable-beats-unscrapable",
-        "unscrapable-source-key-kept",
-        "database-keys-skipped",
-        "database-url-under-source",
-        "database-urls-under-woas-and-url",
-    ],
-)
-def test_store_url_ranking(album_dir, monkeypatch, tags, expected) -> None:
-    monkeypatch.setattr(src, "MutagenFile", lambda _path: _FakeAudio(tags))
-
-    assert metadata_mod.store_url(str(album_dir)) == expected
 
 
 def test_release_type_from_folder_reads_the_library_layout() -> None:
@@ -239,27 +195,6 @@ def _search_results(*entries):
     return results
 
 
-def test_suggest_choice_stars_the_store_url_and_adds_the_matching_result() -> None:
-    ident = IdentData("Illy", "journaling", 2022, 6, "WEB")
-    choices = {1: ("MusicBrainz", "mb1"), 2: ("Deezer", "dz1")}
-    results = _search_results(("MusicBrainz", "mb1", ident), ("Deezer", "dz1", ident))
-    rls_data = {"artists": [("Illy", "main")], "title": "journaling"}
-
-    assert metadata_mod.suggest_choice(choices, results, rls_data, 6, QOBUZ_URL) == f"*{QOBUZ_URL} 1"
-    assert metadata_mod.suggest_choice(choices, results, rls_data, 6, None) == "1"
-    assert metadata_mod.suggest_choice(choices, results, rls_data, 9, QOBUZ_URL) == f"*{QOBUZ_URL}"
-    assert metadata_mod.suggest_choice({}, {}, rls_data, 6, None) is None
-
-
-def test_suggest_choice_does_not_add_the_result_the_starred_url_already_is() -> None:
-    ident = IdentData("Illy", "journaling", 2022, 6, "WEB")
-    choices = {1: ("Deezer", "dz1")}
-    results = _search_results(("Deezer", "dz1", ident))
-    rls_data = {"artists": [("Illy", "main")], "title": "journaling"}
-
-    assert metadata_mod.suggest_choice(choices, results, rls_data, 6, DEEZER_URL) == f"*{DEEZER_URL}"
-
-
 def test_metadata_prompt_pretypes_the_suggestion(monkeypatch) -> None:
     defaults = _capturing_prompt(monkeypatch, "salmon.tagger.metadata.click.prompt", answer="m")
     monkeypatch.setattr(metadata_mod, "_get_manual_metadata", lambda rls_data: {"tracks": {}})
@@ -375,7 +310,7 @@ def test_the_pretyped_metadata_answer_is_explained(capsys) -> None:
 
     out = capsys.readouterr().out
     assert f"Pre-typed *{QOBUZ_URL}: the store page in the files' tags" in out
-    assert "Pre-typed 7: the Deezer result matching the files' artist, title and track count." in out
+    assert "Pre-typed 7: the Deezer result matching the files' artist, title, track count and year." in out
 
 
 def test_the_metadata_prompt_says_how_several_answers_combine(monkeypatch) -> None:

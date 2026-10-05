@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from copy import copy
 from itertools import islice
 from typing import Any
@@ -8,21 +9,38 @@ import asyncclick as click
 import msgspec
 
 from salmon import cfg
-from salmon.checks.source import tag_urls
+from salmon.checks.source import is_store_url, tag_urls
 from salmon.common import handle_scrape_errors, make_searchstrs, re_strip
-from salmon.common.strings import comparable
+from salmon.common.strings import artist_keys, comparable
 from salmon.search import SEARCHSOURCES, run_metasearch
 from salmon.sources.deezer import DeezerBase, album_upc
-from salmon.tagger.combine import combine_metadatas, get_source_from_link
+from salmon.tagger.combine import combine_metadatas
 from salmon.tagger.sources import METASOURCES
 from salmon.tagger.sources.base import generate_artists, standardize_genres
 
+_NOT_ALBUM_PAGE = re.compile(r"/(?:track|playlist)/", re.IGNORECASE)
+_TYPE_SUFFIX = re.compile(r"\s*(?:-\s*(?:EP|Single)|[(\[](?:EP|Single)[)\]])\s*$", re.IGNORECASE)
 
-def store_url(path: str) -> str | None:
-    """The files' own store page: a link salmon can scrape (source keys first), else a source-key URL."""
+
+def _metasource_of(url: str) -> str | None:
+    """The metadata source that scrapes this URL, if any."""
+    return next((name for name, source in METASOURCES.items() if source.Scraper.regex.match(url)), None)
+
+
+def files_store_url(path: str) -> str | None:
+    """The store album URL the files' own tags give under a source key (SOURCE, URL, WWW, ...).
+
+    Only a URL of a store a metadata source scrapes counts, and only when it is the only store album
+    URL the tags hold, under any key: two different ones give none.
+    """
     sourced, other = tag_urls(path)
-    scrapable = (url for url in sourced + other if get_source_from_link(url))
-    return next(scrapable, None) or next(iter(sourced), None)
+
+    def album(url: str) -> bool:
+        return is_store_url(url) and not _NOT_ALBUM_PAGE.search(url) and _metasource_of(url) is not None
+
+    if len({url.rstrip("/") for url in sourced + other if album(url)}) != 1:
+        return None
+    return next((url for url in sourced if album(url)), None)
 
 
 async def get_metadata(path: str, tags: dict[str, Any], rls_data: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
@@ -49,7 +67,7 @@ async def get_metadata(path: str, tags: dict[str, Any], rls_data: dict[str, Any]
         searchstrs, filter=False, track_count=len(tags), artists=artists_list, album=album_title
     )
     choices = _print_search_results(search_results, rls_data)
-    store = store_url(path)
+    store = files_store_url(path)
     default = suggest_choice(choices, search_results, rls_data, len(tags), store)
     _explain_default(default, choices)
     metadata, source_url = await _select_choice(choices, rls_data, default=default)
@@ -65,10 +83,14 @@ def _explain_default(default: str | None, choices: dict[int, tuple[str, str]]) -
     for part in (default or "").split():
         if part.startswith("*"):
             click.secho(f"Pre-typed {part}: the store page in the files' tags, starred as the source.", fg="cyan")
+        elif part.startswith("http"):
+            click.secho(
+                f"Pre-typed {part}: the store page in the files' tags (not starred: not a WEB release).", fg="cyan"
+            )
         elif part.isdigit() and int(part) in choices:
             source = choices[int(part)][0]
             click.secho(
-                f"Pre-typed {part}: the {source} result matching the files' artist, title and track count.",
+                f"Pre-typed {part}: the {source} result matching the files' artist, title, track count and year.",
                 fg="cyan",
             )
 
@@ -152,32 +174,58 @@ def suggest_choice(
     track_count: int,
     url: str | None,
 ) -> str | None:
-    """Pre-typed metadata answer: the files' store URL starred as the source, plus the first result matching them."""
-    url_source = get_source_from_link(url)
-    parts = [f"*{url}"] if url else []
+    """The metadata prompt's default: the files' store URL, and the search result that matches them.
+
+    The URL is starred (the release's source) only for a WEB release. The matching result is left
+    out when it is from the URL's own store, which already gives that source's metadata.
+
+    Args:
+        choices: The numbered search results, as printed.
+        search_results: What the search returned, by source and release ID.
+        rls_data: The release data built from the tags.
+        track_count: The number of audio files.
+        url: The files' store URL (files_store_url), or None.
+
+    Returns:
+        The answer an empty reply gives, or None for no default.
+    """
+    parts = [f"{'*' if rls_data.get('source') == 'WEB' else ''}{url}"] if url else []
     match = _matching_choice(choices, search_results, rls_data, track_count)
-    if match is not None and choices[match][0] != url_source:
+    if match is not None and (url is None or choices[match][0] != _metasource_of(url)):
         parts.append(str(match))
     return " ".join(parts) or None
+
+
+def _comparable_title(title: object) -> str:
+    return comparable(_TYPE_SUFFIX.sub("", str(title or "")))
 
 
 def _matching_choice(
     choices: dict[int, tuple[str, str]], search_results: dict[str, Any], rls_data: dict[str, Any], track_count: int
 ) -> int | None:
-    """First search result whose artist, title and track count agree with the files' own tags."""
-    title = comparable(rls_data.get("title"))
-    artists = {comparable(name) for name, _importance in rls_data.get("artists") or []} - {""}
-    if not title:
+    """The search result whose artist, title, track count and year agree with the files' own tags.
+
+    A count or year a result does not give is not held against it. Two matching results from the same
+    source (an explicit and a clean version, say) give none from that source.
+    """
+    title = _comparable_title(rls_data.get("title"))
+    artists = artist_keys(rls_data.get("artists"))
+    year = str(rls_data.get("year") or "")[:4]
+    if not title or not artists:
         return None
+    matches = []
     for choice_id, (source, rls_id) in choices.items():
-        ident = (search_results.get(source) or {}).get(rls_id, (None,))[0]
-        if ident is None:
-            continue
-        if comparable(ident.album) != title or comparable(ident.artist) not in artists:
+        ident = ((search_results.get(source) or {}).get(rls_id) or (None,))[0]
+        if ident is None or _comparable_title(ident.album) != title or comparable(ident.artist) not in artists:
             continue
         if ident.track_count not in (None, track_count):
             continue
-        return choice_id
+        if year and ident.year and str(ident.year)[:4] != year:
+            continue
+        matches.append(choice_id)
+    for choice_id in matches:
+        if sum(choices[other][0] == choices[choice_id][0] for other in matches) == 1:
+            return choice_id
     return None
 
 
