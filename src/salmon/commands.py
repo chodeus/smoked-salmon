@@ -82,6 +82,9 @@ async def descgen(urls: tuple[str, ...]) -> None:
 @click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True))
 async def compress(path: str) -> None:
     """Recompress a directory of FLACs to the configured level; exits 1 if any file fails."""
+    if cfg.directory.protects(path):
+        click.secho(f"Not recompressing {path}: it is in library_dirs, or holds one.", fg="red")
+        raise click.Abort
     flac_files = get_flac_files(path)
     if not flac_files:
         click.secho("No flacs found to recompress. Skipping...", fg="red")

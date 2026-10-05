@@ -8,17 +8,16 @@ class BaseStruct(msgspec.Struct, forbid_unknown_fields=False):
     pass
 
 
-def _path_contains(root: str, path: str) -> bool:
-    """True when path is root or sits inside it.
+def _real(path: str) -> str:
+    return os.path.realpath(os.path.expanduser(path))
 
-    commonpath, not a prefix test: "root + os.sep" is "//" when root is "/", and a
-    bare startswith would also treat /data/music-old as inside /data/music.
-    """
-    root_real = os.path.realpath(os.path.expanduser(root))
-    path_real = os.path.realpath(os.path.expanduser(path))
+
+def _holds(folder: str, path: str) -> bool:
+    """Whether the resolved path is the resolved folder or inside it (commonpath: /music-old is not in /music)."""
+    folder, path = _real(folder), _real(path)
     try:
-        return os.path.commonpath([path_real, root_real]) == root_real
-    except ValueError:  # different drives on Windows
+        return os.path.commonpath([folder, path]) == folder
+    except ValueError:  # Different drives on Windows.
         return False
 
 
@@ -28,7 +27,7 @@ class Directory(BaseStruct):
     hardlinks: bool = True
     tmp_dir: str | None = None
     clean_tmp_dir: bool = False
-    # Read-only sources: browsable and uploadable, never deleted.
+    # Curated music folders: salmon works on a copy of an album inside one, and never changes or deletes it.
     library_dirs: list[str] = msgspec.field(default_factory=list)
 
     def __post_init__(self):
@@ -38,23 +37,37 @@ class Directory(BaseStruct):
             raise ValueError("download_directory is not a valid directory")
         if self.tmp_dir and not os.path.isdir(self.tmp_dir):
             raise ValueError("tmp_dir is not a valid directory")
-        writable = (
-            ("download_directory", self.download_directory),
-            ("dottorrents_dir", self.dottorrents_dir),
-            ("tmp_dir", self.tmp_dir),
-        )
         for entry in self.library_dirs:
             if not os.path.isdir(entry):
                 raise ValueError(f"library_dirs entry is not a valid directory: {entry}")
-            # An output dir inside a library would be staged into, then treated as
-            # read-only by the webui - fail at load rather than behave strangely.
-            for name, target in writable:
-                if target and _path_contains(entry, target):
-                    raise ValueError(f"library_dirs entry {entry} must not contain {name}")
+            # salmon writes and deletes in these, and a copy of a library album would land in the library.
+            for name, folder in (
+                ("download_directory", self.download_directory),
+                ("dottorrents_dir", self.dottorrents_dir),
+                ("tmp_dir", self.tmp_dir),
+            ):
+                if folder and _holds(entry, folder):
+                    raise ValueError(f"library_dirs entry {entry} must not contain {name} ({folder})")
+            # salmon replaces and deletes folders in these: renamed copies, conversions, spectrals, clean_tmp_dir.
+            for name, folder in (("download_directory", self.download_directory), ("tmp_dir", self.tmp_dir)):
+                if folder and _holds(folder, entry):
+                    raise ValueError(f"library_dirs entry {entry} must not be inside {name} ({folder})")
+
+    def library_of(self, path: str) -> str | None:
+        """The library_dirs entry path is or is inside, compared on resolved paths, or None."""
+        return next((entry for entry in self.library_dirs if _holds(entry, path)), None)
 
     def is_library_path(self, path: str) -> bool:
-        """True if path sits inside a library_dirs entry, which must never be deleted."""
-        return any(_path_contains(entry, path) for entry in self.library_dirs)
+        """Whether path is a library_dirs entry or inside one, compared on resolved paths."""
+        return self.library_of(path) is not None
+
+    def library_inside(self, path: str) -> str | None:
+        """A library_dirs entry that path is or holds, or None."""
+        return next((entry for entry in self.library_dirs if _holds(path, entry)), None)
+
+    def protects(self, path: str) -> bool:
+        """Whether changing or deleting path could change a library album: it is in a library or holds one."""
+        return self.is_library_path(path) or self.library_inside(path) is not None
 
 
 ImgUploaderLiteral = Literal["ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "red"]

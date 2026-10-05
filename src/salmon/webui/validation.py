@@ -69,15 +69,21 @@ def validate_album_dir(raw_path: str) -> str:
     return path
 
 
-def validate_writable_album_dir(raw_path: str) -> str:
-    """Like validate_album_dir, but refuses read-only library sources.
-
-    Transcode/downconvert write a sibling folder next to the source and
-    spectral generation writes into the album itself, so neither may target a
-    curated library_dirs entry.
-    """
+def validate_source_album_dir(raw_path: str) -> str:
+    """Like validate_album_dir, but refuses a folder holding a library: such a job reads one album, never a library."""
     path = validate_album_dir(raw_path)
-    if cfg.directory.is_library_path(path):
+    if not cfg.directory.is_library_path(path) and cfg.directory.library_inside(path) is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Refusing a folder that holds a library directory: pick one album folder in it.",
+        )
+    return path
+
+
+def validate_writable_album_dir(raw_path: str) -> str:
+    """Like validate_album_dir, but refuses a folder in a library or holding one, for jobs that rewrite it in place."""
+    path = validate_album_dir(raw_path)
+    if cfg.directory.protects(path):
         raise HTTPException(
             status_code=403,
             detail="Refusing to write inside a read-only library directory.",
@@ -91,7 +97,7 @@ def refuse_library_output(output_path: str, what: str) -> None:
     For jobs that write beside the album rather than into it, the album being a
     library source says nothing — where the output lands is what matters.
     """
-    if cfg.directory.is_library_path(output_path):
+    if cfg.directory.protects(output_path):
         raise HTTPException(
             status_code=403,
             detail=(

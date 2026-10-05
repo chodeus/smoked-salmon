@@ -7,11 +7,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from salmon.common import get_flac_files
+from salmon.converter import conversion_output_dir
 from salmon.converter.downconverting import convert_folder
 from salmon.converter.transcoding import transcode_folder
 from salmon.tagger.audio_info import recompress_path
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
-from salmon.webui.validation import validate_writable_album_dir
+from salmon.webui.validation import validate_source_album_dir, validate_writable_album_dir
 
 router = APIRouter(tags=["convert"])
 
@@ -31,10 +32,11 @@ class CompressRequest(BaseModel):
 
 @router.post("/convert/transcode")
 async def transcode(req: TranscodeRequest) -> dict:
-    path = validate_writable_album_dir(req.path)
+    # A library album converts into download_directory, the same as with salmon transcode.
+    path = validate_source_album_dir(req.path)
 
     async def run(job: Job) -> dict:
-        output = await transcode_folder(path, req.bitrate)
+        output = await transcode_folder(path, req.bitrate, output_dir=conversion_output_dir(path))
         return {"output_path": output}
 
     title = f"Transcode {req.bitrate}: {os.path.basename(path)}"
@@ -49,10 +51,10 @@ async def transcode(req: TranscodeRequest) -> dict:
 
 @router.post("/convert/downconvert")
 async def downconvert(req: DownconvertRequest) -> dict:
-    path = validate_writable_album_dir(req.path)
+    path = validate_source_album_dir(req.path)
 
     async def run(job: Job) -> dict:
-        _sample_rate, output = await convert_folder(path)
+        _sample_rate, output = await convert_folder(path, output_dir=conversion_output_dir(path))
         return {"output_path": output}
 
     title = f"Downconvert: {os.path.basename(path)}"

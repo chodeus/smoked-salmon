@@ -116,31 +116,38 @@ async def tag(
         skip_initial_review: Skip the first manual metadata review before AI review.
         apply_ai_suggestions: Automatically apply AI review suggestions when present.
     """
+    # Imported here: salmon.uploader imports this module.
+    from salmon.uploader.staging import staged_source
+
     click.secho(f"\nProcessing {path}", fg="cyan", bold=True)
-    standardize_tags(path)
-    tags = gather_tags(path)
-    audio_info = gather_audio_info(path)
-    rls_data = construct_rls_data(tags, audio_info, source, encoding, overwrite=overwrite)
+    # Read before staging: the library's Artist/Type/Album layout names the release type.
+    folder_type = release_type_from_folder(path)
+    # An album in library_dirs is tagged as a copy, renamed into download_directory.
+    with staged_source(path, scratch=False) as (path, rename_into):
+        standardize_tags(path)
+        tags = gather_tags(path)
+        audio_info = gather_audio_info(path)
+        rls_data = construct_rls_data(tags, audio_info, source, encoding, overwrite=overwrite)
 
-    metadata, source_url = await get_metadata(path, tags, rls_data)
-    rls_type_hint = suggest_release_type(release_type_from_folder(path), len(tags))
-    metadata = await review_metadata_with_ai(
-        metadata,
-        rls_data,
-        source_url,
-        metadata_validator_base,
-        functools.partial(review_metadata, rls_type_hint=rls_type_hint),
-        skip_initial_review=skip_initial_review,
-        apply_suggestions=apply_ai_suggestions,
-    )
-    tag_files(path, tags, metadata, auto_rename)
+        metadata, source_url = await get_metadata(path, tags, rls_data)
+        rls_type_hint = suggest_release_type(folder_type, len(tags))
+        metadata = await review_metadata_with_ai(
+            metadata,
+            rls_data,
+            source_url,
+            metadata_validator_base,
+            functools.partial(review_metadata, rls_type_hint=rls_type_hint),
+            skip_initial_review=skip_initial_review,
+            apply_suggestions=apply_ai_suggestions,
+        )
+        tag_files(path, tags, metadata, auto_rename)
 
-    await download_cover_if_nonexistent(path, metadata["cover"])
-    tags = await check_tags(path)
-    path = rename_folder(path, metadata, auto_rename)
-    rename_files(path, tags, metadata, auto_rename, None)
-    await check_folder_structure(path, scene=False)
-    click.secho(f"\nProcessed {path}", fg="cyan", bold=True)
+        await download_cover_if_nonexistent(path, metadata["cover"])
+        tags = await check_tags(path)
+        path = rename_folder(path, metadata, auto_rename, parent=rename_into)
+        rename_files(path, tags, metadata, auto_rename, None)
+        await check_folder_structure(path, scene=False)
+        click.secho(f"\nProcessed {path}", fg="cyan", bold=True)
 
 
 @commandgroup.command()

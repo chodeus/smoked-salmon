@@ -91,51 +91,59 @@ def test_is_within_roots_handles_filesystem_root(monkeypatch) -> None:
     assert not is_within_roots("/data/music-old", ["/data/music"])
 
 
-def test_library_source_is_staged_as_a_real_copy(tmp_path, monkeypatch) -> None:
+def test_library_source_is_staged_as_a_real_copy_in_a_run_directory(tmp_path, monkeypatch) -> None:
     # A hardlink shares the inode, so tag writes would reach the library file.
-    # Staging must produce an independent copy.
     import os
 
-    from salmon.uploader.staging import _stage_source
+    from salmon.uploader.staging import STAGING_DIR, staged_source
 
     lib = tmp_path / "music"
     album = lib / "Artist - Album"
     album.mkdir(parents=True)
     track = album / "01.flac"
     track.write_bytes(b"fLaC-original")
-    staging = tmp_path / "staging"
-    staging.mkdir()
-
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
     monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
-    monkeypatch.setattr(cfg.directory, "download_directory", str(staging))
+    monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
 
-    dest = _stage_source(str(album))
+    with staged_source(str(album), scratch=False) as (dest, rename_into):
+        copied = os.path.join(dest, "01.flac")
+        assert os.path.dirname(os.path.dirname(dest)) == str(downloads / STAGING_DIR)
+        assert rename_into is None, "the renamed copy goes into download_directory, to be seeded"
+        assert os.stat(copied).st_ino != os.stat(track).st_ino
+        with open(copied, "wb") as fh:
+            fh.write(b"retagged")
+        assert track.read_bytes() == b"fLaC-original"
+    assert os.listdir(downloads / STAGING_DIR) == [], "the run directory goes when the run ends"
 
-    assert dest == str(staging / "Artist - Album")
-    copied = staging / "Artist - Album" / "01.flac"
-    assert copied.read_bytes() == b"fLaC-original"
-    # the decisive assertion: separate inode, so writing the copy cannot touch the library
-    assert os.stat(copied).st_ino != os.stat(track).st_ino
 
-    copied.write_bytes(b"retagged")
-    assert track.read_bytes() == b"fLaC-original"
-
-
-def test_staging_refuses_to_clobber_an_existing_folder(tmp_path, monkeypatch) -> None:
-    from salmon.errors import UploadError
-    from salmon.uploader.staging import _stage_source
+def test_staging_never_touches_a_folder_of_the_same_name(tmp_path, monkeypatch) -> None:
+    from salmon.uploader.staging import staged_source
 
     lib = tmp_path / "music"
-    album = lib / "Album"
-    album.mkdir(parents=True)
-    staging = tmp_path / "staging"
-    (staging / "Album").mkdir(parents=True)
-
+    (lib / "Album").mkdir(parents=True)
+    downloads = tmp_path / "downloads"
+    (downloads / "Album").mkdir(parents=True)
+    (downloads / "Album" / "mine.flac").write_bytes(b"mine")
     monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
-    monkeypatch.setattr(cfg.directory, "download_directory", str(staging))
+    monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
 
-    with pytest.raises(UploadError, match="already exists"):
-        _stage_source(str(album))
+    with staged_source(str(lib / "Album"), scratch=False) as (dest, _rename_into):
+        assert dest != str(downloads / "Album")
+    assert (downloads / "Album" / "mine.flac").read_bytes() == b"mine"
+
+
+def test_staging_refuses_a_folder_that_holds_a_library(tmp_path, monkeypatch) -> None:
+    from salmon.errors import UploadError
+    from salmon.uploader.staging import staged_source
+
+    lib = tmp_path / "media" / "music"
+    lib.mkdir(parents=True)
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
+
+    with pytest.raises(UploadError, match="holds the library folder"), staged_source(str(tmp_path / "media"), False):
+        pass
 
 
 @pytest.mark.parametrize("field", ["download_directory", "dottorrents_dir", "tmp_dir"])
@@ -171,26 +179,34 @@ def test_library_dir_beside_the_writable_dirs_is_accepted(tmp_path) -> None:
     assert directory.library_dirs == [str(lib)]
 
 
-async def test_tag_endpoint_refuses_a_library_source(tmp_path, monkeypatch) -> None:
-    """`salmon tag` saves over the source files and renames the folder, so the
-    endpoint must refuse a read-only library album the way convert does."""
+async def test_tag_endpoint_takes_a_library_album_but_not_a_folder_holding_one(tmp_path, monkeypatch) -> None:
+    """`salmon tag` works on a copy of a library album; a folder holding a library is never one album."""
     import fastapi
     import pytest as _pytest
 
     from salmon.webui.routers import tools
 
-    lib = tmp_path / "music"
+    downloads = tmp_path / "downloads"
+    lib = downloads / "music"
     album = lib / "Artist" / "Album"
     album.mkdir(parents=True)
+    # A library inside download_directory fails config validation; set here only to reach the holding case.
+    monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
     monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
 
     called: list[str] = []
     monkeypatch.setattr(tools, "_TAG", lambda **_kw: called.append("tag"))
-    monkeypatch.setattr(tools, "_queue", lambda *_a, **_kw: called.append("queue"))
 
-    request = tools.TagRequest(path=str(album), source="CD")
+    def queue(*_a, **_kw):
+        called.append("queue")
+        return {"id": "job"}
+
+    monkeypatch.setattr(tools, "_queue", queue)
+
+    await tools.tag(tools.TagRequest(path=str(album), source="CD"))
+    assert called == ["queue"]
+
     with _pytest.raises(fastapi.HTTPException) as exc:
-        await tools.tag(request)
-
+        await tools.tag(tools.TagRequest(path=str(downloads), source="CD"))
     assert exc.value.status_code == 403
-    assert called == [], "the job must never be queued for a library path"
+    assert called == ["queue"], "a folder holding a library is never queued"

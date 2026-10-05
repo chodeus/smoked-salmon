@@ -545,6 +545,7 @@ async def upload(
             folder_type=folder_type,
             conversion=conversion,
             rename_into=rename_into,
+            library_album=path if cfg.directory.is_library_path(path) else None,
         )
 
 
@@ -577,6 +578,7 @@ async def _upload_staged(
     folder_type: str | None,
     conversion: dict[str, Any] | None,
     rename_into: str | None,
+    library_album: str | None = None,
 ) -> None:
     """upload() on a folder that is safe to change; see upload() for the arguments."""
     remove_downloaded_cover_image = scene or cfg.image.remove_auto_downloaded_cover_image
@@ -677,14 +679,15 @@ async def _upload_staged(
                 bold=True,
             )
             return click.secho("\nAborting upload...", fg="red")
-        # library_dirs hold curated sources, not disposable downloads.
-        if cfg.directory.is_library_path(path):
+        if cfg.directory.protects(path):
+            click.secho(f"\nNot deleting {path}: it is in library_dirs, or holds one.", fg="yellow", bold=True)
+            return click.secho("\nAborting upload...", fg="red")
+        if library_album is not None:
             click.secho(
-                f"\n{path} is inside a configured library_dirs entry; refusing to delete it.",
+                f"\nDeleting the copy the upload worked on. The library album {library_album} is kept.",
                 fg="yellow",
                 bold=True,
             )
-            return click.secho("\nAborting upload...", fg="red")
         if platform.system() == "Windows" and cfg.upload.windows_use_recycle_bin:
             try:
                 import send2trash

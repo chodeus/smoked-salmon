@@ -8,6 +8,8 @@ from typing import Any
 
 import asyncclick as click
 
+from salmon import cfg
+
 # One hidden directory per parent with one file per converted folder: never inside the album, never shared by writers.
 REGISTRY_DIR = ".salmon-conversions"
 KINDS = {"downconvert", "transcode"}
@@ -19,9 +21,14 @@ def _sidecar(folder: str) -> str:
 
 
 def record_conversion(output: str, **facts: Any) -> None:
-    """Note how `output` was produced: its source folder plus the converter's settings."""
+    """Note how `output` was produced: its source folder plus the converter's settings; never inside a library."""
     sidecar = _sidecar(output)
-    os.makedirs(os.path.dirname(sidecar), exist_ok=True)
+    record_dir = os.path.dirname(sidecar)
+    # Both: the record directory (a symlink may lead it into a library) and its parent, which may hold one.
+    if cfg.directory.protects(record_dir) or cfg.directory.protects(os.path.dirname(record_dir)):
+        click.secho(f"Not recording how {os.path.basename(output)} was made: library_dirs is there.", fg="yellow")
+        return
+    os.makedirs(record_dir, exist_ok=True)
     handle, temp = tempfile.mkstemp(dir=os.path.dirname(sidecar), prefix=os.path.basename(sidecar), suffix=".tmp")
     with os.fdopen(handle, "w", encoding="utf-8") as fh:
         json.dump(facts, fh, indent=2, sort_keys=True)

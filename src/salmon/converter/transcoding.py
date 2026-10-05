@@ -437,6 +437,9 @@ async def transcode_folder(
     """
     _validate_lossless(path)
     new_path = _build_output_path(path, bitrate, output_dir)
+    # Resolved, so a symlink on the way cannot carry the output, or the removal of an incomplete one, into a library.
+    if cfg.directory.protects(new_path):
+        raise UploadError(f"Not transcoding into {new_path}: it is in library_dirs, or holds one.")
     # Collected before the overwrite branch so the channel check can run ahead of
     # the rmtree below: discovering the source cannot be transcoded after a prior
     # output has been deleted costs the thing that was already there.
