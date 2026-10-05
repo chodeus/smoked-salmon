@@ -1512,7 +1512,7 @@ async def _prompt_source(detected: dict | None = None):
     click.echo(f"\nValid sources: {', '.join(SOURCES.values())}")
     default = ""
     if detected and detected.get("confidence") == "confirmed" and detected.get("source") in SOURCES.values():
-        default = str(detected["source"]).lower()
+        default = str(detected["source"])
         click.secho(f"Files suggest {detected['source']}: {' '.join(detected['reasons'])}", fg="cyan")
     while True:
         sauce = await click.prompt(

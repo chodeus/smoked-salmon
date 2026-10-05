@@ -264,7 +264,7 @@ def test_source_prompt_pretypes_a_confirmed_detection(monkeypatch) -> None:
 
     result = anyio.run(uploader._prompt_source, detected)
     assert result == "WEB"
-    assert defaults == ["web"]
+    assert defaults == ["WEB"]
 
 
 def test_source_prompt_offers_nothing_for_an_unconfirmed_detection(monkeypatch) -> None:
