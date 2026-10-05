@@ -30,7 +30,10 @@ def _inside_scratch(path: str) -> bool:
 
 
 def record_conversion(output: str, **facts: Any) -> None:
-    """Note how `output` was produced: its source folder plus the converter's settings; never inside a library."""
+    """Note how `output` was produced: its source folder plus the converter's settings.
+
+    Nothing is written into a library_dirs entry, nor, in a dry run, outside the run's scratch directory.
+    """
     sidecar = _sidecar(output)
     record_dir = os.path.dirname(sidecar)
     # Both: the record directory (a symlink may lead it into a library) and its parent, which may hold one.
@@ -39,11 +42,18 @@ def record_conversion(output: str, **facts: Any) -> None:
         return
     if dryrun.active() and not _inside_scratch(record_dir):
         return
+    # The record names its folder, so one that ends up under another folder's name is recognised as foreign.
+    facts = {**facts, "output": os.path.basename(os.path.abspath(output))}
     os.makedirs(record_dir, exist_ok=True)
-    handle, temp = tempfile.mkstemp(dir=os.path.dirname(sidecar), prefix=os.path.basename(sidecar), suffix=".tmp")
-    with os.fdopen(handle, "w", encoding="utf-8") as fh:
-        json.dump(facts, fh, indent=2, sort_keys=True)
-    os.replace(temp, sidecar)
+    handle, temp = tempfile.mkstemp(dir=record_dir, prefix=os.path.basename(sidecar), suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            json.dump(facts, fh, indent=2, sort_keys=True)
+        os.replace(temp, sidecar)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(temp)
+        raise
 
 
 def conversion_of(folder: str) -> dict[str, Any] | None:
@@ -58,7 +68,10 @@ def conversion_of(folder: str) -> dict[str, Any] | None:
     except (json.JSONDecodeError, UnicodeDecodeError):
         click.secho(f"Ignoring an unreadable conversion record for {os.path.basename(folder)}.", fg="yellow")
         return None
-    return data if _usable(data) else None
+    if not _usable(data, os.path.basename(os.path.abspath(folder))):
+        click.secho(f"Ignoring a conversion record that does not fit {os.path.basename(folder)}.", fg="yellow")
+        return None
+    return data
 
 
 def carry_conversion(old: str, new: str) -> None:
@@ -66,21 +79,25 @@ def carry_conversion(old: str, new: str) -> None:
     facts = conversion_of(old)
     if facts is None or os.path.abspath(old) == os.path.abspath(new):
         return
-    record_conversion(new, **facts)
+    record_conversion(new, **{key: value for key, value in facts.items() if key != "output"})
     if not os.path.isdir(old):
         with contextlib.suppress(OSError):
             os.remove(_sidecar(old))
 
 
-def _usable(data: Any) -> bool:
+def _usable(data: Any, name: str) -> bool:
     from salmon.converter.downconverting import SOX_DEPTH_ARGS  # local: both converters import this module
     from salmon.converter.transcoding import LAME_COMMAND_MAP
 
-    if not isinstance(data, dict) or data.get("kind") not in KINDS or not isinstance(data.get("source"), str):
+    if not isinstance(data, dict) or not isinstance(data.get("source"), str) or data.get("output") != name:
         return False
-    if data["kind"] == "transcode":
-        return data.get("bitrate") in LAME_COMMAND_MAP
-    return data.get("bit_depth") in SOX_DEPTH_ARGS and _usable_rates(data.get("sample_rate"))
+    # Hashable before any membership test: a list or object from a hand-edited file must read as unusable.
+    kind, bitrate, bit_depth = data.get("kind"), data.get("bitrate"), data.get("bit_depth")
+    if not isinstance(kind, str) or kind not in KINDS:
+        return False
+    if kind == "transcode":
+        return isinstance(bitrate, str) and bitrate in LAME_COMMAND_MAP
+    return _positive_int(bit_depth) and bit_depth in SOX_DEPTH_ARGS and _usable_rates(data.get("sample_rate"))
 
 
 def _usable_rates(rates: Any) -> bool:
