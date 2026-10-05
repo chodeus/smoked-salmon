@@ -210,3 +210,36 @@ async def test_tag_endpoint_takes_a_library_album_but_not_a_folder_holding_one(t
         await tools.tag(tools.TagRequest(path=str(downloads), source="CD"))
     assert exc.value.status_code == 403
     assert called == ["queue"], "a folder holding a library is never queued"
+
+
+def test_a_trackers_own_dottorrents_dir_inside_a_library_is_refused(tmp_path) -> None:
+    from salmon.config.validations import Cfg, GazelleTrackerSettings, Tracker
+
+    lib = tmp_path / "music"
+    (lib / "torrents").mkdir(parents=True)
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    directory = Directory(dottorrents_dir=str(downloads), download_directory=str(downloads), library_dirs=[str(lib)])
+    inside = Tracker(red=GazelleTrackerSettings(session="placeholder", dottorrents_dir=str(lib / "torrents")))
+    beside = Tracker(red=GazelleTrackerSettings(session="placeholder", dottorrents_dir=str(downloads)))
+
+    with pytest.raises(ValueError, match="tracker.red.dottorrents_dir"):
+        Cfg(directory=directory, tracker=inside)
+    assert Cfg(directory=directory, tracker=beside).tracker.red is not None
+
+
+def test_staging_an_album_with_a_dangling_symlink_says_why(tmp_path, monkeypatch) -> None:
+    from salmon.errors import UploadError
+    from salmon.uploader.staging import staged_source
+
+    lib = tmp_path / "music"
+    album = lib / "Album"
+    album.mkdir(parents=True)
+    (album / "01.flac").symlink_to(tmp_path / "gone.flac")
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
+    monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
+
+    with pytest.raises(UploadError, match="Could not measure"), staged_source(str(album), scratch=False):
+        pass

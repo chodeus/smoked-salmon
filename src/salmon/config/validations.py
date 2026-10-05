@@ -365,3 +365,13 @@ class Cfg(BaseStruct):
     tracker: Tracker = msgspec.field(default_factory=Tracker)
     seedbox: list[Seedbox] = msgspec.field(default_factory=list)
     upload: Upload = msgspec.field(default_factory=Upload)
+
+    def __post_init__(self):
+        # A tracker's own dottorrents_dir gets .torrent files written with overwrite, like the global one.
+        for code in ("red", "ops", "dic"):
+            settings = getattr(self.tracker, code)
+            folder = settings.dottorrents_dir if settings else None
+            if folder and (library := self.directory.library_of(folder)) is not None:
+                raise ValueError(
+                    f"tracker.{code}.dottorrents_dir ({folder}) must not be inside library_dirs entry {library}"
+                )

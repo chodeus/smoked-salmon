@@ -47,7 +47,10 @@ def _copy_into(path: str, into: str, scratch: bool) -> str:
         why = "It is in library_dirs, so salmon works on a copy and never modifies the library album."
     else:
         why = "--skip-flac-upload works on a copy, so the source is never modified."
-    size = sum(os.path.getsize(os.path.join(root, f)) for root, _, files in os.walk(path) for f in files)
+    try:
+        size = sum(os.path.getsize(os.path.join(root, f)) for root, _, files in os.walk(path) for f in files)
+    except OSError as error:  # A dangling symlink, say.
+        raise UploadError(f"Could not measure {path} before copying it: {error}") from error
     free = shutil.disk_usage(into).free
     if size > free:
         raise UploadError(
