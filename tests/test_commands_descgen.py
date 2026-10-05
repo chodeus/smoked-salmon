@@ -1,0 +1,38 @@
+"""`salmon descgen` closes every BBCode tag it opens (ported from upstream #597). No metadata source is contacted."""
+
+import re
+
+import anyio
+
+import salmon.uploader.description as description_mod
+from salmon import cfg
+from salmon.commands import descgen
+
+METADATA = {
+    "tracks": {
+        "1": {
+            "1": {"artists": [("Artist", "main")], "title": "First"},
+            "2": {"artists": [("Artist", "main")], "title": "Second"},
+        }
+    },
+    "comment": None,
+    "urls": [],
+}
+
+
+def test_descgen_closes_the_tracklist_heading_size(monkeypatch, capsys) -> None:
+    async def fake_run_metadata(url, return_source_name=False):
+        return METADATA, "Qobuz"
+
+    # The fork builds the description in uploader/description.py, shared with the web interface.
+    monkeypatch.setattr(description_mod, "run_metadata", fake_run_metadata)
+    monkeypatch.setattr(description_mod, "combine_metadatas", lambda *_: METADATA)
+    monkeypatch.setattr(description_mod, "clean_metadata", lambda metadata: metadata)
+    monkeypatch.setattr(cfg.upload.description, "copy_uploaded_url_to_clipboard", False)
+    assert descgen.callback is not None
+
+    anyio.run(descgen.callback, ("https://www.qobuz.com/album/x",))
+
+    out = capsys.readouterr().out
+    assert "[b][size=4]Tracklist[/size][/b]" in out
+    assert len(re.findall(r"\[size=\d+\]", out)) == len(re.findall(r"\[/size\]", out))
