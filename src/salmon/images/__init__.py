@@ -1,6 +1,5 @@
 import contextlib
 from collections.abc import Callable, Sequence
-from typing import Any
 
 import anyio
 import asyncclick as click
@@ -8,7 +7,7 @@ import pyperclip
 
 from salmon import cfg, dryrun
 from salmon.common import AliasedCommands, commandgroup, is_http_url
-from salmon.config.validations import SPECTRALS_REFUSED
+from salmon.config.validations import SPECTRALS_REFUSED, host_refusal
 from salmon.errors import ImageUploadFailed
 from salmon.images import catbox, imgbb, imgbox, oeimg, ptscreens, ra, red
 from salmon.images.base import BaseImageUploader
@@ -28,24 +27,41 @@ HOSTS = {
 UPLOAD_CONNECTIONS = 8
 
 
-def validate_image_host(ctx: click.Context, param: click.Parameter, value: str) -> Any:
-    """Validate and return the image host module.
+class ImageHostRefused(ValueError):
+    """An image host may not be used for a tracker's images; the message says why."""
 
-    Args:
-        ctx: Click context.
-        param: Click parameter.
-        value: The image host name.
 
-    Returns:
-        The image host module.
+def validate_image_host(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
+    """Validate an image host name, passing "no host given" through."""
+    if value is not None and value not in HOSTS:
+        raise click.BadParameter(f"{value} is not a valid image host")
+    return value
+
+
+def image_host_for_tracker(tracker: str, explicit_host: str | None = None) -> str:
+    """The host for images on `tracker`'s pages: explicit_host if allowed there, else the tracker's image_uploader.
 
     Raises:
-        click.BadParameter: If the image host is invalid.
+        ImageHostRefused: If explicit_host may not be used for that tracker's images, with the reason.
     """
-    try:
-        return HOSTS[value]
-    except KeyError:
-        raise click.BadParameter(f"{value} is not a valid image host") from None
+    if explicit_host is None:
+        return cfg.image.resolve(tracker, "image_uploader")
+    # A host picked by hand is held to the cover rule, the most a tracker's own pages allow.
+    if (reason := host_refusal(tracker.lower(), "cover_uploader", explicit_host)) is not None:
+        raise ImageHostRefused(f"{explicit_host} can't be used for {tracker.upper()}'s images: {reason}")
+    return explicit_host
+
+
+def validate_tracker(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
+    """Validate a tracker given by code, in any case, against the configured trackers."""
+    if value is None:
+        return None
+    from salmon import trackers  # Read at run time, as the configured trackers are.
+
+    if value.upper() not in trackers.tracker_list:
+        configured = ", ".join(trackers.tracker_list) or "none"
+        raise click.BadParameter(f"{value} is not a tracker in your config (configured: {configured})")
+    return value.upper()
 
 
 @commandgroup.group(cls=AliasedCommands)
@@ -63,13 +79,28 @@ async def images() -> None:
 @click.option(
     "--image-host",
     "-i",
-    help="The name of the image host to upload to",
-    default=cfg.image.image_uploader,
+    help=(
+        "The image host to upload to. With --tracker, defaults to that tracker's image_uploader; "
+        "otherwise [image] image_uploader"
+    ),
+    default=None,
     callback=validate_image_host,
 )
-async def up(filepaths: tuple[str, ...], image_host: Any) -> None:
+@click.option(
+    "--tracker",
+    "-t",
+    help="The tracker the images are for: its image_uploader is the default host, and the host must be allowed there",
+    default=None,
+    callback=validate_tracker,
+)
+async def up(filepaths: tuple[str, ...], image_host: str | None, tracker: str | None) -> None:
     """Upload images to an image host."""
-    await upload_images(filepaths, image_host)
+    if tracker is not None:
+        try:
+            image_host = image_host_for_tracker(tracker, image_host)
+        except ImageHostRefused as error:
+            raise click.BadParameter(str(error), param_hint="'--image-host'") from None
+    await upload_images(filepaths, HOSTS[image_host or cfg.image.image_uploader])
 
 
 async def upload_images(filepaths: Sequence[str], image_host) -> list[str]:

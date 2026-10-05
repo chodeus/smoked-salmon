@@ -47,6 +47,7 @@ cover_uploader = "catbox"
 specs_uploader = "catbox"
 
 # Per-tracker overrides (optional); unset keys fall back to [image].
+# A tracker's image_uploader is also the default host of `salmon images up -t <tracker>`.
 # RED→OPS cross-uploads keep RED-hosted images as they are (OPS proxies and caches them).
 # [image.red]
 # cover_uploader = "red"      # send RED covers to RED's own host
