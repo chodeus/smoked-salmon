@@ -13,11 +13,7 @@ from salmon.common.files import rewrite_refusal
 
 
 def allowed_roots() -> list[str]:
-    """Real paths the UI may operate within: salmon's configured directories.
-
-    library_dirs are sources, so they are browsable and uploadable; the delete
-    path refuses them separately (see Directory.is_library_path).
-    """
+    """Real paths the UI may operate within: salmon's directories, library_dirs too (deletes check protects())."""
     raw = [
         cfg.directory.download_directory,
         cfg.directory.dottorrents_dir,
@@ -67,8 +63,14 @@ def validate_album_dir(raw_path: str) -> str:
         )
     if not os.path.isdir(path):
         raise HTTPException(status_code=404, detail=f"Not a directory: {raw_path}")
-    # The job gets the resolved path, so a link into a library from outside it would lose the copy salmon works on.
     given = os.path.abspath(os.path.expanduser(raw_path))
+    # The job gets the resolved path: it would rewrite or delete the link's target in place, as the CLI never does.
+    if os.path.islink(given):
+        raise HTTPException(
+            status_code=403,
+            detail="Refusing an album folder that is a symlink: open the folder it leads to.",
+        )
+    # Resolved, a link into a library from outside it would lose the copy salmon works on.
     if cfg.directory.is_library_path(given) and not cfg.directory.is_library_path(path):
         raise HTTPException(
             status_code=403,
@@ -105,10 +107,7 @@ def refuse_library_output(output_path: str, what: str) -> None:
     if cfg.directory.protects(output_path):
         raise HTTPException(
             status_code=403,
-            detail=(
-                f"{what} would be written inside a read-only library directory. "
-                "Set directory.tmp_dir to a writable scratch folder."
-            ),
+            detail=f"{what} would be written inside a read-only library directory, or a folder holding one.",
         )
 
 
