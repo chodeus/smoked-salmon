@@ -65,7 +65,7 @@ def validate_album_dir(raw_path: str) -> str:
         raise HTTPException(status_code=404, detail=f"Not a directory: {raw_path}")
     given = os.path.abspath(os.path.expanduser(raw_path))
     # The job gets the resolved path: it would rewrite or delete the link's target in place, as the CLI never does.
-    if os.path.islink(given):
+    if os.path.join(os.path.realpath(os.path.dirname(given)), os.path.basename(given)) != path:
         raise HTTPException(
             status_code=403,
             detail="Refusing an album folder that is a symlink: open the folder it leads to.",
