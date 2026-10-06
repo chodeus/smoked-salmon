@@ -48,13 +48,7 @@ class TorrentClient:
 
 
 def _qbittorrent_add_succeeded(result: object) -> bool:
-    """Whether qBittorrent's torrents_add answer means the torrent was added.
-
-    Web API v2.14.0+ (qBittorrent 5.1+) answers with a JSON object carrying success_count,
-    failure_count, pending_count and added_torrent_ids; a pre-5.1 server still answers the plain
-    string "Ok." (success) or "Fails." (failure), which qbittorrent-api falls back to whenever the
-    body is not JSON.
-    """
+    """Whether torrents_add added it: 5.1+ answers JSON counts, older servers "Ok." or "Fails."."""
     if isinstance(result, Mapping):
         success_count = result.get("success_count", 0)
         failure_count = result.get("failure_count", 0)
@@ -133,10 +127,7 @@ class TransmissionClient(TorrentClient):
 
         try:
             click.secho("Adding torrent to Transmission...", fg="yellow")
-            # transmission-rpc's add_torrent returns next(iter(response.values())): a duplicate
-            # torrent already in the client comes back as a Torrent object too, the same as a
-            # fresh add, so it cannot be told apart here without reaching into its private
-            # _request. Reported as success either way.
+            # A duplicate also comes back as a Torrent object, so it counts as success here.
             result = self.client.add_torrent(
                 torrent=torrent,
                 download_dir=remote_folder,
@@ -231,10 +222,7 @@ class RuTorrentClient(TorrentClient):
             return None
 
     def add_to_downloader(self, remote_folder, torrent, is_paused, label) -> bool:
-        # rtorrent's load.raw_start_verbose/load.raw_verbose XML-RPC calls do not return a result
-        # that signals success or failure: they answer 0 whether or not the torrent was actually
-        # queued. Reaching here without an exception is the only signal available, so success here
-        # means the call went through, not that rtorrent necessarily accepted the torrent.
+        # load.raw*_verbose answers 0 either way: True only means the call did not raise.
         if not self.client:
             return False
 

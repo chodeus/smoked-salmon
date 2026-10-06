@@ -36,8 +36,8 @@ def record_conversion(output: str, **facts: Any) -> None:
     """
     sidecar = _sidecar(output)
     record_dir = os.path.dirname(sidecar)
-    # Both: the record directory (a symlink may lead it into a library) and its parent, which may hold one.
-    if cfg.directory.protects(record_dir) or cfg.directory.protects(os.path.dirname(record_dir)):
+    # Covers its parent too, and a symlinked record directory that leads into a library.
+    if cfg.directory.protects(record_dir):
         click.secho(f"Not recording how {os.path.basename(output)} was made: library_dirs is there.", fg="yellow")
         return
     if dryrun.active() and not _inside_scratch(record_dir):
