@@ -1,6 +1,4 @@
-"""Downconversion uploads: a converted folder that cannot be read is skipped, the rest go on.
-
-Ported from upstream (smokin-salmon/smoked-salmon#552)."""
+"""Downconversion uploads: a converted folder that cannot be read is skipped, the rest go on (upstream #552)."""
 
 import contextlib
 import struct
@@ -60,10 +58,7 @@ def _no_audio_files(folder: Path) -> None:
 
 
 def _fake_conversion(monkeypatch, tmp_path: Path, broken) -> list[tuple[str, int]]:
-    """Make the 24-bit conversion a reused, broken folder and the 16-bit one a good folder.
-
-    Returns the (folder, bit depth) of each converted upload, in order.
-    """
+    """Make the 24-bit conversion a reused, broken folder, the 16-bit one good; give (folder, depth) per upload."""
 
     async def convert_folder(path, bit_depth, sample_rate, output_dir):
         folder = tmp_path / f"converted {bit_depth}"
