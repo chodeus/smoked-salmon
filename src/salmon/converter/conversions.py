@@ -30,10 +30,7 @@ def _inside_scratch(path: str) -> bool:
 
 
 def record_conversion(output: str, **facts: Any) -> None:
-    """Note how `output` was produced: its source folder plus the converter's settings.
-
-    Nothing is written into a library_dirs entry, nor, in a dry run, outside the run's scratch directory.
-    """
+    """Note how `output` was made (source plus settings); never in a library, nor outside a dry run's scratch."""
     sidecar = _sidecar(output)
     record_dir = os.path.dirname(sidecar)
     # Covers its parent too, and a symlinked record directory that leads into a library.

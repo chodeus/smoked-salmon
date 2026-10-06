@@ -370,11 +370,7 @@ def converted_from_note(conversion: dict[str, Any] | None, url: str | None) -> s
 
 
 def _max_path_length_for_run(site_code: str, trackers: list[str] | None, flac_group: dict | None) -> int:
-    """The path limit the folder is checked against: this tracker's, or the strictest of every one the run may reach.
-
-    The folder is checked once, before the first upload; trackers named with -t are known up front, and with
-    multi_tracker_upload any configured one may follow (upstream #565).
-    """
+    """The run's path limit: this tracker's, or the strictest of all the run may reach (-t, multi_tracker_upload)."""
     if flac_group is not None or (not trackers and not cfg.upload.multi_tracker_upload):
         return path_limit_for([site_code])
     return path_limit_for([site_code, *(trackers or salmon.trackers.tracker_list)])
@@ -544,9 +540,8 @@ async def upload(
     folder_type = release_type_from_folder(path)
     # Looked up before any rename: the record knows the folder by the name the converter gave it.
     conversion = conversion_of(path)
-    # Staged before anything mutates: standardize_tags writes to the source directly.
-    # The group's FLAC is most likely seeding from path, so with --skip-flac-upload everything works on a copy.
-    # So does a dry run, which changes nothing, and an album in library_dirs: see staged_source.
+    # Staged before anything mutates (standardize_tags writes in place): --skip-flac-upload, a dry run
+    # and a protected album all work on a copy, see staged_source.
     with (
         staged_source(path, scratch=flac_group is not None or dryrun.active()) as (staged, rename_into),
         # A scratch copy's run directory, removed when the run ends: where a dry run writes.

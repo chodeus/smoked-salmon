@@ -624,11 +624,7 @@ def _parse_tag_number(tracktags, field):
 
 
 def move_non_audio_files(directory_move_pairs, disc_of_folder=None):
-    """Move the files other than the tracks (logs, cues, covers, scan folders) after the tracks; never replace one.
-
-    `disc_of_folder` gives the disc of each folder that held one disc and is emptied into the release folder: its
-    files are named for that disc (rip.log from disc 2 becomes rip.2.log, Scans becomes Scans.2).
-    """
+    """Move the non-track files after the tracks, never replacing one; a disc folder's names carry its disc."""
     disc_of_folder = disc_of_folder or {}
     for ext, old_dir, new_dir in sorted(directory_move_pairs):
         if old_dir == new_dir:
