@@ -111,7 +111,7 @@ async def compress(path: str) -> None:
 )
 @click.argument(
     "path",
-    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    type=AlbumPath(exists=True, file_okay=False),
     nargs=1,
     default=".",
 )

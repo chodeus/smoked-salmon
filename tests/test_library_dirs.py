@@ -146,7 +146,8 @@ def test_a_folder_holding_a_library_is_protected_but_not_a_library_path(dirs) ->
 
 
 def test_without_library_dirs_nothing_is_protected(monkeypatch, tmp_path) -> None:
-    assert Directory(dottorrents_dir=str(tmp_path), download_directory=str(tmp_path)).library_dirs == []
+    directory = Directory(dottorrents_dir=str(tmp_path), download_directory=str(tmp_path))
+    assert directory.library_dirs == []
     monkeypatch.setattr(cfg.directory, "library_dirs", [])
 
     assert not cfg.directory.is_library_path(str(tmp_path))
@@ -365,11 +366,7 @@ def _rename_files(path: str, *_args: Any) -> None:
 
 
 def _run_up(monkeypatch, album: Path, **fakes: Any) -> tuple[Any, list[str], list[tuple[str, str]]]:
-    """Run `salmon up ALBUM -g 5` with the real staging, tag standardizing, picture strip and folder rename.
-
-    The seams that need audio tools, a network or a reviewer are stubbed, `fakes` replace more of them.
-    Returns the result, the folder of every upload, and the (source, output) of every transcode.
-    """
+    """`salmon up ALBUM -g 5` with real staging and renames, `fakes` for more seams: (result, uploads, transcodes)."""
     uploads: list[str] = []
     transcodes: list[tuple[str, str]] = []
 
@@ -489,6 +486,20 @@ def test_up_leaves_an_album_sharing_files_and_what_it_shares_byte_identical(monk
     assert (_snapshot(library), _snapshot(album)) == before
     assert uploads[0] == str(downloads / RENAMED)
     assert _inodes(downloads / RENAMED).isdisjoint(_inodes(library))
+
+
+@pytest.mark.parametrize("how", ["hardlinked file", "symlinked file", "symlinked folder"])
+def test_up_never_replaces_an_album_sharing_files_that_already_has_the_new_name(monkeypatch, dirs, how: str) -> None:
+    library, downloads = dirs
+    album = _album(downloads / RENAMED)
+    _link(album, library, how)
+    before = _snapshot(library), _snapshot(album), _inodes(album)
+
+    result, uploads, _transcodes = _run_up(monkeypatch, album)
+
+    assert (_snapshot(library), _snapshot(album), _inodes(album)) == before
+    assert uploads == []
+    assert f"Not replacing {downloads / RENAMED}" in str(result.exception)
 
 
 def test_up_on_an_album_symlinked_into_a_library_leaves_its_target_byte_identical(monkeypatch, dirs, tmp_path) -> None:
@@ -807,6 +818,52 @@ def test_spectrals_of_a_library_album_are_made_outside_it(dirs, tmp_path) -> Non
 
     assert get_spectrals_path(str(library / "Album")) == str(downloads / "spectrals_Album")
     assert get_spectrals_path(str(tmp_path / "seeding" / "Album")) == str(tmp_path / "seeding" / "Album" / "Spectrals")
+
+
+def test_an_album_path_walks_dot_dot_after_a_link_as_the_filesystem_does(dirs, tmp_path, monkeypatch) -> None:
+    from salmon.common.files import AlbumPath
+
+    library, downloads = dirs
+    _album(library / "Album")
+    (library / "Artist").mkdir()
+    (downloads / "link").symlink_to(library / "Artist", target_is_directory=True)
+    (library / "Artist" / "Linked").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    monkeypatch.chdir(downloads)
+
+    walked = AlbumPath(exists=True).convert(os.path.join("link", "..", "Album"), None, None)
+    kept = AlbumPath().convert(os.path.join("link", "..", "Artist", "Linked"), None, None)
+
+    assert walked == os.path.realpath(library / "Album")
+    assert cfg.directory.is_library_path(walked)
+    assert kept == os.path.join(os.path.realpath(library), "Artist", "Linked")
+
+
+def test_checkspecs_works_on_the_album_as_given_not_where_a_link_leads(monkeypatch, dirs, tmp_path) -> None:
+    library, _downloads = dirs
+    _album(tmp_path / "elsewhere" / "Album")
+    (library / "Artist").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    checked: list[str] = []
+
+    class Site(FakeSite):
+        async def api_call(self, *_args: Any, **_kwargs: Any) -> dict:
+            return {"torrent": {"filePath": "Album", "media": "WEB"}}
+
+    async def spectral_check(_site: Any, path: str, *_args: Any) -> None:
+        checked.append(path)
+
+    monkeypatch.setattr(salmon.trackers, "validate_tracker", _returning_async("RED"))
+    monkeypatch.setattr(salmon.trackers, "get_class", lambda _tracker: Site)
+    monkeypatch.setattr(salmon.commands, "gather_audio_info", _returning({}))
+    monkeypatch.setattr(salmon.commands, "post_upload_spectral_check", spectral_check)
+
+    async def run():
+        return await CliRunner().invoke(salmon.commands.checkspecs, [str(library / "Artist"), "-i", "1"])
+
+    result = anyio.run(run)
+
+    assert result.exit_code == 0, result.output
+    assert checked == [str(library / "Artist" / "Album")]
+    assert cfg.directory.protects(checked[0])
 
 
 def test_rename_folder_never_follows_a_symlink_into_a_library(monkeypatch, dirs, tmp_path) -> None:
