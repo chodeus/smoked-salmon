@@ -111,27 +111,31 @@ def test_one_matching_flac_is_the_transcode_source(monkeypatch) -> None:
         _torrent(13),
     )
 
-    assert _choose(group) == 13
+    chosen = _choose(group)
+    assert chosen == 13
     assert asked == []
 
 
 def test_one_matching_flac_needs_no_prompt_with_yes_all(monkeypatch) -> None:
     monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
 
-    assert _choose(_group(_torrent(13))) == 13
+    chosen = _choose(_group(_torrent(13)))
+    assert chosen == 13
 
 
 def test_24bit_release_is_a_transcode_of_the_24bit_flac() -> None:
     group = _group(_torrent(11), _torrent(12, encoding="24bit Lossless"))
 
-    assert _choose(group, encoding="24bit Lossless") == 12
+    chosen = _choose(group, encoding="24bit Lossless")
+    assert chosen == 12
 
 
 def test_no_matching_flac_stops(monkeypatch) -> None:
     asked = _answers(monkeypatch)
     group = _group(_torrent(10, format_="MP3", encoding="V0 (VBR)"), _torrent(11, media="CD"))
 
-    assert _choose(group) is None
+    chosen = _choose(group)
+    assert chosen is None
     assert asked == []
 
 
@@ -140,21 +144,24 @@ def test_flacs_differing_only_by_catalogue_number_are_both_offered(monkeypatch) 
     asked = _answers(monkeypatch, "2")
     group = _group(_torrent(11, catno="0123456789012"), _torrent(12))
 
-    assert _choose(group) == 12
+    chosen = _choose(group)
+    assert chosen == 12
     assert len(asked) == 1
 
 
 def test_a_flac_of_another_year_is_not_a_source(monkeypatch) -> None:
     asked = _answers(monkeypatch)
 
-    assert _choose(_group(_torrent(11, year=2011))) is None
+    chosen = _choose(_group(_torrent(11, year=2011)))
+    assert chosen is None
     assert asked == []
 
 
 def test_a_flac_of_another_edition_title_is_not_a_source() -> None:
     group = _group(_torrent(11, title="Deluxe"), _torrent(12, title="Remastered"))
 
-    assert _choose(group, edition_title="Remastered") == 12
+    chosen = _choose(group, edition_title="Remastered")
+    assert chosen == 12
 
 
 def test_a_remaster_with_no_year_matches_any_year() -> None:
@@ -162,28 +169,32 @@ def test_a_remaster_with_no_year_matches_any_year() -> None:
     group = _group(_torrent(11, year=0))
     group["group"]["year"] = 2011
 
-    assert _choose(group) == 11
+    chosen = _choose(group)
+    assert chosen == 11
 
 
 def test_several_matching_flacs_ask_which_one(monkeypatch) -> None:
     asked = _answers(monkeypatch, "3", "x", "2")
     group = _group(_torrent(11), _torrent(10, format_="MP3", encoding="320"), _torrent(12))
 
-    assert _choose(group) == 12
+    chosen = _choose(group)
+    assert chosen == 12
     assert len(asked) == 3
 
 
 def test_several_matching_flacs_can_abort(monkeypatch) -> None:
     _answers(monkeypatch, "a")
 
-    assert _choose(_group(_torrent(11), _torrent(12))) is None
+    chosen = _choose(_group(_torrent(11), _torrent(12)))
+    assert chosen is None
 
 
 def test_several_matching_flacs_stop_with_yes_all(monkeypatch) -> None:
     monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
     asked = _answers(monkeypatch)
 
-    assert _choose(_group(_torrent(11), _torrent(12))) is None
+    chosen = _choose(_group(_torrent(11), _torrent(12)))
+    assert chosen is None
     assert asked == []
 
 
