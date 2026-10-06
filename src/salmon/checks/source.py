@@ -1,9 +1,4 @@
-"""Infer an album's media source from its own files, and read the URLs their tags carry.
-
-A source is confirmed only when the files prove it and nothing in them disagrees: a plain 16/44.1 rip
-with no log could be a CD or a WEB release, so it stays a question. Upstream (smokin-salmon/smoked-salmon)
-splits this module into tagger/tag_urls.py and checks/source.py.
-"""
+"""Infer an album's media source from its own files, and read the URLs their tags carry."""
 
 import os
 import re
@@ -43,11 +38,7 @@ def field_name(key) -> str:
 
 
 def _decode_bytes(item: bytes) -> str:
-    """Decode a raw tag value: an MP4 freeform's own `dataformat` when it says UTF-16, else UTF-8.
-
-    iTunes writes UTF-16 freeform data big-endian with no BOM; only trust the "utf-16" codec's own
-    byte-order guess when a BOM is actually present, otherwise decode it as big-endian explicitly.
-    """
+    """Decode a raw tag value: UTF-16 MP4 freeform by its BOM (big-endian without one), else UTF-8."""
     if isinstance(item, MP4FreeForm) and item.dataformat == AtomDataType.UTF16:
         encoding = "utf-16" if item[:2] in (b"\xfe\xff", b"\xff\xfe") else "utf-16-be"
         return item.decode(encoding, "ignore")
@@ -55,10 +46,7 @@ def _decode_bytes(item: bytes) -> str:
 
 
 def tag_texts(value) -> list[str]:
-    """A tag value as plain strings, whether a list, an ID3 frame or MP4 freeform bytes.
-
-    An ID3 text frame gives each of its values: as one string, they would be joined with NULs.
-    """
+    """A tag value as plain strings: a list, each value of an ID3 frame, or MP4 freeform bytes."""
     if isinstance(value, TextFrame):
         # mutagen sets a frame's attributes from its spec at runtime, so its types do not know `text`.
         value = getattr(value, "text", [])
@@ -160,11 +148,7 @@ class _Evidence:
 
 
 def detect_source(path: str) -> dict:
-    """Return {source, confidence, reasons} for an album folder.
-
-    confidence is "confirmed" when the files prove the source and nothing in them disagrees, "likely" for a
-    hint that never proves one (vinyl side numbering, a rate above CD's), and "unknown" otherwise.
-    """
+    """{source, confidence, reasons}: "confirmed" if proven and uncontradicted, "likely" for a hint, else "unknown"."""
     if not get_audio_files(path):
         return _unknown(["No audio files found."])
     evidence = _gather(path)

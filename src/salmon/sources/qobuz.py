@@ -23,11 +23,7 @@ class QobuzBase(BaseScraper):
 
     @staticmethod
     def configured() -> bool:
-        """Qobuz refuses every API call without both a real app id and a real user token.
-
-        The shipped config.default.toml carries placeholder values for both, so a user who never
-        set up Qobuz still has two truthy strings; treat those placeholders as unset too.
-        """
+        """Whether the app id and user token are both set and not config.default.toml's placeholders."""
         app_id = cfg.metadata.qobuz.app_id
         user_auth_token = cfg.metadata.qobuz.user_auth_token
         if app_id == _PLACEHOLDER_APP_ID or user_auth_token == _PLACEHOLDER_USER_AUTH_TOKEN:

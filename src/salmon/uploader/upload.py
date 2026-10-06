@@ -123,17 +123,7 @@ def concat_track_data(tags: dict[str, Any], audio_info: dict[str, Any]) -> dict[
 def _filter_unsupported_artists(
     gazelle_site: "BaseGazelleApi", artists: list[tuple[str, str]]
 ) -> list[tuple[str, str]]:
-    """Drop artists whose role this tracker's upload form does not offer.
-
-    Prints one warning line per dropped role, naming the artists it drops.
-
-    Args:
-        gazelle_site: The tracker API instance.
-        artists: List of (artist_name, role) tuples.
-
-    Returns:
-        The artists list with unsupported roles removed.
-    """
+    """Drop artists whose role this tracker's upload form does not offer, warning once per dropped role."""
     unsupported = gazelle_site.unsupported_artist_roles
     if not unsupported:
         return artists
