@@ -212,7 +212,8 @@ async def test_tag_endpoint_takes_a_library_album_but_not_a_folder_holding_one(t
     from salmon.webui.routers import tools
 
     downloads = tmp_path / "downloads"
-    lib = downloads / "music"
+    holder = downloads / "media"
+    lib = holder / "music"
     album = lib / "Artist" / "Album"
     album.mkdir(parents=True)
     # A library inside download_directory fails config validation; set here only to reach the holding case.
@@ -232,8 +233,9 @@ async def test_tag_endpoint_takes_a_library_album_but_not_a_folder_holding_one(t
     assert called == ["queue"]
 
     with _pytest.raises(fastapi.HTTPException) as exc:
-        await tools.tag(tools.TagRequest(path=str(downloads), source="CD"))
+        await tools.tag(tools.TagRequest(path=str(holder), source="CD"))
     assert exc.value.status_code == 403
+    assert "holds a library" in exc.value.detail
     assert called == ["queue"], "a folder holding a library is never queued"
 
 
@@ -250,7 +252,8 @@ def test_a_trackers_own_dottorrents_dir_inside_a_library_is_refused(tmp_path) ->
 
     with pytest.raises(ValueError, match="tracker.red.dottorrents_dir"):
         Cfg(directory=directory, tracker=inside)
-    assert Cfg(directory=directory, tracker=beside).tracker.red is not None
+    config = Cfg(directory=directory, tracker=beside)
+    assert config.tracker.red is not None
 
 
 def test_staging_an_album_with_a_dangling_symlink_says_why(tmp_path, monkeypatch) -> None:
