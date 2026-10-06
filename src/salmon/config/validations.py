@@ -1,4 +1,5 @@
 import os
+from collections.abc import Iterator
 from typing import Annotated, Literal
 
 import msgspec
@@ -25,7 +26,33 @@ def _holds(folder: str, path: str) -> bool:
                 return True
         except ValueError:  # Different drives on Windows.
             continue
-    return False
+    # Strings miss ~/music on a case-insensitive volume when the folder is ~/Music, and a second bind mount.
+    return _same_dir_above(folder, path)
+
+
+def _same_dir_above(folder: str, path: str) -> bool:
+    """Whether path or a parent of it, resolved or as given, is the directory folder (same device and inode)."""
+    try:
+        target = os.stat(_real(folder))
+    except OSError:
+        return False
+    return any(_same_as(above, target) for norm in (_real, _lexical) for above in _ancestors(norm(path)))
+
+
+def _ancestors(path: str) -> Iterator[str]:
+    while True:
+        yield path
+        parent = os.path.dirname(path)
+        if parent == path:
+            return
+        path = parent
+
+
+def _same_as(path: str, target: os.stat_result) -> bool:
+    try:
+        return os.path.samestat(os.stat(path), target)
+    except OSError:
+        return False
 
 
 class Directory(BaseStruct):

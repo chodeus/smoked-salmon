@@ -694,8 +694,7 @@ def _group_with(**edition):
 
 
 def test_another_catalogue_number_is_the_same_edition_and_noted():
-    """Trackers write catalogue numbers in different conventions (a label's number, a UPC): they never tell
-    editions apart, so the DUPE RISK line names ours instead."""
+    """A catalogue number never tells editions apart, so the DUPE RISK line names ours instead."""
     rset = _group_with(remasterCatalogueNumber="1200214726676")
     held = rset["torrents"][0]
 
@@ -758,7 +757,11 @@ async def test_every_held_torrent_of_the_edition_is_named(fake_tracker, install_
     with pytest.raises(click.Abort):
         await _confirm_group_id(fake_tracker, 100, [result], WEB_FLAC)
 
-    assert capsys.readouterr().out.count("DUPE RISK") == 2
+    out = capsys.readouterr().out
+    risks = [line for line in out.splitlines() if line.startswith("DUPE RISK")]
+    assert len(risks) == 2
+    assert any("2024 / A / WEB / FLAC / Lossless" in line for line in risks)
+    assert any("2024 / B / WEB / FLAC / Lossless" in line for line in risks)
 
 
 async def test_another_year_with_another_catalogue_number_is_no_dupe_risk(fake_tracker, install_prompt, capsys):
@@ -775,8 +778,11 @@ async def test_another_year_with_another_catalogue_number_is_no_dupe_risk(fake_t
         }
     ]
 
-    assert await _confirm_group_id(fake_tracker, 100, [result], {**WEB_FLAC, "catno": "CAT-100"}) is True
-    assert "DUPE RISK" not in capsys.readouterr().out
+    confirmed = await _confirm_group_id(fake_tracker, 100, [result], {**WEB_FLAC, "catno": "CAT-100"})
+    out = capsys.readouterr().out
+
+    assert confirmed is True
+    assert "DUPE RISK" not in out
 
 
 def test_matching_torrents_skips_another_edition_title():
