@@ -16,17 +16,7 @@ class ImageUploader(BaseImageUploader):
     """Image uploader for thesungod.xyz (Ra)."""
 
     async def upload_file(self, filename: str) -> tuple[str, None]:
-        """Upload image file to thesungod.xyz.
-
-        Args:
-            filename: Path to the image file.
-
-        Returns:
-            Tuple of (url, deletion_url).
-
-        Raises:
-            ImageUploadFailed: If upload fails.
-        """
+        """Upload an image to thesungod.xyz: (url, None); ImageUploadFailed if it fails."""
         async with await anyio.open_file(filename, "rb") as f:
             file_data = await f.read()
 

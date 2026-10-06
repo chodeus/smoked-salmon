@@ -143,25 +143,7 @@ async def _upload_groups(
     on_start: Callable[[int], None] = lambda _index: None,
     on_failure: Callable[[int, ImageUploadFailed], None] = lambda _index, _error: None,
 ) -> list[list[str] | None]:
-    """Upload groups of images to one host, over at most UPLOAD_CONNECTIONS connections.
-
-    Images queue for a free connection, in order, and a slow or failed upload holds up none
-    of the others. Once an upload fails, no new group starts: the host may be down, so the
-    groups not started yet are left for the caller to send elsewhere. The images of a group
-    already started still go.
-
-    Args:
-        uploader: The image uploader to send every image through.
-        groups: The image paths to upload, in groups that succeed or fail together.
-        on_start: Called with a group's index when its first image starts uploading.
-        on_failure: Called with a group's index and the error when one of its images fails.
-
-    Returns:
-        Each group's URLs, in the order of its paths, or None if the group failed or never started.
-
-    Raises:
-        DryRunRefused: In a dry run, before any upload starts.
-    """
+    """Upload image groups over at most UPLOAD_CONNECTIONS; after a failure no new group starts (None for it)."""
     # Here as well as in upload_file: refused in several workers at once, it would come out as a group.
     if dryrun.active():
         dryrun.refuse(f"upload {sum(len(paths) for paths in groups)} image(s) to {uploader.host}")

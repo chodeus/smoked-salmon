@@ -1,10 +1,4 @@
-"""A timed-out image upload must not crash the upload (follow-up to #428).
-
-aiohttp raises a plain TimeoutError, not aiohttp.ClientError, when UPLOAD_TIMEOUT's total runs
-out. Every image host module except imgbox.py (which already catches everything) and red.py
-(which goes through RedApi._request, already turning timeouts into RequestError) needs to catch
-it too. Nothing here contacts a real image host: all requests are redirected to a local fake one.
-"""
+"""A timed-out image upload (aiohttp's plain TimeoutError) must not crash the upload, on any host (#428)."""
 
 import asyncio
 from pathlib import Path
@@ -154,11 +148,7 @@ def test_a_client_error_becomes_a_network_error_message(
 def test_a_connect_timeout_gives_the_connection_wording(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
 ) -> None:
-    """A connect timeout must not be reported as the (much longer) overall upload timeout.
-
-    aiohttp.ConnectionTimeoutError is both an aiohttp.ClientError and a TimeoutError, and fires
-    at UPLOAD_TIMEOUT's sock_connect (30s), well before its total (300s) ever could.
-    """
+    """A connect timeout (sock_connect, 30 s) is not reported as the overall upload timeout (300 s)."""
     module, _real_host = TIMEOUT_MODULES[name]
     path = tmp_path / "image.png"
     path.write_bytes(b"png")
@@ -231,5 +221,7 @@ def test_upload_cover_returns_none_and_prints_on_timeout(
             await host.stop()
 
     result = anyio.run(run)
+    out = capsys.readouterr().out
+
     assert result is None
-    assert "failed" in capsys.readouterr().out
+    assert "failed" in out

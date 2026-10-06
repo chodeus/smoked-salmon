@@ -1,8 +1,4 @@
-"""Batch uploads to an image host share a few reused connections (#475).
-
-The real catbox and ptscreens uploaders run against a local fake host that counts the
-connections made to it. Nothing here contacts a real image host.
-"""
+"""Batch uploads to an image host share a few reused connections (#475), against a local fake host."""
 
 import asyncio
 import contextlib

@@ -1,8 +1,4 @@
-"""Ra (thesungod.xyz) image host uploader.
-
-Tests talk only to a local aiohttp fake server, monkeypatching ra.UPLOAD_URL so the
-uploader's own aiohttp.ClientSession never reaches the real host.
-"""
+"""Ra (thesungod.xyz) image host uploader, against a local fake server only."""
 
 import anyio
 import pytest
