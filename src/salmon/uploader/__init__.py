@@ -818,7 +818,8 @@ async def _upload_staged(
                     held = set()
                     uploaded.append(url)
 
-                    if spectrals_after:
+                    # A request fill can answer without a torrent id (0): then the next upload runs the check.
+                    if spectrals_after and torrent_id:
                         # Once, on the first torrent up; transcodes and later trackers carry what it found.
                         # Before print_torrents: that fetch can fail, and must not take the check with it.
                         spectrals_after = False

@@ -593,16 +593,15 @@ class BaseGazelleApi:
             click.secho(f"Too many redirects from {self.site_string}, last to {urlparse(url).path}", fg="red")
             raise RequestFailedError(f"Too many redirects from {self.site_string}")
         except (TimeoutError, aiohttp.ClientError) as err:
-            # Checked by type: ConnectionTimeoutError is also a TimeoutError, and never connected is safe to resend.
-            # An aiohttp error can repeat the URL, and a download link carries secrets: not chained, as a traceback
-            # would print the original.
-            reason = self._scrub(str(err))
+            # By type: a ConnectionTimeoutError is also a TimeoutError, and never connected is safe to resend.
+            # Not chained: an aiohttp error can repeat the URL and its query, and a traceback would print it.
+            reason = _safe_response_excerpt(self._scrub(str(err)))
             raise failure(f"Network error: {reason}", not_acted_on=isinstance(err, _NOT_SENT_ERRORS)) from None
         except RequestError as err:
             # After a redirect the tracker has acted, so a refused later hop is an unknown outcome.
             if idempotent or not redirected or isinstance(err, UnknownOutcomeError):
                 raise
-            # By type only: a RequestFailedError carries the raw response body.
+            # By type only: a RequestFailedError's message holds response text.
             raise UnknownOutcomeError(f"{self.site_string} failed on a later hop ({type(err).__name__})") from err
 
     def _scrub(self, text: str) -> str:
