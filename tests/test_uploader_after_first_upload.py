@@ -160,6 +160,22 @@ def test_spectrals_after_runs_once_the_only_upload_is_up(flow, monkeypatch) -> N
     assert executed == [True]
 
 
+def test_an_upload_with_no_torrent_id_skips_the_spectral_check(flow, monkeypatch, capsys) -> None:
+    calls, executed, _ = flow
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+
+    async def request_fill(site, *_args, **_kwargs):
+        return 0, 5, "/t.torrent", b"", f"{site.base_url}/requests.php?action=view&id=7"
+
+    monkeypatch.setattr(salmon.uploader, "upload_and_report", request_fill)
+    _upload(None)
+    names = [name for name, _site, _kw in calls]
+    out = capsys.readouterr().out
+    assert "post_upload_spectral_check" not in names
+    assert "salmon checkspecs" in out
+    assert executed == [True]
+
+
 def test_a_failed_group_fetch_after_the_upload_still_runs_the_spectral_check(flow, monkeypatch) -> None:
     calls, executed, set_fake = flow
     monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)

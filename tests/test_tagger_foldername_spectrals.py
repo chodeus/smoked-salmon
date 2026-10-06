@@ -216,3 +216,22 @@ def test_a_folder_made_later_at_the_old_path_is_not_salmons(monkeypatch, dirs) -
     foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False)
 
     assert _listing(album) == before
+
+
+def test_a_folder_made_where_salmon_removed_its_own_is_the_users(monkeypatch, tmp_path) -> None:
+    import anyio
+
+    from salmon.uploader import spectrals
+
+    specs = tmp_path / "Album" / "Spectrals"
+    specs.parent.mkdir()
+    create_specs_folder("", str(specs))
+
+    async def no_upload(*_args: Any) -> dict:
+        return {}
+
+    monkeypatch.setattr(spectrals, "upload_spectrals", no_upload)
+    anyio.run(spectrals.handle_spectrals_upload_and_deletion, str(specs), None)
+    specs.mkdir()
+
+    assert not spectrals.made_by_salmon(str(specs))

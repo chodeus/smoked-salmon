@@ -84,7 +84,7 @@ async def recompress_path(path: str, files: list[str] | None = None) -> None:
     """Recompress FLACs in parallel (`files` relative to path, else all if all are FLAC); UploadError on any failure."""
     if files is None:
         files = get_audio_files(path)
-        if not files or not all(".flac" in f for f in files):
+        if not files or not all(f.lower().endswith(".flac") for f in files):
             return click.secho("No flacs found to recompress. Skipping...", fg="red")
     filepaths = [os.path.join(path, filename) for filename in files]
 
