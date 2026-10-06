@@ -668,6 +668,24 @@ async def test_site_page_upload_request_fill_failure_extracts_error(api):
     assert "Request fill failed: Request already filled" in str(excinfo.value)
 
 
+async def test_a_long_request_fill_error_is_capped(api):
+    fill_error_html = f"<html><body><div><div><h2>Error</h2></div><p>{'x' * 2000}</p></div></body></html>"
+    script_requests(api, [http(text=fill_error_html, url="https://dummy.example/requests.php?action=takefill")])
+    api.passkey = "PK"
+
+    with pytest.raises(RequestError) as excinfo:
+        await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
+    assert "[truncated]" in str(excinfo.value)
+
+
+async def test_a_long_api_upload_error_is_capped(api):
+    script_requests(api, [http(text='{"status": "failure", "error": "' + "x" * 2000 + '"}')])
+
+    with pytest.raises(RequestError) as excinfo:
+        await api.api_key_upload({}, UploadFiles(torrent_data=b"torrent"))
+    assert "[truncated]" in str(excinfo.value)
+
+
 async def test_site_page_upload_bounced_to_login_raises_login_error(api, monkeypatch):
     # An expired cookie sends the upload to login.php, which is never requested.
     captured = install_fake_aiohttp(
