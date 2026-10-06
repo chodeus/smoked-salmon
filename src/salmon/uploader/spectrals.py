@@ -335,7 +335,7 @@ async def _compress_spectrals(spectrals_path: str) -> None:
 
 
 def spectrals_dir() -> str | None:
-    """The folder spectrals go in beside albums: tmp_dir, or a dry run's own run directory; None for inside them."""
+    """The folder spectrals go in beside albums: tmp_dir, or a dry run's own run directory; None without tmp_dir."""
     if not (cfg.directory.tmp_dir and os.path.isdir(cfg.directory.tmp_dir)):
         return None
     # A dry run leaves nothing outside its run directory, nor replaces another album's spectrals_<name> there.

@@ -138,7 +138,7 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
             shutil.rmtree(path)
     carry_conversion(path, new_path)
 
-    # Also rename spectrals folder in TMP_DIR if it exists
+    # Also rename the spectrals folder in tmp_dir, or a dry run's run directory, if there is one.
     if (beside := spectrals_dir()) is not None:
         tmp_old_specs_path = os.path.join(beside, f"spectrals_{old_base}")
         tmp_new_specs_path = os.path.join(beside, f"spectrals_{new_base}")
