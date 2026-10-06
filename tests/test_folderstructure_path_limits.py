@@ -1,11 +1,4 @@
-"""The path-length limit is the run's trackers', from MAX_PATH_LENGTH, instead of always the strictest.
-
-_check_path_lengths blocks (a scene release raises directly rather than offering to auto-fix, which
-is the simplest way to assert the limit without going through the interactive confirm loop).
-_max_path_length_for_run picks the value a whole run is checked against: the tracker's own limit, or
-the strictest among every tracker configured, when the run might go on to another of them.
-
-Ported from upstream (smokin-salmon/smoked-salmon#565), on the fork's MAX_PATH_LENGTH table."""
+"""The path limit is the run's trackers' (MAX_PATH_LENGTH), not always the strictest (upstream #565)."""
 
 import pytest
 
@@ -87,8 +80,7 @@ def test_dic_keeps_the_180_default_pending_confirmation(monkeypatch) -> None:
 
 
 def test_truncation_that_cannot_fit_raises_instead_of_leaving_the_path_too_long(tmp_path) -> None:
-    """A deep sub-folder can already sit right at the limit, leaving no room to shorten a short
-    file name into: truncating it down to just ".." plus its extension can still be too long."""
+    """A sub-folder already at the limit leaves no room: truncating a file name to ".." + extension still fails."""
     max_path_length = 20
     folder = tmp_path / "F"
     subfolder = folder / ("S" * 16)  # "F/SSSSSSSSSSSSSSSS" is 18 chars, within the limit.

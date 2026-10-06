@@ -1,6 +1,4 @@
-"""The downconversion and transcode folder checks use the run's computed path limit, not the
-180 default: an OPS-only run must not truncate a transcode's file names to 180 when its FLAC was
-allowed 255."""
+"""Conversion folder checks use the run's path limit: an OPS-only run allows 255, not the 180 default."""
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast

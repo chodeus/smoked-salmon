@@ -370,11 +370,7 @@ def converted_from_note(conversion: dict[str, Any] | None, url: str | None) -> s
 
 
 def _max_path_length_for_run(site_code: str, trackers: list[str] | None, flac_group: dict | None) -> int:
-    """The path limit the folder is checked against: this tracker's, or the strictest of every one the run may reach.
-
-    The folder is checked once, before the first upload; trackers named with -t are known up front, and with
-    multi_tracker_upload any configured one may follow (upstream #565).
-    """
+    """The run's path limit: this tracker's, or the strictest of all the run may reach (-t, multi_tracker_upload)."""
     if flac_group is not None or (not trackers and not cfg.upload.multi_tracker_upload):
         return path_limit_for([site_code])
     return path_limit_for([site_code, *(trackers or salmon.trackers.tracker_list)])

@@ -1,7 +1,4 @@
-"""A FLAC's ID3 tag is stripped (a scene release only warned about), and the upload goes on.
-
-Ported from upstream (smokin-salmon/smoked-salmon#565). The fork reports an uncompressed FLAC with the
-other rules at upload (collect_upload_warnings), so these notes do not repeat it."""
+"""A FLAC's ID3 tag is stripped (a scene release only warned about) and the upload goes on (upstream #565)."""
 
 import struct
 

@@ -104,13 +104,7 @@ def _has_id3v2_header(filepath: str) -> bool:
 
 
 def has_blank_id3v2_alongside_id3v1(filepath: str) -> bool:
-    """True for an MP3 with a filled-in ID3v1 tag next to an ID3v2 tag that carries no frames.
-
-    Reading only the ID3v1 tag, or only a filled-in ID3v2 tag, is ordinary and not flagged; nor is
-    an ID3v2 tag with real content sitting next to an ID3v1 tag. When both a v1 tag and a v2
-    header exist, mutagen reads the v2 tag: it is the blank one that matters here, not the
-    presence of v1 by itself, so both a v1 block and a v2 header must be found on disk first.
-    """
+    """True for an MP3 whose filled-in ID3v1 tag sits beside a frameless ID3v2 tag, both found on disk."""
     if not (_has_id3v1_block(filepath) and _has_id3v2_header(filepath)):
         return False
     try:
@@ -121,11 +115,7 @@ def has_blank_id3v2_alongside_id3v1(filepath: str) -> bool:
 
 
 def process_tag_issues(path: str, *, scene: bool) -> list[str]:
-    """Strip a FLAC's ID3 tag in place, and note a dual-ID3 MP3; one line per file, empty when nothing to report.
-
-    A scene release is never touched and only gets a note. An uncompressed FLAC is reported with the other
-    rules at upload (collect_upload_warnings), from the files as they are after any recompress.
-    """
+    """Strip FLACs' ID3 tags (a scene release only gets a note) and note dual-ID3 MP3s; one line per file."""
     messages: list[str] = []
     for filename in get_audio_files(path):
         filepath = os.path.join(path, filename)
