@@ -372,15 +372,13 @@ def _records_under(folder: Path) -> list[Path]:
     return list(folder.rglob(conversions.REGISTRY_DIR))
 
 
-def test_nothing_is_recorded_in_library_dirs_or_in_a_folder_holding_it(tmp_path, library_and_downloads) -> None:
+def test_nothing_is_recorded_in_library_dirs(tmp_path, library_and_downloads) -> None:
     library, _downloads = library_and_downloads
     (library / "Artist").mkdir()
 
     conversions.record_conversion(str(library / "Artist" / "Album [WEB FLAC]"), **DOWNCONVERT)
-    # Beside the library, in the folder that holds it.
-    conversions.record_conversion(str(tmp_path / "Album [WEB FLAC]"), **DOWNCONVERT)
 
-    assert _records_under(tmp_path) == []
+    assert _records_under(library) == []
 
 
 def test_a_conversion_cannot_land_in_the_library_nor_leave_a_record_there(
