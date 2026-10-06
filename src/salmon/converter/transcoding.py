@@ -90,9 +90,7 @@ def _build_output_path(path: str, bitrate: Bitrate, output_dir: str | None = Non
     """
     to_append: list[str] = []
     foldername = os.path.basename(path)
-    # Drop a stale resolution token before deriving the new name: an MP3 transcode must not keep
-    # claiming a FLAC resolution such as "24-96". The token is computed from the source's actual
-    # files, not guessed at with a pattern, so it cannot also eat unrelated digits from the title.
+    # An MP3 must not keep a FLAC resolution such as "24-96": drop the token, computed from the source's files.
     # Imported here: foldername imports this package, through salmon.converter.conversions.
     from salmon.tagger.foldername import drop_resolution_token, resolution_token
 

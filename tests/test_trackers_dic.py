@@ -1,6 +1,4 @@
-"""DICMusic's upload form data: the sample rate it requires for 24bit Lossless (#421).
-
-Ported from upstream (smokin-salmon/smoked-salmon#552)."""
+"""DICMusic's upload form: the sample rate it requires for 24bit Lossless (#421, upstream #552)."""
 
 import struct
 from pathlib import Path
@@ -174,10 +172,7 @@ def _write_flac(path: Path, sample_rate: int, bits: int = 24) -> None:
 
 
 def _downconvert_24bit(monkeypatch, tmp_path: Path, converted_names) -> list[dict[str, Any]]:
-    """Run the 24-bit downconversion of a 192 kHz source to DIC; give the upload data it sent.
-
-    The fake conversion writes the given file names into the output folder.
-    """
+    """Downconvert a 192 kHz source to 24 bits for DIC, the fake writing `converted_names`; give the data sent."""
     source_track_data = _track_data(192000, 192000)
     converted = tmp_path / "converted"
 

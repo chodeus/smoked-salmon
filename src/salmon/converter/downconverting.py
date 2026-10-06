@@ -71,19 +71,15 @@ def _build_output_path(path: str, bit_depth: BitDepth, sample_rate: int | None, 
         The output directory path string.
     """
     foldername = os.path.basename(path)
-    # A stale resolution token, e.g. "24-192", is computed from the source's actual files, not
-    # guessed at with a pattern, so it cannot also eat unrelated digits from the album title. It
-    # only counts if that exact text is actually in the name; a folder that happens to be 24/96
-    # inside is not the same thing as one whose name says so.
     # Imported here: foldername imports this package, through salmon.converter.conversions.
     from salmon.tagger.foldername import drop_resolution_token, resolution_token
 
     audio_info = gather_audio_info(path)
+    # From the source's files, never a pattern that could eat title digits; it counts only when the name holds it.
     current_token = resolution_token(audio_info)
     has_token = bool(current_token) and re.search(r"\b" + re.escape(current_token) + r"\b", foldername)
-    # A {resolution}-only name (the recommended template does not pair it with {format}) has no
-    # "24bit"/"16bit FLAC" wording to rewrite: swap its token for the conversion's own one in
-    # place instead of running it through the FLAC/bit-depth rewriting below.
+    # A {resolution}-only name has no "24bit"/"16bit FLAC" wording: swap its token for the conversion's
+    # in place instead of the bit-depth rewriting below.
     carries_bit_depth_wording = bool(re.search(r"\d+ ?bit FLAC", foldername, flags=re.IGNORECASE))
 
     if has_token and not carries_bit_depth_wording:

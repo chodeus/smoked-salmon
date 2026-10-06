@@ -170,21 +170,12 @@ def _move_specs_folder(src: str, dst: str) -> None:
 
 
 def _resolution(path):
-    """
-    "<bits>-<kHz>"-style bit depth and sample rate for the folder's tracks, e.g. "24-96" or
-    "24-44.1". Blank for lossy files, for plain 16-bit/44.1kHz, for a missing or zero bit depth,
-    and when the tracks do not all share one bit depth and sample rate: a folder name must not
-    claim a single resolution for a hybrid release.
-    """
+    """Bit depth and sample rate of the folder's tracks, like "24-96"; blank for lossy, 16/44.1, zero or mixed."""
     return resolution_token(gather_audio_info(path))
 
 
 def resolution_token(audio_info):
-    """
-    Same as `_resolution`, from an already-gathered `gather_audio_info` mapping. The converters
-    use this to work out the exact token (if any) a source folder's name would carry, so they can
-    drop or replace it without guessing at a pattern that could also match unrelated text.
-    """
+    """_resolution from a gather_audio_info mapping, so the converters know a name's exact token."""
     bits = {info["precision"] for info in audio_info.values()}
     rates = {info["sample rate"] for info in audio_info.values()}
     if len(bits) != 1 or len(rates) != 1:
@@ -196,12 +187,7 @@ def resolution_token(audio_info):
 
 
 def drop_resolution_token(foldername, token):
-    """
-    Remove a resolution token, e.g. "24-96", from an already-formatted folder name. Only a
-    bracket group left holding nothing else comes with it; a group that still has other text
-    (like "[WEB FLAC]") stays untouched. The converters use this once a token is gone for good,
-    e.g. a 16/44.1 downconversion or an MP3 transcode that must not claim a resolution at all.
-    """
+    """Remove a resolution token from a folder name, and a bracket group it leaves empty."""
     foldername = re.sub(r"\s*" + re.escape(token) + r"\b", "", foldername)
     foldername = re.sub(r"[\[{(]\s*[\]})]", "", foldername)
     return re.sub(r"\s+", " ", foldername).strip()
@@ -224,16 +210,7 @@ def generate_folder_name(metadata):
 
 
 def _strip_blank_resolution(template):
-    """
-    Drop a blank {resolution} token from the template.
-
-    strip_template_keys assumes a token owns the whole bracket around it, which is right for a
-    token alone in its brackets but wrong for "[{source} FLAC {resolution}]": it would eat the
-    closing bracket and leave "FLAC" hanging open. Here only the placeholder (and one adjacent
-    separator space) goes; the bracket comes with it only if nothing else was left inside.
-    A placeholder can carry a format spec, as in "{resolution:>5}"; that goes too, or it would
-    survive into template.format() with no "resolution" key left to fill it.
-    """
+    """Drop a blank {resolution} placeholder (format spec too) and its bracket only if that empties it."""
     template = re.sub(r"\s*\{resolution(?::[^}]*)?\}", "", template)
     template = re.sub(r"[\[{(]\s*[\]})]", "", template)
     template = re.sub(r"\s+", " ", template).strip()

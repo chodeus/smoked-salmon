@@ -953,18 +953,7 @@ class BaseGazelleApi:
             raise RequestError(f"API upload failed, response: {self._scrub(str(resp))}") from err
 
     def upload_form_fields(self, metadata: dict[str, Any], track_data: dict[str, Any]) -> dict[str, str]:
-        """Give the upload form fields only this tracker has, for one torrent.
-
-        Args:
-            metadata: Release metadata of the torrent being uploaded.
-            track_data: Track information of the files in that torrent.
-
-        Returns:
-            Field names and values to add to the upload form data; none by default.
-
-        Raises:
-            UploadRefusedError: If the tracker's form has no value that describes the torrent.
-        """
+        """Upload form fields only this tracker has, for one torrent; UploadRefusedError if none describes it."""
         return {}
 
     async def site_page_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
