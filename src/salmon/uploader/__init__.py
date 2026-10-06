@@ -872,7 +872,14 @@ async def _upload_staged(
                     held = set()
                     uploaded.append(url)
 
-                    if spectrals_after:
+                    # A request fill can answer without a torrent id (0): the check, on the FLAC's torrent, waits.
+                    if spectrals_after and not torrent_id:
+                        click.secho(
+                            "No torrent id came back for this upload: spectrals are checked on the next tracker's "
+                            "upload, or run salmon checkspecs on this one.",
+                            fg="yellow",
+                        )
+                    elif spectrals_after:
                         # Once, on the first torrent up; transcodes and later trackers carry what it found.
                         # Before print_torrents: that fetch can fail, and must not take the check with it.
                         spectrals_after = False
