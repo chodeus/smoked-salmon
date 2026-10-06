@@ -206,7 +206,7 @@ def test_compress_command_failure_output_does_not_suggest_a_nonexistent_flag(mon
 
     result = anyio.run(run)
 
-    assert result.exit_code != 0
+    assert result.exit_code == 1, result.output
     assert "-c" not in result.output
 
 

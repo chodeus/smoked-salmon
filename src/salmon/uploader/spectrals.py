@@ -144,6 +144,8 @@ async def handle_spectrals_upload_and_deletion(
         if os.path.isdir(spectrals_path):
             shutil.rmtree(spectrals_path)
             await anyio.sleep(0.5)
+    if delete_spectrals and not os.path.isdir(spectrals_path):
+        drop_specs_claim(spectrals_path)
     return spectral_urls
 
 
@@ -353,6 +355,11 @@ def carry_specs_claim(old_real: str, new_path: str) -> None:
     if old_real in _made_specs_folders:
         _made_specs_folders.discard(old_real)
         _made_specs_folders.add(os.path.realpath(new_path))
+
+
+def drop_specs_claim(spectrals_path: str) -> None:
+    """Forget salmon's claim on a spectrals folder that is gone, so a folder made there later is the user's."""
+    _made_specs_folders.discard(os.path.realpath(spectrals_path))
 
 
 def create_specs_folder(path, spectrals_path=None):

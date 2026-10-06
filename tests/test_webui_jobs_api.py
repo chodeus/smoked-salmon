@@ -929,6 +929,18 @@ def test_discarding_removes_the_generated_images(tmp_path, monkeypatch):
     assert not specs.exists()
 
 
+def test_discarding_drops_salmons_claim_on_the_folder(tmp_path, monkeypatch):
+    from salmon.uploader.spectrals import create_specs_folder, made_by_salmon
+    from salmon.webui.routers.spectrals import _discard_spectrals
+
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_path))
+    specs = pathlib.Path(create_specs_folder("", os.path.join(os.path.realpath(tmp_path), "spectrals_claim")))
+    _discard_spectrals(_finished_spectrals_job(specs))
+    specs.mkdir()
+
+    assert not made_by_salmon(str(specs))
+
+
 def test_discarding_refuses_a_path_outside_the_configured_directories(tmp_path):
     from salmon.webui.routers.spectrals import _discard_spectrals
 
