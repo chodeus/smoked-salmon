@@ -26,10 +26,7 @@ class FakeGazelleSite:
 def test_recent_upload_prompt_keeps_master_wording_when_there_are_no_recent_uploads(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """When the group search found nothing and the site log has no recent uploads either, the
-    "similar recent uploads" header is misleading: there is nothing to pick from. Master's plain
-    "Would you like to upload to an existing group?" wording should be shown instead (#518 follow-up).
-    """
+    """With no group found and no recent uploads, the prompt is the plain "upload to an existing group?"."""
     prompt_text = ""
 
     async def fake_prompt(text: str, *_args, **_kwargs) -> str:
@@ -71,9 +68,7 @@ def test_recent_upload_match_accepts_true_collab_title_match() -> None:
 
 
 def test_recent_upload_match_requires_shared_title_word_when_titles_given() -> None:
-    """A shared three-word artist alone can carry a high ratio and word-overlap fraction even with
-    a completely different one-word title. Passing normalized title words for both sides requires
-    the titles to share a word too (#518 CodeRabbit follow-up on #509)."""
+    """A shared three-word artist with different one-word titles matches only without the title words."""
     searchstrs = generate_dupe_check_searchstrs([["John James Smith", "main"]], "Sunrise")
     comparisons = generate_dupe_check_searchstrs([["John James Smith", "main"]], "Sunset")
 
@@ -102,10 +97,7 @@ class _LogOnlySite:
 
 
 def test_dupe_check_recent_torrents_ignores_shared_artist_prefix_only() -> None:
-    """A logged upload that shares only an artist with our release must not be flagged as a dupe,
-    a true collab title match must still be flagged, and a match that only shows up through a
-    search string other than searchstrs[0] must also be flagged (master only checks searchstrs[0]).
-    """
+    """An artist-only match is no dupe; a collab title match is, also through a search string past the first."""
     searchstrs = generate_dupe_check_searchstrs([["Anna Zak", "main"], ["אביב גפן", "main"]], "מה נשאר לי ממך")
     false_positive_upload = (1, "Anna Zak", "קלטתי אותך")
     true_match_upload = (2, "Anna Zak & אביב גפן", "מה נשאר לי ממך")
@@ -124,12 +116,7 @@ def test_dupe_check_recent_torrents_ignores_shared_artist_prefix_only() -> None:
 
 
 def test_dupe_check_recent_torrents_requires_shared_title_word_not_just_shared_artist() -> None:
-    """A three-word shared artist can carry a high SequenceMatcher ratio and word-overlap fraction
-    on its own, even with a completely different one-word title ("john james smith sunrise" vs
-    "john james smith sunset" share 3 of 4 words). Passing our release's title makes
-    dupe_check_recent_torrents require the titles themselves to share a word, while a same-title
-    match (including a collab) still hits (#518 CodeRabbit follow-up).
-    """
+    """With our title given, a shared three-word artist is not enough: the titles must share a word too."""
     artist = [["John James Smith", "main"]]
     our_title = "Sunrise"
     searchstrs = generate_dupe_check_searchstrs(artist, our_title)

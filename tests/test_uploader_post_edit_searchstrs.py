@@ -1,15 +1,4 @@
-"""After the metadata review, dupe checks must use the reviewed metadata, not the pre-review rls_data.
-
-_upload_staged() builds rls_data from the file tags before the user reviews and edits metadata
-(edit_metadata). If the review changes the artists, title or catno, the dupe checks that run after
-it, the last-minute dupe check, the request search and a second tracker's group search, must use
-search strings and a title built from the edited metadata. On master they keep using the pre-edit
-rls_data (#521), so a renamed release is checked against its old name.
-
-Ported from upstream (smokin-salmon/smoked-salmon#524). Every step that does not touch this is stubbed
-out: what is under test is what _upload_staged hands to last_min_dupe_check, check_requests and
-check_existing_group, so those are stubbed to record their arguments.
-"""
+"""Dupe checks after the metadata review search on the reviewed metadata, not the pre-review rls_data."""
 
 from typing import TYPE_CHECKING, Any, cast
 
@@ -197,9 +186,7 @@ def test_post_review_dupe_checks_use_the_edited_metadata_not_the_pre_review_rls_
 def test_a_caller_supplied_group_id_still_reaches_the_post_review_checks(
     monkeypatch: pytest.MonkeyPatch, album
 ) -> None:
-    """When the caller already knows the group (group_id set), the pre-review dupe search never runs
-    (searchstrs stays whatever the caller passed, here None) but the post-review checks must still
-    use search strings built from the edited metadata, not crash on the caller's None."""
+    """With group_id set, searchstrs stays the caller's None; the post-review checks still build their own."""
     rls_data = {
         "format": "FLAC",
         "encoding": "Lossless",

@@ -197,7 +197,8 @@ def test_an_album_symlinked_into_a_library_from_outside_it_is_refused(client, tm
     resp = client.post("/api/convert/compress", json={"path": os.path.join(lib, "Linked")})
     assert resp.status_code == 403
     assert "symlinked into a library" in resp.json()["detail"]
-    assert client.post("/api/convert/compress", json={"path": album}).status_code != 403
+    control = client.post("/api/convert/compress", json={"path": album})
+    assert control.status_code == 200
 
 
 def test_offered_sources_match_the_canonical_set(client) -> None:
