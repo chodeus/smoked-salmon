@@ -394,7 +394,8 @@ def test_the_rclone_command_salmon_prints_hides_the_seedbox_secrets(
 ) -> None:
     _fake_rclone(monkeypatch, tmp_path)
 
-    assert _upload_with_fake_rclone(_box(url=url, extra_args=extra_args)) is True
+    ok = _upload_with_fake_rclone(_box(url=url, extra_args=extra_args))
+    assert ok is True
 
     out, err = capfd.readouterr()
     assert "Executing: rclone copy" in out
@@ -419,9 +420,11 @@ def test_the_rclone_command_salmon_prints_keeps_harmless_values(monkeypatch, tmp
 def test_rclone_upload_folder_reports_nonzero_exit_code(monkeypatch, tmp_path, capfd) -> None:
     _fake_rclone(monkeypatch, tmp_path, exit_code=7)
 
-    assert _upload_with_fake_rclone(_box(url="seedbox", extra_args=["-P"])) is False
+    ok = _upload_with_fake_rclone(_box(url="seedbox", extra_args=["-P"]))
+    out = capfd.readouterr().out
 
-    assert "Rclone upload failed with exit code 7" in capfd.readouterr().out
+    assert ok is False
+    assert "Rclone upload failed with exit code 7" in out
 
 
 @needs_posix
@@ -462,7 +465,8 @@ def test_what_rclone_echoes_on_stderr_is_masked(
 ) -> None:
     _fake_rclone(monkeypatch, tmp_path, stderr=echo if "no newline" in echo else echo + "\n", exit_code=1)
 
-    assert _upload_with_fake_rclone(_box(url=url, extra_args=extra_args)) is False
+    ok = _upload_with_fake_rclone(_box(url=url, extra_args=extra_args))
+    assert ok is False
 
     out, err = capfd.readouterr()
     # rclone's own line is still shown, only its secret is masked.
@@ -488,15 +492,7 @@ def _run_upload(
     seedboxes: list[Seedbox],
     rclone_exit_codes: dict[str, int] | None = None,
 ) -> tuple[dict[str, _RecordingClient], list[list[str]]]:
-    """Queue one release on the given seedboxes and run the upload with a fake client and rclone.
-
-    Args:
-        rclone_exit_codes: Maps a seedbox URL to the exit code its rclone call should return.
-            Seedboxes not listed succeed (exit code 0).
-
-    Returns:
-        The torrent clients salmon logged in to, by URL, and the rclone commands it ran.
-    """
+    """Upload one release to seedboxes with a fake client; rclone exits per URL, default 0."""
     clients: dict[str, _RecordingClient] = {}
     rclone_calls: list[list[str]] = []
     rclone_exit_codes = rclone_exit_codes or {}
@@ -649,9 +645,8 @@ def test_successful_rclone_copy_still_seeds(monkeypatch, tmp_path) -> None:
 
 
 def test_failed_copy_only_skips_seeding_its_own_folder(monkeypatch, tmp_path) -> None:
-    # An upload run queues several releases (a FLAC plus each transcode). A failed copy of one
-    # folder used to be keyed by seedbox alone, so it skipped the seed of every other folder
-    # queued for that seedbox too, including ones whose files did arrive.
+    # A run queues several releases (a FLAC plus each transcode): a failed copy skips only its own
+    # folder's seed, not every seed queued for that seedbox.
     clients: dict[str, _RecordingClient] = {}
     rclone_calls: list[list[str]] = []
 
@@ -895,7 +890,8 @@ def test_qbittorrent_fails_response_is_reported_as_not_added(monkeypatch, capsys
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is False
-    assert "successfully" not in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out
+    assert "successfully" not in out.lower()
 
 
 def test_qbittorrent_ok_response_is_reported_as_added(monkeypatch, capsys) -> None:
@@ -908,7 +904,8 @@ def test_qbittorrent_ok_response_is_reported_as_added(monkeypatch, capsys) -> No
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is True
-    assert "Torrent added successfully" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Torrent added successfully" in out
 
 
 def test_qbittorrent_5_1_metadata_success_is_reported_as_added(monkeypatch, capsys) -> None:
@@ -922,7 +919,8 @@ def test_qbittorrent_5_1_metadata_success_is_reported_as_added(monkeypatch, caps
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is True
-    assert "Torrent added successfully" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Torrent added successfully" in out
 
 
 def test_qbittorrent_5_1_metadata_failure_is_reported_as_not_added(monkeypatch, capsys) -> None:
@@ -935,7 +933,8 @@ def test_qbittorrent_5_1_metadata_failure_is_reported_as_not_added(monkeypatch, 
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is False
-    assert "successfully" not in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out
+    assert "successfully" not in out.lower()
 
 
 def test_deluge_none_result_is_reported_as_not_added(monkeypatch, capsys) -> None:
@@ -949,7 +948,8 @@ def test_deluge_none_result_is_reported_as_not_added(monkeypatch, capsys) -> Non
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is False
-    assert "successfully" not in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out
+    assert "successfully" not in out.lower()
 
 
 def test_deluge_torrent_id_is_reported_as_added(monkeypatch, capsys) -> None:
@@ -962,7 +962,8 @@ def test_deluge_torrent_id_is_reported_as_added(monkeypatch, capsys) -> None:
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is True
-    assert "Torrent added successfully" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Torrent added successfully" in out
 
 
 def test_transmission_torrent_result_is_reported_as_added(monkeypatch, capsys) -> None:
@@ -975,7 +976,8 @@ def test_transmission_torrent_result_is_reported_as_added(monkeypatch, capsys) -
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is True
-    assert "Torrent added successfully" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Torrent added successfully" in out
 
 
 def test_a_client_call_that_raises_is_reported_as_not_added(monkeypatch, capsys) -> None:
@@ -988,7 +990,8 @@ def test_a_client_call_that_raises_is_reported_as_not_added(monkeypatch, capsys)
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is False
-    assert "successfully" not in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out
+    assert "successfully" not in out.lower()
 
 
 def test_a_client_that_never_connected_is_reported_as_not_added(monkeypatch, capsys) -> None:
@@ -997,7 +1000,8 @@ def test_a_client_that_never_connected_is_reported_as_not_added(monkeypatch, cap
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is False
-    assert "successfully" not in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out
+    assert "successfully" not in out.lower()
 
 
 class _RefusingClient:
