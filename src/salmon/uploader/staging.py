@@ -77,7 +77,7 @@ def _remove_scratch_dir(scratch_dir: str, source: str) -> None:
     real_source = os.path.realpath(source)
     # Checked on the resolved paths: a symlinked component must not carry the removal out of the root,
     # and neither the source nor a folder holding it is ever removed.
-    if os.path.islink(scratch_dir) or os.path.dirname(real) != root or _holds(real, real_source):
+    if os.path.islink(scratch_dir) or os.path.dirname(real) != root or _within(real, real_source):
         click.secho(f"Left the scratch copy at {scratch_dir}: it is not a run directory in {root}.", fg="yellow")
         return
     try:
@@ -86,7 +86,7 @@ def _remove_scratch_dir(scratch_dir: str, source: str) -> None:
         click.secho(f"Could not remove the scratch copy at {scratch_dir}: {error}", fg="yellow")
 
 
-def _holds(folder: str, path: str) -> bool:
+def _within(folder: str, path: str) -> bool:
     """Whether path is folder or inside it."""
     try:
         return os.path.commonpath([folder, path]) == folder

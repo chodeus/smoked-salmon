@@ -53,7 +53,7 @@ def _discard_spectrals(job: Job) -> None:
 @router.post("/spectrals/generate")
 async def generate(req: GenerateRequest) -> dict:
     path = validate_album_dir(req.path)
-    # Spectrals go to tmp_dir, or for a library album to download_directory; this refuses any that would not.
+    # tmp_dir, download_directory for a library album, else the album's own Spectrals: never inside a library.
     spectrals_path = get_spectrals_path(path)
     refuse_library_output(spectrals_path, "Spectrals")
 

@@ -9,6 +9,7 @@ import asyncclick as click
 
 from salmon import cfg
 from salmon.common import strip_template_keys
+from salmon.common.files import rewrite_refusal
 from salmon.common.strings import plain_spaces
 from salmon.constants import (
     BLACKLISTED_CHARS,
@@ -72,6 +73,9 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
     if not same_location and cfg.directory.protects(new_path):
         raise UploadError(f"Not renaming into {new_path}: it is in library_dirs, or holds one.")
     if os.path.isdir(new_path) and not same_location:
+        # Often the very album this copy was made from: replacing it would break what seeds from it.
+        if (reason := rewrite_refusal(new_path)) is not None:
+            raise UploadError(f"Not replacing {new_path}: {reason}. Rename it, or give the upload another folder name.")
         if not check or click.confirm(
             click.style(
                 f"A folder already exists with the new folder name '{new_path}', would you like to replace it?",
