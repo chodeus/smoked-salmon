@@ -92,7 +92,7 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
         os.makedirs(new_path_dirname)
 
     # Imported here: the uploader package imports this module.
-    from salmon.uploader.spectrals import get_spectrals_path, made_by_salmon
+    from salmon.uploader.spectrals import get_spectrals_path, made_by_salmon, spectrals_dir
 
     # Check if hardlinks can be used
     same_volume = os.stat(path).st_dev == os.stat(cfg.directory.download_directory).st_dev
@@ -138,10 +138,10 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
             shutil.rmtree(path)
     carry_conversion(path, new_path)
 
-    # Also rename spectrals folder in TMP_DIR if it exists
-    if cfg.directory.tmp_dir and os.path.exists(cfg.directory.tmp_dir):
-        tmp_old_specs_path = os.path.join(cfg.directory.tmp_dir, f"spectrals_{old_base}")
-        tmp_new_specs_path = os.path.join(cfg.directory.tmp_dir, f"spectrals_{new_base}")
+    # Also rename the spectrals folder in tmp_dir, or a dry run's run directory, if there is one.
+    if (beside := spectrals_dir()) is not None:
+        tmp_old_specs_path = os.path.join(beside, f"spectrals_{old_base}")
+        tmp_new_specs_path = os.path.join(beside, f"spectrals_{new_base}")
 
         if not os.path.exists(tmp_old_specs_path):
             pass  # No spectrals folder exists, nothing to rename

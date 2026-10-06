@@ -6,9 +6,10 @@ import posixpath
 import anyio
 import asyncclick as click
 
-from salmon import cfg
+from salmon import cfg, dryrun
 from salmon.common.redaction import redact_command, redact_secrets, secret_values
 from salmon.config.validations import Seedbox
+from salmon.errors import DryRunRefused
 from salmon.uploader.torrent_client import TorrentClient, TorrentClientGenerator
 
 
@@ -109,8 +110,15 @@ class UploadManager:
     """
 
     def __init__(self) -> None:
-        click.secho("Initializing upload managers", fg="cyan")
         self._client_cache: dict[str, TorrentClient] = {}
+        # Each task: (seedbox, local_path, task_type)
+        self.tasks: collections.deque[tuple[Seedbox, str, str]] = collections.deque()
+        if dryrun.active():
+            # Setting up a torrent client logs into it. A dry run queues nothing, so it needs none.
+            if any(seedbox.enabled for seedbox in cfg.seedbox):
+                dryrun.say("not connecting to the seedboxes' torrent clients.")
+            return
+        click.secho("Initializing upload managers", fg="cyan")
         for seedbox in cfg.seedbox:
             if not seedbox.enabled:
                 continue
@@ -120,11 +128,11 @@ class UploadManager:
                         seedbox.torrent_client
                     )
                 click.secho(f"Configured {seedbox.type} uploader to {seedbox.url}", fg="yellow")
+            except DryRunRefused:
+                # Were the skip above missed, the client's refusal to log in must stop the run.
+                raise
             except Exception as e:
                 click.secho(f"Failed to configure {seedbox.type} uploader: {e}", fg="red")
-
-        # Each task: (seedbox, local_path, task_type)
-        self.tasks: collections.deque[tuple[Seedbox, str, str]] = collections.deque()
 
     def _client(self, seedbox: Seedbox) -> TorrentClient:
         """Look up the cached torrent client for a seedbox entry.
@@ -146,6 +154,7 @@ class UploadManager:
             is_flac: Whether the release is FLAC; skips seedboxes with flac_only=True if False.
             site_code: Tracker this upload went to; skips seedboxes pinned to other trackers.
         """
+        dryrun.refuse(f"queue {directory} for a seedbox copy or a torrent client")
         click.secho(f"Preparing upload tasks for: {directory}", fg="cyan")
         for seedbox in cfg.seedbox:
             if not seedbox.enabled:

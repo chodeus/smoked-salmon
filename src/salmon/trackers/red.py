@@ -1,6 +1,6 @@
 from bs4 import BeautifulSoup
 
-from salmon import cfg
+from salmon import cfg, dryrun
 from salmon.common import UploadFiles
 from salmon.trackers.base import BaseGazelleApi
 
@@ -144,9 +144,7 @@ class RedApi(BaseGazelleApi):
 
         return await super().upload(data, files)
 
-    # No dry_run_upload override: RED's server-side dryrun POSTs the whole upload
-    # form to the tracker, which is not what a dry run promises. The base
-    # implementation builds everything locally and sends nothing.
+    # Never RED's server-side dryrun: it POSTs the whole form. The base upload's dry-run gate sends nothing.
 
     async def site_page_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Upload torrent via upload.php with group data enrichment.
@@ -164,6 +162,9 @@ class RedApi(BaseGazelleApi):
             Tuple of (torrent_id, group_id).
         """
         group_id = data.get("groupid")
+        if isinstance(group_id, dryrun.Pending):
+            dryrun.say(f"not reading the new group's fields from {self.site_string}'s upload page: it creates none.")
+            return await super().site_page_upload(data, files)
         if group_id:
             await self._enrich_data_from_group(data, int(group_id))
         return await super().site_page_upload(data, files)

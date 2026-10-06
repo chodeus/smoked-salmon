@@ -8,7 +8,7 @@ from typing import Any
 
 import asyncclick as click
 
-from salmon import cfg
+from salmon import cfg, dryrun
 
 # One hidden directory per parent with one file per converted folder: never inside the album, never shared by writers.
 REGISTRY_DIR = ".salmon-conversions"
@@ -20,6 +20,15 @@ def _sidecar(folder: str) -> str:
     return os.path.join(os.path.dirname(folder), REGISTRY_DIR, os.path.basename(folder) + ".json")
 
 
+def _inside_scratch(path: str) -> bool:
+    """Whether path is inside the scratch directory of the dry run upload that is running."""
+    try:
+        scratch = os.path.realpath(dryrun.scratch_dir())
+    except RuntimeError:
+        return False
+    return os.path.commonpath([scratch, os.path.realpath(path)]) == scratch
+
+
 def record_conversion(output: str, **facts: Any) -> None:
     """Note how `output` was produced: its source folder plus the converter's settings; never inside a library."""
     sidecar = _sidecar(output)
@@ -27,6 +36,8 @@ def record_conversion(output: str, **facts: Any) -> None:
     # Covers its parent too, and a symlinked record directory that leads into a library.
     if cfg.directory.protects(record_dir):
         click.secho(f"Not recording how {os.path.basename(output)} was made: library_dirs is there.", fg="yellow")
+        return
+    if dryrun.active() and not _inside_scratch(record_dir):
         return
     os.makedirs(record_dir, exist_ok=True)
     handle, temp = tempfile.mkstemp(dir=os.path.dirname(sidecar), prefix=os.path.basename(sidecar), suffix=".tmp")
