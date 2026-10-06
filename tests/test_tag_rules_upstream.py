@@ -1,7 +1,4 @@
-"""ID3 tags inside FLACs (stripped, unless scene), uncompressed FLACs, the dual-ID3-tag MP3 case,
-and the shared in-torrent path helper.
-
-Ported from upstream (smokin-salmon/smoked-salmon#565); the uncompressed FLAC is reported with the other rules here."""
+"""FLAC ID3 tags stripped unless scene, the dual-ID3 MP3 case and the path helper (upstream #565)."""
 
 import shutil
 import struct
@@ -164,8 +161,7 @@ def test_dual_id3_is_flagged_only_for_a_filled_v1_next_to_a_blank_v2(tmp_path) -
 
 
 def test_a_tag_mutagen_cannot_parse_is_not_flagged_and_does_not_crash(tmp_path, monkeypatch) -> None:
-    """A warning check must never raise: a malformed ID3v2 tag mutagen refuses to parse (not just a
-    missing one) must be treated as not the flagged case, not propagated to abort the upload."""
+    """A malformed ID3v2 tag mutagen refuses to parse is not the flagged case, and never aborts the upload."""
     path = tmp_path / "a.mp3"
     path.write_bytes(b"ID3\x02\x00\x00\x00\x00\x00\x00" + b"\x00" * 300 + b"TAG" + b"\x00" * 125)
 
@@ -205,8 +201,7 @@ def test_stripping_removes_a_trailing_id3v1_block_but_keeps_the_stream_and_tags(
 
 
 def test_a_failed_strip_is_warned_about_and_does_not_crash(tmp_path, monkeypatch) -> None:
-    """A fix must never raise either: a FLAC mutagen cannot re-save (a truncated file, a read-only
-    path) must be reported as not fixed, not propagated to abort the upload."""
+    """A FLAC mutagen cannot re-save is reported as not fixed, and never aborts the upload."""
     path = tmp_path / "01.flac"
     _write_flac(path, title="Hello")
     _prepend_id3v2_header(path)

@@ -106,18 +106,7 @@ class DICApi(BaseGazelleApi):
         return await super().upload(enriched_data, files)
 
     def upload_form_fields(self, metadata: dict[str, Any], track_data: dict[str, Any]) -> dict[str, str]:
-        """Give the sample rate DIC requires for a 24bit Lossless torrent.
-
-        Args:
-            metadata: Release metadata of the torrent being uploaded.
-            track_data: Track information of the files in that torrent.
-
-        Returns:
-            The sample_rate field for a 24bit Lossless torrent, nothing for any other.
-
-        Raises:
-            UploadRefusedError: If the files have mixed sample rates, or one the form does not list.
-        """
+        """DIC's sample_rate field for a 24bit Lossless torrent; UploadRefusedError for mixed or unlisted rates."""
         if metadata["encoding"] != "24bit Lossless":
             return {}
 

@@ -116,13 +116,19 @@ def test_a_record_naming_another_folder_is_ignored_with_one_line(tmp_path, capsy
     conversions.record_conversion(str(other), **DOWNCONVERT)
     os.replace(conversions._sidecar(str(other)), conversions._sidecar(str(out)))
 
-    assert conversions.conversion_of(str(out)) is None
-    assert capsys.readouterr().out.count("Ignoring") == 1
+    facts = conversions.conversion_of(str(out))
+    out_text = capsys.readouterr().out
+
+    assert facts is None
+    assert out_text.count("Ignoring") == 1
 
 
 def test_a_missing_record_reads_as_no_conversion_quietly(tmp_path, capsys) -> None:
-    assert conversions.conversion_of(str(tmp_path / "Album [WEB FLAC]")) is None
-    assert capsys.readouterr().out == ""
+    facts = conversions.conversion_of(str(tmp_path / "Album [WEB FLAC]"))
+    out_text = capsys.readouterr().out
+
+    assert facts is None
+    assert out_text == ""
 
 
 def _stub_convert(monkeypatch, out, items):

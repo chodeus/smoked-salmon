@@ -50,13 +50,7 @@ def _write_picture(path: str, picture) -> str | None:
 
 
 def _as_cover_file(picture: Picture) -> tuple[str, bytes] | None:
-    """Get the extension and bytes to save an embedded picture as a cover file, which must be JPEG or PNG.
-
-    JPEG and PNG are kept as they are, whatever MIME type the picture claims; other formats are converted to PNG.
-
-    Returns:
-        The extension and bytes, or None if the picture is not an image PIL can read.
-    """
+    """(extension, bytes) to save an embedded picture as a cover: JPEG or PNG as is, else PNG; None if unreadable."""
     try:
         with Image.open(io.BytesIO(picture.data)) as image:
             if image.format in ("JPEG", "PNG"):
@@ -87,14 +81,7 @@ def _write_whole_file(dest: str, data: bytes) -> None:
 
 
 def _flatten_to_rgb(image: Image.Image) -> Image.Image:
-    """Convert an image to RGB, the only mode JPEG can be saved as.
-
-    A mode with transparency (RGBA, LA, or P with a transparency entry) is flattened onto a white
-    background using its alpha channel as a mask, since `convert("RGB")` alone leaves transparent pixels
-    black or noisy instead. A 16- or 32-bit integer mode (I;16, I;16B, I;16L, I) is scaled down to 8 bits
-    first, since `convert("RGB")` alone clips instead of scaling: a typical 16-bit value like 32768 comes
-    out white (255) rather than mid-grey (measured on PIL). Any other mode is converted directly.
-    """
+    """Convert to RGB for JPEG: transparency flattened onto white, 16/32-bit integer modes scaled to 8 bits first."""
     if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
         rgba = image.convert("RGBA")
         background = Image.new("RGB", rgba.size, (255, 255, 255))
