@@ -58,11 +58,7 @@ FRONT = _image("jpeg", 1500 * KIB)
 def _png_bytes(
     mode: str, size: tuple[int, int], seed: int, *, known_block: tuple[int, int, int, int] | None = None
 ) -> bytes:
-    """A PNG in the given mode, large and effectively random so it compresses poorly and lands over the limit.
-
-    known_block: a (x0, y0, x1, y1) box set to a known value, to check later how flattening to RGB treats it.
-    RGBA gets full transparency there (alpha 0); I;16 gets a mid-grey 16-bit value (32768).
-    """
+    """A large random PNG in `mode`, over the limit; `known_block` is set to a known value (alpha 0, or 32768)."""
     width, height = size
     rand = random.Random(seed)
     if mode == "RGBA":
@@ -137,7 +133,8 @@ def test_a_cover_that_cannot_be_shrunk_is_not_embedded(tmp_path, monkeypatch, ca
     cover.compress_pictures(str(tmp_path))
 
     assert FLAC(tmp_path / "01.flac").pictures == []
-    assert "Could not shrink" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Could not shrink" in out
 
 
 @pytest.mark.parametrize(

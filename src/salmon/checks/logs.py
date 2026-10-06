@@ -163,17 +163,7 @@ async def _calculate_range_crc_async(track_files: list[str], toc_entries: list[c
 
 
 def _find_audio_files(path: str) -> list[str]:
-    """Return every audio file under a directory, recursively.
-
-    Args:
-        path: Directory to search.
-
-    Returns:
-        Paths of the .flac, .mp3 and .m4a files found; none if the directory does not exist.
-
-    Raises:
-        OSError: If the directory, or a folder under it, cannot be read.
-    """
+    """Every .flac, .mp3 and .m4a file under path; none if path is missing, OSError if a folder can't be read."""
     try:
         os.stat(path)
     except FileNotFoundError:
@@ -192,14 +182,7 @@ def _find_audio_files(path: str) -> list[str]:
 
 
 def _disc_number(path: str) -> int | None:
-    """Read an audio file's disc number tag.
-
-    Args:
-        path: Path to the audio file.
-
-    Returns:
-        The disc number, or None if the file has none or cannot be read.
-    """
+    """An audio file's disc number tag, or None if it has none or cannot be read."""
     try:
         value = TagFile(path).discnumber
     except Exception:
@@ -209,21 +192,7 @@ def _disc_number(path: str) -> int | None:
 
 
 def _audio_files_of_disc(audio_files: list[str], logpath: str) -> list[str]:
-    """Keep the tracks of the log's disc when the files hold several discs.
-
-    A multi-disc release kept in one folder (split_multi_disc_into_folders = false) has every
-    disc's tracks next to every disc's log, each log named for its disc: rip.2.log. Checking
-    that log against every track would rebuild a range rip from all discs and decode each
-    disc once per log, so only the tracks tagged with the log's disc are kept.
-
-    Args:
-        audio_files: The audio files the log would be checked against.
-        logpath: Path to the log file.
-
-    Returns:
-        The tracks of the log's disc, or ``audio_files`` unchanged when the log is not named
-        for a disc, a file has no disc number, or the files are all of one disc.
-    """
+    """The tracks of the disc a log is named for (rip.2.log) when the files hold several discs, else all of them."""
     named_for_disc = re.search(r"\.(\d+)\.log$", os.path.basename(logpath), flags=re.IGNORECASE)
     if not named_for_disc:
         return audio_files
@@ -235,19 +204,7 @@ def _audio_files_of_disc(audio_files: list[str], logpath: str) -> list[str]:
 
 
 async def check_log_cambia(logpath: str, basepath: str) -> None:
-    """Check a log file using Cambia.
-
-    Args:
-        logpath: Path to the log file to check.
-        basepath: Release folder, checked when the log's own folder holds no audio files, and
-            for a log covering several discs.
-
-    Raises:
-        LogCheckSkipped: If the log's CRCs can't be checked against the audio (see each raise).
-        EditedLogError: If a log's checksum shows it was edited.
-        CRCMismatchError: If the audio doesn't match the log's CRCs.
-        Exception: Any other error means the audio could not be verified.
-    """
+    """Check a log's CRCs with Cambia; LogCheckSkipped, EditedLogError or CRCMismatchError when they fail."""
     # cambia raises ValueError for a log it can't parse; an OSError reading it propagates.
     try:
         cambia_output = cambia.parse_log_file(logpath)
@@ -289,11 +246,8 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         raise LogCheckSkipped("The log lists no tracks, so there are no CRCs to check.")
     expected_crcs = Counter(last_copy_hash.values())
 
-    # A single-disc log is checked against the audio in its own folder, so a release with one log
-    # per disc folder decodes each disc once instead of once per log (#444). A log kept apart from
-    # the audio (Logs/CD1.log) has none in its folder: check it against the whole release then. A
-    # log covering several discs holds every disc's CRCs, so it checks the whole release wherever
-    # it sits, and is not narrowed to one disc's tracks even when named for one (rip.1.log, #479).
+    # A single-disc log checks its own folder's audio (one decode per disc, #444), or the whole release when
+    # that holds none; a log covering several discs always checks the whole release (#479).
     multi_disc = len({pl.toc.accurip_tocid.hash for pl in parsed_logs}) > 1
     files_to_check = [] if multi_disc else _find_audio_files(os.path.dirname(logpath))
     files_to_check = files_to_check or _find_audio_files(basepath)
