@@ -16,6 +16,7 @@ from salmon.common.files import (
     compress,
     create_relative_path,
     get_audio_files,
+    get_flac_files,
 )
 from salmon.common.regexes import (
     parse_copyright,
@@ -43,6 +44,7 @@ __all__ = [
     "compress",
     "create_relative_path",
     "get_audio_files",
+    "get_flac_files",
     "parse_copyright",
     "re_split",
     "re_strip",

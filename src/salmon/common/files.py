@@ -1,6 +1,7 @@
 import os
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TypeVar, cast
 
 import anyio
@@ -29,6 +30,11 @@ def get_audio_files(path, sort_by_tracknumber=False):
     return sorted(files)
 
 
+def get_flac_files(path, sort_by_tracknumber=False):
+    """The FLAC files under path, relative to it, as get_audio_files lists them."""
+    return [f for f in get_audio_files(path, sort_by_tracknumber) if f.lower().endswith(".flac")]
+
+
 def _tracknumber_sort_key(filename):
     """
     Extract a sort key for the filename. Filenames with numbers are sorted
@@ -55,22 +61,26 @@ def create_relative_path(root, path, filename):
     return os.path.join(root.split(path, 1)[1][1:], filename)  # [1:] to get rid of the slash.
 
 
-async def compress(filepath: str) -> None:
-    """Re-compress a .flac file with the configured compression level.
+@dataclass
+class CompressResult:
+    """The outcome of re-compressing one FLAC file."""
 
-    Args:
-        filepath: Path to the FLAC file to re-compress.
-    """
-    await anyio.run_process(
-        [
-            "flac",
-            f"-{cfg.upload.compression.flac_compression_level}",
-            "-V",
-            filepath,
-            "--force",
-        ],
-        check=False,
-    )
+    filepath: str
+    success: bool
+    error: str | None = None
+
+
+async def compress(filepath: str) -> CompressResult:
+    """Re-compress a .flac file at the configured level; flac replaces the original only once encode and -V pass."""
+    command = ["flac", f"-{cfg.upload.compression.flac_compression_level}", "-V", "-s", filepath, "--force"]
+    try:
+        result = await anyio.run_process(command, check=False)
+    except OSError as e:
+        return CompressResult(filepath, False, str(e))
+    if result.returncode != 0:
+        error = result.stderr.decode(errors="replace").strip() or f"flac exited with code {result.returncode}"
+        return CompressResult(filepath, False, error)
+    return CompressResult(filepath, True)
 
 
 async def process_files(

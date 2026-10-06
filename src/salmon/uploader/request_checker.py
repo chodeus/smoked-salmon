@@ -212,8 +212,9 @@ async def _confirm_request_id(gazelle_site: "BaseGazelleApi", request_id: str | 
         else:
             for a in req["musicInfo"]["artists"]:
                 req["artist"] += a["name"] + " "
-    except RequestError:
-        click.secho(f"{request_id} does not exist.", fg="red")
+    except RequestError as err:
+        # The tracker's reason, never a claim that the request is gone: Gazelle answers a rate limit as a failure too.
+        click.secho(f"Could not fetch request {request_id} from {gazelle_site.site_string}: {err}", fg="red")
         raise click.Abort from None
     _print_request_details(gazelle_site, req)
     if cfg.upload.yes_all:

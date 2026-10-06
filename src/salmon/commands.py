@@ -18,12 +18,12 @@ import salmon.trackers
 import salmon.uploader
 from salmon import cfg
 from salmon.checks.connection import check_tracker_connection
-from salmon.common import commandgroup
-from salmon.common import compress as recompress
+from salmon.common import commandgroup, get_flac_files
 from salmon.common.redaction import redact_secrets
 from salmon.config import find_config_path, get_default_config_path, get_user_cfg_path
+from salmon.errors import UploadError
 from salmon.sources.tidal import credentials_configured as tidal_credentials_configured
-from salmon.tagger.audio_info import gather_audio_info
+from salmon.tagger.audio_info import gather_audio_info, recompress_path
 from salmon.uploader.description import build_tracklist_description
 from salmon.uploader.seedbox import seedbox_secrets
 from salmon.uploader.spectrals import (
@@ -81,13 +81,16 @@ async def descgen(urls: tuple[str, ...]) -> None:
 @commandgroup.command()
 @click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True))
 async def compress(path: str) -> None:
-    """Recompress a directory of FLACs to level 8."""
-    for root, _, files in os.walk(path):
-        for f in sorted(files):
-            if os.path.splitext(f)[1].lower() == ".flac":
-                filepath = os.path.join(root, f)
-                click.secho(f"Recompressing {filepath[len(path) + 1 :]}...")
-                await recompress(filepath)
+    """Recompress a directory of FLACs to the configured level; exits 1 if any file fails."""
+    flac_files = get_flac_files(path)
+    if not flac_files:
+        click.secho("No flacs found to recompress. Skipping...", fg="red")
+        return
+    try:
+        await recompress_path(path, files=flac_files)
+    except UploadError as e:
+        click.secho(str(e), fg="red")
+        raise click.exceptions.Exit(1) from e
 
 
 @commandgroup.command()

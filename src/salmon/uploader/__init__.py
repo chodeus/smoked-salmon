@@ -39,6 +39,7 @@ from salmon.errors import (
     InvalidMetadataError,
     LogCheckSkipped,
     RequestError,
+    UploadError,
 )
 from salmon.images import upload_cover
 from salmon.tagger import (
@@ -719,18 +720,12 @@ async def _upload_staged(
     searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
 
     seedbox_uploader = UploadManager()
+    uploaded: list[str] = []  # The URL of each torrent uploaded, for an abort to list
 
     try:
         while True:
             # Loop until we don't want to upload to any more sites.
             if not tracker:
-                if spectrals_after and torrent_id:
-                    # Here we are checking the spectrals after uploading to the first site
-                    # if they were not done before.
-                    lossy_master, lossy_comment, spectral_urls, spectral_ids = await post_upload_spectral_check(
-                        gazelle_site, path, torrent_id, None, track_data, source, source_url, format=rls_data["format"]
-                    )
-                    spectrals_after = False
                 tracker = await next_tracker(bool(trackers), remaining_gazelle_sites)
                 if not tracker:
                     click.secho("\nDone with this release.", fg="green")
@@ -740,7 +735,8 @@ async def _upload_staged(
                 click.secho(f"Uploading to {gazelle_site.base_url}", fg="cyan", bold=True)
                 searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
                 # The reviewed metadata, not the tags: an edit to artist, title or year must move the match with it.
-                group_id = await check_existing_group(gazelle_site, searchstrs, release=metadata)
+                # A torrent already seeds from the folder: never offer to delete it.
+                group_id = await check_existing_group(gazelle_site, searchstrs, offer_deletion=False, release=metadata)
 
             remaining_gazelle_sites.remove(tracker)
             # The source FLAC's group is on this tracker only.
@@ -820,6 +816,29 @@ async def _upload_staged(
 
                     request_id = None
                     held = set()
+                    uploaded.append(url)
+
+                    # A request fill can answer without a torrent id (0): the check, on the FLAC's torrent, waits.
+                    if spectrals_after and not torrent_id:
+                        click.secho(
+                            "No torrent id came back for this upload: spectrals are checked on the next tracker's "
+                            "upload, or run salmon checkspecs on this one.",
+                            fg="yellow",
+                        )
+                    elif spectrals_after:
+                        # Once, on the first torrent up; transcodes and later trackers carry what it found.
+                        # Before print_torrents: that fetch can fail, and must not take the check with it.
+                        spectrals_after = False
+                        lossy_master, lossy_comment, spectral_urls, spectral_ids = await post_upload_spectral_check(
+                            gazelle_site,
+                            path,
+                            torrent_id,
+                            None,
+                            track_data,
+                            source,
+                            source_url,
+                            format=rls_data["format"],
+                        )
 
                     await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
 
@@ -857,6 +876,7 @@ async def _upload_staged(
                             seedbox_uploader,
                             source,
                             url,
+                            uploaded=uploaded,
                         )
             except RequestError as e:
                 click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
@@ -866,6 +886,13 @@ async def _upload_staged(
                 click.secho("\nDone uploading this release.", fg="green")
                 break
 
+    except click.Abort:
+        if not uploaded:
+            raise
+        # What is up stays up and is seeded below: the run only stops offering more.
+        click.secho("\nAborting: nothing more is uploaded. Already uploaded:", fg="red")
+        for line in uploaded:
+            click.echo(f"  {line}")
     finally:
         await seedbox_uploader.execute_upload()
 
@@ -928,7 +955,10 @@ async def edit_metadata(
 
         tags = await check_tags(path)
         if not metadata["scene"] and recompress:
-            await recompress_path(path)
+            try:
+                await recompress_path(path)
+            except UploadError as e:
+                raise UploadError(f"{e} Rerun without -c.") from e
         path = rename_folder(path, metadata, auto_rename, parent=rename_into)
         if not metadata["scene"]:
             rename_files(path, tags, metadata, auto_rename, spectral_ids, source)
@@ -1205,6 +1235,8 @@ async def execute_downconversion_tasks(
     seedbox_uploader: UploadManager,
     source: str | None,
     base_url: str,
+    *,
+    uploaded: list[str] | None = None,
 ) -> None:
     """Execute the selected downconversion tasks.
 
@@ -1226,7 +1258,10 @@ async def execute_downconversion_tasks(
         seedbox_uploader: Seedbox upload manager.
         source: Media source.
         base_url: Base URL for the original upload.
+        uploaded: Where to add the URL of each torrent uploaded.
     """
+    if uploaded is None:
+        uploaded = []
 
     base_path = path
 
@@ -1278,6 +1313,7 @@ async def execute_downconversion_tasks(
                 override_description=description,
                 override_lossy_comment=override_lossy_comment,
             )
+            uploaded.append(new_url)
 
             click.secho(f"  ✓ {task['name']} conversion completed", fg="green")
 
@@ -1321,6 +1357,7 @@ async def execute_downconversion_tasks(
                 override_description=description,
                 override_lossy_comment=override_lossy_comment,
             )
+            uploaded.append(new_url)
 
             click.secho(f"  ✓ {task['name']} transcode completed", fg="green")
 

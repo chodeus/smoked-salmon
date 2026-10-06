@@ -48,10 +48,11 @@ def flow(monkeypatch, tmp_path):
     async def view(spectrals_path, ids):
         events.append("view")
 
-    async def prompt(force_prompt_lossy_master=False, suggested="n"):
+    async def prompt(force_prompt_lossy_master=False, suggested="n", offer_deletion=True):
         events.append("prompt")
         state["forced"] = force_prompt_lossy_master
         state["suggested"] = suggested
+        state["offer_deletion"] = offer_deletion
         return state["answer"]
 
     async def prompt_spectrals(*_a, **_k):

@@ -6,9 +6,10 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from salmon.common import compress as recompress
+from salmon.common import get_flac_files
 from salmon.converter.downconverting import convert_folder
 from salmon.converter.transcoding import transcode_folder
+from salmon.tagger.audio_info import recompress_path
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
 from salmon.webui.validation import validate_writable_album_dir
 
@@ -70,13 +71,11 @@ async def compress(req: CompressRequest) -> dict:
     path = validate_writable_album_dir(req.path)
 
     async def run(job: Job) -> dict:
-        count = 0
-        for root, _dirs, files in os.walk(path):
-            for name in sorted(files):
-                if os.path.splitext(name)[1].lower() == ".flac":
-                    await recompress(os.path.join(root, name))
-                    count += 1
-        return {"path": path, "recompressed": count}
+        flac_files = get_flac_files(path)
+        if flac_files:
+            # Raises UploadError on any failed file, which ends the job as an error.
+            await recompress_path(path, files=flac_files)
+        return {"path": path, "recompressed": len(flac_files)}
 
     title = f"Recompress: {os.path.basename(path)}"
     try:

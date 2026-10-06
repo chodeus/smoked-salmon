@@ -15,7 +15,7 @@ import aiohttp
 import asyncclick as click
 import msgspec
 from aiohttp import FormData
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential, wait_random
 from torf import TorfError, Torrent
 from yarl import URL
@@ -62,10 +62,19 @@ _SENSITIVE_URL_PARAMS = re.compile(
     re.IGNORECASE,
 )
 
+_SECRET_INPUT_NAME = r"""\bname=["'](?:authkey|passkey|torrent_pass|auth|api_key)["']"""
+# A form's hidden inputs, value before or after the name: <input name="auth" value="...">.
+_SENSITIVE_INPUTS = re.compile(
+    rf"""(<input\b[^>]*{_SECRET_INPUT_NAME}[^>]*\bvalue=["'])[^"']*"""
+    rf"""|(<input\b[^>]*\bvalue=["'])[^"']*(?=["'][^>]*{_SECRET_INPUT_NAME})""",
+    re.IGNORECASE,
+)
+
 
 def _redact(text: str) -> str:
-    """Redact sensitive values (JSON fields and URL query params) from a string."""
+    """Redact sensitive values (JSON fields, URL query params, form inputs) from a string."""
     text = _SENSITIVE_KEYS.sub(lambda m: f'"{m.group(1)}": "[REDACTED]"', text)
+    text = _SENSITIVE_INPUTS.sub(lambda m: f"{m.group(1) or m.group(2)}[REDACTED]", text)
     return _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
 
 
@@ -164,6 +173,62 @@ def _compose_form_data(files: UploadFiles, data: dict[str, Any]) -> FormData:
         else:
             _add_form_field(form, key, value)
     return form
+
+
+# Inputs a browser does not submit as text: a file input sends a file, a button only its own name when clicked.
+_UNSUBMITTED_INPUT_TYPES = frozenset({"file", "submit", "button", "reset", "image"})
+
+
+def _submitted_fields(form: Tag) -> list[tuple[str, str]]:
+    """The form's (name, value) pairs in page order, disabled fields kept: RED's onsubmit enables them all."""
+    fields: list[tuple[str, str]] = []
+    for control in form.find_all(["input", "select", "textarea"]):
+        if not isinstance(control, Tag) or not control.get("name"):
+            continue
+        name = str(control["name"])
+        if control.name == "input":
+            input_type = str(control.get("type", "text")).lower()
+            if input_type in _UNSUBMITTED_INPUT_TYPES:
+                continue
+            if input_type not in ("checkbox", "radio"):
+                fields.append((name, str(control.get("value", ""))))
+            elif control.has_attr("checked"):
+                fields.append((name, str(control.get("value", "on"))))
+        elif control.name == "select":
+            options = [option for option in control.find_all("option") if isinstance(option, Tag)]
+            selected = [option for option in options if option.has_attr("selected")]
+            if not control.has_attr("multiple"):
+                # The last selected option wins; with none, the first one not disabled.
+                selected = selected[-1:] or [option for option in options if not option.has_attr("disabled")][:1]
+            for option in selected:
+                value = option.get("value")
+                fields.append((name, " ".join(option.get_text().split()) if value is None else str(value)))
+        else:
+            # A newline right after the opening tag is not part of the text.
+            fields.append((name, control.get_text().removeprefix("\n")))
+    return fields
+
+
+def _torrent_edit_fields(page: str, torrent_id: int) -> list[tuple[str, str]]:
+    """The torrent edit form's fields as a browser submits them; RequestError unless it is exactly this torrent's."""
+    soup = BeautifulSoup(page, "lxml")
+    # The page also holds forms that move the torrent to another group; only one posts action=takeedit.
+    forms = [
+        form
+        for form in soup.find_all("form", attrs={"name": "torrent"})
+        if isinstance(form, Tag) and form.find("input", attrs={"type": "hidden", "name": "action", "value": "takeedit"})
+    ]
+    if len(forms) != 1:
+        raise RequestError(f"expected one edit form on the page, found {len(forms)}")
+    fields = _submitted_fields(forms[0])
+    descriptions = [name for name, _ in fields].count("release_desc")
+    if descriptions != 1:
+        raise RequestError(f"expected one description field in the edit form, found {descriptions}")
+    if ("torrentid", str(torrent_id)) not in fields:
+        raise RequestError(f"the edit form is not for torrent {torrent_id}")
+    if not dict(fields).get("auth"):
+        raise RequestError("the edit form has no auth field")
+    return fields
 
 
 class SearchReleaseData(msgspec.Struct, frozen=True):
@@ -537,13 +602,15 @@ class BaseGazelleApi:
             click.secho(f"Too many redirects from {self.site_string}, last to {urlparse(url).path}", fg="red")
             raise RequestFailedError(f"Too many redirects from {self.site_string}")
         except (TimeoutError, aiohttp.ClientError) as err:
-            # Checked by type: ConnectionTimeoutError is also a TimeoutError, and never connected is safe to resend.
-            raise failure(f"Network error: {err}", not_acted_on=isinstance(err, _NOT_SENT_ERRORS)) from err
+            # By type: a ConnectionTimeoutError is also a TimeoutError, and never connected is safe to resend.
+            # Not chained: an aiohttp error can repeat the URL and its query, and a traceback would print it.
+            reason = _safe_response_excerpt(self._scrub(str(err)))
+            raise failure(f"Network error: {reason}", not_acted_on=isinstance(err, _NOT_SENT_ERRORS)) from None
         except RequestError as err:
             # After a redirect the tracker has acted, so a refused later hop is an unknown outcome.
             if idempotent or not redirected or isinstance(err, UnknownOutcomeError):
                 raise
-            # By type only: a RequestFailedError carries the raw response body.
+            # By type only: a RequestFailedError's message holds response text.
             raise UnknownOutcomeError(f"{self.site_string} failed on a later hop ({type(err).__name__})") from err
 
     def _scrub(self, text: str) -> str:
@@ -570,6 +637,8 @@ class BaseGazelleApi:
         error_msg = text
         with suppress(msgspec.DecodeError, ValueError):
             error_msg = msgspec.json.encode(msgspec.json.decode(text)["error"]).decode()
+        # An error page can repeat the authkey or passkey, and callers print what they catch.
+        shown = _safe_response_excerpt(self._scrub(error_msg))
 
         server_wait = parse_retry_after(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
         if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
@@ -581,10 +650,10 @@ class BaseGazelleApi:
 
         if resp.status == HTTPStatus.UNAUTHORIZED:
             click.secho(
-                f"Authentication to {self.site_string} failed: {error_msg}.\nYour API key may be invalid.",
+                f"Authentication to {self.site_string} failed: {shown}.\nYour API key may be invalid.",
                 fg="red",
             )
-            raise LoginError(error_msg)
+            raise LoginError(shown)
 
         # Any 5xx may follow the tracker acting on a POST; a GET is resent only on these.
         if resp.status >= HTTPStatus.INTERNAL_SERVER_ERROR and (not idempotent or resp.status in _TRANSIENT_5XX):
@@ -593,8 +662,8 @@ class BaseGazelleApi:
                 await asyncio.sleep(min(server_wait, _MAX_SERVER_WAIT))
             raise failure(f"Server error {resp.status}")
 
-        click.secho(f"Request to {self.site_string} failed ({resp.status}): {error_msg}", fg="red")
-        raise RequestFailedError(error_msg)
+        click.secho(f"Request to {self.site_string} failed ({resp.status}): {shown}", fg="red")
+        raise RequestFailedError(shown)
 
     def _next_hop(
         self, current: str, status: int, method: str, data: Any, location: str, idempotent: bool
@@ -649,7 +718,7 @@ class BaseGazelleApi:
             resp_json = {"status": "error", "error": resp.text}
 
         if resp_json.get("status") != "success":
-            raise RequestFailedError(self._scrub(str(resp_json.get("error", resp.text))))
+            raise RequestFailedError(_safe_response_excerpt(self._scrub(str(resp_json.get("error", resp.text)))))
         return cast("dict", resp_json["response"])
 
     async def torrentgroup(self, group_id: int) -> dict:
@@ -876,7 +945,9 @@ class BaseGazelleApi:
 
         try:
             if resp["status"] != "success":
-                raise RequestError(f"API upload failed: {self._scrub(str(resp.get('error', resp)))}")
+                raise RequestError(
+                    f"API upload failed: {_safe_response_excerpt(self._scrub(str(resp.get('error', resp))))}"
+                )
             if ("requestid" in resp["response"] and resp["response"]["requestid"]) or (
                 "fillRequest" in resp["response"]
                 and resp["response"]["fillRequest"]
@@ -901,11 +972,14 @@ class BaseGazelleApi:
                 group_id = resp["response"]["groupId"]
             elif "requestid" not in resp["response"] and "fillRequest" not in resp["response"]:
                 raise UploadError(
-                    f"API upload succeeded but returned no torrent id, response: {self._scrub(str(resp))}"
+                    "API upload succeeded but returned no torrent id, response: "
+                    f"{_safe_response_excerpt(self._scrub(str(resp)))}"
                 )
             return torrent_id, group_id
         except TypeError as err:
-            raise RequestError(f"API upload failed, response: {self._scrub(str(resp))}") from err
+            raise RequestError(
+                f"API upload failed, response: {_safe_response_excerpt(self._scrub(str(resp)))}"
+            ) from err
 
     async def site_page_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Upload torrent via upload.php.
@@ -936,7 +1010,9 @@ class BaseGazelleApi:
         if self.announce in resp_text:
             match = re.search(r'<p style="color: red; text-align: center;">(.+)<\/p>', resp_text)
             if match:
-                raise RequestError(f"Site upload failed: {match[1]} ({response.status})")
+                raise RequestError(
+                    f"Site upload failed: {_safe_response_excerpt(self._scrub(match[1]))} ({response.status})"
+                )
         if "requests.php" in resp_url:
             try:
                 torrent_id = self.parse_torrent_id_from_filled_request_page(resp_text)
@@ -950,7 +1026,7 @@ class BaseGazelleApi:
                 if error and error.parent and error.parent.parent:
                     p_tag = error.parent.parent.find("p")
                     if p_tag:
-                        error_message = self._scrub(p_tag.text)
+                        error_message = _safe_response_excerpt(self._scrub(p_tag.text))
                 raise RequestError(f"Request fill failed: {error_message}") from err
         try:
             return self.parse_most_recent_torrent_and_group_id_from_group_page(resp_text)
@@ -1037,42 +1113,28 @@ class BaseGazelleApi:
         raise RequestError(f"Failed to report the torrent for lossy master, code {resp.status}.")
 
     async def append_to_torrent_description(self, torrent_id: int, description_addition: str) -> None:
-        """Add text to start of torrent description.
-
-        Args:
-            torrent_id: The torrent ID.
-            description_addition: Text to prepend to description.
-
-        Raises:
-            RequestError: If edit fails.
-        """
-        current_details = await self.api_call("torrent", params={"id": torrent_id})
-        new_data = {
-            "action": "takeedit",
-            "torrentid": torrent_id,
-            "type": 1,
-            "groupremasters": 0,
-            "remaster_year": current_details["torrent"]["remasterYear"],
-            "remaster_title": current_details["torrent"]["remasterTitle"],
-            "remaster_record_label": current_details["torrent"]["remasterRecordLabel"],
-            "remaster_catalogue_number": current_details["torrent"]["remasterCatalogueNumber"],
-            "format": current_details["torrent"]["format"],
-            "bitrate": current_details["torrent"]["encoding"],
-            "other_bitrate": "",
-            "media": current_details["torrent"]["media"],
-            "release_desc": description_addition + current_details["torrent"]["description"],
-            "auth": self.authkey,
-        }
+        """Prepend text to a torrent's description; RequestError if the form is unreadable or the edit refused."""
         url = self.base_url + "/torrents.php"
-        # Every field is rebuilt from the torrent's current state, so sending it twice is harmless.
-        resp = await self._request("POST", url, data=new_data, idempotent=True)
+        # Send the tracker's own edit form back with only the description changed (a rebuilt one loses fields).
+        # Authenticated first: the page holds the authkey, and _scrub masks only a known one.
+        page = await self._request("GET", url, params={"action": "edit", "id": torrent_id})
+        try:
+            fields = _torrent_edit_fields(page.text, torrent_id)
+        except RequestError as err:
+            raise RequestError(
+                f"Could not read the edit form of torrent {torrent_id} on {self.site_string} ({err}). "
+                "Nothing was sent: its description is unchanged."
+            ) from err
+        new_data = [(name, description_addition + value if name == "release_desc" else value) for name, value in fields]
+        # Every field is the one the form showed, or the description above, so sending it twice is harmless.
+        resp = await self._request("POST", url, data=new_data, idempotent=True, needs_authkey=False)
         resp_text = resp.text
 
         soup = BeautifulSoup(resp_text, "lxml")
         edit_error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
         if edit_error and edit_error.parent and edit_error.parent.parent:
             p_tag = edit_error.parent.parent.find("p")
-            error_message = self._scrub(p_tag.text) if p_tag else "Unknown error"
+            error_message = _safe_response_excerpt(self._scrub(p_tag.text)) if p_tag else "Unknown error"
             raise RequestError(f"Failed to edit torrent: {error_message}")
         else:
             click.secho("Added spectrals to the torrent description.", fg="green")

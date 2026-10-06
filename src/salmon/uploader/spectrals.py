@@ -20,6 +20,7 @@ from salmon.common.files import process_files
 from salmon.errors import (
     AbortAndDeleteFolder,
     ImageUploadFailed,
+    RequestError,
     UnknownOutcomeError,
     UploadError,
 )
@@ -39,6 +40,7 @@ async def check_spectrals(
     check_lma: bool = True,
     force_prompt_lossy_master: bool = False,
     format: str = "FLAC",
+    offer_deletion: bool = True,
 ) -> tuple[bool | None, dict[int, str] | None]:
     """Run spectral checker functions.
 
@@ -53,6 +55,7 @@ async def check_spectrals(
         check_lma: Whether to check for lossy master.
         force_prompt_lossy_master: Force lossy master prompt.
         format: Audio format.
+        offer_deletion: Whether the lossy master prompt offers to delete the music folder.
 
     Returns:
         Tuple of (lossy_master, spectral_ids).
@@ -77,6 +80,7 @@ async def check_spectrals(
                 lossy_master = await prompt_lossy_master(
                     force_prompt_lossy_master or measured == "suspect",
                     suggested="y" if measured == "suspect" else "n",
+                    offer_deletion=offer_deletion,
                 )
                 if lossy_master is not None:
                     break
@@ -95,6 +99,7 @@ async def check_spectrals(
             lossy_master = await prompt_lossy_master(
                 force_prompt_lossy_master or measured == "suspect",
                 suggested="y" if measured == "suspect" else "n",
+                offer_deletion=offer_deletion,
             )
 
     return lossy_master, spectral_ids
@@ -139,6 +144,8 @@ async def handle_spectrals_upload_and_deletion(
         if os.path.isdir(spectrals_path):
             shutil.rmtree(spectrals_path)
             await anyio.sleep(0.5)
+    if delete_spectrals and not os.path.isdir(spectrals_path):
+        drop_specs_claim(spectrals_path)
     return spectral_urls
 
 
@@ -334,6 +341,27 @@ def get_spectrals_path(path):
     return os.path.join(path, "Spectrals")
 
 
+# Spectrals folders salmon made, by real path: a rename moves only these, never a folder of the user's own.
+_made_specs_folders: set[str] = set()
+
+
+def made_by_salmon(spectrals_path: str) -> bool:
+    """Whether salmon made this spectrals folder in this process."""
+    return os.path.realpath(spectrals_path) in _made_specs_folders
+
+
+def carry_specs_claim(old_real: str, new_path: str) -> None:
+    """After a move, salmon's claim on the folder at old_real (a real path) moves to new_path."""
+    if old_real in _made_specs_folders:
+        _made_specs_folders.discard(old_real)
+        _made_specs_folders.add(os.path.realpath(new_path))
+
+
+def drop_specs_claim(spectrals_path: str) -> None:
+    """Forget salmon's claim on a spectrals folder that is gone, so a folder made there later is the user's."""
+    _made_specs_folders.discard(os.path.realpath(spectrals_path))
+
+
 def create_specs_folder(path, spectrals_path=None):
     """Create the spectrals folder, emptying it first.
 
@@ -346,6 +374,7 @@ def create_specs_folder(path, spectrals_path=None):
     if os.path.isdir(spectrals_path):
         shutil.rmtree(spectrals_path)
     os.mkdir(spectrals_path)
+    _made_specs_folders.add(os.path.realpath(spectrals_path))
     return spectrals_path
 
 
@@ -556,8 +585,8 @@ async def prompt_spectrals(spectral_ids, lossy_master, check_lma, force_prompt_l
         )
 
 
-async def prompt_lossy_master(force_prompt_lossy_master=False, suggested: str = "n"):
-    """Ask the lossy-master question; `suggested` is the pre-typed answer from the frequency analysis."""
+async def prompt_lossy_master(force_prompt_lossy_master=False, suggested: str = "n", offer_deletion: bool = True):
+    """Ask the lossy-master question; `suggested` is the analysis's pre-typed answer, `offer_deletion` adds [d]."""
     while True:
         flush_stdin()
         r = (
@@ -566,8 +595,8 @@ async def prompt_lossy_master(force_prompt_lossy_master=False, suggested: str = 
             else (
                 await click.prompt(
                     click.style(
-                        "\nIs this release lossy mastered? "
-                        "[y]es, [N]o, [r]eopen spectrals, [a]bort, [d]elete music folder",
+                        "\nIs this release lossy mastered? [y]es, [N]o, [r]eopen spectrals, [a]bort"
+                        + (", [d]elete music folder" if offer_deletion else ""),
                         fg="magenta",
                     ),
                     type=click.STRING,
@@ -583,7 +612,7 @@ async def prompt_lossy_master(force_prompt_lossy_master=False, suggested: str = 
             return None
         elif r == "a":
             raise click.Abort
-        elif r == "d":
+        elif r == "d" and offer_deletion:
             raise AbortAndDeleteFolder
 
 
@@ -620,6 +649,16 @@ async def report_lossy_master(
             f"{gazelle_site.base_url}/torrents.php?torrentid={torrent_id} before reporting again.",
             fg="yellow",
         )
+        return
+    except RequestError as err:
+        # Not a failed upload: the torrent is up, and the rest of the flow goes on.
+        click.secho(
+            f"\n{gazelle_site.site_string} did not take the lossy master report for "
+            f"{gazelle_site.base_url}/torrents.php?torrentid={torrent_id} ({err}). Report it by hand with this text:",
+            fg="red",
+            bold=True,
+        )
+        click.echo(comment)
         return
     click.secho("\nReported upload for Lossy Master/WEB Approval Request.", fg="cyan")
 
@@ -696,10 +735,14 @@ async def post_upload_spectral_check(
     Returns:
         Tuple of (lossy_master, lossy_comment, spectral_urls, spectral_ids).
     """
+    # The uploaded torrent seeds from path: the check must not offer to delete it.
     lossy_master, spectral_ids = await check_spectrals(
-        path, track_data, None, spectral_ids, force_prompt_lossy_master=True, format=format
+        path, track_data, None, spectral_ids, force_prompt_lossy_master=True, format=format, offer_deletion=False
     )
     if not lossy_master and not spectral_ids:
+        # Nothing to upload: the spectrals made for the check go before a later torrent can take them.
+        if made_by_salmon(spectrals_path := get_spectrals_path(path)):
+            await handle_spectrals_upload_and_deletion(spectrals_path, None)
         return False, None, None, None
 
     lossy_comment = None
@@ -714,7 +757,25 @@ async def post_upload_spectral_check(
 
     if spectral_urls:
         spectrals_bbcode = make_spectral_bbcode(spectral_ids, spectral_urls)
-        await gazelle_site.append_to_torrent_description(torrent_id, spectrals_bbcode)
+        permalink = f"{gazelle_site.base_url}/torrents.php?torrentid={torrent_id}"
+        try:
+            await gazelle_site.append_to_torrent_description(torrent_id, spectrals_bbcode)
+        except UnknownOutcomeError as err:
+            click.secho(
+                f"\nCould not tell whether {gazelle_site.site_string} took the description edit for {permalink} "
+                f"({err}): check the description before pasting this in by hand:",
+                fg="red",
+                bold=True,
+            )
+            click.echo(spectrals_bbcode)
+        except RequestError as err:
+            click.secho(
+                f"\nThe description for {permalink} was not updated on {gazelle_site.site_string} ({err}). "
+                "Paste this in by hand:",
+                fg="red",
+                bold=True,
+            )
+            click.echo(spectrals_bbcode)
 
     if lossy_master:
         await report_lossy_master(

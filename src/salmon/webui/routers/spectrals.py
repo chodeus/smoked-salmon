@@ -17,7 +17,7 @@ from salmon.config.validations import ARTWORK_ONLY_HOSTS
 from salmon.images import HOSTS, upload_images
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.uploader.frequency import assess, generate_frequency_plots
-from salmon.uploader.spectrals import create_specs_folder, generate_spectrals_all, get_spectrals_path
+from salmon.uploader.spectrals import create_specs_folder, drop_specs_claim, generate_spectrals_all, get_spectrals_path
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
 from salmon.webui.validation import allowed_roots, is_within_roots, refuse_library_output, validate_album_dir
 
@@ -48,6 +48,8 @@ def _discard_spectrals(job: Job) -> None:
     if not is_within_roots(real, roots) or real in roots or cfg.directory.is_library_path(real):
         return
     shutil.rmtree(real, ignore_errors=True)
+    if not os.path.isdir(real):
+        drop_specs_claim(real)
 
 
 @router.post("/spectrals/generate")
