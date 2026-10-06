@@ -63,10 +63,19 @@ _SENSITIVE_URL_PARAMS = re.compile(
     re.IGNORECASE,
 )
 
+_SECRET_INPUT_NAME = r"""\bname=["'](?:authkey|passkey|torrent_pass|auth|api_key)["']"""
+# A form's hidden inputs, value before or after the name: <input name="auth" value="...">.
+_SENSITIVE_INPUTS = re.compile(
+    rf"""(<input\b[^>]*{_SECRET_INPUT_NAME}[^>]*\bvalue=["'])[^"']*"""
+    rf"""|(<input\b[^>]*\bvalue=["'])[^"']*(?=["'][^>]*{_SECRET_INPUT_NAME})""",
+    re.IGNORECASE,
+)
+
 
 def _redact(text: str) -> str:
-    """Redact sensitive values (JSON fields and URL query params) from a string."""
+    """Redact sensitive values (JSON fields, URL query params, form inputs) from a string."""
     text = _SENSITIVE_KEYS.sub(lambda m: f'"{m.group(1)}": "[REDACTED]"', text)
+    text = _SENSITIVE_INPUTS.sub(lambda m: f"{m.group(1) or m.group(2)}[REDACTED]", text)
     return _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
 
 
@@ -571,16 +580,15 @@ class BaseGazelleApi:
             click.secho(f"Too many redirects from {self.site_string}, last to {urlparse(url).path}", fg="red")
             raise RequestFailedError(f"Too many redirects from {self.site_string}")
         except (TimeoutError, aiohttp.ClientError) as err:
-            # Checked by type: ConnectionTimeoutError is also a TimeoutError, and never connected is safe to resend.
-            # An aiohttp error can repeat the URL, and a download link carries secrets: not chained, as a traceback
-            # would print the original.
-            reason = self._scrub(str(err))
+            # By type: a ConnectionTimeoutError is also a TimeoutError, and never connected is safe to resend.
+            # Not chained: an aiohttp error can repeat the URL and its query, and a traceback would print it.
+            reason = _safe_response_excerpt(self._scrub(str(err)))
             raise failure(f"Network error: {reason}", not_acted_on=isinstance(err, _NOT_SENT_ERRORS)) from None
         except RequestError as err:
             # After a redirect the tracker has acted, so a refused later hop is an unknown outcome.
             if idempotent or not redirected or isinstance(err, UnknownOutcomeError):
                 raise
-            # By type only: a RequestFailedError carries the raw response body.
+            # By type only: a RequestFailedError's message holds response text.
             raise UnknownOutcomeError(f"{self.site_string} failed on a later hop ({type(err).__name__})") from err
 
     def _scrub(self, text: str) -> str:
@@ -917,7 +925,9 @@ class BaseGazelleApi:
 
         try:
             if resp["status"] != "success":
-                raise RequestError(f"API upload failed: {self._scrub(str(resp.get('error', resp)))}")
+                raise RequestError(
+                    f"API upload failed: {_safe_response_excerpt(self._scrub(str(resp.get('error', resp))))}"
+                )
             if ("requestid" in resp["response"] and resp["response"]["requestid"]) or (
                 "fillRequest" in resp["response"]
                 and resp["response"]["fillRequest"]
@@ -942,11 +952,14 @@ class BaseGazelleApi:
                 group_id = resp["response"]["groupId"]
             elif "requestid" not in resp["response"] and "fillRequest" not in resp["response"]:
                 raise UploadError(
-                    f"API upload succeeded but returned no torrent id, response: {self._scrub(str(resp))}"
+                    "API upload succeeded but returned no torrent id, response: "
+                    f"{_safe_response_excerpt(self._scrub(str(resp)))}"
                 )
             return torrent_id, group_id
         except TypeError as err:
-            raise RequestError(f"API upload failed, response: {self._scrub(str(resp))}") from err
+            raise RequestError(
+                f"API upload failed, response: {_safe_response_excerpt(self._scrub(str(resp)))}"
+            ) from err
 
     async def site_page_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Upload torrent via upload.php.
@@ -995,7 +1008,7 @@ class BaseGazelleApi:
                 if error and error.parent and error.parent.parent:
                     p_tag = error.parent.parent.find("p")
                     if p_tag:
-                        error_message = self._scrub(p_tag.text)
+                        error_message = _safe_response_excerpt(self._scrub(p_tag.text))
                 raise RequestError(f"Request fill failed: {error_message}") from err
         try:
             return self.parse_most_recent_torrent_and_group_id_from_group_page(resp_text)
@@ -1092,9 +1105,8 @@ class BaseGazelleApi:
     async def append_to_torrent_description(self, torrent_id: int, description_addition: str) -> None:
         """Prepend text to a torrent's description; RequestError if the form is unreadable or the edit refused."""
         url = self.base_url + "/torrents.php"
-        # The edit form sets every field, so one rebuilt from the API cleared the flags, the DIC edition, and
-        # turned RED's escaped & into &amp;. Send the tracker's own form back with only the description changed.
-        # Authenticated first: the page holds the authkey in its auth input, and only a known authkey is masked.
+        # Send the tracker's own edit form back with only the description changed (a rebuilt one loses fields).
+        # Authenticated first: the page holds the authkey, and _scrub masks only a known one.
         page = await self._request("GET", url, params={"action": "edit", "id": torrent_id})
         try:
             fields = _torrent_edit_fields(page.text, torrent_id)
@@ -1112,7 +1124,7 @@ class BaseGazelleApi:
         edit_error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
         if edit_error and edit_error.parent and edit_error.parent.parent:
             p_tag = edit_error.parent.parent.find("p")
-            error_message = self._scrub(p_tag.text) if p_tag else "Unknown error"
+            error_message = _safe_response_excerpt(self._scrub(p_tag.text)) if p_tag else "Unknown error"
             raise RequestError(f"Failed to edit torrent: {error_message}")
         else:
             click.secho("Added spectrals to the torrent description.", fg="green")
