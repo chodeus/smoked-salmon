@@ -21,11 +21,7 @@ def comparable(text: object) -> str:
 
 
 def artist_keys(artists) -> set[str]:
-    """comparable() forms a listing may name a release's artists by: each main artist, and all of them together.
-
-    Args:
-        artists: (name, importance) pairs. Without a main artist, every artist counts.
-    """
+    """comparable() forms a listing may name the artists by: each main one (all, if none is main), and all together."""
     pairs = list(artists or [])
     names = [name for name, importance in pairs if importance == "main"] or [name for name, _ in pairs]
     return ({comparable(name) for name in names} | {comparable("".join(names))}) - {""}

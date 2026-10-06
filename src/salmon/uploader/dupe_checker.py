@@ -58,19 +58,7 @@ async def dupe_check_recent_torrents(
 
 
 def _title_words(title: str | None) -> set[str]:
-    """Normalized words of a title, cleaned up the same way make_searchstrs cleans the album.
-
-    Two releases can share every artist word and still be unrelated if their titles have nothing
-    in common: comparing the full search strings alone lets a shared multi-word artist outweigh a
-    completely different one-word title, since SequenceMatcher and the word-overlap ratio both
-    look at artist and title text together. Comparing title words on their own closes that gap.
-
-    Args:
-        title: A release title, our own or a logged upload's.
-
-    Returns:
-        The set of normalized words in the title, empty if there is no title.
-    """
+    """Normalized title words, cleaned as make_searchstrs cleans the album; empty for no title."""
     album = _sanitize_album_for_dupe_check(title)
     album = re.sub(r" ?(- )? (EP|Single)", "", album)
     album = re.sub(r"\(?[Ff]eat(\.|uring)? [^\)]+\)?", "", album)
@@ -86,29 +74,7 @@ def _recent_upload_matches(
     our_title_words: set[str] | None = None,
     candidate_title_words: set[str] | None = None,
 ) -> bool:
-    """Return True when a logged upload is genuinely similar enough to be a likely dupe.
-
-    Comparing against only the first search string, and on SequenceMatcher's ratio alone,
-    overweights a shared artist prefix between two otherwise unrelated releases (#509). Every
-    generated search string is checked, and a high ratio is also required to share enough words
-    with the candidate to suggest actual title overlap, not just a shared artist.
-
-    A shared artist can still carry a high ratio and word-overlap fraction on its own when the
-    artist has more words than the title (#518): "A B C song" vs "A B C other" shares 3 of 4
-    words. Requiring the titles themselves to share at least one word, checked separately from the
-    artist, closes that gap while still matching same-title collab releases.
-
-    Args:
-        searchstrs: Search strings generated for our release.
-        possible_comparisons: Search strings generated for the logged upload.
-        tolerance: The configured similarity tolerance (cfg.upload.log_dupe_tolerance).
-        our_title_words: Normalized words of our release's title, or None to skip the title check.
-        candidate_title_words: Normalized words of the logged upload's title.
-
-    Returns:
-        True if any pair of strings is similar enough, shares enough words, and (when title words
-        are given) shares at least one title word.
-    """
+    """True if any search-string pair passes ratio and word overlap, and given titles share a word."""
     if our_title_words and candidate_title_words and not (our_title_words & candidate_title_words):
         return False
     for searchstr in searchstrs:
@@ -123,15 +89,7 @@ def _recent_upload_matches(
 
 
 def _word_overlap_ratio(left: str, right: str) -> float:
-    """Fraction of words shared between two normalized search strings, relative to the larger side.
-
-    Args:
-        left: A normalized search string.
-        right: Another normalized search string.
-
-    Returns:
-        The overlap ratio, 0.0 if either side has no words.
-    """
+    """Words shared by two normalized search strings over the larger side's count; 0.0 if either is empty."""
     left_words = set(left.split())
     right_words = set(right.split())
     if not left_words or not right_words:
@@ -561,19 +519,7 @@ def _edition_catno(torrent: dict, rset: dict) -> str:
 
 
 def matching_torrents(group: dict, release: dict) -> list[dict]:
-    """Find the group's torrents in the release's edition with its media, format and encoding.
-
-    The edition is the year and edition title. Either missing on either side still matches. The catalogue
-    number is not compared: trackers and uploaders write it in different conventions (the label's number,
-    a UPC, a store id), so the same release often carries a different one on each side.
-
-    Args:
-        group: The group, as the tracker's torrentgroup API returns it.
-        release: The release metadata, with its source, format and encoding.
-
-    Returns:
-        The matching torrents, in the group's order.
-    """
+    """The group's torrents with the release's media, format, encoding, year and edition title (missing = any)."""
     wanted = (release.get("source"), release.get("format"), release.get("encoding"))
     if not all(wanted):
         return []
@@ -596,10 +542,7 @@ def matching_torrents(group: dict, release: dict) -> list[dict]:
 
 
 def _held_in_group(rset: dict, release: dict[str, Any] | None) -> list[dict]:
-    """The torrents of a printed group that already hold our release's edition, media, format and encoding.
-
-    rset is a search result or a fetched group: a search result has the group's year as groupYear.
-    """
+    """The torrents of a search result or fetched group that already hold our edition, media, format and encoding."""
     if not release:
         return []
     group = rset if "group" in rset else {**rset, "group": {"year": rset.get("groupYear")}}
