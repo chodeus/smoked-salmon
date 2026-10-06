@@ -532,9 +532,8 @@ async def upload(
     folder_type = release_type_from_folder(path)
     # Looked up before any rename: the record knows the folder by the name the converter gave it.
     conversion = conversion_of(path)
-    # Staged before anything mutates: standardize_tags writes to the source directly.
-    # The group's FLAC is most likely seeding from path, so with --skip-flac-upload everything works on a copy.
-    # So does a dry run, which changes nothing, and an album in library_dirs: see staged_source.
+    # Staged before anything mutates (standardize_tags writes in place): --skip-flac-upload, a dry run
+    # and a protected album all work on a copy, see staged_source.
     with (
         staged_source(path, scratch=flac_group is not None or dryrun.active()) as (staged, rename_into),
         # A scratch copy's run directory, removed when the run ends: where a dry run writes.
