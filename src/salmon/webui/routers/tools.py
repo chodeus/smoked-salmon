@@ -24,7 +24,7 @@ from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
 from salmon.webui.validation import (
     assert_public_url,
     validate_confined_path,
-    validate_writable_album_dir,
+    validate_source_album_dir,
 )
 
 MAX_DESCGEN_URLS = 20
@@ -127,9 +127,8 @@ async def images_upload(req: ImageUploadRequest) -> dict:
 @router.post("/tag")
 async def tag(req: TagRequest) -> dict:
     """Interactively retag an album; prompts surface as browser questions."""
-    # standardize_tags() saves over the source files and rename_folder() renames
-    # it, so a read-only library source must be refused.
-    path = validate_writable_album_dir(req.path)
+    # salmon tag works on a copy of a library album, so only a folder holding a library is refused.
+    path = validate_source_album_dir(req.path)
     if req.source not in SOURCE_CODES.values():
         raise HTTPException(status_code=422, detail=f"Unknown source: {req.source}")
     if req.encoding is not None and req.encoding not in TAG_ENCODINGS:

@@ -540,13 +540,14 @@ def test_spectrals_generate_allowed_for_a_library_album(client, library_album, s
     assert not cfg.directory.is_library_path(specs_requests[0])
 
 
-def test_spectrals_generate_refused_when_it_would_write_into_the_library(client, library_album, monkeypatch):
-    # No tmp_dir means get_spectrals_path falls back to <album>/Spectrals.
+def test_spectrals_of_a_library_album_never_go_inside_it(library_album, monkeypatch):
+    from salmon.uploader.spectrals import get_spectrals_path
+
+    # No tmp_dir: an ordinary album would get <album>/Spectrals, a library album a folder in download_directory.
     monkeypatch.setattr(cfg.directory, "tmp_dir", "")
-    resp = client.post("/api/spectrals/generate", json={"path": str(library_album)})
-    assert resp.status_code == 403
-    assert "read-only library directory" in resp.json()["detail"]
-    assert not (library_album / "Spectrals").exists()
+    spectrals_path = pathlib.Path(get_spectrals_path(str(library_album)))
+    assert not spectrals_path.is_relative_to(library_album)
+    assert spectrals_path.parent == pathlib.Path(cfg.directory.download_directory)
 
 
 def test_spectrals_generate_happy_path(client, album_dir, spectral_stubs):
@@ -738,7 +739,7 @@ def test_downconvert_nonexistent_dir_returns_404(client):
 def test_transcode_happy_path(client, album_dir, monkeypatch):
     calls = []
 
-    async def fake_transcode_folder(path, bitrate):
+    async def fake_transcode_folder(path, bitrate, output_dir=None):
         calls.append((path, bitrate))
         return f"{path} [MP3 {bitrate}]"
 
@@ -757,10 +758,10 @@ def test_transcode_happy_path(client, album_dir, monkeypatch):
 
 
 def test_transcode_and_downconvert_share_the_path_lock(client, album_dir, monkeypatch):
-    async def hang_transcode(path, bitrate):
+    async def hang_transcode(path, bitrate, output_dir=None):
         await asyncio.Event().wait()
 
-    async def fake_convert_folder(path):
+    async def fake_convert_folder(path, output_dir=None):
         return 44100, f"{path} [16-44]"
 
     monkeypatch.setattr("salmon.webui.routers.convert.transcode_folder", hang_transcode)

@@ -13,6 +13,7 @@ import msgspec
 from salmon.common.aliases import AliasedCommands
 from salmon.common.constants import RE_FEAT
 from salmon.common.files import (
+    AlbumPath,
     compress,
     create_relative_path,
     get_audio_files,
@@ -38,6 +39,7 @@ from salmon.common.urls import http_url_hostname, is_http_url, is_public_ip
 from salmon.errors import ScrapeError
 
 __all__ = [
+    "AlbumPath",
     "AliasedCommands",
     "RE_FEAT",
     "UploadFiles",

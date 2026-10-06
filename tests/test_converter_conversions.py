@@ -230,8 +230,30 @@ def test_an_unreadable_sidecar_is_not_read_as_no_conversion(tmp_path, monkeypatc
         conversions.conversion_of(str(out))
 
 
+def test_no_record_is_written_inside_a_library(tmp_path, monkeypatch) -> None:
+    library = tmp_path / "library"
+    out = library / "Album [V0]"
+    out.mkdir(parents=True)
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(library)])
+
+    conversions.record_conversion(str(out), **DOWNCONVERT)
+
+    assert not (library / conversions.REGISTRY_DIR).exists()
+
+
+def test_a_folder_beside_a_library_still_gets_its_record(tmp_path, monkeypatch) -> None:
+    (tmp_path / "library").mkdir()
+    out = tmp_path / "Album [V0]"
+    out.mkdir()
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(tmp_path / "library")])
+
+    conversions.record_conversion(str(out), **DOWNCONVERT)
+
+    assert (tmp_path / conversions.REGISTRY_DIR / f"{out.name}.json").exists()
+
+
 def test_staging_a_library_album_takes_its_record_along(tmp_path, monkeypatch) -> None:
-    from salmon.uploader.staging import _stage_source
+    from salmon.uploader.staging import staged_source
 
     library, downloads = tmp_path / "library", tmp_path / "downloads"
     album = library / "Illy" / "journaling [WEB FLAC]"
@@ -240,8 +262,9 @@ def test_staging_a_library_album_takes_its_record_along(tmp_path, monkeypatch) -
     downloads.mkdir()
     monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
     conversions.record_conversion(str(album), **DOWNCONVERT)
+    # Made a library only now: nothing is ever recorded inside one.
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(library)])
 
-    staged = _stage_source(str(album))
-
-    assert conversions.conversion_of(staged) == DOWNCONVERT
+    with staged_source(str(album), scratch=False) as (staged, _rename_into):
+        assert conversions.conversion_of(staged) == DOWNCONVERT
     assert conversions.conversion_of(str(album)) == DOWNCONVERT, "the library album keeps its own record"

@@ -9,6 +9,7 @@ import asyncclick as click
 
 from salmon import cfg
 from salmon.common import strip_template_keys
+from salmon.common.files import rewrite_refusal
 from salmon.common.strings import plain_spaces
 from salmon.constants import (
     BLACKLISTED_CHARS,
@@ -67,7 +68,14 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
         raise UploadError(f"Invalid folder name: {new_base!r}")
 
     new_path = os.path.join(parent or cfg.directory.download_directory, new_base)
-    if os.path.isdir(new_path) and not os.path.samefile(path, new_path):
+    same_location = os.path.isdir(new_path) and os.path.samefile(path, new_path)
+    # Checked whether or not new_path exists yet: a symlinked folder on the way can lead into a library.
+    if not same_location and cfg.directory.protects(new_path):
+        raise UploadError(f"Not renaming into {new_path}: it is in library_dirs, or holds one.")
+    if os.path.isdir(new_path) and not same_location:
+        # Often the very album this copy was made from: replacing it would break what seeds from it.
+        if (reason := rewrite_refusal(new_path)) is not None:
+            raise UploadError(f"Not replacing {new_path}: {reason}. Rename it, or give the upload another folder name.")
         if not check or click.confirm(
             click.style(
                 f"A folder already exists with the new folder name '{new_path}', would you like to replace it?",
@@ -88,12 +96,13 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
 
     # Check if hardlinks can be used
     same_volume = os.stat(path).st_dev == os.stat(cfg.directory.download_directory).st_dev
-    use_hardlinks = same_volume and cfg.directory.hardlinks
+    # A hardlink shares the inode, so a later tag write on the new folder would reach a library album.
+    in_library = cfg.directory.protects(path)
+    use_hardlinks = same_volume and cfg.directory.hardlinks and not in_library
 
     # Spectrals salmon made before this rename move with the album whatever remove_source_dir says; a Spectrals
     # folder it did not make (a seeding source's own) is copied like any other, and a library album keeps its own.
     specs_path = get_spectrals_path(path)
-    in_library = cfg.directory.is_library_path(path)
     specs_in_source = (
         not in_library
         and _is_direct_child(specs_path, path)
@@ -123,7 +132,9 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
             # Moved, not copied: the source must not keep a Spectrals folder the upload never deletes.
             _move_specs_folder(specs_path, get_spectrals_path(new_path))
 
-        if cfg.upload.formatting.remove_source_dir:
+        if cfg.upload.formatting.remove_source_dir and in_library:
+            click.secho(f"Not removing {path}: it is in library_dirs, or holds one.", fg="yellow")
+        elif cfg.upload.formatting.remove_source_dir:
             shutil.rmtree(path)
     carry_conversion(path, new_path)
 

@@ -45,7 +45,7 @@ def _discard_spectrals(job: Job) -> None:
         return
     real = os.path.realpath(path)
     roots = allowed_roots()
-    if not is_within_roots(real, roots) or real in roots or cfg.directory.is_library_path(real):
+    if not is_within_roots(real, roots) or real in roots or cfg.directory.protects(real):
         return
     shutil.rmtree(real, ignore_errors=True)
     if not os.path.isdir(real):
@@ -55,8 +55,7 @@ def _discard_spectrals(job: Job) -> None:
 @router.post("/spectrals/generate")
 async def generate(req: GenerateRequest) -> dict:
     path = validate_album_dir(req.path)
-    # Spectrals go to tmp_dir, so a library album is fine; only the no-tmp_dir
-    # fallback writes into the album, and that is what must be refused.
+    # tmp_dir, download_directory for a library album, else the album's own Spectrals: never inside a library.
     spectrals_path = get_spectrals_path(path)
     refuse_library_output(spectrals_path, "Spectrals")
 

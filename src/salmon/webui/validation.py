@@ -9,14 +9,11 @@ from fastapi import HTTPException
 
 from salmon import cfg
 from salmon.common import http_url_hostname, is_public_ip
+from salmon.common.files import rewrite_refusal
 
 
 def allowed_roots() -> list[str]:
-    """Real paths the UI may operate within: salmon's configured directories.
-
-    library_dirs are sources, so they are browsable and uploadable; the delete
-    path refuses them separately (see Directory.is_library_path).
-    """
+    """Real paths the UI may operate within: salmon's directories, library_dirs too (deletes check protects())."""
     raw = [
         cfg.directory.download_directory,
         cfg.directory.dottorrents_dir,
@@ -66,22 +63,38 @@ def validate_album_dir(raw_path: str) -> str:
         )
     if not os.path.isdir(path):
         raise HTTPException(status_code=404, detail=f"Not a directory: {raw_path}")
+    given = os.path.abspath(os.path.expanduser(raw_path))
+    # The job gets the resolved path: it would rewrite or delete the link's target in place, as the CLI never does.
+    if os.path.join(os.path.realpath(os.path.dirname(given)), os.path.basename(given)) != path:
+        raise HTTPException(
+            status_code=403,
+            detail="Refusing an album folder that is a symlink: open the folder it leads to.",
+        )
+    # Resolved, a link into a library from outside it would lose the copy salmon works on.
+    if cfg.directory.is_library_path(given) and not cfg.directory.is_library_path(path):
+        raise HTTPException(
+            status_code=403,
+            detail="Refusing an album symlinked into a library from outside it: run salmon up on it in a terminal.",
+        )
+    return path
+
+
+def validate_source_album_dir(raw_path: str) -> str:
+    """Like validate_album_dir, but refuses a folder holding a library: such a job reads one album, never a library."""
+    path = validate_album_dir(raw_path)
+    if cfg.directory.library_inside(path) is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Refusing a folder that holds a library directory: pick one album folder in it.",
+        )
     return path
 
 
 def validate_writable_album_dir(raw_path: str) -> str:
-    """Like validate_album_dir, but refuses read-only library sources.
-
-    Transcode/downconvert write a sibling folder next to the source and
-    spectral generation writes into the album itself, so neither may target a
-    curated library_dirs entry.
-    """
+    """Like validate_album_dir, but refuses an album rewrite_refusal protects, for jobs that rewrite it in place."""
     path = validate_album_dir(raw_path)
-    if cfg.directory.is_library_path(path):
-        raise HTTPException(
-            status_code=403,
-            detail="Refusing to write inside a read-only library directory.",
-        )
+    if (refusal := rewrite_refusal(path)) is not None:
+        raise HTTPException(status_code=403, detail=f"Refusing to rewrite this album in place: {refusal}.")
     return path
 
 
@@ -91,13 +104,10 @@ def refuse_library_output(output_path: str, what: str) -> None:
     For jobs that write beside the album rather than into it, the album being a
     library source says nothing — where the output lands is what matters.
     """
-    if cfg.directory.is_library_path(output_path):
+    if cfg.directory.protects(output_path):
         raise HTTPException(
             status_code=403,
-            detail=(
-                f"{what} would be written inside a read-only library directory. "
-                "Set directory.tmp_dir to a writable scratch folder."
-            ),
+            detail=f"{what} would be written inside a read-only library directory, or a folder holding one.",
         )
 
 
