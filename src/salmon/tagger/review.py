@@ -310,17 +310,7 @@ def release_type_from_folder(path: str) -> str | None:
 
 
 def suggest_release_type(folder_hint: str | None, title: str | None, durations: Sequence[float]) -> str | None:
-    """The release type prompt's default: the library folder's word when there is one, else what the files imply.
-
-    1 to 3 tracks are a single, 4 to 6 an EP, more an album; past 30 minutes in all, an album, and a
-    single with a track past 10 minutes, an EP. A title that names another type ("... EP", "(Single)")
-    contradicts it: then there is no default.
-
-    Args:
-        folder_hint: The release type the album's library folder names (Artist/Type/Album), or None.
-        title: The release title from the tags.
-        durations: Each audio file's length in seconds; unknown lengths are 0.
-    """
+    """Release type default: the library folder's word, else by track count and length; None if the title disagrees."""
     if folder_hint:
         return folder_hint
     if not durations:

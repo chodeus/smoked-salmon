@@ -1,8 +1,4 @@
-"""Prompts whose default comes from the files when they know the answer (ported from upstream #595).
-
-Every prompt stays and any typed answer still wins; only the answer an empty reply gives changes. Files
-that contradict themselves give no default.
-"""
+"""Prompt defaults from the files when they agree (upstream #595); a typed answer still wins."""
 
 from functools import partial
 from pathlib import Path
@@ -229,7 +225,8 @@ def test_t_takes_a_comma_separated_list_or_repeats(monkeypatch) -> None:
 def test_no_t_runs_the_first_time_choice(monkeypatch) -> None:
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["OPS"])
 
-    assert anyio.run(salmon.trackers.validate_trackers, None, "trackers", ()) == ("OPS",)
+    trackers = anyio.run(salmon.trackers.validate_trackers, None, "trackers", ())
+    assert trackers == ("OPS",)
 
 
 def test_no_tracker_chosen_aborts(monkeypatch) -> None:

@@ -203,11 +203,7 @@ def test_get_metadata_fills_the_upc_from_the_files_deezer_album(tmp_path, monkey
 
 
 def test_a_deezer_upc_matching_the_catno_clears_the_catno(tmp_path, monkeypatch) -> None:
-    """clean_metadata clears a catno that only repeats the UPC; a UPC filled in later must get the same treatment.
-
-    `_select_choice` runs `clean_metadata` (and its catno/UPC dedupe) before the fill, so a Deezer
-    UPC that happens to equal the catno used to leave a duplicate catno on the release (#562).
-    """
+    """A late Deezer UPC equal to the catno clears the catno, as clean_metadata does."""
     (tmp_path / "01.flac").write_bytes(b"")
     _tagged(monkeypatch, {"source": [DEEZER_URL]})
     _deezer_answers(monkeypatch, {"upc": "0656465465801"})

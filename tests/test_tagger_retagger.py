@@ -475,11 +475,8 @@ def test_get_tag_number_unwraps_a_list_value():
 
 
 def test_create_track_changes_keeps_file_order_when_discnumber_tags_are_missing():
-    # A CD1/CD2 folder layout with no DISCNUMBER tag on any file: every file's disc
-    # defaults to 1, so (disc, track) pairs collide across discs (track 1 of CD1 and
-    # track 1 of CD2 both key as (1, 1)). Tags can't identify these files, so the
-    # existing file order (already correct, as get_audio_files gives it) must be kept
-    # instead of being reshuffled by an untrustworthy sort.
+    # CD1/CD2 folders, no DISCNUMBER: pairs collide across discs as (1, 1), so the files keep
+    # their existing (correct) order instead of an untrustworthy sort.
     tags = {
         "CD1/01.flac": _tagset("Old CD1 1", tracknumber="1", discnumber=None),
         "CD1/02.flac": _tagset("Old CD1 2", tracknumber="2", discnumber=None),
@@ -508,12 +505,8 @@ def test_create_track_changes_keeps_file_order_when_discnumber_tags_are_missing(
 
 
 def test_create_track_changes_falls_back_when_only_some_files_carry_a_discnumber_tag():
-    # CD1's file has a (nonstandard) DISCNUMBER/TRACKNUMBER pair that reads as a high track
-    # number; CD2's file has no DISCNUMBER tag at all, so it defaults to disc 1 with its own low
-    # track number. Neither pair collides, so a plain sort by (disc, track) would trust them: it
-    # would put CD2's file first and CD1's file second, backwards from the actual CD1/CD2 layout.
-    # A mix of files with and without a DISCNUMBER tag can't be trusted, so this must fall back to
-    # pairing by folder instead of mispairing off that sort.
+    # CD1's file has a DISCNUMBER/TRACKNUMBER pair, CD2's none: a (disc, track) sort would swap them,
+    # so a mix of files with and without DISCNUMBER pairs by folder.
     tags = {
         "CD1/01.flac": _tagset("Old CD1", tracknumber="5", discnumber="1"),
         "CD2/01.flac": _tagset("Old CD2", tracknumber="1", discnumber=None),
@@ -532,12 +525,8 @@ def test_create_track_changes_falls_back_when_only_some_files_carry_a_discnumber
 
 
 def test_create_track_changes_trusts_continuous_track_numbers_with_no_discnumber_tag_anywhere():
-    # A flat, single folder holding a two-disc release with no DISCNUMBER tag on any file, and
-    # TRACKNUMBER counting straight through both discs (1..6, not restarting at each disc). Every
-    # file defaults to disc 1, so the (disc, track) keys are unique on tracknumber alone and this
-    # has always retagged correctly by a plain tag sort, positionally against the metadata's
-    # flattened disc 1 then disc 2 track list. DISCNUMBER being absent on every file (not just
-    # some) is exactly the case the disc-folder fallback is not needed for.
+    # One flat folder, two discs, no DISCNUMBER, TRACKNUMBER counting through both: the keys are
+    # unique, so the plain tag sort retags it with no folder fallback.
     tags = {f"{n:02d}.flac": _tagset(f"Old {n}", tracknumber=str(n), discnumber=None) for n in range(1, 7)}
     metadata = {
         "tracks": {
@@ -552,12 +541,8 @@ def test_create_track_changes_trusts_continuous_track_numbers_with_no_discnumber
 
 
 def test_create_track_changes_falls_back_when_tag_pairs_do_not_match_the_metadata_discs():
-    # Every file carries a distinct, parseable DISCNUMBER/TRACKNUMBER pair, so the tags look
-    # trustworthy by uniqueness alone: (1, 1), (1, 2), (1, 3), (2, 1). But the metadata gives each
-    # of two discs two tracks, so disc 1 has no track "3" and disc 2's second track has no file at
-    # all. Trusting the unique-looking pairs would zip the file tagged (1, 3) onto disc 2's first
-    # track. The tag pairs must match the metadata's real disc/track pairs, not just be unique
-    # among themselves; the files aren't in a folder per disc either, so this must refuse.
+    # Unique, parseable pairs that are not the metadata's (disc 1 has no track 3), in one folder:
+    # zipping them would mispair, so this refuses.
     tags = {
         "a.flac": _tagset("Old a", tracknumber="1", discnumber="1"),
         "b.flac": _tagset("Old b", tracknumber="2", discnumber="1"),
@@ -576,9 +561,7 @@ def test_create_track_changes_falls_back_when_tag_pairs_do_not_match_the_metadat
 
 
 def test_create_track_changes_orders_ten_plus_discs_naturally():
-    # gather_tags lists CD10 before CD2 (a path with no leading number sorts as text). With no
-    # DISCNUMBER tags every file collides on (1, 1), so the fallback must order the disc folders
-    # naturally (CD2 before CD10), not lexically.
+    # No DISCNUMBER, so every file collides: the fallback orders disc folders naturally (CD2 before CD10).
     tags = {f"CD{disc}/01.flac": _tagset(f"Old CD{disc}", tracknumber="1", discnumber=None) for disc in (1, 10, 2)}
     metadata = {"tracks": {str(disc): {"1": _trackmeta(f"New CD{disc}", "1", str(disc))} for disc in (1, 2, 10)}}
 
@@ -589,10 +572,8 @@ def test_create_track_changes_orders_ten_plus_discs_naturally():
 
 
 def test_create_track_changes_refuses_a_flat_folder_without_disc_tags():
-    # Track-first names in one flat folder (01-CD1, 01-CD2, 02-CD1, 02-CD2): no DISCNUMBER tags,
-    # and the file order interleaves the two discs while the metadata goes disc by disc. Neither
-    # the tags nor a folder per disc can sort this out, so retagging must refuse rather than
-    # silently write CD2's titles onto CD1's files.
+    # Track-first names in one flat folder interleave the discs: neither tags nor folders sort them,
+    # so retagging refuses.
     tags = {
         name: _tagset(f"Old {name}", tracknumber=track, discnumber=None)
         for name, track in (
@@ -614,9 +595,7 @@ def test_create_track_changes_refuses_a_flat_folder_without_disc_tags():
 
 
 def test_tag_files_stops_on_a_flat_folder_without_disc_tags_instead_of_crashing(capsys):
-    # Same flat, disc-encoded-in-the-name layout as above, but exercised through tag_files, the
-    # entry point the uploader actually calls. It must print the refusal and return so the upload
-    # continues with the files' current tags, not raise out and abort the whole run.
+    # The same layout through tag_files: it prints the refusal and returns, so the upload goes on.
     tags = {
         name: _tagset(f"Old {name}", tracknumber=track, discnumber=None)
         for name, track in (
@@ -668,10 +647,7 @@ def test_create_track_changes_refuses_disc_folders_whose_track_counts_differ_fro
 
 
 def test_create_track_changes_orders_a_single_disc_single_folder_with_duplicate_track_tags_by_file_name():
-    # A single-disc release, one folder, every file tagged TRACKNUMBER=1 (the bad tags that are
-    # exactly why someone would retag). On master this falls back to file order and retags; the
-    # disc-folder fallback must keep doing that instead of refusing just because a single disc
-    # can't resolve any other way.
+    # One disc, one folder, every file TRACKNUMBER=1: the fallback retags by file order, not a refusal.
     tags = {
         "01 First.flac": _tagset("Old First", tracknumber="1", discnumber=None),
         "02 Second.flac": _tagset("Old Second", tracknumber="1", discnumber=None),
@@ -717,10 +693,7 @@ def test_create_track_changes_orders_a_single_disc_single_folder_with_no_track_t
 
 
 def test_create_track_changes_orders_by_file_name_when_a_name_holds_a_digit_int_cannot_parse():
-    # Same no-track-tag, single-disc, single-folder fallback as above, but one file's name has a
-    # superscript "2" next to ordinary digits ("01²2.flac"): str.isdigit() accepts it as a
-    # split segment on its own, and int() then rejects it. The natural-order file-name fallback
-    # must not raise out of retagging over a file name like that.
+    # A superscript "2" beside digits ("01²2.flac") must not raise out of the file-name fallback.
     tags = {
         "01²2.flac": _tagset("Old First", tracknumber=None, discnumber=None),
         "02.flac": _tagset("Old Second", tracknumber=None, discnumber=None),
@@ -741,10 +714,8 @@ def test_create_track_changes_orders_by_file_name_when_a_name_holds_a_digit_int_
 
 
 def test_tag_files_stops_when_one_disc_folder_is_genuinely_ambiguous(capsys):
-    # A two-disc release with a proper folder per disc: CD1's files have no track tags and tie
-    # under natural file-name order too (same name, different case), so CD1 alone can't be
-    # resolved. tag_files must print the refusal and return, leaving the upload to continue with
-    # the files' current tags, rather than raising out of tag_files and aborting the run.
+    # CD1's files have no track tags and tie on file name too: tag_files prints the refusal
+    # and returns, so the upload goes on with the current tags.
     tags = {
         "CD1/Track.flac": _tagset("Old A", tracknumber=None, discnumber=None),
         "CD1/track.flac": _tagset("Old B", tracknumber=None, discnumber=None),
@@ -777,9 +748,7 @@ def test_tag_files_stops_when_one_disc_folder_is_genuinely_ambiguous(capsys):
 
 
 def test_create_track_changes_handles_the_one_folder_disc_dot_track_layout():
-    # #479's one-folder layout keeps a multi-disc release flat, files named "<disc>.<track> ...".
-    # The tags already carry real DISCNUMBER/TRACKNUMBER values by that point, so this stays on
-    # the tag-sorted path rather than tripping the folder-collision fallback.
+    # #479's flat "<disc>.<track> ..." names already carry real disc/track tags: the tag-sorted path.
     tags = {
         "2.01 Third.flac": _tagset("Old Third", tracknumber="1", discnumber="2"),
         "1.01 First.flac": _tagset("Old First", tracknumber="1", discnumber="1"),

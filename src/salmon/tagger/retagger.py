@@ -103,20 +103,16 @@ def create_track_changes(tags, metadata):
     def disc_track_key(tagset):
         return (_get_tag_number(tagset, "discnumber"), _get_tag_number(tagset, "tracknumber"))
 
-    # An unparseable tag reads as 1 via _get_tag_number, so it can't vouch for a file's place: only
-    # a disc/track pair built from tags we actually trust identifies a file, and TRACKNUMBER must
-    # be present and parseable everywhere either way.
+    # An unparseable tag reads as 1 (_get_tag_number), so only pairs from trusted tags identify a file,
+    # and TRACKNUMBER must parse on every file either way.
     tracknumber_readable = all(_parse_tag_number(tagset, "tracknumber") is not None for tagset in tags.values())
     disc_track_keys = [disc_track_key(tagset) for tagset in tags.values()]
     keys_unique = len(set(disc_track_keys)) == len(disc_track_keys)
     discnumber_tags = [_has_tag(tagset, "discnumber") for tagset in tags.values()]
 
     if tracknumber_readable and keys_unique and not any(discnumber_tags):
-        # No file carries a DISCNUMBER tag, so every key defaults to (1, track) and uniqueness
-        # among them is really uniqueness of the track numbers alone (a flat single-disc folder,
-        # or one whose TRACKNUMBER counts straight through every disc instead of restarting at
-        # each one). Nothing here vouches for *which* disc a file belongs to, but the positional
-        # zip below only needs the track order right, which this does give us.
+        # No DISCNUMBER anywhere: every key is (1, track), so this proves only the track order,
+        # which is all the positional zip below needs.
         ordered_tags = sorted(tags.items(), key=lambda item: disc_track_key(item[1]))
     elif (
         tracknumber_readable
@@ -125,11 +121,8 @@ def create_track_changes(tags, metadata):
         and all(_parse_tag_number(tagset, "discnumber") is not None for tagset in tags.values())
         and set(disc_track_keys) == _metadata_track_keys(metadata["tracks"])
     ):
-        # DISCNUMBER is present and parseable on every file, and the resulting pairs are not just
-        # unique among themselves but are exactly the metadata's real disc/track pairs: a pair
-        # that happens to be unique but that the metadata doesn't have (an extra track number a
-        # disc's real tracklist doesn't include, say) would otherwise still get trusted and zipped
-        # onto the wrong track.
+        # A parseable DISCNUMBER on every file, and the pairs are exactly the metadata's: a unique pair
+        # the metadata lacks would be zipped onto the wrong track.
         ordered_tags = sorted(tags.items(), key=lambda item: disc_track_key(item[1]))
     else:
         ordered_tags = _order_by_disc_folders(tags, metadata["tracks"])
@@ -219,13 +212,7 @@ def _disc_track_sort_key(value):
 
 
 def _order_by_disc_folders(tags, discs):
-    """Pair files whose disc/track tags collide one folder per disc, or raise when that can't identify each file.
-
-    Files are grouped by the folder they are in, folders are taken as discs in natural order (CD2 before
-    CD10), and each folder is ordered against the corresponding disc by its files' track tags. If the folder
-    layout does not resolve to one folder per disc with the right number of tracks, we refuse rather than
-    guess: silently mispairing files with the wrong disc's titles is worse than stopping the retag.
-    """
+    """Pair colliding files one folder per disc, in natural order, each by track tag; raise rather than guess."""
     by_path = sorted(tags.items(), key=lambda item: _natural_key(item[0]))
     if len(by_path) != sum(len(tracks) for tracks in discs.values()):
         return by_path  # the caller reports the track count mismatch
@@ -240,12 +227,7 @@ def _order_by_disc_folders(tags, discs):
 
 
 def _order_within_disc(group):
-    """Order one disc folder's files: by track tag when every file has its own distinct one, else by file name.
-
-    This is also the path a single-disc, single-folder release takes, so a folder full of duplicate or
-    missing TRACKNUMBER tags (exactly why someone would retag) still resolves by file name instead of being
-    refused. Only raise when neither the tags nor the file names can tell the files apart.
-    """
+    """Order one disc folder's files by distinct track tags, else by file name; raise if neither tells them apart."""
     numbers = [_parse_tag_number(tagset, "tracknumber") for _, tagset in group]
     if None not in numbers and len(set(numbers)) == len(numbers):
         return sorted(group, key=lambda item: _get_tag_number(item[1], "tracknumber"))
@@ -278,12 +260,7 @@ def _ambiguous_tracks() -> UploadError:
 
 
 def _natural_key(path: str) -> list[int | str]:
-    """Sort key that compares the digit runs in a path as numbers, so CD2 sorts before CD10.
-
-    Uses ``str.isdecimal()``, not ``str.isdigit()``: ``\\d+`` in the regex only matches ASCII-like decimal
-    digits, but a lone non-decimal digit character next to them (superscript "2" in "01²2.flac") still ends
-    up as its own split segment, where ``isdigit()`` would accept it and ``int()`` would then reject it.
-    """
+    """Sort key reading digit runs as numbers (CD2 before CD10); isdecimal, as int() rejects a superscript digit."""
     return [int(part) if part.isdecimal() else part.lower() for part in re.split(r"(\d+)", path)]
 
 
@@ -618,11 +595,7 @@ def _has_tag(tracktags, field):
 
 
 def _to_number(value):
-    """A digit string read as an int, so it compares equal to the number a tag parses to; anything else as is.
-
-    ``str.isdecimal()``, not ``str.isdigit()``: ``isdigit()`` accepts some Unicode digits (superscript "2")
-    that ``int()`` then rejects, while ``isdecimal()`` is true for exactly what ``int()`` accepts.
-    """
+    """A decimal string as an int (isdecimal is what int() accepts), so it equals a parsed tag; else as is."""
     s = str(value)
     return int(s) if s.isdecimal() else s
 
