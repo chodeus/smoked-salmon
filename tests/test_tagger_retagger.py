@@ -808,10 +808,7 @@ def _formatting(**settings):
 
 
 def _release(root, tracks, others=()):
-    """Write a release's files, each holding its own path, and return the tags and metadata of its tracks.
-
-    ``tracks`` maps a track's path to its (disc, track) numbers; a disc of None leaves the tag out.
-    """
+    """Write a release's files (each holding its path); `tracks` maps paths to (disc, track), None leaving disc out."""
     tags = {}
     discs = {}
     for name, (disc, track) in tracks.items():

@@ -152,10 +152,8 @@ def test_appended_rerip_replaces_the_stale_hash(tmp_path, monkeypatch) -> None:
 
 
 def test_two_discs_with_overlapping_track_numbers_keep_both_hashes(tmp_path, monkeypatch) -> None:
-    # Both discs use track number 1. If the expected hash were keyed by track number alone,
-    # disc 2's entry would silently overwrite disc 1's, and a real corruption on disc 1 track 1
-    # would go undetected because its expected hash was dropped from copy_crc_set. Keying by
-    # (disc, track) keeps both expectations, so the corrupt disc-1 file must still be caught.
+    # Both discs have a track 1: keyed by track alone, disc 2's hash would replace disc 1's
+    # and hide the corrupt disc-1 file this must still catch.
     basepath = _write_files(tmp_path, ["d1-01.flac", "d2-01.flac"])
     output = FakeCambiaOutput(
         parsed=FakeParsedCombined(
