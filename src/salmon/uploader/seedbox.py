@@ -136,11 +136,8 @@ class UploadManager:
 
     def __init__(self) -> None:
         self._client_cache: dict[str, TorrentClient] = {}
-        # Each task: (seedbox, local_path, task_type, folder). `folder` is the release folder the
-        # task belongs to: itself for a "folder" task, and the folder its torrent was built from
-        # for a "seed" task. It lets a failed copy skip only the seeds for its own folder, not
-        # every seed queued for that seedbox (a folder task's copy failing must not stop the seed
-        # of a different release, or a different format of the same release, on the same seedbox).
+        # (seedbox, local_path, task_type, folder): folder is the release folder, so a failed copy
+        # skips only that folder's seeds on that seedbox.
         self.tasks: collections.deque[tuple[Seedbox, str, str, str]] = collections.deque()
         if dryrun.active():
             # Setting up a torrent client logs into it. A dry run queues nothing, so it needs none.
@@ -277,9 +274,7 @@ class UploadManager:
             except Exception as e:
                 click.secho(f"Critical error during task: {redact_secrets(str(e), secrets)}", fg="red")
                 if task_type == "folder":
-                    # A folder task that raised (rclone missing, unexpected I/O error, ...) is a
-                    # failed copy too: the seed task must not add a torrent for files that may not
-                    # be on the remote.
+                    # A raising folder task is a failed copy too: its seeds must not be added.
                     failed_folders.add((id(seedbox), folder))
                     failed_copies += 1
                 elif task_type == "seed":

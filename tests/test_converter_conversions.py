@@ -311,6 +311,28 @@ def test_an_unreadable_sidecar_is_not_read_as_no_conversion(tmp_path, monkeypatc
         conversions.conversion_of(str(out))
 
 
+def test_no_record_is_written_inside_a_library(tmp_path, monkeypatch) -> None:
+    library = tmp_path / "library"
+    out = library / "Album [V0]"
+    out.mkdir(parents=True)
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(library)])
+
+    conversions.record_conversion(str(out), **DOWNCONVERT)
+
+    assert not (library / conversions.REGISTRY_DIR).exists()
+
+
+def test_a_folder_beside_a_library_still_gets_its_record(tmp_path, monkeypatch) -> None:
+    (tmp_path / "library").mkdir()
+    out = tmp_path / "Album [V0]"
+    out.mkdir()
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(tmp_path / "library")])
+
+    conversions.record_conversion(str(out), **DOWNCONVERT)
+
+    assert (tmp_path / conversions.REGISTRY_DIR / f"{out.name}.json").exists()
+
+
 def test_staging_a_library_album_takes_its_record_along(tmp_path, monkeypatch) -> None:
     from salmon.uploader.staging import staged_source
 
@@ -350,15 +372,13 @@ def _records_under(folder: Path) -> list[Path]:
     return list(folder.rglob(conversions.REGISTRY_DIR))
 
 
-def test_nothing_is_recorded_in_library_dirs_or_in_a_folder_holding_it(tmp_path, library_and_downloads) -> None:
+def test_nothing_is_recorded_in_library_dirs(tmp_path, library_and_downloads) -> None:
     library, _downloads = library_and_downloads
     (library / "Artist").mkdir()
 
     conversions.record_conversion(str(library / "Artist" / "Album [WEB FLAC]"), **DOWNCONVERT)
-    # Beside the library, in the folder that holds it.
-    conversions.record_conversion(str(tmp_path / "Album [WEB FLAC]"), **DOWNCONVERT)
 
-    assert _records_under(tmp_path) == []
+    assert _records_under(library) == []
 
 
 def test_a_conversion_cannot_land_in_the_library_nor_leave_a_record_there(

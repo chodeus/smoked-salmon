@@ -80,7 +80,7 @@ def validate_album_dir(raw_path: str) -> str:
 def validate_source_album_dir(raw_path: str) -> str:
     """Like validate_album_dir, but refuses a folder holding a library: such a job reads one album, never a library."""
     path = validate_album_dir(raw_path)
-    if not cfg.directory.is_library_path(path) and cfg.directory.library_inside(path) is not None:
+    if cfg.directory.library_inside(path) is not None:
         raise HTTPException(
             status_code=403,
             detail="Refusing a folder that holds a library directory: pick one album folder in it.",

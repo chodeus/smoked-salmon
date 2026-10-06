@@ -20,7 +20,7 @@ STAGING_DIR = ".salmon-staging"
 @contextmanager
 def staged_source(path: str, scratch: bool) -> Iterator[tuple[str, str | None]]:
     """Yield (folder to work on, dir its rename stays in or None); UploadError if path holds a library."""
-    if not cfg.directory.is_library_path(path) and (library := cfg.directory.library_inside(path)) is not None:
+    if (library := cfg.directory.library_inside(path)) is not None:
         raise UploadError(f"{path} holds the library folder {library}: run salmon on one album folder of it.")
     reason = rewrite_refusal(path)
     if not scratch and reason is None:

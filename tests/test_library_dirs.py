@@ -233,7 +233,8 @@ def test_a_library_album_is_staged_as_a_real_copy_whose_rename_goes_to_download_
 
     assert _snapshot(album) == before
     assert os.listdir(downloads / staging.STAGING_DIR) == []
-    assert "library_dirs" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "library_dirs" in out
 
 
 def test_a_folder_holding_a_library_is_refused(dirs) -> None:
@@ -244,6 +245,16 @@ def test_a_folder_holding_a_library_is_refused(dirs) -> None:
         staging.staged_source(str(library.parent), scratch=False),
     ):
         pytest.fail("the upload ran on a folder holding a library")
+
+
+def test_a_library_folder_itself_is_refused(dirs) -> None:
+    library, _downloads = dirs
+
+    with (
+        pytest.raises(UploadError, match="holds the library folder"),
+        staging.staged_source(str(library), scratch=False),
+    ):
+        pytest.fail("the upload ran on a whole library")
 
 
 def _link(album: Path, library: Path, how: str) -> None:
@@ -276,7 +287,8 @@ def test_an_album_sharing_files_is_staged_as_a_real_copy(dirs, capsys, how: str)
             flac.write_bytes(b"changed")
 
     assert _snapshot(library) == before
-    assert "hardlink or symlink" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "hardlink or symlink" in out
 
 
 def test_an_album_sharing_no_file_is_worked_on_in_place(dirs) -> None:
@@ -294,6 +306,8 @@ def test_an_unreadable_folder_counts_as_sharing_files(dirs) -> None:
     album = _album(downloads / "Album")
     (album / "CD1").chmod(0)
     try:
+        if os.access(album / "CD1", os.R_OK):
+            pytest.skip("permission bits are not enforced for this user")
         assert shares_files(str(album))
     finally:
         (album / "CD1").chmod(0o755)
@@ -642,7 +656,7 @@ def test_compress_refuses_a_library_album(monkeypatch, dirs) -> None:
     album = _album(library / "Album")
     recompressed: list[str] = []
 
-    async def fake_recompress_path(path: str) -> None:
+    async def fake_recompress_path(path: str, files=None) -> None:
         recompressed.append(path)
 
     monkeypatch.setattr(salmon.commands, "recompress_path", fake_recompress_path)
