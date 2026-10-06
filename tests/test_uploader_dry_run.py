@@ -1,7 +1,4 @@
-"""salmon up --dry-run: the whole upload is built, and nothing is sent (#532).
-
-The runs here go against a local fake tracker and a fake image host, never a real one.
-"""
+"""salmon up --dry-run builds the whole upload and sends nothing (#532); runs use a fake tracker and image host."""
 
 import hashlib
 import os
@@ -300,11 +297,7 @@ def _run_up(
     yes_all: bool = True,
     **fakes: Any,
 ) -> Run:
-    """Run `salmon up ALBUM -t RED` against the fake tracker, with the real staging, torrents and upload forms.
-
-    The seams that need audio tools, a metadata source or a reviewer are stubbed, `fakes` replace more of them.
-    `classes` gives the client class of each site code, RED and OPS by default. `yes_all=False` leaves out -yyy.
-    """
+    """`salmon up ALBUM -t RED` on the fake tracker, real staging and forms; `classes` maps site codes to clients."""
     rls_data = {
         "format": "FLAC",
         "encoding": "Lossless",
@@ -520,8 +513,7 @@ def test_a_dry_run_prints_the_forms_the_real_run_sends(monkeypatch, tmp_path, di
     assert dry.logins == dry.queued == []
 
     def as_printed(value: str) -> str:
-        """A value the real run sent, as the dry run shows it: redacted, with what only a real upload gets
-        (image URLs, the new group's and torrents' IDs) replaced by what stands in for it."""
+        """A value the real run sent, redacted, with a real upload's image URLs and new IDs swapped for stand-ins."""
         for name, url in real_images:
             value = value.replace(url, dryrun.image_url(name, "testhost"))
         for torrent_id in range(FIRST_TORRENT_ID, FIRST_TORRENT_ID + 6):
