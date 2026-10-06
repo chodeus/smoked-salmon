@@ -346,17 +346,7 @@ def generate_catno(metadata: dict[str, Any]) -> str:
 
 
 def _normalize_torrent_names(t: Torrent, form: Literal["NFC", "NFD"]) -> None:
-    """Normalize the Unicode form of every file path component in a torrent's info dict.
-
-    Only the names change: piece hashes cover file contents, so they stay valid. The caller
-    is responsible for writing the torrent with validate=False and reloading it from disk
-    afterwards, since the normalized names no longer match the on-disk file names that
-    Torrent.validate() checks against.
-
-    Args:
-        t: The generated torrent, still pointing at the source folder on disk.
-        form: "NFC" or "NFD".
-    """
+    """Unicode-normalize every file path name in the info dict; the caller writes with validate=False and reloads."""
     info = t.metainfo["info"]
     info["name"] = unicodedata.normalize(form, info["name"])
     if "files" in info:
@@ -393,9 +383,8 @@ def generate_torrent(gazelle_site: "BaseGazelleApi", path: str) -> tuple[str, To
     else:
         form: Literal["NFC", "NFD"] = "NFC" if normalization == "NFC" else "NFD"
         _normalize_torrent_names(t, form)
-        # The normalized names no longer match the file names on disk, so validation
-        # against the source folder would fail; skip it, then reload from the written
-        # file so later use (dump, write, infohash) does not re-validate against disk.
+        # The new names no longer match the files on disk: write without validating, then reload
+        # so later dumps and the infohash do not validate against disk either.
         t.write(tpath, overwrite=True, validate=False)
         t = Torrent.read(tpath)
     click.secho(" done!", fg="yellow")
@@ -403,16 +392,7 @@ def generate_torrent(gazelle_site: "BaseGazelleApi", path: str) -> tuple[str, To
 
 
 def format_tracklist_artists(artists: list[str]) -> str:
-    """Format a track's artist list for the group description's tracklist.
-
-    Args:
-        artists: Track artist names.
-
-    Returns:
-        The joined artist names, wrapped in [artist][/artist] BBCode when the
-        `artist_tags_in_tracklist` setting is on. A name containing "[" or "]" is
-        left plain, since wrapping it could break the tag.
-    """
+    """Join a track's artists, in [artist] tags when artist_tags_in_tracklist is on; a name with [ or ] stays plain."""
     if not cfg.upload.description.artist_tags_in_tracklist:
         return ", ".join(artists)
     return ", ".join(
