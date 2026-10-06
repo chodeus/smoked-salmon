@@ -160,7 +160,7 @@ def test_spectrals_after_runs_once_the_only_upload_is_up(flow, monkeypatch) -> N
     assert executed == [True]
 
 
-def test_an_upload_with_no_torrent_id_skips_the_spectral_check(flow, monkeypatch) -> None:
+def test_an_upload_with_no_torrent_id_skips_the_spectral_check(flow, monkeypatch, capsys) -> None:
     calls, executed, _ = flow
     monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
 
@@ -170,7 +170,9 @@ def test_an_upload_with_no_torrent_id_skips_the_spectral_check(flow, monkeypatch
     monkeypatch.setattr(salmon.uploader, "upload_and_report", request_fill)
     _upload(None)
     names = [name for name, _site, _kw in calls]
+    out = capsys.readouterr().out
     assert "post_upload_spectral_check" not in names
+    assert "salmon checkspecs" in out
     assert executed == [True]
 
 

@@ -310,6 +310,33 @@ def test_debug_output_never_shows_the_edit_forms_auth(monkeypatch, capsys) -> No
     assert secret not in out
 
 
+def test_debug_output_masks_a_form_auth_the_client_does_not_know(monkeypatch, capsys) -> None:
+    secret = "edit-form-auth-0123456789"
+    monkeypatch.setattr(cfg.upload, "debug_tracker_connection", True)
+    monkeypatch.setattr(FakeTracker, "authkey", "another-authkey-9876543210", raising=False)
+    fake = FakeTracker(_fixture("red_edit.html").replace('value="XXXX"', f'value="{secret}"'))
+    _run_edit(fake, authenticated=False)
+    out = capsys.readouterr().out
+    assert "[DEBUG] response body" in out
+    assert secret not in out
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        '<input type="hidden" name="auth" value="SECRET-123">',
+        "<input value='SECRET-123' type='hidden' name='torrent_pass'/>",
+        '<INPUT NAME="authkey" VALUE="SECRET-123">',
+    ],
+)
+def test_redaction_masks_a_secret_form_input_either_way_round(tag: str) -> None:
+    from salmon.trackers.base import _redact
+
+    redacted = _redact(f'<form>{tag}<input name="title" value="Album"></form>')
+    assert "SECRET-123" not in redacted
+    assert 'value="Album"' in redacted
+
+
 def test_edit_refused_by_the_tracker_raises() -> None:
     fake = FakeTracker(_fixture("red_edit.html"), edit_answer=ERROR_PAGE)
     with pytest.raises(RequestError, match="You do not have permission"):

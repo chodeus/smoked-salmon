@@ -62,10 +62,19 @@ _SENSITIVE_URL_PARAMS = re.compile(
     re.IGNORECASE,
 )
 
+_SECRET_INPUT_NAME = r"""\bname=["'](?:authkey|passkey|torrent_pass|auth|api_key)["']"""
+# A form's hidden inputs, value before or after the name: <input name="auth" value="...">.
+_SENSITIVE_INPUTS = re.compile(
+    rf"""(<input\b[^>]*{_SECRET_INPUT_NAME}[^>]*\bvalue=["'])[^"']*"""
+    rf"""|(<input\b[^>]*\bvalue=["'])[^"']*(?=["'][^>]*{_SECRET_INPUT_NAME})""",
+    re.IGNORECASE,
+)
+
 
 def _redact(text: str) -> str:
-    """Redact sensitive values (JSON fields and URL query params) from a string."""
+    """Redact sensitive values (JSON fields, URL query params, form inputs) from a string."""
     text = _SENSITIVE_KEYS.sub(lambda m: f'"{m.group(1)}": "[REDACTED]"', text)
+    text = _SENSITIVE_INPUTS.sub(lambda m: f"{m.group(1) or m.group(2)}[REDACTED]", text)
     return _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
 
 
