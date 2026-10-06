@@ -1,4 +1,5 @@
 import errno
+import hashlib
 import os
 import platform
 import random
@@ -339,8 +340,9 @@ def get_spectrals_path(path):
         # Create a unique subfolder for this album
         return os.path.join(cfg.directory.tmp_dir, f"spectrals_{base_name}")
     if cfg.directory.protects(path):
-        # Never inside a library album: the folder is replaced, then deleted.
-        return os.path.join(cfg.directory.download_directory, f"spectrals_{base_name}")
+        # Never inside a library album: the folder is replaced, then deleted. The digest keeps same-named albums apart.
+        digest = hashlib.sha1(os.path.realpath(path).encode(), usedforsecurity=False).hexdigest()[:8]
+        return os.path.join(cfg.directory.download_directory, f"spectrals_{base_name} {digest}")
     return os.path.join(path, "Spectrals")
 
 
