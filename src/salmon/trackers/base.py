@@ -1102,9 +1102,8 @@ class BaseGazelleApi:
     async def append_to_torrent_description(self, torrent_id: int, description_addition: str) -> None:
         """Prepend text to a torrent's description; RequestError if the form is unreadable or the edit refused."""
         url = self.base_url + "/torrents.php"
-        # The edit form sets every field, so one rebuilt from the API cleared the flags, the DIC edition, and
-        # turned RED's escaped & into &amp;. Send the tracker's own form back with only the description changed.
-        # Authenticated first: the page holds the authkey in its auth input, and only a known authkey is masked.
+        # Send the tracker's own edit form back with only the description changed (a rebuilt one loses fields).
+        # Authenticated first: the page holds the authkey, and _scrub masks only a known one.
         page = await self._request("GET", url, params={"action": "edit", "id": torrent_id})
         try:
             fields = _torrent_edit_fields(page.text, torrent_id)
