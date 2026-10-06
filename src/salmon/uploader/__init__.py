@@ -821,11 +821,9 @@ async def _upload_staged(
                     held = set()
                     uploaded.append(url)
 
-                    await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
-
                     if spectrals_after:
-                        # Once, on the first torrent up, whether or not the run goes on to another tracker.
-                        # Its transcodes, and the later trackers' uploads, then carry what it found.
+                        # Once, on the first torrent up; transcodes and later trackers carry what it found.
+                        # Before print_torrents: that fetch can fail, and must not take the check with it.
                         spectrals_after = False
                         lossy_master, lossy_comment, spectral_urls, spectral_ids = await post_upload_spectral_check(
                             gazelle_site,
@@ -837,6 +835,8 @@ async def _upload_staged(
                             source_url,
                             format=rls_data["format"],
                         )
+
+                    await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
 
                 if get_downconversion_options(rls_data, track_data) and (
                     source_flac is not None
