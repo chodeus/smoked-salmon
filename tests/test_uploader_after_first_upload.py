@@ -160,6 +160,21 @@ def test_spectrals_after_runs_once_the_only_upload_is_up(flow, monkeypatch) -> N
     assert executed == [True]
 
 
+def test_a_failed_group_fetch_after_the_upload_still_runs_the_spectral_check(flow, monkeypatch) -> None:
+    calls, executed, set_fake = flow
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+
+    async def fetch_fails(*_args, **_kwargs):
+        raise click.Abort
+
+    set_fake("print_torrents", fetch_fails)
+    _upload(None)
+    names = [name for name, _site, _kw in calls]
+    assert names.count("post_upload_spectral_check") == 1
+    assert names.index("post_upload_spectral_check") < names.index("print_torrents")
+    assert executed == [True]
+
+
 def test_the_next_tracker_never_offers_to_delete_the_uploaded_folder(flow, monkeypatch) -> None:
     calls, _executed, _ = flow
     monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", True)

@@ -9,6 +9,7 @@ Seams used:
   with an in-memory fake so no network is ever touched.
 """
 
+import traceback
 from typing import Any, cast
 
 import aiohttp
@@ -333,6 +334,8 @@ async def test_a_network_error_masks_the_clients_credentials(api, monkeypatch):
 
     assert api.cookie not in str(excinfo.value)
     assert "Network error: failed: https://dummy.example/x/" in str(excinfo.value)
+    # Nor in a printed traceback: the original error is not chained.
+    assert api.cookie not in "".join(traceback.format_exception(excinfo.value))
 
 
 async def test_api_call_persistent_network_error_raises_retryable_error(api, monkeypatch):
@@ -611,6 +614,20 @@ async def test_site_page_upload_failure_masks_the_clients_credentials(api):
     with pytest.raises(RequestError) as excinfo:
         await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
     assert "Site upload failed: Bad session [REDACTED]" in str(excinfo.value)
+
+
+async def test_site_page_upload_failure_is_capped(api):
+    api.passkey = "PK"
+    failure_html = (
+        f"<html><body><input value='{api.announce}' />"
+        f'<p style="color: red; text-align: center;">{"x" * 2000}</p>'
+        "</body></html>"
+    )
+    script_requests(api, [http(text=failure_html, url="https://dummy.example/upload.php", status=200)])
+
+    with pytest.raises(RequestError) as excinfo:
+        await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
+    assert len(str(excinfo.value)) < 600
 
 
 async def test_site_page_upload_unparseable_page_raises_request_error(api):
