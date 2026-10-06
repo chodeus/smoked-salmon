@@ -1,8 +1,4 @@
-"""Detecting the media source from the album's own files (ported from upstream #588).
-
-Upstream returns a DetectedSource or None; the fork returns {source, confidence, reasons}, which
-`detect_source` below turns back into upstream's answer so the assertions stay theirs.
-"""
+"""Media source detection from the album's files (upstream #588), asserted in upstream's answer shape."""
 
 import struct
 from dataclasses import dataclass

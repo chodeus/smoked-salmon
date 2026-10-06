@@ -185,16 +185,27 @@ def test_compress_refuses_an_album_with_a_hardlinked_file(client, tmp_path, monk
     assert "hardlink or symlink" in resp.json()["detail"]
 
 
-def test_an_album_symlinked_into_a_library_from_outside_it_is_refused(client, tmp_path, monkeypatch) -> None:
+def test_an_album_folder_that_is_a_symlink_is_refused(client, tmp_path) -> None:
     base = os.path.realpath(cfg.directory.download_directory)
     album = os.path.join(base, tmp_path.name, "Artist - Album")
+    os.makedirs(album, exist_ok=True)
+    os.symlink(album, os.path.join(base, tmp_path.name, "Linked"))
+
+    resp = client.post("/api/convert/compress", json={"path": os.path.join(base, tmp_path.name, "Linked")})
+    assert resp.status_code == 403
+    assert "is a symlink" in resp.json()["detail"]
+
+
+def test_an_album_symlinked_into_a_library_from_outside_it_is_refused(client, tmp_path, monkeypatch) -> None:
+    base = os.path.realpath(cfg.directory.download_directory)
+    album = os.path.join(base, tmp_path.name, "Artist", "Album")
     lib = os.path.join(base, tmp_path.name, "library")
     os.makedirs(album, exist_ok=True)
     os.makedirs(lib, exist_ok=True)
-    os.symlink(album, os.path.join(lib, "Linked"))
+    os.symlink(os.path.dirname(album), os.path.join(lib, "Linked"))
     monkeypatch.setattr(cfg.directory, "library_dirs", [lib])
 
-    resp = client.post("/api/convert/compress", json={"path": os.path.join(lib, "Linked")})
+    resp = client.post("/api/convert/compress", json={"path": os.path.join(lib, "Linked", "Album")})
     assert resp.status_code == 403
     assert "symlinked into a library" in resp.json()["detail"]
     control = client.post("/api/convert/compress", json={"path": album})
