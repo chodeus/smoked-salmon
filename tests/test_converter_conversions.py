@@ -230,6 +230,28 @@ def test_an_unreadable_sidecar_is_not_read_as_no_conversion(tmp_path, monkeypatc
         conversions.conversion_of(str(out))
 
 
+def test_no_record_is_written_inside_a_library(tmp_path, monkeypatch) -> None:
+    library = tmp_path / "library"
+    out = library / "Album [V0]"
+    out.mkdir(parents=True)
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(library)])
+
+    conversions.record_conversion(str(out), **DOWNCONVERT)
+
+    assert not (library / conversions.REGISTRY_DIR).exists()
+
+
+def test_a_folder_beside_a_library_still_gets_its_record(tmp_path, monkeypatch) -> None:
+    (tmp_path / "library").mkdir()
+    out = tmp_path / "Album [V0]"
+    out.mkdir()
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(tmp_path / "library")])
+
+    conversions.record_conversion(str(out), **DOWNCONVERT)
+
+    assert (tmp_path / conversions.REGISTRY_DIR / f"{out.name}.json").exists()
+
+
 def test_staging_a_library_album_takes_its_record_along(tmp_path, monkeypatch) -> None:
     from salmon.uploader.staging import staged_source
 

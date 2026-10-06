@@ -27,6 +27,31 @@ def test_is_library_path_rejects_sibling_with_shared_prefix(tmp_path, monkeypatc
     assert not cfg.directory.is_library_path(str(sibling))
 
 
+def test_a_library_given_in_another_case_is_still_the_library(tmp_path, monkeypatch) -> None:
+    lib = tmp_path / "Music"
+    (lib / "Artist" / "Album").mkdir(parents=True)
+    other_case = tmp_path / "music" / "Artist" / "Album"
+    if not other_case.is_dir():
+        pytest.skip("this filesystem is case-sensitive")
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
+
+    assert cfg.directory.is_library_path(str(other_case))
+    assert cfg.directory.library_inside(str(tmp_path / "music")) == str(lib)
+
+
+def test_a_library_reached_by_a_path_no_string_matches_is_still_the_library(tmp_path, monkeypatch) -> None:
+    from salmon.config import validations
+
+    lib = tmp_path / "music"
+    (lib / "Album").mkdir(parents=True)
+    (tmp_path / "mount").symlink_to(lib)
+    # Stands in for a second bind mount: the strings name another folder, the device and inode are the library's.
+    monkeypatch.setattr(validations, "_real", validations._lexical)
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
+
+    assert cfg.directory.is_library_path(str(tmp_path / "mount" / "Album"))
+
+
 def test_no_library_dirs_means_nothing_is_protected(monkeypatch) -> None:
     monkeypatch.setattr(cfg.directory, "library_dirs", [])
     assert not cfg.directory.is_library_path("/anywhere")
