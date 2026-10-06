@@ -317,6 +317,12 @@ def test_edit_refused_by_the_tracker_raises() -> None:
     assert len(fake.posts) == 1
 
 
+def test_a_long_refusal_from_the_tracker_is_capped() -> None:
+    fake = FakeTracker(_fixture("red_edit.html"), edit_answer=ERROR_PAGE.replace("You do not", "x" * 2000))
+    with pytest.raises(RequestError, match=r"\[truncated\]"):
+        _run_edit(fake)
+
+
 BROWSER_RULES_FORM = """<form name="torrent" method="post">
 <input type="hidden" name="hidden" value="a &amp;amp; b">
 <input name="untyped" value="x">

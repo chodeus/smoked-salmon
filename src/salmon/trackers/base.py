@@ -937,7 +937,9 @@ class BaseGazelleApi:
 
         try:
             if resp["status"] != "success":
-                raise RequestError(f"API upload failed: {self._scrub(str(resp.get('error', resp)))}")
+                raise RequestError(
+                    f"API upload failed: {_safe_response_excerpt(self._scrub(str(resp.get('error', resp))))}"
+                )
             if ("requestid" in resp["response"] and resp["response"]["requestid"]) or (
                 "fillRequest" in resp["response"]
                 and resp["response"]["fillRequest"]
@@ -962,11 +964,14 @@ class BaseGazelleApi:
                 group_id = resp["response"]["groupId"]
             elif "requestid" not in resp["response"] and "fillRequest" not in resp["response"]:
                 raise UploadError(
-                    f"API upload succeeded but returned no torrent id, response: {self._scrub(str(resp))}"
+                    "API upload succeeded but returned no torrent id, response: "
+                    f"{_safe_response_excerpt(self._scrub(str(resp)))}"
                 )
             return torrent_id, group_id
         except TypeError as err:
-            raise RequestError(f"API upload failed, response: {self._scrub(str(resp))}") from err
+            raise RequestError(
+                f"API upload failed, response: {_safe_response_excerpt(self._scrub(str(resp)))}"
+            ) from err
 
     async def site_page_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Upload torrent via upload.php.
@@ -1013,7 +1018,7 @@ class BaseGazelleApi:
                 if error and error.parent and error.parent.parent:
                     p_tag = error.parent.parent.find("p")
                     if p_tag:
-                        error_message = self._scrub(p_tag.text)
+                        error_message = _safe_response_excerpt(self._scrub(p_tag.text))
                 raise RequestError(f"Request fill failed: {error_message}") from err
         try:
             return self.parse_most_recent_torrent_and_group_id_from_group_page(resp_text)
@@ -1121,7 +1126,7 @@ class BaseGazelleApi:
         edit_error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
         if edit_error and edit_error.parent and edit_error.parent.parent:
             p_tag = edit_error.parent.parent.find("p")
-            error_message = self._scrub(p_tag.text) if p_tag else "Unknown error"
+            error_message = _safe_response_excerpt(self._scrub(p_tag.text)) if p_tag else "Unknown error"
             raise RequestError(f"Failed to edit torrent: {error_message}")
         else:
             click.secho("Added spectrals to the torrent description.", fg="green")
