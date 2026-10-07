@@ -50,3 +50,50 @@ def test_generate_t_description_omits_empty_more_info_after_source_filter() -> N
 
     assert "[b]Source:[/b] [url=https://gammenterprises.bandcamp.com/album/cry-fi-dem]Bandcamp[/url]" in description
     assert "[b]More info:[/b]" not in description
+
+
+def test_a_new_group_takes_the_description_override(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from salmon.uploader.upload import compile_data_new_group
+
+    monkeypatch.setattr(cfg.upload.compression, "use_upc_as_catno", False)
+    site = SimpleNamespace(
+        site_string="RED",
+        release_types={"Album": 1},
+        unsupported_artist_roles=frozenset(),
+        upload_form_fields=lambda metadata, track_data: {},
+    )
+    metadata = {
+        "title": "Album",
+        "artists": [("Artist", "main")],
+        "group_year": 2020,
+        "label": None,
+        "catno": None,
+        "rls_type": "Album",
+        "year": 2020,
+        "edition_title": None,
+        "format": "FLAC",
+        "encoding": "Lossless",
+        "encoding_vbr": False,
+        "source": "WEB",
+        "tags": ["electronic"],
+        "comment": None,
+        "urls": [],
+        "date": None,
+    }
+
+    data = compile_data_new_group(
+        site,  # pyright: ignore[reportArgumentType]
+        path="/tmp/does-not-exist",
+        metadata=metadata,
+        track_data={},
+        hybrid=False,
+        cover_url=None,
+        spectral_urls=None,
+        spectral_ids=None,
+        lossy_comment=None,
+        override_description="[b]Source:[/b] the original",
+    )
+
+    assert data["release_desc"] == "[b]Source:[/b] the original"

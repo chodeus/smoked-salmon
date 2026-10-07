@@ -1,4 +1,5 @@
 import os
+import re
 import zlib
 from collections import Counter
 from collections.abc import Generator, Iterable
@@ -12,6 +13,7 @@ import cambia
 
 from salmon.common.files import process_files
 from salmon.errors import CRCMismatchError, EditedLogError, LogCheckSkipped
+from salmon.tagger.tagfile import TagFile, parse_tag_number
 
 
 def _get_audio_duration_sectors(filepath: str) -> int:
@@ -160,19 +162,48 @@ async def _calculate_range_crc_async(track_files: list[str], toc_entries: list[c
     return await anyio.to_thread.run_sync(lambda: _crc32_from_chunks(_iter_range_pcm_chunks(track_files, toc_entries)))
 
 
+def _find_audio_files(path: str) -> list[str]:
+    """Every .flac, .mp3 and .m4a file under path; none if path is missing, OSError if a folder can't be read."""
+    try:
+        os.stat(path)
+    except FileNotFoundError:
+        return []  # e.g. the dirname of a bare "rip.log"; any other stat error propagates
+
+    def _raise_scan_error(error: OSError) -> None:
+        raise error
+
+    audio_files: list[str] = []
+    # An unreadable or vanished disc folder would otherwise pass as "audio missing" and skip the check.
+    for root, _folders, files_ in os.walk(path, onerror=_raise_scan_error):
+        for f in files_:
+            if os.path.splitext(f.lower())[1] in {".flac", ".mp3", ".m4a"}:
+                audio_files.append(os.path.join(root, f))
+    return audio_files
+
+
+def _disc_number(path: str) -> int | None:
+    """An audio file's disc number tag, or None if it has none or cannot be read."""
+    try:
+        return parse_tag_number(TagFile(path), "discnumber")
+    except Exception:
+        return None
+
+
+def _audio_files_of_disc(audio_files: list[str], logpath: str) -> list[str]:
+    """The tracks of the disc a log is named for (rip.2.log) when the files hold several discs, else all of them."""
+    # rip.2.log, or rip.2.1.log once a taken name was numbered: the first number is the disc.
+    named_for_disc = re.search(r"\.(\d+)(?:\.\d+)*\.log$", os.path.basename(logpath), flags=re.IGNORECASE)
+    if not named_for_disc:
+        return audio_files
+    disc_numbers = {path: _disc_number(path) for path in audio_files}
+    if None in disc_numbers.values():
+        return audio_files
+    disc = int(named_for_disc[1])
+    return [path for path, number in disc_numbers.items() if number == disc] or audio_files
+
+
 async def check_log_cambia(logpath: str, basepath: str) -> None:
-    """Check a log file using Cambia.
-
-    Args:
-        logpath: Path to the log file to check.
-        basepath: Base directory path containing audio files.
-
-    Raises:
-        LogCheckSkipped: If the log's CRCs can't be checked against the audio (see each raise).
-        EditedLogError: If a log's checksum shows it was edited.
-        CRCMismatchError: If the audio doesn't match the log's CRCs.
-        Exception: Any other error means the audio could not be verified.
-    """
+    """Check a log's CRCs with Cambia: LogCheckSkipped, EditedLogError, CRCMismatchError, or any error = unverified."""
     # cambia raises ValueError for a log it can't parse; an OSError reading it propagates.
     try:
         cambia_output = cambia.parse_log_file(logpath)
@@ -214,31 +245,15 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         raise LogCheckSkipped("The log lists no tracks, so there are no CRCs to check.")
     expected_crcs = Counter(last_copy_hash.values())
 
-    def _find_audio(root_dir: str) -> list[str]:
-        try:
-            os.stat(root_dir)
-        except FileNotFoundError:
-            return []  # e.g. the dirname of a bare "rip.log"; any other stat error propagates
-
-        def _raise_scan_error(error: OSError) -> None:
-            raise error
-
-        found: list[str] = []
-        # An unreadable or vanished disc folder would otherwise pass as "audio missing" and skip the check.
-        for root, _folders, files_ in os.walk(root_dir, onerror=_raise_scan_error):
-            for f in files_:
-                if os.path.splitext(f.lower())[1] in {".flac", ".mp3", ".m4a"}:
-                    found.append(os.path.join(root, f))
-        return found
-
-    # A single-disc log searches its own folder first; a multi-disc log, or a folder with no audio,
-    # searches basepath.
+    # A single-disc log checks its own folder's audio (one decode per disc), or the whole release when that
+    # holds none; a log covering several discs always checks the whole release.
     multi_disc = len({pl.toc.accurip_tocid.hash for pl in parsed_logs}) > 1
-    files_to_check = [] if multi_disc else _find_audio(os.path.dirname(logpath))
-    files_to_check = files_to_check or _find_audio(basepath)
-
+    files_to_check = [] if multi_disc else _find_audio_files(os.path.dirname(logpath))
+    files_to_check = files_to_check or _find_audio_files(basepath)
     if not files_to_check:
         raise LogCheckSkipped("No audio files found!")
+    if not multi_disc:
+        files_to_check = await anyio.to_thread.run_sync(_audio_files_of_disc, files_to_check, logpath)
 
     click.secho("\nVerifying audio file CRC values...", fg="cyan", bold=True)
     if multi_disc and len(files_to_check) < len(last_copy_hash):

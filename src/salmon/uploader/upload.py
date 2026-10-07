@@ -35,6 +35,7 @@ async def prepare_and_upload(
     request_id: int | str | None,
     source_url: str | None = None,
     override_description: str | None = None,
+    conversion_note: str | None = None,
 ) -> tuple[int, int, str, Torrent]:
     """Compile data and upload torrent to tracker.
 
@@ -53,6 +54,7 @@ async def prepare_and_upload(
         request_id: Request ID to fill.
         source_url: Source URL.
         override_description: Override torrent description.
+        conversion_note: How the folder was converted, added to the generated description.
 
     Returns:
         Tuple of (torrent_id, group_id, torrent_path, torrent_content).
@@ -74,6 +76,8 @@ async def prepare_and_upload(
             lossy_comment,
             request_id,
             source_url=source_url,
+            override_description=override_description,
+            conversion_note=conversion_note,
         )
     else:
         data = compile_data_existing_group(
@@ -89,6 +93,7 @@ async def prepare_and_upload(
             request_id,
             source_url=source_url,
             override_description=override_description,
+            conversion_note=conversion_note,
         )
     await gazelle_site.ensure_authenticated()
     torrent_path, torrent_content = generate_torrent(gazelle_site, path)
@@ -157,6 +162,8 @@ def compile_data_new_group(
     lossy_comment: str | None,
     request_id: int | str | None = None,
     source_url: str | None = None,
+    override_description: str | None = None,
+    conversion_note: str | None = None,
 ) -> dict[str, Any]:
     """Compile data for a new torrent group upload.
 
@@ -172,6 +179,8 @@ def compile_data_new_group(
         lossy_comment: Lossy approval comment.
         request_id: Request ID to fill.
         source_url: Source URL.
+        override_description: Override torrent description.
+        conversion_note: How the folder was converted, added to the generated description.
 
     Returns:
         Data dict for upload POST.
@@ -203,8 +212,17 @@ def compile_data_new_group(
         "tags": metadata["tags"],
         "image": cover_url,
         "album_desc": generate_description(track_data, metadata),
-        "release_desc": generate_t_description(
-            metadata, track_data, hybrid, metadata["urls"], spectral_urls, spectral_ids, lossy_comment, source_url
+        "release_desc": override_description
+        or generate_t_description(
+            metadata,
+            track_data,
+            hybrid,
+            metadata["urls"],
+            spectral_urls,
+            spectral_ids,
+            lossy_comment,
+            source_url,
+            conversion_note,
         ),
         "requestid": request_id,
     }
@@ -223,6 +241,7 @@ def compile_data_existing_group(
     request_id: int | str | None,
     source_url: str | None = None,
     override_description: str | None = None,
+    conversion_note: str | None = None,
 ) -> dict[str, Any]:
     """Compile data for upload to an existing group.
 
@@ -239,6 +258,7 @@ def compile_data_existing_group(
         request_id: Request ID to fill.
         source_url: Source URL.
         override_description: Override torrent description.
+        conversion_note: How the folder was converted, added to the generated description.
 
     Returns:
         Data dict for upload POST.
@@ -263,7 +283,15 @@ def compile_data_existing_group(
         "release_desc": override_description
         if override_description
         else generate_t_description(
-            metadata, track_data, hybrid, metadata["urls"], spectral_urls, spectral_ids, lossy_comment, source_url
+            metadata,
+            track_data,
+            hybrid,
+            metadata["urls"],
+            spectral_urls,
+            spectral_ids,
+            lossy_comment,
+            source_url,
+            conversion_note,
         ),
         "requestid": request_id,
     }
@@ -398,6 +426,7 @@ def generate_t_description(
     spectral_ids: dict[int, str] | None,
     lossy_comment: str | None,
     source_url: str | None,
+    conversion_note: str | None = None,
 ) -> str:
     """Generate torrent description with spectrals and file info.
 
@@ -410,6 +439,7 @@ def generate_t_description(
         spectral_ids: Spectral IDs.
         lossy_comment: Lossy approval comment.
         source_url: Source URL.
+        conversion_note: How the folder was converted, appended to the description.
 
     Returns:
         BBCode description string.
@@ -471,7 +501,8 @@ def generate_t_description(
 
     footer = upload_footer()
 
-    return f"{spectrals}{encode_specifics}{release_date}{tracklist}{lossy_notes}{source}{more_info}{footer}"
+    conversion = conversion_note or ""
+    return f"{spectrals}{encode_specifics}{release_date}{tracklist}{lossy_notes}{source}{more_info}{conversion}{footer}"
 
 
 def generate_source_links(metadata_urls: list[str], source_url: str | None = None) -> str:
