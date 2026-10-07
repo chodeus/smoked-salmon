@@ -1,6 +1,7 @@
 """A downconversion output name must not keep a stale {resolution} token from the source name."""
 
 from salmon.converter import downconverting
+from salmon.errors import UploadError
 
 # What the tag/foldername step would produce with a template combining {format} and {resolution}
 # ("24bit FLAC 24-96"): a 24-bit/96kHz FLAC folder.
@@ -36,10 +37,10 @@ def test_a_name_without_a_resolution_token_is_unaffected(monkeypatch) -> None:
     # Regression: the default template (no {resolution}) must convert exactly as before.
     _stub_24_96(monkeypatch)
 
-    assert downconverting._build_output_path(SOURCE_NO_TOKEN, 16, None) == "/downloads/Artist - Title (2024) [WEB FLAC]"
-    assert (
-        downconverting._build_output_path(SOURCE_NO_TOKEN, 24, 48000) == "/downloads/Artist - Title (2024) [WEB 24-48]"
-    )
+    new_path = downconverting._build_output_path(SOURCE_NO_TOKEN, 16, None)
+    assert new_path == "/downloads/Artist - Title (2024) [WEB FLAC]"
+    new_path = downconverting._build_output_path(SOURCE_NO_TOKEN, 24, 48000)
+    assert new_path == "/downloads/Artist - Title (2024) [WEB 24-48]"
 
 
 def test_a_32_bit_source_token_is_also_dropped(monkeypatch) -> None:
@@ -51,7 +52,8 @@ def test_a_32_bit_source_token_is_also_dropped(monkeypatch) -> None:
     )
     source = "/downloads/Artist - Title (2024) [WEB 24bit FLAC 32-96]"
 
-    assert downconverting._build_output_path(source, 16, None) == "/downloads/Artist - Title (2024) [WEB FLAC]"
+    new_path = downconverting._build_output_path(source, 16, None)
+    assert new_path == "/downloads/Artist - Title (2024) [WEB FLAC]"
 
 
 def _stub_24_192(monkeypatch) -> None:
@@ -96,9 +98,12 @@ def test_a_format_only_name_is_unaffected_by_the_resolution_swap(monkeypatch) ->
     _stub_24_192(monkeypatch)
     source = "/downloads/Artist - Album (2020) [WEB 24bit FLAC]"
 
-    assert downconverting._build_output_path(source, 24, 96000) == "/downloads/Artist - Album (2020) [WEB 24-96]"
-    assert downconverting._build_output_path(source, 24, 48000) == "/downloads/Artist - Album (2020) [WEB 24-48]"
-    assert downconverting._build_output_path(source, 16, 44100) == "/downloads/Artist - Album (2020) [WEB FLAC]"
+    new_path = downconverting._build_output_path(source, 24, 96000)
+    assert new_path == "/downloads/Artist - Album (2020) [WEB 24-96]"
+    new_path = downconverting._build_output_path(source, 24, 48000)
+    assert new_path == "/downloads/Artist - Album (2020) [WEB 24-48]"
+    new_path = downconverting._build_output_path(source, 16, 44100)
+    assert new_path == "/downloads/Artist - Album (2020) [WEB FLAC]"
 
 
 def test_a_bare_bracketed_token_leaves_no_empty_brackets(monkeypatch) -> None:
@@ -120,7 +125,8 @@ def test_only_the_measured_token_is_removed_not_a_look_alike_in_the_title(monkey
     )
     source = "/downloads/Artist - 24-96 (2024) [WEB FLAC]"
 
-    assert downconverting._build_output_path(source, 16, None) == "/downloads/Artist - 24-96 (2024) [WEB 16bit FLAC]"
+    new_path = downconverting._build_output_path(source, 16, None)
+    assert new_path == "/downloads/Artist - 24-96 (2024) [WEB 16bit FLAC]"
 
 
 def test_digits_in_the_title_stay_when_the_token_is_swapped(monkeypatch) -> None:
@@ -132,3 +138,15 @@ def test_digits_in_the_title_stay_when_the_token_is_swapped(monkeypatch) -> None
     new_path = downconverting._build_output_path(source, 16, 48000)
 
     assert new_path == "/downloads/Artist - Recordings 1924-48 (2021) [WEB FLAC 16-48]"
+
+
+def _unreadable(_path):
+    raise UploadError("Could not read audio file: 01.flac")
+
+
+def test_an_unreadable_source_file_names_the_output_as_before(monkeypatch) -> None:
+    monkeypatch.setattr(downconverting, "gather_audio_info", _unreadable)
+
+    new_path = downconverting._build_output_path(SOURCE_24_96, 16, None)
+
+    assert new_path == "/downloads/Artist - Title (2024) [WEB FLAC 24-96]"

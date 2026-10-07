@@ -89,7 +89,7 @@ def _patch_cambia(monkeypatch, output: FakeCambiaOutput) -> None:
 
 def _patch_file_crcs(monkeypatch, crc_by_name: dict[str, str]) -> None:
     async def fake_calculate_file_crc_async(filepath: str, _: object = None) -> str:
-        return crc_by_name[filepath.rsplit("/", 1)[-1]]
+        return crc_by_name[os.path.basename(filepath)]
 
     monkeypatch.setattr(logs, "_calculate_file_crc_async", fake_calculate_file_crc_async)
 
@@ -106,7 +106,7 @@ def _record_file_crcs(monkeypatch, crc_by_name: dict[str, str]) -> list[str]:
 
     async def fake_calculate_file_crc_async(filepath: str, _: object = None) -> str:
         checked.append(filepath)
-        return crc_by_name[filepath.rsplit("/", 1)[-1]]
+        return crc_by_name[os.path.basename(filepath)]
 
     monkeypatch.setattr(logs, "_calculate_file_crc_async", fake_calculate_file_crc_async)
     return checked
@@ -208,7 +208,7 @@ TWO_DISC_CRCS = {"d1-01.flac": "D1-1", "d1-02.flac": "D1-2", "d2-01.flac": "D2-1
 
 def test_a_log_in_a_disc_folder_checks_only_that_disc(tmp_path, monkeypatch) -> None:
     # One log per disc folder: each log's CRCs are checked against its own disc's files, not
-    # against every file in the release, which decoded a 3-disc release three times (#444).
+    # against every file in the release, which would decode a 3-disc release three times.
     basepath = _write_files(
         tmp_path, ["CD1/CD1.log", "CD1/d1-01.flac", "CD1/d1-02.flac", "CD2/CD2.log", "CD2/d2-01.flac", "CD2/d2-02.flac"]
     )

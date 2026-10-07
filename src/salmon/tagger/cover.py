@@ -3,6 +3,7 @@ import io
 import os
 import re
 import uuid
+from typing import cast
 
 import aiohttp
 import anyio
@@ -92,9 +93,14 @@ def _flatten_to_rgb(image: Image.Image) -> Image.Image:
 
 def _eight_bit(image: Image.Image) -> Image.Image:
     """A 16/32-bit integer mode scaled to 8 bits (convert alone clips it to white); any other as it is."""
-    if image.mode in ("I", "I;16", "I;16B", "I;16L"):
-        return image.convert("I").point(lambda v: v / 256).convert("L")
-    return image
+    if image.mode not in ("I", "I;16", "I;16B", "I;16L"):
+        return image
+    image = image.convert("I")
+    low, high = cast("tuple[int, int]", image.getextrema())
+    # Scaled as 16-bit: a 32-bit value past that range would clip to white, so it is refused.
+    if low < 0 or high > 65535:
+        raise ValueError(f"pixel values {low}..{high} do not fit 16 bits")
+    return image.point(lambda v: v / 256).convert("L")
 
 
 def extract_embedded_cover(path: str) -> str | None:
@@ -245,19 +251,22 @@ def strip_oversized_pictures(path: str, track_data: dict) -> list[str]:
         except Exception as error:
             click.secho(f"{filename}: could not read the FLAC metadata ({type(error).__name__}); left as is.", fg="red")
             continue
+        pictures = [picture for picture in audio.pictures if picture.data]
+        # Front covers first: the first picture that saves is the copy kept.
+        pictures.sort(key=lambda picture: picture.type != PictureType.COVER_FRONT)
+        if pictures and not _existing_cover(path) and not any(_write_picture(path, p) for p in pictures):
+            # The embedded pictures are the only copy of the artwork: never strip them.
+            click.secho(
+                f"{filename}: pictures and padding exceed 1 MiB (a trump reason), but left as they are: "
+                "the embedded artwork could not be read as an image to keep.",
+                fg="red",
+            )
+            continue
         click.secho(
             f"{filename}: {humanfriendly.format_size(size, binary=True)} of pictures and padding exceeds 1 MiB "
             "(a trump reason); removing them.",
             fg="yellow",
         )
-        pictures = [picture for picture in audio.pictures if picture.data]
-        front = next((p for p in pictures if p.type == PictureType.COVER_FRONT), pictures[0] if pictures else None)
-        if front is not None and not _existing_cover(path) and not _write_picture(path, front):
-            # The embedded picture (the front cover, else the first) is the only copy of the artwork: never strip it.
-            click.secho(
-                f"{filename}: left as it is, as its front cover could not be read as an image to keep.", fg="red"
-            )
-            continue
         audio.clear_pictures()
         audio.save(padding=get_8kib_padding)
         stripped.append(filename)
@@ -289,8 +298,11 @@ def compress_pictures(path):
         # the image gets what is left once they are written with no data.
         picture = Picture()
         try:
-            picture.mime = Image.open(cover_file).get_format_mimetype()
-        except (OSError, Image.DecompressionBombError) as e:
+            # Decoded, not just identified: a truncated image still opens.
+            with Image.open(cover_file) as image:
+                image.load()
+                picture.mime = image.get_format_mimetype()
+        except (OSError, ValueError, Image.DecompressionBombError) as e:
             click.secho(f"Could not read cover file {cover_file} as an image ({e}); leaving it out.", fg="red")
             continue
 

@@ -124,6 +124,7 @@ def test_a_corrupt_sidecar_is_ignored_and_replaced(tmp_path) -> None:
         {"source": "/x", "kind": "transcode", "bitrate": ["V0"]},
         {"source": "/x", "kind": "downconvert", "bit_depth": [16], "sample_rate": 44100},
         {"source": "/x", "kind": {"a": 1}, "bit_depth": 16, "sample_rate": 44100},
+        {"source": "/x", "kind": "downconvert", "bit_depth": 16, "sample_rate": 44100, "output": None},
     ],
 )
 def test_an_unusable_entry_reads_as_no_conversion(tmp_path, entry) -> None:
@@ -133,7 +134,9 @@ def test_an_unusable_entry_reads_as_no_conversion(tmp_path, entry) -> None:
         with open(conversions._sidecar(str(out)), "w", encoding="utf-8") as fh:
             json.dump(entry, fh)
 
-    assert conversions.conversion_of(str(out)) is None
+    facts = conversions.conversion_of(str(out))
+
+    assert facts is None
 
 
 def test_a_record_naming_another_folder_is_ignored_with_one_line(tmp_path, capsys) -> None:
@@ -403,9 +406,6 @@ def test_staging_a_library_album_takes_its_record_along(tmp_path, monkeypatch) -
     assert _facts(str(album)) == DOWNCONVERT, "the library album keeps its own record"
 
 
-# What protects the library, and what a dry run may write
-
-
 @pytest.fixture
 def library_and_downloads(monkeypatch, tmp_path) -> tuple[Path, Path]:
     library, downloads = tmp_path / "library", tmp_path / "downloads"
@@ -503,9 +503,6 @@ def test_parallel_conversions_keep_each_others_records(tmp_path, monkeypatch) ->
 
     recorded = {(_facts(f"{source} [V0]") or {}).get("source") for source in sources}
     assert recorded == {str(source) for source in sources}
-
-
-# A separate `salmon up` of a converted folder
 
 
 @pytest.fixture

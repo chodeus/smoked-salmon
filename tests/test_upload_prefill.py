@@ -23,7 +23,7 @@ import salmon.trackers
 import salmon.uploader
 from salmon import cfg
 from salmon.checks.source import detect_source
-from salmon.errors import RequestError
+from salmon.errors import RequestError, UploadRefusedError
 from salmon.search.base import IdentData
 from salmon.tagger import metadata as metadata_mod
 from salmon.tagger import review
@@ -327,7 +327,8 @@ def test_a_skipped_named_tracker_moves_on_to_the_next(monkeypatch, tmp_path, dir
     assert ANOTHER_TRACKER not in run.result.output
 
 
-def test_a_failed_named_tracker_moves_on_to_the_next(monkeypatch, tmp_path, dirs) -> None:
+@pytest.mark.parametrize("error", [RequestError, UploadRefusedError])
+def test_a_failed_named_tracker_moves_on_to_the_next(monkeypatch, tmp_path, dirs, error) -> None:
     _downloads, torrents = dirs
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
     sites = _uploads_by_tracker(monkeypatch)
@@ -335,7 +336,7 @@ def test_a_failed_named_tracker_moves_on_to_the_next(monkeypatch, tmp_path, dirs
 
     async def red_fails(gazelle_site, *args: Any, **kwargs: Any) -> Any:
         if gazelle_site.site_code == "RED":
-            raise RequestError("refused")
+            raise error("refused")
         return await recording(gazelle_site, *args, **kwargs)
 
     monkeypatch.setattr(salmon.uploader, "upload_and_report", red_fails)

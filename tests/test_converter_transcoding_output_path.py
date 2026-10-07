@@ -1,6 +1,7 @@
 """An MP3 transcode output name must not keep a stale {resolution} token from the source name."""
 
 from salmon.converter import transcoding
+from salmon.errors import UploadError
 
 # What the tag/foldername step would produce with a template combining {format} and {resolution}:
 # a 24-bit/96kHz FLAC folder.
@@ -36,8 +37,10 @@ def test_a_name_without_a_resolution_token_is_unaffected(monkeypatch) -> None:
     # Regression: the default template (no {resolution}) must transcode exactly as before.
     _stub_24_96(monkeypatch)
 
-    assert transcoding._build_output_path(SOURCE_NO_TOKEN, "V0") == "/downloads/Artist - Title (2024) [WEB MP3 V0]"
-    assert transcoding._build_output_path(SOURCE_NO_TOKEN, "320") == "/downloads/Artist - Title (2024) [WEB MP3 320]"
+    new_path = transcoding._build_output_path(SOURCE_NO_TOKEN, "V0")
+    assert new_path == "/downloads/Artist - Title (2024) [WEB MP3 V0]"
+    new_path = transcoding._build_output_path(SOURCE_NO_TOKEN, "320")
+    assert new_path == "/downloads/Artist - Title (2024) [WEB MP3 320]"
 
 
 def test_a_resolution_only_name_transcodes_with_no_token(monkeypatch) -> None:
@@ -49,7 +52,8 @@ def test_a_resolution_only_name_transcodes_with_no_token(monkeypatch) -> None:
     )
     source = "/downloads/Artist - Album (2020) [WEB FLAC 24-192]"
 
-    assert transcoding._build_output_path(source, "V0") == "/downloads/Artist - Album (2020) [WEB MP3 V0]"
+    new_path = transcoding._build_output_path(source, "V0")
+    assert new_path == "/downloads/Artist - Album (2020) [WEB MP3 V0]"
 
 
 def test_a_bare_bracketed_token_leaves_no_empty_brackets(monkeypatch) -> None:
@@ -76,7 +80,8 @@ def test_only_the_measured_token_is_removed_not_a_look_alike_in_the_title(monkey
     )
     source = "/downloads/Artist - 24-96 (2024) [WEB FLAC]"
 
-    assert transcoding._build_output_path(source, "V0") == "/downloads/Artist - 24-96 (2024) [WEB MP3 V0]"
+    new_path = transcoding._build_output_path(source, "V0")
+    assert new_path == "/downloads/Artist - 24-96 (2024) [WEB MP3 V0]"
 
 
 def test_digits_in_the_title_are_not_taken_for_the_token(monkeypatch) -> None:
@@ -96,3 +101,15 @@ def test_a_token_first_in_its_brackets_leaves_no_stray_space(monkeypatch) -> Non
     new_path = transcoding._build_output_path("/downloads/Artist - Title (2024) [24-96 WEB FLAC]", "V0")
 
     assert new_path == "/downloads/Artist - Title (2024) [WEB MP3 V0]"
+
+
+def _unreadable(_path):
+    raise UploadError("Could not read audio file: 01.flac")
+
+
+def test_an_unreadable_source_file_names_the_output_as_before(monkeypatch) -> None:
+    monkeypatch.setattr(transcoding, "gather_audio_info", _unreadable)
+
+    new_path = transcoding._build_output_path(SOURCE_24_96, "V0")
+
+    assert new_path == "/downloads/Artist - Title (2024) [WEB MP3 V0 24-96]"
