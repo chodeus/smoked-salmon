@@ -72,12 +72,17 @@ def _build_output_path(path: str, bit_depth: BitDepth, sample_rate: int | None, 
     """
     foldername = os.path.basename(path)
     # Imported here: foldername imports this package, through salmon.converter.conversions.
-    from salmon.tagger.foldername import drop_resolution_token, resolution_token
+    from salmon.tagger.foldername import (
+        drop_resolution_token,
+        holds_resolution_token,
+        resolution_token,
+        swap_resolution_token,
+    )
 
     audio_info = gather_audio_info(path)
-    # From the source's files, never a pattern that could eat title digits; it counts only when the name holds it.
+    # From the source's files, and only where the name holds it as its own word, never digits inside a title.
     current_token = resolution_token(audio_info)
-    has_token = bool(current_token) and re.search(r"\b" + re.escape(current_token) + r"\b", foldername)
+    has_token = holds_resolution_token(foldername, current_token)
     # A {resolution}-only name has no "24bit"/"16bit FLAC" wording: swap its token for the conversion's
     # in place instead of the bit-depth rewriting below.
     carries_bit_depth_wording = bool(re.search(r"\d+ ?bit FLAC", foldername, flags=re.IGNORECASE))
@@ -89,7 +94,7 @@ def _build_output_path(path: str, bit_depth: BitDepth, sample_rate: int | None, 
             target_rate = _resolve_sample_rate(source_rate)
         new_token = resolution_token({"_": {"precision": bit_depth, "sample rate": target_rate}})
         if new_token:
-            foldername = foldername.replace(current_token, new_token)
+            foldername = swap_resolution_token(foldername, current_token, new_token)
         else:
             foldername = drop_resolution_token(foldername, current_token)
         return os.path.join(output_dir or os.path.dirname(path), foldername)

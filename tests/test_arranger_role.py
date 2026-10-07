@@ -1,4 +1,4 @@
-"""The Arranger artist role: credited on RED and OPS, dropped on DIC (ported from upstream #498)."""
+"""The Arranger artist role: credited on RED and OPS, dropped on DIC."""
 
 from typing import TYPE_CHECKING, cast
 
@@ -26,6 +26,18 @@ def test_discogs_arranged_by_maps_to_arranger() -> None:
 
     assert ("Main Artist", "main") in artists
     assert ("Some Arranger", "arranger") in artists
+
+
+def test_discogs_arranged_by_keeps_main_for_the_same_artist() -> None:
+    track = {
+        "artists": [{"name": "Main Artist"}],
+        "extraartists": [{"name": "Main Artist", "role": "Arranged By"}],
+    }
+
+    artists = parse_artists([], track)
+
+    assert ("Main Artist", "main") in artists
+    assert ("Main Artist", "arranger") in artists
 
 
 def test_compile_artist_str_excludes_arranger() -> None:

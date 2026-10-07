@@ -176,6 +176,24 @@ def test_an_upload_with_no_torrent_id_skips_the_spectral_check(flow, monkeypatch
     assert executed == [True]
 
 
+def test_the_release_type_hint_reads_the_chosen_title_not_the_tags(flow, monkeypatch) -> None:
+    calls, _executed, set_fake = flow
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+    monkeypatch.setattr(
+        salmon.uploader, "gather_audio_info", lambda *_args, **_kwargs: {str(n): {"duration": 200} for n in range(7)}
+    )
+    chosen = {"artists": [("Artist", "main")], "title": "Album EP", "label": "Label", "cover": None}
+
+    async def get_metadata(*_args, **_kwargs):
+        return chosen, None
+
+    set_fake("get_metadata", get_metadata)
+    _upload(None)
+    hints = [kwargs["rls_type_hint"] for name, _site, kwargs in calls if name == "edit_metadata"]
+
+    assert hints == [None]
+
+
 def test_a_failed_group_fetch_after_the_upload_still_runs_the_spectral_check(flow, monkeypatch) -> None:
     calls, executed, set_fake = flow
     monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
@@ -338,3 +356,23 @@ def test_a_spectrals_folder_salmon_did_not_make_is_kept_when_nothing_is_picked(m
     os.mkdir(theirs)
     anyio.run(lambda: spectrals.post_upload_spectral_check(FakeSite(), album, 1, None, {}, "WEB", None))  # type: ignore[arg-type]
     assert os.path.isdir(theirs)
+
+
+def test_every_trackers_conversions_are_checked_against_the_runs_path_limit(flow, monkeypatch) -> None:
+    _calls, _executed, _set_fake = flow
+    task = {"name": "MP3 320", "action": "transcode", "encoding": "320"}
+    limits: list[int | None] = []
+
+    async def choose(*_args):
+        return [task]
+
+    async def execute(*_args, max_path_length=None, **_kwargs):
+        limits.append(max_path_length)
+
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
+    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args: [task])
+    monkeypatch.setattr(salmon.uploader, "prompt_downconversion_choice", choose)
+    monkeypatch.setattr(salmon.uploader, "execute_downconversion_tasks", execute)
+    _upload(["RED", "OPS"])
+
+    assert limits == [180, 180]

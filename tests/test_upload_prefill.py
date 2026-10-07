@@ -1,4 +1,4 @@
-"""Prompt defaults from the files when they agree (upstream #595); a typed answer still wins."""
+"""Prompt defaults from the files when they agree; a typed answer still wins."""
 
 from functools import partial
 from pathlib import Path
@@ -64,6 +64,15 @@ def _tagged_album(folder: Path, *tags: dict[str, str]) -> Path:
     for number, file_tags in enumerate(tags, 1):
         _write_flac(folder / f"0{number}.flac", title=f"Track {number}", **file_tags)
     return folder
+
+
+def test_two_forms_of_one_album_url_are_one_store_album(tmp_path) -> None:
+    localized = "https://www.deezer.com/en/album/322064097"
+    album = _tagged_album(tmp_path / "a", {"SOURCE": DEEZER_URL, "COMMENT": localized})
+
+    url = metadata_mod.files_store_url(str(album))
+
+    assert url == DEEZER_URL
 
 
 def test_the_store_url_under_a_source_key_is_the_files_store_url(tmp_path) -> None:

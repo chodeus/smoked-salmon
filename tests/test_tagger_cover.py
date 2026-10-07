@@ -92,7 +92,20 @@ def test_another_image_format_is_saved_as_png(album_dir, monkeypatch) -> None:
 def test_the_pictures_own_format_names_the_file_whatever_its_mime_type_says(album_dir, monkeypatch) -> None:
     _fake_flac(monkeypatch, [_front(PNG, "image/jpeg")])
 
-    assert cover.extract_embedded_cover(str(album_dir)) == str(album_dir / "cover.png")
+    written = cover.extract_embedded_cover(str(album_dir))
+
+    assert written == str(album_dir / "cover.png")
+
+
+def test_a_16_bit_picture_is_saved_scaled_down_not_white(album_dir, monkeypatch) -> None:
+    buffer = io.BytesIO()
+    Image.new("I;16", (4, 4), 32768).save(buffer, "TIFF")
+    _fake_flac(monkeypatch, [_front(buffer.getvalue(), "image/tiff")])
+
+    written = cover.extract_embedded_cover(str(album_dir))
+
+    assert written is not None
+    assert Image.open(written).convert("L").getpixel((0, 0)) == 128
 
 
 def test_an_unreadable_picture_is_skipped_in_favour_of_a_readable_one(album_dir, monkeypatch) -> None:

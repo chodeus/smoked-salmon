@@ -135,9 +135,6 @@ def test_real_ai_values_still_apply():
     assert out["label"] == "Real Records"
 
 
-# Ported from upstream (smokin-salmon/smoked-salmon#523).
-
-
 def _tags(genres):
     """What reaches the tracker's tags field for genres read from a source."""
     return convert_genres(standardize_genres(genres)).split(",")
@@ -197,10 +194,12 @@ def test_manual_metadata_genres_are_standardized(monkeypatch):
     rls_data = {"genres": [], "urls": []}
     edited = {"genres": ["Dance / Pop", "Drum & Bass"], "urls": []}
     monkeypatch.setattr(metadata_module.click, "edit", lambda *_a, **_k: json.dumps(edited))
-    assert metadata_module._get_manual_metadata(rls_data)["genres"] == ["Dance", "Pop", "Drum & Bass"]
-
+    first = metadata_module._get_manual_metadata(rls_data)["genres"]
     edited["genres"] = "Folk, World, & Country"
-    assert metadata_module._get_manual_metadata(rls_data)["genres"] == ["Folk", "World", "Country"]
+    second = metadata_module._get_manual_metadata(rls_data)["genres"]
+
+    assert first == ["Dance", "Pop", "Drum & Bass"]
+    assert second == ["Folk", "World", "Country"]
 
 
 def test_store_split_tables_still_yield_valid_tags():

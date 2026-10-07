@@ -12,6 +12,7 @@ from salmon.common import UploadFiles, str_to_int_if_int
 from salmon.constants import ARTIST_IMPORTANCES
 from salmon.release_notification import upload_footer
 from salmon.sources import SOURCE_ICONS
+from salmon.tagger.pre_data import parse_artists
 from salmon.tagger.sources import METASOURCES
 from salmon.uploader.spectrals import (
     make_spectral_bbcode,
@@ -354,12 +355,13 @@ def _normalize_torrent_names(t: Torrent, form: Literal["NFC", "NFD"]) -> None:
             fileinfo["path"] = [unicodedata.normalize(form, part) for part in fileinfo["path"]]
 
 
-def generate_torrent(gazelle_site: "BaseGazelleApi", path: str) -> tuple[str, Torrent]:
+def generate_torrent(gazelle_site: "BaseGazelleApi", path: str, normalize: bool = True) -> tuple[str, Torrent]:
     """Generate torrent file for the album.
 
     Args:
         gazelle_site: The tracker API instance.
         path: Path to the album folder.
+        normalize: Apply torrent_name_normalization; False names the files exactly as on disk.
 
     Returns:
         Tuple of (torrent_path, torrent_object).
@@ -377,7 +379,7 @@ def generate_torrent(gazelle_site: "BaseGazelleApi", path: str) -> tuple[str, To
         dryrun.scratch_dir() if dryrun.active() else gazelle_site.dot_torrents_dir,
         f"{os.path.basename(path)} - {gazelle_site.site_string}.torrent",
     )
-    normalization = cfg.upload.torrent_name_normalization
+    normalization = cfg.upload.torrent_name_normalization if normalize else "none"
     if normalization in ("", "none"):
         t.write(tpath, overwrite=True)
     else:
@@ -392,12 +394,17 @@ def generate_torrent(gazelle_site: "BaseGazelleApi", path: str) -> tuple[str, To
 
 
 def format_tracklist_artists(artists: list[str]) -> str:
-    """Join a track's artists, in [artist] tags when artist_tags_in_tracklist is on; a name with [ or ] stays plain."""
+    """Join a track's artists, each in [artist] tags when artist_tags_in_tracklist is on and it names one artist."""
     if not cfg.upload.description.artist_tags_in_tracklist:
         return ", ".join(artists)
-    return ", ".join(
-        f"[artist]{artist}[/artist]" if "[" not in artist and "]" not in artist else artist for artist in artists
-    )
+    return ", ".join(_artist_link(artist) for artist in artists)
+
+
+def _artist_link(artist: str) -> str:
+    # A combined value ("A & B (feat. C)") names no one artist, and [ or ] would break the tag: left plain.
+    if "[" in artist or "]" in artist or [name for name, _role in parse_artists(artist)] != [artist]:
+        return artist
+    return f"[artist]{artist}[/artist]"
 
 
 def generate_description(track_data: dict[str, Any], metadata: dict[str, Any]) -> str:
@@ -467,6 +474,7 @@ def generate_t_description(
         spectral_ids: Spectral IDs.
         lossy_comment: Lossy approval comment.
         source_url: Source URL.
+        conversion_note: How the folder was converted, appended to the description.
 
     Returns:
         BBCode description string.

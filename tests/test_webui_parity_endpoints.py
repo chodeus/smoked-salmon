@@ -484,7 +484,8 @@ def test_upload_forwards_the_selected_trackers(client, album_dir, monkeypatch) -
     assert seen["trackers"] == ["RED", "OPS"]
 
 
-def test_a_web_dry_run_runs_the_upload_as_a_dry_run(client, album_dir, monkeypatch) -> None:
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_a_web_upload_runs_as_a_dry_run_only_when_asked(client, album_dir, monkeypatch, dry_run: bool) -> None:
     from salmon import dryrun
     from salmon.webui.routers import upload as upload_router
 
@@ -494,12 +495,12 @@ def test_a_web_dry_run_runs_the_upload_as_a_dry_run(client, album_dir, monkeypat
         seen["dry_run"] = dryrun.active()
 
     monkeypatch.setattr(upload_router, "run_upload", fake_upload)
-    resp = client.post("/api/upload", json={"path": str(album_dir), "tracker": "RED", "source": "WEB", "dry_run": True})
+    payload = {"path": str(album_dir), "tracker": "RED", "source": "WEB", "dry_run": dry_run}
+    resp = client.post("/api/upload", json=payload)
     assert resp.status_code == 200
     body = _wait(client, resp.json()["id"])
     assert body["status"] == "done", body
-    assert seen == {"dry_run": True}
-    assert not dryrun.active(), "the flag ends with the job"
+    assert seen == {"dry_run": dry_run}
 
 
 def test_a_web_dry_run_refuses_spectrals_after(client, album_dir) -> None:

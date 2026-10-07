@@ -362,6 +362,7 @@ def test_a_range_rip_log_named_for_its_disc_rebuilds_only_that_disc(tmp_path, mo
         pytest.param("rip.1.log", ["1", "1", "2", None], id="a-track-without-disc-number"),
         pytest.param("rip.1.log", ["1", "1", "1", "1"], id="all-one-disc"),
         pytest.param("rip.3.log", ["1", "1", "2", "2"], id="no-track-of-that-disc"),
+        pytest.param("rip.1.log", ["1", "1", "2", "\u00b2"], id="a-disc-tag-int-cannot-read"),
     ],
 )
 def test_a_log_is_checked_against_every_track_when_its_disc_is_unclear(tmp_path, monkeypatch, log_name, discs) -> None:
@@ -374,6 +375,18 @@ def test_a_log_is_checked_against_every_track_when_its_disc_is_unclear(tmp_path,
     anyio.run(logs.check_log_cambia, str(tmp_path / log_name), str(tmp_path))
 
     assert sorted(os.path.basename(path) for path in checked) == list(ONE_FOLDER_CRCS)
+
+
+def test_a_log_numbered_after_its_disc_still_checks_that_disc(tmp_path, monkeypatch) -> None:
+    for name, disc in zip(ONE_FOLDER_CRCS, ["1", "1", "2", "2"], strict=True):
+        _write_flac(tmp_path / name, disc)
+    (tmp_path / "rip.2.1.log").write_text("log")
+    _patch_cambia(monkeypatch, _one_disc_log("D2-1", "D2-2"))
+    checked = _record_file_crcs(monkeypatch, ONE_FOLDER_CRCS)
+
+    anyio.run(logs.check_log_cambia, str(tmp_path / "rip.2.1.log"), str(tmp_path))
+
+    assert sorted(os.path.basename(path) for path in checked) == ["2.01.flac", "2.02.flac"]
 
 
 def test_an_unparseable_log_is_skipped(tmp_path, monkeypatch) -> None:

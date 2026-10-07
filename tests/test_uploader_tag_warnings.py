@@ -1,4 +1,4 @@
-"""A FLAC's ID3 tag is stripped (a scene release only warned about) and the upload goes on (upstream #565)."""
+"""A FLAC's ID3 tag is stripped (a scene release only warned about) and the upload goes on."""
 
 import struct
 
@@ -7,6 +7,7 @@ import asyncclick as click
 from mutagen.flac import FLAC
 
 import salmon.uploader as uploader
+from salmon.checks.tag_rules import has_id3_tag
 
 
 def _write_flac(path, *, title: str | None = None) -> None:
@@ -60,6 +61,7 @@ def test_id3_is_stripped_and_the_upload_goes_on(monkeypatch, tmp_path, capsys) -
     assert "Removed an ID3 tag from 01.flac" in out
     assert "RED and OPS" in out
     assert FLAC(str(path))["title"] == ["Hello"], "stripping must not touch the rest of the tags"
+    assert has_id3_tag(str(path)) is False
 
 
 def test_a_scene_release_is_only_warned_about_and_not_modified(monkeypatch, tmp_path, capsys) -> None:

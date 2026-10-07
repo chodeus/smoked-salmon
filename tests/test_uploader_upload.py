@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from salmon import cfg
 from salmon.uploader.upload import generate_description, generate_source_links, generate_t_description
 
@@ -103,9 +105,6 @@ def test_a_new_group_takes_the_description_override(monkeypatch) -> None:
     assert data["release_desc"] == "[b]Source:[/b] the original"
 
 
-# Ported from upstream (smokin-salmon/smoked-salmon#496).
-
-
 def _two_track_data() -> dict[str, dict[str, Any]]:
     return {
         "01. Track One.flac": {
@@ -143,6 +142,16 @@ def test_generate_description_wraps_artists_in_bbcode_when_enabled() -> None:
 
     assert "[artist]Artist A[/artist], [artist]Artist B[/artist] - Track One" in description
     assert "[artist]Artist A[/artist] - Track Two" in description
+
+
+@pytest.mark.parametrize("artist", ["A & B (feat. C)", "Artist A, Artist B", ""])
+def test_a_value_naming_no_single_artist_is_left_plain(monkeypatch, artist: str) -> None:
+    from salmon.uploader.upload import format_tracklist_artists
+
+    monkeypatch.setattr(cfg.upload.description, "artist_tags_in_tracklist", True)
+    formatted = format_tracklist_artists([artist])
+
+    assert formatted == artist
 
 
 def test_generate_description_leaves_artists_plain_by_default() -> None:

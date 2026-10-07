@@ -65,13 +65,14 @@ _JPEG = _jpeg()
 class _FakeFLAC:
     instances: list = []
     picture_bytes = 0
+    picture_type = PictureType.COVER_FRONT
     padding = 8192
     unreadable = False
 
     def __init__(self, _path):
         # A real JPEG, padded after its end marker to the size the test needs.
         data = b"x" * self.picture_bytes if self.unreadable else _JPEG + b"x" * (self.picture_bytes - len(_JPEG))
-        front = SimpleNamespace(type=PictureType.COVER_FRONT, mime="image/jpeg", data=data)
+        front = SimpleNamespace(type=self.picture_type, mime="image/jpeg", data=data)
         self.pictures = [front]
         self.metadata_blocks = [SimpleNamespace(code=1, length=self.padding)]
         self.saved_with: list = []
@@ -101,6 +102,16 @@ def test_strip_removes_oversized_pictures_and_keeps_the_front_cover(album_dir, m
     assert stripped == ["01. Song.flac"]
     assert flac.pictures == []
     assert flac.saved_with == [cover.get_8kib_padding]
+    assert (album_dir / "cover.jpg").stat().st_size == 2 * MIB
+
+
+def test_strip_keeps_artwork_not_tagged_as_the_front_cover(album_dir, monkeypatch) -> None:
+    track_data = _album_with_flac(monkeypatch, 2 * MIB)
+    monkeypatch.setattr(_FakeFLAC, "picture_type", PictureType.OTHER)
+
+    stripped = cover.strip_oversized_pictures(str(album_dir), track_data)
+
+    assert stripped == ["01. Song.flac"]
     assert (album_dir / "cover.jpg").stat().st_size == 2 * MIB
 
 

@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import tempfile
+from collections import Counter
 from contextlib import suppress
 from itertools import chain
 from string import Formatter
@@ -19,7 +20,7 @@ from salmon.constants import (
 )
 from salmon.errors import UploadError
 from salmon.tagger.mutation import abort_partial
-from salmon.tagger.tagfile import TagFile
+from salmon.tagger.tagfile import TagFile, parse_tag_number
 
 
 class Change(msgspec.Struct, frozen=True):
@@ -105,24 +106,16 @@ def create_track_changes(tags, metadata):
 
     # An unparseable tag reads as 1 (_get_tag_number), so only pairs from trusted tags identify a file,
     # and TRACKNUMBER must parse on every file either way.
-    tracknumber_readable = all(_parse_tag_number(tagset, "tracknumber") is not None for tagset in tags.values())
+    tracknumber_readable = all(parse_tag_number(tagset, "tracknumber") is not None for tagset in tags.values())
     disc_track_keys = [disc_track_key(tagset) for tagset in tags.values()]
     keys_unique = len(set(disc_track_keys)) == len(disc_track_keys)
     discnumber_tags = [_has_tag(tagset, "discnumber") for tagset in tags.values()]
 
-    if tracknumber_readable and keys_unique and not any(discnumber_tags):
-        # No DISCNUMBER anywhere: every key is (1, track), so this proves only the track order,
-        # which is all the positional zip below needs.
-        ordered_tags = sorted(tags.items(), key=lambda item: disc_track_key(item[1]))
-    elif (
-        tracknumber_readable
-        and keys_unique
-        and all(discnumber_tags)
-        and all(_parse_tag_number(tagset, "discnumber") is not None for tagset in tags.values())
-        and set(disc_track_keys) == _metadata_track_keys(metadata["tracks"])
-    ):
-        # A parseable DISCNUMBER on every file, and the pairs are exactly the metadata's: a unique pair
-        # the metadata lacks would be zipped onto the wrong track.
+    # No DISCNUMBER anywhere keys every file (1, track): that proves the track order, all the zip below needs.
+    disc_tags_usable = not any(discnumber_tags) or (
+        all(discnumber_tags) and all(parse_tag_number(tagset, "discnumber") is not None for tagset in tags.values())
+    )
+    if tracknumber_readable and keys_unique and disc_tags_usable and _zips_onto(disc_track_keys, metadata["tracks"]):
         ordered_tags = sorted(tags.items(), key=lambda item: disc_track_key(item[1]))
     else:
         ordered_tags = _order_by_disc_folders(tags, metadata["tracks"])
@@ -211,8 +204,18 @@ def _disc_track_sort_key(value):
     return (0, int(s)) if s.isdecimal() else (1, s.lower())
 
 
+def _zips_onto(keys, discs) -> bool:
+    """Whether files sorted by (disc, track) line up with the metadata: one disc either side, or equal disc sizes."""
+    file_discs = Counter(disc for disc, _track in keys)
+    if len(file_discs) == 1 or len(discs) == 1:
+        return True
+    return [file_discs[disc] for disc in sorted(file_discs)] == [
+        len(discs[disc]) for disc in sorted(discs, key=_disc_track_sort_key)
+    ]
+
+
 def _order_by_disc_folders(tags, discs):
-    """Pair colliding files one folder per disc, in natural order, each by track tag; raise rather than guess."""
+    """Order files the tags can't: one folder per disc, in natural order, each by track tag or numbered names."""
     by_path = sorted(tags.items(), key=lambda item: _natural_key(item[0]))
     if len(by_path) != sum(len(tracks) for tracks in discs.values()):
         return by_path  # the caller reports the track count mismatch
@@ -228,10 +231,14 @@ def _order_by_disc_folders(tags, discs):
 
 def _order_within_disc(group):
     """Order one disc folder's files by distinct track tags, else by file name; raise if neither tells them apart."""
-    numbers = [_parse_tag_number(tagset, "tracknumber") for _, tagset in group]
+    numbers = [parse_tag_number(tagset, "tracknumber") for _, tagset in group]
     if None not in numbers and len(set(numbers)) == len(numbers):
         return sorted(group, key=lambda item: _get_tag_number(item[1], "tracknumber"))
-    if _names_distinct(filename for filename, _ in group):
+    names = [filename for filename, _ in group]
+    pinned = sum(1 for n in numbers if n is not None and numbers.count(n) == 1)
+    # Names place files when they start with a number, or when unique track tags pin all files but one.
+    numbered = all(re.match(r"\d", os.path.basename(name)) for name in names)
+    if (numbered or pinned >= len(group) - 1) and _names_distinct(names):
         by_name = sorted(group, key=lambda item: _natural_key(item[0]))
         if not _names_contradict_unique_tags(by_name):
             return by_name
@@ -240,7 +247,7 @@ def _order_within_disc(group):
 
 def _names_contradict_unique_tags(by_name) -> bool:
     """Whether file-name order puts a file away from the track its tag gives, when no other file has that tag."""
-    numbers = [_parse_tag_number(tagset, "tracknumber") for _, tagset in by_name]
+    numbers = [parse_tag_number(tagset, "tracknumber") for _, tagset in by_name]
     return any(n is not None and numbers.count(n) == 1 and n != place for place, n in enumerate(numbers, 1))
 
 
@@ -397,7 +404,7 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
     )
 
     # Disc folders stay CD01 and track numbers two digits wide; only a release kept in one folder is padded
-    # to its largest disc and track numbers, so its files sort by disc, then track (upstream #479).
+    # to its largest disc and track numbers, so its files sort by disc, then track.
     disc_digits, track_digits = 2, 2
     if multi_disc and not split_multi_disc_into_folders:
         disc_digits = len(str(max((_get_tag_number(t, "discnumber") for t in tags.values()), default=1)))
@@ -584,7 +591,7 @@ def _parse_integer(value, width=2):
 
 def _get_tag_number(tracktags, field):
     """Read a disc/track number off a tag object or dict, defaulting to 1."""
-    number = _parse_tag_number(tracktags, field)
+    number = parse_tag_number(tracktags, field)
     return 1 if number is None else number
 
 
@@ -594,46 +601,19 @@ def _has_tag(tracktags, field):
     return value is not None
 
 
-def _to_number(value):
-    """A decimal string as an int (isdecimal is what int() accepts), so it equals a parsed tag; else as is."""
-    s = str(value)
-    return int(s) if s.isdecimal() else s
-
-
-def _metadata_track_keys(discs):
-    """The metadata's real (disc, track) pairs, numbers read the same way a tag's are."""
-    return {(_to_number(disc), _to_number(track)) for disc, disc_tracks in discs.items() for track in disc_tracks}
-
-
-def _parse_tag_number(tracktags, field):
-    """The tag's number, or None when it is absent or not a number (unlike ``_get_tag_number``, no default)."""
-    value = tracktags.get(field) if isinstance(tracktags, dict) else getattr(tracktags, field, None)
-
-    if isinstance(value, list) and value:
-        value = value[0]
-    if value is None:
-        return None
-    if isinstance(value, str):
-        value = value.split("/")[0]
-        # str.isdecimal(), not str.isdigit(): isdigit() accepts some Unicode digits (superscript
-        # "2") that int() then rejects, while isdecimal() is true for exactly what int() accepts.
-        return int(value) if value.isdecimal() else None
-    if isinstance(value, int):
-        return value
-    return None
-
-
 def move_non_audio_files(directory_move_pairs, disc_of_folder=None):
     """Move the non-track files after the tracks, never replacing one; a disc folder's names carry its disc."""
     disc_of_folder = disc_of_folder or {}
+    track_dirs = [os.path.normpath(old_dir) for _ext, old_dir, _new_dir in directory_move_pairs]
     for ext, old_dir, new_dir in sorted(directory_move_pairs):
-        if old_dir == new_dir:
+        # Gone: a folder of tracks inside another one moves on its own pass, never as that one's stray.
+        if old_dir == new_dir or not os.path.isdir(old_dir) or _same_dir(old_dir, new_dir):
             continue
         disc_number = disc_of_folder.get(old_dir)
         for file in sorted(os.listdir(old_dir)):
             file_path = os.path.join(old_dir, file)
             is_dir = os.path.isdir(file_path)
-            if file.lower().endswith(ext) and not is_dir:
+            if (file.lower().endswith(ext) and not is_dir) or (is_dir and _holds_any(file_path, track_dirs)):
                 continue
             stem, suffix = (file, "") if is_dir else os.path.splitext(file)
             if disc_number is not None:
@@ -644,6 +624,16 @@ def move_non_audio_files(directory_move_pairs, disc_of_folder=None):
                 dest_path = os.path.join(new_dir, f"{stem}.{counter}{suffix}")
                 counter += 1
             shutil.move(file_path, dest_path)
+
+
+def _same_dir(left: str, right: str) -> bool:
+    """Whether two paths are one folder, as a rename that only changes the case on a case-insensitive volume."""
+    return os.path.isdir(right) and os.path.samefile(left, right)
+
+
+def _holds_any(folder: str, paths: list[str]) -> bool:
+    folder = os.path.normpath(folder)
+    return any(path == folder or path.startswith(folder + os.sep) for path in paths)
 
 
 def delete_empty_folders(path):

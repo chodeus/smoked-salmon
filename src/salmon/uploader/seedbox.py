@@ -188,9 +188,7 @@ class UploadManager:
             directory: Local folder path (for "folder" tasks) or .torrent file path (for "seed" tasks).
             task_type: Either "folder" to transfer files or "seed" to add to the download client.
             is_flac: Whether the release is FLAC; skips seedboxes with flac_only=True if False.
-            folder: For a "seed" task, the release folder its torrent was built from, so a failed
-                copy of that folder skips this seed. Ignored for a "folder" task, which always uses
-                its own path. Defaults to `directory` when omitted, matching the old behaviour.
+            folder: For a "seed" task (required), the release folder its torrent was built from.
             site_code: Tracker this upload went to. Skips a seedbox whose `trackers` is set and
                 does not contain it; a seedbox with no `trackers` still matches every tracker.
 
@@ -198,8 +196,10 @@ class UploadManager:
             DryRunRefused: In a dry run, which copies nothing to a seedbox and adds nothing to a client.
         """
         dryrun.refuse(f"queue {directory} for a seedbox copy or a torrent client")
+        task_folder = folder if task_type == "seed" else directory
+        if task_folder is None:
+            raise ValueError("A seed task needs the folder its torrent was built from.")
         click.secho(f"Preparing upload tasks for: {directory}", fg="cyan")
-        task_folder = directory if task_type == "folder" else (folder or directory)
         for seedbox in _enabled_seedboxes():
             if seedbox.torrent_client not in self._client_cache:
                 continue
@@ -246,7 +246,8 @@ class UploadManager:
                     if (id(seedbox), folder) in failed_folders:
                         click.secho(
                             redact_secrets(
-                                f"Skipping seed on {seedbox.url}: the Rclone upload of {folder} failed, "
+                                f"Skipping seed on {_seedbox_display_name(seedbox, secrets)}: "
+                                f"the Rclone upload of {folder} failed, "
                                 f"so {local_path} was not added to the client there. Add it by hand once "
                                 "the files have been copied.",
                                 secrets,

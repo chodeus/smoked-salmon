@@ -829,11 +829,11 @@ def test_add_upload_task_queues_folder_and_seed_for_seedbox(monkeypatch, fake_pa
     manager = make_manager(monkeypatch, [box])
 
     manager.add_upload_task("/music/Album", "folder", is_flac=True)
-    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True)
+    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True, folder="/music/Album")
 
     assert list(manager.tasks) == [
         (box, "/music/Album", "folder", "/music/Album"),
-        (box, "/torrents/Album.torrent", "seed", "/torrents/Album.torrent"),
+        (box, "/torrents/Album.torrent", "seed", "/music/Album"),
     ]
 
 
@@ -865,7 +865,7 @@ def test_add_upload_task_flac_only_seedbox_skipped_for_non_flac(monkeypatch, fak
     any_box = make_seedbox(name="anything", flac_only=False, torrent_client="transmission+http://b:9091")
     manager = make_manager(monkeypatch, [flac_box, any_box])
 
-    manager.add_upload_task("/music/Album [MP3]", "seed", is_flac=False)
+    manager.add_upload_task("/music/Album [MP3].torrent", "seed", is_flac=False, folder="/music/Album [MP3]")
 
     assert [box.name for box, *_ in manager.tasks] == ["anything"]
 
@@ -873,7 +873,7 @@ def test_add_upload_task_flac_only_seedbox_skipped_for_non_flac(monkeypatch, fak
 def test_add_upload_task_flac_only_seedbox_included_for_flac(monkeypatch, fake_parse) -> None:
     manager = make_manager(monkeypatch, [make_seedbox(flac_only=True)])
 
-    manager.add_upload_task("/music/Album [FLAC]", "seed", is_flac=True)
+    manager.add_upload_task("/music/Album [FLAC].torrent", "seed", is_flac=True, folder="/music/Album [FLAC]")
 
     assert len(manager.tasks) == 1
 
@@ -890,7 +890,7 @@ def test_add_upload_task_deduplicates_identical_tasks(monkeypatch, fake_parse) -
 def test_add_upload_task_folder_tasks_are_prepended_before_seed_tasks(monkeypatch, fake_parse) -> None:
     manager = make_manager(monkeypatch, [make_seedbox()])
 
-    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True)
+    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True, folder="/music/Album")
     manager.add_upload_task("/music/Album", "folder", is_flac=True)
 
     # Folder transfers must run before torrent injection, even if queued later.
@@ -955,7 +955,7 @@ async def test_execute_upload_rclone_seed_injects_with_label_and_paused(
 ) -> None:
     box = make_seedbox(type="rclone", directory="/remote/music", label="salmon", add_paused=True)
     manager = make_manager(monkeypatch, [box])
-    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True)
+    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True, folder="/music/Album")
 
     await manager.execute_upload()
 
@@ -972,7 +972,7 @@ async def test_execute_upload_rclone_seed_honors_sftp_path_override(
         extra_args=["-P", "--sftp-path-override", "@/mnt/tank"],
     )
     manager = make_manager(monkeypatch, [box])
-    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True)
+    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True, folder="/music/Album")
 
     await manager.execute_upload()
 
@@ -982,7 +982,7 @@ async def test_execute_upload_rclone_seed_honors_sftp_path_override(
 async def test_execute_upload_local_seed_uses_seedbox_directory(monkeypatch, fake_parse, recorded_transfers) -> None:
     box = make_seedbox(type="local", directory="/data/music")
     manager = make_manager(monkeypatch, [box])
-    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True)
+    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True, folder="/music/Album")
 
     await manager.execute_upload()
 
@@ -995,7 +995,7 @@ async def test_execute_upload_local_seed_falls_back_to_download_directory(
     monkeypatch.setattr(cfg.directory, "download_directory", str(tmp_path))
     box = make_seedbox(type="local", directory="")
     manager = make_manager(monkeypatch, [box])
-    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True)
+    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True, folder="/music/Album")
 
     await manager.execute_upload()
 
@@ -1007,7 +1007,7 @@ async def test_execute_upload_multiple_seedboxes_each_processed(monkeypatch, fak
     box2 = make_seedbox(name="box2", directory="/two", torrent_client="transmission+http://b:9091")
     manager = make_manager(monkeypatch, [box1, box2])
     manager.add_upload_task("/local/Album", "folder", is_flac=True)
-    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True)
+    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True, folder="/music/Album")
 
     await manager.execute_upload()
 
@@ -1038,7 +1038,7 @@ async def test_execute_upload_disabled_seedbox_gets_no_transfers(monkeypatch, fa
     box = make_seedbox(name="off", enabled=False)
     manager = make_manager(monkeypatch, [box])
     manager.add_upload_task("/local/Album", "folder", is_flac=True)
-    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True)
+    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True, folder="/music/Album")
 
     await manager.execute_upload()
 
@@ -1057,7 +1057,7 @@ async def test_execute_upload_seed_failure_is_surfaced_and_does_not_stop_the_res
     box2 = make_seedbox(name="box2", torrent_client=url_b)
     recorded_transfers.inject_fail_urls.add(url_a)
     manager = make_manager(monkeypatch, [box1, box2])
-    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True)
+    manager.add_upload_task("/torrents/Album.torrent", "seed", is_flac=True, folder="/music/Album")
 
     await manager.execute_upload()  # must not raise
 
@@ -1074,7 +1074,7 @@ async def test_execute_upload_end_to_end_seed_reads_torrent_and_injects(monkeypa
     torrent_path.write_bytes(b"d4:info0:e")
     box = make_seedbox(type="rclone", directory="/remote/music", label="salmon", add_paused=True)
     manager = make_manager(monkeypatch, [box])
-    manager.add_upload_task(str(torrent_path), "seed", is_flac=True)
+    manager.add_upload_task(str(torrent_path), "seed", is_flac=True, folder="/music/Album")
 
     await manager.execute_upload()
 
@@ -1099,7 +1099,7 @@ async def test_execute_upload_end_to_end_folder_runs_rclone_before_seed(monkeypa
     client = fake_parse.created[box.torrent_client]
     client.add_to_downloader = lambda *args, **kwargs: events.append("inject") or True
 
-    manager.add_upload_task(str(torrent_path), "seed", is_flac=True)
+    manager.add_upload_task(str(torrent_path), "seed", is_flac=True, folder="/local/Album")
     manager.add_upload_task("/local/Album", "folder", is_flac=True)
     await manager.execute_upload()
 
