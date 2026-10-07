@@ -314,6 +314,24 @@ def test_an_unreadable_folder_counts_as_sharing_files(dirs) -> None:
         (album / "CD1").chmod(0o755)
 
 
+def test_an_entry_that_vanishes_mid_walk_counts_as_sharing_files(monkeypatch, dirs) -> None:
+    from salmon.common import files
+
+    _library, downloads = dirs
+    album = _album(downloads / "Album")
+    real_lstat = os.lstat
+
+    def vanishing(path, *args, **kwargs):
+        if os.path.basename(path) == "01 - one.flac":
+            raise FileNotFoundError(path)
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(files.os, "lstat", vanishing)
+    shared = files.shares_files(str(album))
+
+    assert shared
+
+
 def test_an_album_symlinked_into_a_library_is_in_it(dirs, tmp_path) -> None:
     library, _downloads = dirs
     elsewhere = _album(tmp_path / "elsewhere" / "Album")
@@ -816,7 +834,11 @@ def test_conversions_outside_a_library_still_go_beside_the_source(monkeypatch, d
 def test_spectrals_of_a_library_album_are_made_outside_it(dirs, tmp_path) -> None:
     library, downloads = dirs
 
-    assert get_spectrals_path(str(library / "Album")) == str(downloads / "spectrals_Album")
+    one, two = get_spectrals_path(str(library / "A" / "Album")), get_spectrals_path(str(library / "B" / "Album"))
+
+    assert os.path.dirname(one) == os.path.dirname(two) == str(downloads)
+    assert os.path.basename(one).startswith("spectrals_Album ")
+    assert one != two
     assert get_spectrals_path(str(tmp_path / "seeding" / "Album")) == str(tmp_path / "seeding" / "Album" / "Spectrals")
 
 

@@ -144,9 +144,7 @@ class RedApi(BaseGazelleApi):
 
         return await super().upload(data, files)
 
-    # No dry_run_upload override: RED's server-side dryrun POSTs the whole upload
-    # form to the tracker, which is not what a dry run promises. The base
-    # implementation builds everything locally and sends nothing.
+    # Never RED's server-side dryrun: it POSTs the whole form. The base upload's dry-run gate sends nothing.
 
     async def site_page_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Upload torrent via upload.php with group data enrichment.

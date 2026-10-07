@@ -48,7 +48,7 @@ class TorrentClient:
 
 
 def _qbittorrent_add_succeeded(result: object) -> bool:
-    """Whether torrents_add added it: 5.1+ answers JSON counts, older servers "Ok." or "Fails."."""
+    """Whether torrents_add added it: Web API 2.14+ (qBittorrent 5.2+) answers JSON counts, older "Ok."/"Fails."."""
     if isinstance(result, Mapping):
         success_count = result.get("success_count", 0)
         failure_count = result.get("failure_count", 0)
@@ -196,9 +196,9 @@ class DelugeClient(TorrentClient):
                             self.client.call("label.set_torrent", result, label)
                             click.secho(f"Label '{label}' set successfully", fg="green")
                         except Exception as add_label_error:
-                            click.secho(f"Failed to create/set label: {add_label_error}", fg="red")
+                            click.secho(f"Failed to create/set label: {self._redact(str(add_label_error))}", fg="red")
                     else:
-                        click.secho(f"Failed to set label: {label_error}", fg="red")
+                        click.secho(f"Failed to set label: {self._redact(str(label_error))}", fg="red")
                 else:
                     click.secho(f"Label '{label}' set successfully", fg="green")
 

@@ -155,8 +155,7 @@ def test_post_review_dupe_checks_use_the_edited_metadata_not_the_pre_review_rls_
     site = FakeSite("FAKE1")
     anyio.run(salmon.uploader.upload, _as_gazelle_api(site), str(album), None, "WEB", None, (), None)
 
-    # recheck_dupe is handed the pre-review search strings, to compare against what the edited
-    # metadata gives: that part is already correct on master and is untouched here.
+    # recheck_dupe gets the pre-review search strings, to compare with what the edited metadata gives.
     assert len(recorder.recheck_dupe_calls) == 1
     _, searchstrs, md = recorder.recheck_dupe_calls[0]
     assert searchstrs == old_searchstrs

@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import tempfile
+from collections import Counter
 from contextlib import suppress
 from itertools import chain
 from string import Formatter
@@ -110,19 +111,11 @@ def create_track_changes(tags, metadata):
     keys_unique = len(set(disc_track_keys)) == len(disc_track_keys)
     discnumber_tags = [_has_tag(tagset, "discnumber") for tagset in tags.values()]
 
-    if tracknumber_readable and keys_unique and not any(discnumber_tags):
-        # No DISCNUMBER anywhere: every key is (1, track), so this proves only the track order,
-        # which is all the positional zip below needs.
-        ordered_tags = sorted(tags.items(), key=lambda item: disc_track_key(item[1]))
-    elif (
-        tracknumber_readable
-        and keys_unique
-        and all(discnumber_tags)
-        and all(_parse_tag_number(tagset, "discnumber") is not None for tagset in tags.values())
-        and set(disc_track_keys) == _metadata_track_keys(metadata["tracks"])
-    ):
-        # A parseable DISCNUMBER on every file, and the pairs are exactly the metadata's: a unique pair
-        # the metadata lacks would be zipped onto the wrong track.
+    # No DISCNUMBER anywhere keys every file (1, track): that proves the track order, all the zip below needs.
+    disc_tags_usable = not any(discnumber_tags) or (
+        all(discnumber_tags) and all(_parse_tag_number(tagset, "discnumber") is not None for tagset in tags.values())
+    )
+    if tracknumber_readable and keys_unique and disc_tags_usable and _zips_onto(disc_track_keys, metadata["tracks"]):
         ordered_tags = sorted(tags.items(), key=lambda item: disc_track_key(item[1]))
     else:
         ordered_tags = _order_by_disc_folders(tags, metadata["tracks"])
@@ -211,8 +204,18 @@ def _disc_track_sort_key(value):
     return (0, int(s)) if s.isdecimal() else (1, s.lower())
 
 
+def _zips_onto(keys, discs) -> bool:
+    """Whether files sorted by (disc, track) line up with the metadata: one disc either side, or equal disc sizes."""
+    file_discs = Counter(disc for disc, _track in keys)
+    if len(file_discs) == 1 or len(discs) == 1:
+        return True
+    return [file_discs[disc] for disc in sorted(file_discs)] == [
+        len(discs[disc]) for disc in sorted(discs, key=_disc_track_sort_key)
+    ]
+
+
 def _order_by_disc_folders(tags, discs):
-    """Pair colliding files one folder per disc, in natural order, each by track tag; raise rather than guess."""
+    """Order files the tags can't: one folder per disc, in natural order, each by track tag or numbered names."""
     by_path = sorted(tags.items(), key=lambda item: _natural_key(item[0]))
     if len(by_path) != sum(len(tracks) for tracks in discs.values()):
         return by_path  # the caller reports the track count mismatch
@@ -231,7 +234,11 @@ def _order_within_disc(group):
     numbers = [_parse_tag_number(tagset, "tracknumber") for _, tagset in group]
     if None not in numbers and len(set(numbers)) == len(numbers):
         return sorted(group, key=lambda item: _get_tag_number(item[1], "tracknumber"))
-    if _names_distinct(filename for filename, _ in group):
+    names = [filename for filename, _ in group]
+    pinned = sum(1 for n in numbers if n is not None and numbers.count(n) == 1)
+    # Names place files when they start with a number, or when unique track tags pin all files but one.
+    numbered = all(re.match(r"\d", os.path.basename(name)) for name in names)
+    if (numbered or pinned >= len(group) - 1) and _names_distinct(names):
         by_name = sorted(group, key=lambda item: _natural_key(item[0]))
         if not _names_contradict_unique_tags(by_name):
             return by_name
@@ -589,17 +596,6 @@ def _has_tag(tracktags, field):
     """Whether a tag object or dict carries a (possibly malformed) value for ``field``."""
     value = tracktags.get(field) if isinstance(tracktags, dict) else getattr(tracktags, field, None)
     return value is not None
-
-
-def _to_number(value):
-    """A decimal string as an int (isdecimal is what int() accepts), so it equals a parsed tag; else as is."""
-    s = str(value)
-    return int(s) if s.isdecimal() else s
-
-
-def _metadata_track_keys(discs):
-    """The metadata's real (disc, track) pairs, numbers read the same way a tag's are."""
-    return {(_to_number(disc), _to_number(track)) for disc, disc_tracks in discs.items() for track in disc_tracks}
 
 
 def _parse_tag_number(tracktags, field):

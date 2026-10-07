@@ -1,4 +1,5 @@
 import errno
+import hashlib
 import os
 import platform
 import random
@@ -334,7 +335,7 @@ async def _compress_spectrals(spectrals_path: str) -> None:
 
 
 def spectrals_dir() -> str | None:
-    """The folder spectrals go in beside albums: tmp_dir, or a dry run's own run directory; None for inside them."""
+    """The folder spectrals go in beside albums: tmp_dir, or a dry run's own run directory; None without tmp_dir."""
     if not (cfg.directory.tmp_dir and os.path.isdir(cfg.directory.tmp_dir)):
         return None
     # A dry run leaves nothing outside its run directory, nor replaces another album's spectrals_<name> there.
@@ -348,8 +349,9 @@ def get_spectrals_path(path):
         # Create a unique subfolder for this album
         return os.path.join(beside, f"spectrals_{base_name}")
     if cfg.directory.protects(path):
-        # Never inside a library album: the folder is replaced, then deleted.
-        return os.path.join(cfg.directory.download_directory, f"spectrals_{base_name}")
+        # Never inside a library album: the folder is replaced, then deleted. The digest keeps same-named albums apart.
+        digest = hashlib.sha1(os.path.realpath(path).encode(), usedforsecurity=False).hexdigest()[:8]
+        return os.path.join(cfg.directory.download_directory, f"spectrals_{base_name} {digest}")
     return os.path.join(path, "Spectrals")
 
 

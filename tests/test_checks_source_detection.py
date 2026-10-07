@@ -1,9 +1,11 @@
-"""Media source detection from the album's files (upstream #588), asserted in upstream's answer shape."""
+"""Media source detection from the album's files, asserted in upstream's answer shape."""
 
+import os
 import struct
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import anyio
 import pytest
@@ -275,6 +277,37 @@ def test_a_rip_log_and_a_store_url_conflict(tmp_path) -> None:
     assert detect_source(str(album)) is None
 
 
+@pytest.mark.parametrize(("error", "expected"), [(PermissionError, None), (FileNotFoundError, "WEB")])
+def test_an_unreadable_log_leaves_a_store_url_unconfirmed(tmp_path, monkeypatch, error, expected) -> None:
+    album = _album(tmp_path, {"COMMENT": QOBUZ_URL})
+    (album / "EAC.log").write_bytes(EAC_LOG.encode("utf-16"))
+
+    def refuse_logs(file, *args, **kwargs):
+        if str(file).endswith(".log"):
+            raise error(13, "refused", str(file))
+        return open(file, *args, **kwargs)
+
+    monkeypatch.setattr(source_mod, "open", refuse_logs, raising=False)
+
+    detected = detect_source(str(album))
+
+    assert (detected.source if detected else None) == expected
+
+
+def test_an_unscannable_folder_leaves_a_store_url_unconfirmed(tmp_path, monkeypatch) -> None:
+    album = _album(tmp_path, {"COMMENT": QOBUZ_URL})
+    real_walk = os.walk
+
+    def walk(top, *args, onerror=None, **kwargs):
+        if onerror:
+            onerror(PermissionError(13, "refused", os.path.join(top, "CD2")))
+        return real_walk(top, *args, onerror=onerror, **kwargs)
+
+    monkeypatch.setattr(os, "walk", walk)
+
+    assert detect_source(str(album)) is None
+
+
 def test_a_media_tag_that_disagrees_with_a_store_url_conflicts(tmp_path) -> None:
     album = _album(tmp_path, {"MEDIA": "CD", "SOURCE": QOBUZ_URL})
 
@@ -294,6 +327,18 @@ def test_a_rip_log_beside_hi_res_files_conflicts(tmp_path) -> None:
     (album / "EAC.log").write_bytes(EAC_LOG.encode("utf-16"))
 
     assert detect_source(str(album)) is None
+
+
+@pytest.mark.parametrize(("codec", "expected"), [("mp4a.40.2", "CD"), ("alac", None)], ids=["aac", "alac"])
+def test_only_lossless_audio_above_cd_contradicts_a_rip_log(tmp_path, monkeypatch, codec, expected) -> None:
+    (tmp_path / "01.m4a").write_bytes(b"")
+    (tmp_path / "EAC.log").write_bytes(EAC_LOG.encode("utf-16"))
+    info = SimpleNamespace(bits_per_sample=16, sample_rate=48000, codec=codec)
+    monkeypatch.setattr(source_mod, "MutagenFile", lambda _path: SimpleNamespace(tags={}, info=info))
+
+    detected = detect_source(str(tmp_path))
+
+    assert (detected.source if detected else None) == expected
 
 
 def test_a_rip_log_beside_vinyl_sides_conflicts(tmp_path) -> None:

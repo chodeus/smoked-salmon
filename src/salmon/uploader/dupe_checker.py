@@ -1,5 +1,4 @@
 import asyncio
-import html
 import re
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any
@@ -28,9 +27,7 @@ async def dupe_check_recent_torrents(
     Args:
         gazelle_site: The tracker API instance.
         searchstrs: Search strings to match against.
-        our_title: Our release's title, used to require actual title overlap on top of the
-            search string comparison (see _recent_upload_matches). None skips that extra check,
-            for callers that cannot supply a title.
+        our_title: Our title, which a logged upload's title must share a word with; None skips that check.
 
     Returns:
         List of matching upload tuples (id, artist, title).
@@ -64,7 +61,8 @@ def _title_words(title: str | None) -> set[str]:
     album = re.sub(r"\(?[Ff]eat(\.|uring)? [^\)]+\)?", "", album)
     normalized = re_strip(album, filter_nonscrape=False)
     accented = normalize_accents(normalized)
-    return set(accented.split()) if isinstance(accented, str) else set()
+    # Split on punctuation too: "Rock'n'Roll" and "Rock 'n' Roll", "Lovin'" and "Lovin’" share their words.
+    return {comparable(word) for word in re.split(r"\W+", accented)} - {""} if isinstance(accented, str) else set()
 
 
 def _recent_upload_matches(
@@ -234,8 +232,8 @@ def suggest_group(results: list[dict] | None, release: dict[str, Any] | None) ->
         str(number)
         for number, result in enumerate(results, 1)
         if result.get("groupId") is not None
-        and comparable(html.unescape(str(result.get("groupName") or ""))) == title
-        and comparable(html.unescape(str(result.get("artist") or ""))) in artists
+        and comparable(result.get("groupName")) == title
+        and comparable(result.get("artist")) in artists
         and str(result.get("groupYear") or "").strip() == year
     ]
     return matches[0] if len(matches) == 1 else "N"
@@ -519,7 +517,7 @@ def _edition_catno(torrent: dict, rset: dict) -> str:
 
 
 def matching_torrents(group: dict, release: dict) -> list[dict]:
-    """The group's torrents with the release's media, format, encoding, year and edition title (missing = any)."""
+    """The group's torrents with the release's media, format and encoding, and its year and edition title if known."""
     wanted = (release.get("source"), release.get("format"), release.get("encoding"))
     if not all(wanted):
         return []
