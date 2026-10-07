@@ -212,6 +212,33 @@ def test_move_non_audio_files_does_not_overwrite_same_named_dest(tmp_path) -> No
     assert (tmp_path / "cover.1.jpg").read_text() == "disc"
 
 
+def test_a_folder_of_tracks_inside_another_moves_on_its_own_pass(tmp_path) -> None:
+    disc1, bonus, disc2 = tmp_path / "Disc 1", tmp_path / "Disc 1" / "Bonus", tmp_path / "Disc 2"
+    bonus.mkdir(parents=True)
+    disc2.mkdir()
+    (disc1 / "rip.log").write_text("disc 1")
+    (bonus / "notes.txt").write_text("bonus")
+    (disc2 / "rip.log").write_text("disc 2")
+    pairs = {(".flac", str(folder), str(tmp_path)) for folder in (disc1, bonus, disc2)}
+
+    move_non_audio_files(pairs, {str(disc1): 1, str(disc2): 2})
+
+    moved = {name: (tmp_path / name).read_text() for name in ("rip.1.log", "rip.2.log", "notes.txt")}
+    assert moved == {"rip.1.log": "disc 1", "rip.2.log": "disc 2", "notes.txt": "bonus"}
+
+
+def test_a_folder_renamed_only_in_case_moves_nothing(tmp_path) -> None:
+    old = tmp_path / "cd01"
+    old.mkdir()
+    (old / "rip.log").write_text("log")
+    if not (tmp_path / "CD01").is_dir():
+        pytest.skip("this filesystem is case-sensitive")
+
+    move_non_audio_files({(".flac", str(old), str(tmp_path / "CD01"))})
+
+    assert os.listdir(old) == ["rip.log"]
+
+
 def test_move_non_audio_files_same_dir_is_a_noop(tmp_path) -> None:
     # old_dir == new_dir (renames within one disc folder): files stay untouched,
     # not spuriously suffixed by the overwrite guard.

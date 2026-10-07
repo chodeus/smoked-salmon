@@ -439,6 +439,7 @@ def generate_t_description(
         spectral_ids: Spectral IDs.
         lossy_comment: Lossy approval comment.
         source_url: Source URL.
+        conversion_note: How the folder was converted, appended to the description.
 
     Returns:
         BBCode description string.

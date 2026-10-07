@@ -63,6 +63,31 @@ def test_record_and_lookup_roundtrip(tmp_path) -> None:
     assert not any(out.iterdir()), "nothing lands inside the album"
 
 
+def test_a_record_from_before_records_named_their_folder_is_still_used(tmp_path) -> None:
+    out = tmp_path / "Album [WEB FLAC]"
+    out.mkdir()
+    sidecar = Path(conversions._sidecar(str(out)))
+    sidecar.parent.mkdir()
+    sidecar.write_text(json.dumps(DOWNCONVERT))
+
+    facts = conversions.conversion_of(str(out))
+
+    assert facts == DOWNCONVERT
+
+
+def test_a_record_found_under_another_case_is_the_same_folders(tmp_path) -> None:
+    out = tmp_path / "Album [WEB FLAC]"
+    out.mkdir()
+    conversions.record_conversion(str(out), **DOWNCONVERT)
+    other_case = tmp_path / "album [web flac]"
+    if not other_case.is_dir():
+        pytest.skip("this filesystem is case-sensitive")
+
+    facts = conversions.conversion_of(str(other_case))
+
+    assert facts is not None
+
+
 def test_two_folders_under_one_parent_keep_both_records(tmp_path) -> None:
     first, second = tmp_path / "A [WEB FLAC]", tmp_path / "B [WEB FLAC]"
 

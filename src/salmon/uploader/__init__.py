@@ -1478,6 +1478,7 @@ async def upload_and_report(
         source: Media source.
         override_description: Override torrent description.
         override_lossy_comment: Override lossy comment.
+        conversion_note: How the folder was converted, appended to the generated description.
 
     Returns:
         Tuple of (torrent_id, group_id, torrent_path, torrent_content, url).
