@@ -135,9 +135,6 @@ def test_real_ai_values_still_apply():
     assert out["label"] == "Real Records"
 
 
-# Ported from upstream (smokin-salmon/smoked-salmon#523).
-
-
 def _tags(genres):
     """What reaches the tracker's tags field for genres read from a source."""
     return convert_genres(standardize_genres(genres)).split(",")

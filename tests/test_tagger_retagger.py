@@ -593,8 +593,8 @@ def test_create_track_changes_refuses_a_flat_folder_without_disc_tags():
         create_track_changes(tags, metadata)
 
 
-def test_tag_files_stops_on_a_flat_folder_without_disc_tags_instead_of_crashing(capsys):
-    # The same layout through tag_files: it prints the refusal and returns, so the upload goes on.
+def test_tag_files_stops_on_a_flat_folder_without_disc_tags_instead_of_crashing():
+    # The same layout through tag_files: it raises UploadError, which stops the upload.
     tags = {
         name: _tagset(f"Old {name}", tracknumber=track, discnumber=None)
         for name, track in (
@@ -712,9 +712,8 @@ def test_create_track_changes_orders_by_file_name_when_a_name_holds_a_digit_int_
     assert Change("title", "Old Second", "New Second") in changes["02.flac"]
 
 
-def test_tag_files_stops_when_one_disc_folder_is_genuinely_ambiguous(capsys):
-    # CD1's files have no track tags and tie on file name too: tag_files prints the refusal
-    # and returns, so the upload goes on with the current tags.
+def test_tag_files_stops_when_one_disc_folder_is_genuinely_ambiguous():
+    # CD1's files have no track tags and tie on file name too: tag_files raises UploadError, stopping the upload.
     tags = {
         "CD1/Track.flac": _tagset("Old A", tracknumber=None, discnumber=None),
         "CD1/track.flac": _tagset("Old B", tracknumber=None, discnumber=None),
