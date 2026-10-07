@@ -200,7 +200,13 @@ def test_conversion_uploads_share_original_group(tmp_path: Path, monkeypatch) ->
 
     monkeypatch.setattr(cross_upload_module, "convert_folder", fake_convert)
     monkeypatch.setattr(cross_upload_module, "transcode_folder", fake_transcode)
-    monkeypatch.setattr(cross_upload_module, "generate_torrent", lambda _site, path: (f"{path}.torrent", object()))
+    normalized: list[bool] = []
+
+    def generate_torrent(_site, path, normalize=True):
+        normalized.append(normalize)
+        return f"{path}.torrent", object()
+
+    monkeypatch.setattr(cross_upload_module, "generate_torrent", generate_torrent)
     monkeypatch.setattr(cross_upload_module, "compile_files", fake_compile_files)
     monkeypatch.setattr(cross_upload_module, "generate_conversion_description", lambda *_args: "16-bit description")
     monkeypatch.setattr(cross_upload_module, "generate_transcode_description", lambda _url, rate: f"{rate} description")
@@ -253,6 +259,7 @@ def test_conversion_uploads_share_original_group(tmp_path: Path, monkeypatch) ->
     ]
     assert all(upload["groupid"] == 9 for upload in target.uploads)
     assert all("title" not in upload for upload in target.uploads)
+    assert normalized == [False, False, False], "conversions are seeded with their names as on disk"
 
 
 def test_all_formats_selects_every_possible_conversion() -> None:

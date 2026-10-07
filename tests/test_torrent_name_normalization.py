@@ -1,5 +1,6 @@
-"""Torrent file name normalization (issue #431)."""
+"""Torrent file name normalization (upstream issue #431)."""
 
+import shutil
 import unicodedata
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -94,6 +95,18 @@ def test_normalize_false_names_the_files_as_on_disk(tmp_path: Path, monkeypatch)
     _tpath, t = generate_torrent(gazelle_site, str(album), normalize=False)
 
     assert _file_names(t) == [DECOMPOSED_NAME]
+
+
+def test_a_normalized_torrent_no_longer_reads_the_files_on_disk(tmp_path: Path, monkeypatch) -> None:
+    album = _make_album(tmp_path)
+    monkeypatch.setattr(cfg.upload, "torrent_name_normalization", "NFC")
+    gazelle_site = cast("BaseGazelleApi", cast("object", FakeGazelleApi(str(tmp_path))))
+    _tpath, t = generate_torrent(gazelle_site, str(album))
+    shutil.rmtree(album)
+
+    dumped = t.dump()
+
+    assert dumped
 
 
 def test_torrent_name_normalization_rejects_invalid_value() -> None:

@@ -12,6 +12,7 @@ from salmon.common import UploadFiles, str_to_int_if_int
 from salmon.constants import ARTIST_IMPORTANCES
 from salmon.release_notification import upload_footer
 from salmon.sources import SOURCE_ICONS
+from salmon.tagger.pre_data import parse_artists
 from salmon.tagger.sources import METASOURCES
 from salmon.uploader.spectrals import (
     make_spectral_bbcode,
@@ -393,12 +394,17 @@ def generate_torrent(gazelle_site: "BaseGazelleApi", path: str, normalize: bool 
 
 
 def format_tracklist_artists(artists: list[str]) -> str:
-    """Join a track's artists, in [artist] tags when artist_tags_in_tracklist is on; a name with [ or ] stays plain."""
+    """Join a track's artists, each in [artist] tags when artist_tags_in_tracklist is on and it names one artist."""
     if not cfg.upload.description.artist_tags_in_tracklist:
         return ", ".join(artists)
-    return ", ".join(
-        f"[artist]{artist}[/artist]" if "[" not in artist and "]" not in artist else artist for artist in artists
-    )
+    return ", ".join(_artist_link(artist) for artist in artists)
+
+
+def _artist_link(artist: str) -> str:
+    # A combined value ("A & B (feat. C)") names no one artist, and [ or ] would break the tag: left plain.
+    if "[" in artist or "]" in artist or [name for name, _role in parse_artists(artist)] != [artist]:
+        return artist
+    return f"[artist]{artist}[/artist]"
 
 
 def generate_description(track_data: dict[str, Any], metadata: dict[str, Any]) -> str:

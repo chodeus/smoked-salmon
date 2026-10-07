@@ -387,7 +387,8 @@ async def _upload_conversions(
         )
 
     for label, variant_path, data in variants:
-        torrent_path, torrent = generate_torrent(target_site, variant_path)
+        # Seeded where they were made, named after the source's files as they are on disk.
+        torrent_path, torrent = generate_torrent(target_site, variant_path, normalize=False)
         files = await compile_files(variant_path, torrent, {"source": media})
         click.secho(f"Uploading {label} using {torrent_path}...", fg="yellow")
         torrent_id, _ = await target_site.upload(data, files)
