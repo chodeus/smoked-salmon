@@ -176,6 +176,24 @@ def test_an_upload_with_no_torrent_id_skips_the_spectral_check(flow, monkeypatch
     assert executed == [True]
 
 
+def test_the_release_type_hint_reads_the_chosen_title_not_the_tags(flow, monkeypatch) -> None:
+    calls, _executed, set_fake = flow
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+    monkeypatch.setattr(
+        salmon.uploader, "gather_audio_info", lambda *_args, **_kwargs: {str(n): {"duration": 200} for n in range(7)}
+    )
+    chosen = {"artists": [("Artist", "main")], "title": "Album EP", "label": "Label", "cover": None}
+
+    async def get_metadata(*_args, **_kwargs):
+        return chosen, None
+
+    set_fake("get_metadata", get_metadata)
+    _upload(None)
+    hints = [kwargs["rls_type_hint"] for name, _site, kwargs in calls if name == "edit_metadata"]
+
+    assert hints == [None]
+
+
 def test_a_failed_group_fetch_after_the_upload_still_runs_the_spectral_check(flow, monkeypatch) -> None:
     calls, executed, set_fake = flow
     monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)

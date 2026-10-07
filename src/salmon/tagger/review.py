@@ -1,6 +1,7 @@
 import os
 import re
 from collections import defaultdict
+from collections.abc import Sequence
 
 import asyncclick as click
 
@@ -9,6 +10,13 @@ from salmon.constants import RELEASE_TYPES
 from salmon.errors import InvalidMetadataError
 from salmon.tagger.metadata import _print_metadata
 from salmon.tagger.sources.base import generate_artists, standardize_genres
+
+_SINGLE_MAX_TRACKS = 3
+_EP_MAX_TRACKS = 6
+_ALBUM_MIN_SECONDS = 30 * 60
+_SINGLE_TRACK_MAX_SECONDS = 10 * 60
+_TITLE_SAYS_EP = re.compile(r"\bE\.?P\b\.?", re.IGNORECASE)
+_TITLE_SAYS_SINGLE = re.compile(r"\bsingle\b", re.IGNORECASE)
 
 _CLASSICAL_GENRES = {
     "classical",
@@ -301,15 +309,26 @@ def release_type_from_folder(path: str) -> str | None:
     return _TYPE_FROM_FOLDER.get(parent)
 
 
-def suggest_release_type(folder_hint: str | None, track_count: int) -> str:
-    """Pre-typed release type: the library folder's word when there is one, else the usual size bands."""
+def suggest_release_type(folder_hint: str | None, title: str | None, durations: Sequence[float]) -> str | None:
+    """Release type default: the library folder's word, else by track count and length; None if the title disagrees."""
     if folder_hint:
         return folder_hint
-    if track_count <= 2:
-        return "Single"
-    if track_count <= 6:
-        return "EP"
-    return "Album"
+    if not durations:
+        return None
+    # A length mutagen cannot read is 0, so unknown lengths leave the track count to decide.
+    total = sum(durations)
+    if total >= _ALBUM_MIN_SECONDS or len(durations) > _EP_MAX_TRACKS:
+        rls_type = "Album"
+    elif len(durations) > _SINGLE_MAX_TRACKS or max(durations) > _SINGLE_TRACK_MAX_SECONDS:
+        rls_type = "EP"
+    else:
+        rls_type = "Single"
+    title = title or ""
+    if _TITLE_SAYS_EP.search(title) and rls_type != "EP":
+        return None
+    if _TITLE_SAYS_SINGLE.search(title) and rls_type != "Single":
+        return None
+    return rls_type
 
 
 def _print_release_types():

@@ -355,6 +355,10 @@ class BaseGazelleApi:
     site_code: str
     site_string: str
     api_key: str = ""  # Optional, only for API key upload
+
+    # Artist roles (from ARTIST_IMPORTANCES) that this tracker's upload form does not offer.
+    # Uploads drop artists with these roles rather than send an unrecognised importance value.
+    unsupported_artist_roles: frozenset[str] = frozenset()
     api_key_prefix: str = ""  # OPS wants "token <key>"; RED wants the bare key
     keeplogged: str | None = None
 

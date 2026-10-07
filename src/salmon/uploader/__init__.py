@@ -647,6 +647,7 @@ async def _upload_staged(
         if group_id is None:
             searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
             if len(searchstrs) > 0:
+                # A failed lookup ends the run: this tracker's group drives the deletion offer and the later re-checks.
                 group_id = await check_existing_group(gazelle_site, searchstrs, release=rls_data)
 
         spectral_ids = None
@@ -678,7 +679,11 @@ async def _upload_staged(
             essential_only,
             skip_initial_review,
             apply_ai_suggestions,
-            rls_type_hint=suggest_release_type(folder_type, len(tags)),
+            rls_type_hint=suggest_release_type(
+                folder_type,
+                metadata.get("title") or rls_data.get("title"),
+                [info.get("duration") or 0 for info in audio_info.values()],
+            ),
             rename_into=rename_into,
         )
 
@@ -764,11 +769,26 @@ async def _upload_staged(
                 click.secho(f"Uploading to {gazelle_site.base_url}", fg="cyan", bold=True)
                 # The reviewed metadata, not the tags: an edit to artist, title or year must move the match with it.
                 # A torrent already seeds from the folder: never offer to delete it.
-                group_id = await check_existing_group(gazelle_site, searchstrs, offer_deletion=False, release=metadata)
+                try:
+                    group_id = await check_existing_group(
+                        gazelle_site, searchstrs, offer_deletion=False, release=metadata
+                    )
+                except RequestError as e:
+                    # Like a failed upload: skip this tracker, and offer the next one.
+                    click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
+                    remaining_gazelle_sites.remove(tracker)
+                    tracker = None
+                    if not remaining_gazelle_sites or not (trackers or cfg.upload.multi_tracker_upload):
+                        break
+                    continue
 
             remaining_gazelle_sites.remove(tracker)
-            # The source FLAC's group is on this tracker only.
-            last_site = source_flac is not None or not remaining_gazelle_sites or not cfg.upload.multi_tracker_upload
+            # The source FLAC's group is on this tracker only; trackers named up front are all gone through.
+            last_site = (
+                source_flac is not None
+                or not remaining_gazelle_sites
+                or not (trackers or cfg.upload.multi_tracker_upload)
+            )
 
             # RED bans specific releases from being uploaded; block RED here (OPS is unaffected).
             if gazelle_site.site_code == "RED":
@@ -1518,7 +1538,7 @@ async def _prompt_source(detected: dict | None = None):
     click.echo(f"\nValid sources: {', '.join(SOURCES.values())}")
     default = ""
     if detected and detected.get("confidence") == "confirmed" and detected.get("source") in SOURCES.values():
-        default = str(detected["source"]).lower()
+        default = str(detected["source"])
         click.secho(f"Files suggest {detected['source']}: {' '.join(detected['reasons'])}", fg="cyan")
     while True:
         sauce = await click.prompt(

@@ -120,6 +120,31 @@ def concat_track_data(tags: dict[str, Any], audio_info: dict[str, Any]) -> dict[
     return track_data
 
 
+def _filter_unsupported_artists(
+    gazelle_site: "BaseGazelleApi", artists: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """Drop artists whose role this tracker's upload form does not offer, warning once per dropped role."""
+    unsupported = gazelle_site.unsupported_artist_roles
+    if not unsupported:
+        return artists
+
+    dropped_by_role: dict[str, list[str]] = {}
+    kept: list[tuple[str, str]] = []
+    for name, role in artists:
+        if role in unsupported:
+            dropped_by_role.setdefault(role, []).append(name)
+        else:
+            kept.append((name, role))
+
+    for role, names in dropped_by_role.items():
+        click.secho(
+            f"{gazelle_site.site_string} has no {role.title()} role: not crediting {', '.join(names)}",
+            fg="yellow",
+        )
+
+    return kept
+
+
 def compile_data_new_group(
     gazelle_site: "BaseGazelleApi",
     path: str,
@@ -151,12 +176,13 @@ def compile_data_new_group(
     Returns:
         Data dict for upload POST.
     """
+    artists = _filter_unsupported_artists(gazelle_site, metadata["artists"])
     return {
         "submit": True,
         "type": 0,
         "title": metadata["title"],
-        "artists[]": [a[0] for a in metadata["artists"]],
-        "importance[]": [ARTIST_IMPORTANCES[a[1]] for a in metadata["artists"]],
+        "artists[]": [a[0] for a in artists],
+        "importance[]": [ARTIST_IMPORTANCES[a[1]] for a in artists],
         "year": metadata["group_year"],
         "record_label": metadata["label"],
         "catalogue_number": generate_catno(metadata),

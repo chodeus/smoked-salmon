@@ -246,3 +246,44 @@ def test_fetch_data_still_uses_the_api_when_configured(monkeypatch) -> None:
     data = anyio.run(Scraper().fetch_data, QOBUZ_URL)
 
     assert data == {"title": "from the api"}
+
+
+def test_page_to_api_shape_rejects_an_invalid_release_date() -> None:
+    soup = BeautifulSoup(SINGLE_DISC.replace("Released on 24/5/22", "Released on 31/13/22"), "lxml")
+
+    with pytest.raises(ValueError):
+        page_to_api_shape(soup)
+
+
+def test_fetch_data_turns_an_invalid_page_date_into_a_scrape_error(monkeypatch) -> None:
+    monkeypatch.setattr(cfg.metadata.qobuz, "app_id", None)
+    monkeypatch.setattr(cfg.metadata.qobuz, "user_auth_token", None)
+    bad_date_page = SINGLE_DISC.replace("Released on 24/5/22", "Released on 31/13/22")
+
+    async def fake_page(_self, _url, *_args, **_kwargs):
+        return BeautifulSoup(bad_date_page, "lxml")
+
+    monkeypatch.setattr(qobuz_base.QobuzBase, "fetch_page", fake_page)
+
+    with pytest.raises(qobuz.ScrapeError, match="invalid release date"):
+        anyio.run(Scraper().fetch_data, QOBUZ_URL)
+
+
+def test_fetch_data_reads_the_page_with_the_shipped_default_placeholders(monkeypatch) -> None:
+    # config.default.toml ships app_id = 'app-id' and user_auth_token = 'user_auth_token'; a user
+    # who never set up Qobuz still has both, and they must count as unset, not as real credentials.
+    monkeypatch.setattr(cfg.metadata.qobuz, "app_id", "app-id")
+    monkeypatch.setattr(cfg.metadata.qobuz, "user_auth_token", "user_auth_token")
+
+    async def fake_page(_self, url, *_args, **_kwargs):
+        return BeautifulSoup(SINGLE_DISC, "lxml")
+
+    async def no_api(*_args, **_kwargs):
+        raise AssertionError("the API must not be called with the shipped placeholder credentials")
+
+    monkeypatch.setattr(qobuz_base.QobuzBase, "fetch_page", fake_page)
+    monkeypatch.setattr(qobuz_base.QobuzBase, "get_json", no_api)
+
+    data = anyio.run(Scraper().fetch_data, QOBUZ_URL)
+
+    assert data["title"] == "journaling"

@@ -1,9 +1,14 @@
 """Genre standardization: splitting combined genres without breaking whitelisted ones."""
 
+import json
+
+import salmon.tagger.metadata as metadata_module
 from salmon.common import split_genre
 from salmon.tagger.ai_review import apply_ai_metadata_result
 from salmon.tagger.pre_data import split_genres
+from salmon.tagger.sources import beatport, qobuz
 from salmon.tagger.sources.base import standardize_genres
+from salmon.uploader import convert_genres
 
 
 def test_slash_combined_genres_are_split_into_whitelisted_parts():
@@ -128,3 +133,78 @@ def test_real_ai_values_still_apply():
     out = apply_ai_metadata_result(_md(), {"metadata": {"title": "Better Title", "label": "Real Records"}}, None)
     assert out["title"] == "Better Title"
     assert out["label"] == "Real Records"
+
+
+def _tags(genres):
+    """What reaches the tracker's tags field for genres read from a source."""
+    return convert_genres(standardize_genres(genres)).split(",")
+
+
+def test_convert_genres_normalizes_separators_to_dots():
+    assert convert_genres(["Hip-Hop", "Deep_House", "Pop Rock"]) == "Hip.Hop,Deep.House,Pop.Rock"
+    assert convert_genres([]) == ""
+
+
+def test_convert_genres_spells_out_ampersands():
+    # GENRE_LIST yields these verbatim; "&" is not a tag character.
+    assert convert_genres(["Drum & Bass"]) == "Drum.and.Bass"
+    assert convert_genres(["Rhythm & Blues"]) == "Rhythm.and.Blues"
+    assert convert_genres(["Rock & Roll"]) == "Rock.and.Roll"
+    assert convert_genres(["Singer & Songwriter"]) == "Singer.and.Songwriter"
+    assert convert_genres(["R&B"]) == "R.and.B"
+
+
+def test_convert_genres_collapses_slashes_and_runs():
+    assert convert_genres(["Dance / Pop"]) == "Dance.Pop"
+    assert convert_genres(["Electronica / Downtempo"]) == "Electronica.Downtempo"
+
+
+def test_split_genre_treats_an_ampersand_after_a_separator_as_part_of_it():
+    # Discogs's list style; "&" alone still never splits.
+    assert split_genre("Folk, World, & Country") == ["Folk", "World", "Country"]
+    assert split_genre("Funk, & Drum & Bass") == ["Funk", "Drum & Bass"]
+
+
+def test_file_tag_genres_keep_their_order():
+    assert split_genres(["Techno; Ambient", "Jazz / Folk", "Electronic, Rock"]) == [
+        "Techno",
+        "Ambient",
+        "Jazz",
+        "Folk",
+        "Electronic",
+        "Rock",
+    ]
+    assert split_genres(["Rock", "Pop; Rock"]) == ["Rock", "Pop"]
+    assert split_genres(None) == []
+
+
+def test_source_genres_reach_the_tracker_as_valid_tags():
+    assert _tags(["Drum & Bass"]) == ["Drum.and.Bass"]
+    assert _tags(["Drum and Bass"]) == ["Drum.and.Bass"]
+    assert _tags(["R&B"]) == ["Rhythm.and.Blues"]
+    assert _tags(["Rock & Roll"]) == ["Rock.and.Roll"]
+    assert _tags(["Dance / Pop"]) == ["Dance", "Pop"]
+    assert _tags(["Dance", "Dance / Pop"]) == ["Dance", "Pop"]
+    assert _tags(["\u00c9lectronique\u2192Dance"]) == ["Electronic", "Dance"]
+    # Discogs: the "&" used to survive as the junk tag "and.Country".
+    assert _tags(["Folk, World, & Country"]) == ["Folk", "World", "Country"]
+
+
+def test_manual_metadata_genres_are_standardized(monkeypatch):
+    rls_data = {"genres": [], "urls": []}
+    edited = {"genres": ["Dance / Pop", "Drum & Bass"], "urls": []}
+    monkeypatch.setattr(metadata_module.click, "edit", lambda *_a, **_k: json.dumps(edited))
+    first = metadata_module._get_manual_metadata(rls_data)["genres"]
+    edited["genres"] = "Folk, World, & Country"
+    second = metadata_module._get_manual_metadata(rls_data)["genres"]
+
+    assert first == ["Dance", "Pop", "Drum & Bass"]
+    assert second == ["Folk", "World", "Country"]
+
+
+def test_store_split_tables_still_yield_valid_tags():
+    for table in (beatport.SPLIT_GENRES, qobuz.SPLIT_GENRES):
+        for source_genre, genres in table.items():
+            for tag in _tags(sorted(genres)) if genres else []:
+                assert tag, source_genre
+                assert not set(tag) & set("&/;, "), (source_genre, tag)

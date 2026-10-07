@@ -29,6 +29,7 @@ ROLES = {
     "Vocals": "guest",
     "Featuring [Vocals]": "guest",
     "Remix": "remixer",
+    "Arranged By": "arranger",
 }
 
 RELEASE_TYPES = {
@@ -150,7 +151,8 @@ def parse_artists(artist_soup, track):
                 if role in ROLES:
                     artists.append((sanitize_artist_name(art["name"]), ROLES[role]))
         for name, role in artists:
-            if role != "main" and (name, "main") in artists:
+            # An artist who also arranged the track stays its main artist.
+            if role != "main" and (name, "main") in artists and (name, "arranger") not in artists:
                 artists.remove((name, "main"))
     return artists
 

@@ -1,4 +1,4 @@
-"""A missing UPC is taken from the Deezer album the files came from, and from nowhere else."""
+"""A missing UPC is taken from the Deezer album the files came from, and from nowhere else (#545)."""
 
 import anyio
 import pytest
@@ -38,9 +38,11 @@ def test_album_upc_reads_the_album_by_its_id(monkeypatch) -> None:
     [
         QOBUZ_URL,
         "https://www.deezer.com/track/12345",
+        "https://www.deezer.com/playlist/12345",
         "not a url",
         "https://notdeezer.com/album/322064097",
         "https://deezer.com.evil.test/album/322064097",
+        "https://evil.com/?x=deezer.com/album/1",
         "https://www.deezer.com/album/322064097junk",
     ],
 )
@@ -94,24 +96,198 @@ def test_the_regex_still_reads_every_real_deezer_form() -> None:
     assert [match[2] for match in matches if match] == ["322064097"] * len(forms)
 
 
-def test_fill_upc_from_store_fills_only_a_missing_upc(monkeypatch) -> None:
-    _deezer_answers(monkeypatch, {"upc": "0656465465801"})
+def test_the_regex_rejects_a_lookalike_host_and_an_embedded_url() -> None:
+    """evil.com/?x=deezer.com/album/1 and deezer.com.evil.test must not match (#545)."""
+    lookalikes = [
+        "https://evil.com/?x=deezer.com/album/1",
+        "https://deezer.com.evil.test/album/1",
+        "https://notdeezer.com/album/1",
+    ]
+
+    assert [deezer.DeezerBase.regex.search(url) for url in lookalikes] == [None, None, None]
+
+
+class _FakeInfo:
+    bits_per_sample = 16
+    sample_rate = 44100
+
+
+class _FakeAudio:
+    def __init__(self, tags):
+        self.tags = tags
+        self.info = _FakeInfo()
+
+
+def _tagged(monkeypatch, tags):
+    """Make every audio file `checks.source` reads for tag URLs carry the same tags."""
+    from salmon.checks import source as tag_urls_mod
+
+    monkeypatch.setattr(tag_urls_mod, "MutagenFile", lambda _path: _FakeAudio(tags))
+    monkeypatch.setattr(tag_urls_mod, "get_audio_files", lambda _path, _sort=False: ["01.flac"])
+
+
+def test_fill_upc_from_deezer_fills_only_a_missing_upc(tmp_path, monkeypatch) -> None:
+    (tmp_path / "01.flac").write_bytes(b"")
+    _tagged(monkeypatch, {"source": [DEEZER_URL]})
+    asked = _deezer_answers(monkeypatch, {"upc": "0656465465801"})
+
     missing = {"upc": None}
     present = {"upc": "1111111111111"}
 
-    anyio.run(metadata_mod.fill_upc_from_store, missing, DEEZER_URL)
-    anyio.run(metadata_mod.fill_upc_from_store, present, DEEZER_URL)
+    anyio.run(metadata_mod.fill_upc_from_deezer, missing, str(tmp_path))
+    anyio.run(metadata_mod.fill_upc_from_deezer, present, str(tmp_path))
 
     assert missing["upc"] == "0656465465801"
     assert present["upc"] == "1111111111111"
+    assert asked == ["/album/322064097"]
 
 
-def test_fill_upc_from_store_leaves_qobuz_sourced_files_alone(monkeypatch) -> None:
+def test_fill_upc_from_deezer_leaves_a_non_deezer_source_alone(tmp_path, monkeypatch) -> None:
+    (tmp_path / "01.flac").write_bytes(b"")
+    _tagged(monkeypatch, {"source": [QOBUZ_URL]})
     asked = _deezer_answers(monkeypatch, {"upc": "should not be read"})
-    metadata = {"upc": None}
 
-    anyio.run(metadata_mod.fill_upc_from_store, metadata, QOBUZ_URL)
-    anyio.run(metadata_mod.fill_upc_from_store, metadata, None)
+    metadata = {"upc": None}
+    anyio.run(metadata_mod.fill_upc_from_deezer, metadata, str(tmp_path))
 
     assert metadata["upc"] is None
     assert asked == []
+
+
+def test_fill_upc_from_deezer_takes_two_forms_of_one_album_as_one(tmp_path, monkeypatch) -> None:
+    (tmp_path / "01.flac").write_bytes(b"")
+    _tagged(monkeypatch, {"source": [DEEZER_URL], "url": ["https://deezer.com/album/322064097/"]})
+    asked = _deezer_answers(monkeypatch, {"upc": "0656465465801"})
+
+    metadata = {"upc": None}
+    anyio.run(metadata_mod.fill_upc_from_deezer, metadata, str(tmp_path))
+
+    assert metadata["upc"] == "0656465465801"
+    assert asked == ["/album/322064097"]
+
+
+def test_fill_upc_from_deezer_makes_no_request_for_two_deezer_albums(tmp_path, monkeypatch) -> None:
+    (tmp_path / "01.flac").write_bytes(b"")
+    _tagged(monkeypatch, {"source": [DEEZER_URL], "url": ["https://www.deezer.com/album/111"]})
+    asked = _deezer_answers(monkeypatch, {"upc": "should not be read"})
+
+    metadata = {"upc": None}
+    anyio.run(metadata_mod.fill_upc_from_deezer, metadata, str(tmp_path))
+
+    assert metadata["upc"] is None
+    assert asked == []
+
+
+def test_fill_upc_from_deezer_makes_no_request_with_no_store_url(tmp_path, monkeypatch) -> None:
+    (tmp_path / "01.flac").write_bytes(b"")
+    _tagged(monkeypatch, {"title": ["A Song"]})
+    asked = _deezer_answers(monkeypatch, {"upc": "should not be read"})
+
+    metadata = {"upc": None}
+    anyio.run(metadata_mod.fill_upc_from_deezer, metadata, str(tmp_path))
+
+    assert metadata["upc"] is None
+    assert asked == []
+
+
+async def _fake_select_choice(_choices, _rls_data, default=None):
+    return {"upc": None, "catno": None, "tracks": {}, "genres": []}, None
+
+
+async def _fake_run_metasearch(*_args, **_kwargs):
+    return {}
+
+
+def test_get_metadata_fills_the_upc_from_the_files_deezer_album(tmp_path, monkeypatch) -> None:
+    """get_metadata itself must wire fill_upc_from_deezer in, not just the helper (CodeRabbit, #562)."""
+    (tmp_path / "01.flac").write_bytes(b"")
+    _tagged(monkeypatch, {"source": [DEEZER_URL]})
+    _deezer_answers(monkeypatch, {"upc": "0656465465801"})
+    monkeypatch.setattr(metadata_mod, "run_metasearch", _fake_run_metasearch)
+    monkeypatch.setattr(metadata_mod, "_select_choice", _fake_select_choice)
+
+    rls_data = {
+        "artists": [("An Artist", "main")],
+        "title": "A Title",
+        "tracks": {},
+        "group_year": 2024,
+        "year": 2024,
+        "edition_title": None,
+        "label": None,
+        "catno": None,
+        "upc": None,
+        "genres": [],
+        "rls_type": None,
+        "comment": None,
+        "urls": [],
+    }
+    metadata, _source_url = anyio.run(metadata_mod.get_metadata, str(tmp_path), {"01.flac": {}}, rls_data)
+
+    assert metadata["upc"] == "0656465465801"
+
+
+def test_a_deezer_upc_matching_the_catno_clears_the_catno(tmp_path, monkeypatch) -> None:
+    """A late Deezer UPC equal to the catno clears the catno, as clean_metadata does."""
+    (tmp_path / "01.flac").write_bytes(b"")
+    _tagged(monkeypatch, {"source": [DEEZER_URL]})
+    _deezer_answers(monkeypatch, {"upc": "0656465465801"})
+
+    metadata = {"upc": None, "catno": "0656465465801"}
+    anyio.run(metadata_mod.fill_upc_from_deezer, metadata, str(tmp_path))
+    metadata_mod._dedupe_catno_against_upc(metadata)
+
+    assert metadata["upc"] == "0656465465801"
+    assert metadata["catno"] is None
+
+
+@pytest.mark.parametrize("metadata", [{}, {"catno": "X"}, {"upc": "X"}])
+def test_dedupe_catno_against_upc_tolerates_missing_keys(metadata: dict) -> None:
+    """Hand-edited metadata may omit either key: nothing raises, and nothing changes."""
+    before = dict(metadata)
+
+    metadata_mod._dedupe_catno_against_upc(metadata)
+
+    assert metadata == before
+
+
+def test_get_metadata_clears_a_catno_that_repeats_the_filled_upc(tmp_path, monkeypatch) -> None:
+    (tmp_path / "01.flac").write_bytes(b"")
+    _tagged(monkeypatch, {"source": [DEEZER_URL]})
+    _deezer_answers(monkeypatch, {"upc": "0656465465801"})
+    monkeypatch.setattr(metadata_mod, "run_metasearch", _fake_run_metasearch)
+
+    async def select_with_catno(_choices, _rls_data, default=None):
+        return {"upc": None, "catno": "0656465465801", "tracks": {}, "genres": []}, None
+
+    monkeypatch.setattr(metadata_mod, "_select_choice", select_with_catno)
+    rls_data = {
+        "artists": [("An Artist", "main")],
+        "title": "A Title",
+        "tracks": {},
+        "group_year": 2024,
+        "year": 2024,
+        "edition_title": None,
+        "label": None,
+        "catno": None,
+        "upc": None,
+        "genres": [],
+        "rls_type": None,
+        "comment": None,
+        "urls": [],
+    }
+
+    metadata, _source_url = anyio.run(metadata_mod.get_metadata, str(tmp_path), {"01.flac": {}}, rls_data)
+
+    assert (metadata["upc"], metadata["catno"]) == ("0656465465801", None)
+
+
+def test_a_deezer_album_under_another_key_still_fills_the_upc(tmp_path, monkeypatch) -> None:
+    # The source key names the Qobuz page; the Deezer album the files also carry has the barcode.
+    (tmp_path / "01.flac").write_bytes(b"")
+    _tagged(monkeypatch, {"source": [QOBUZ_URL], "website": [DEEZER_URL]})
+    _deezer_answers(monkeypatch, {"upc": "0656465465801"})
+
+    metadata = {"upc": None}
+    anyio.run(metadata_mod.fill_upc_from_deezer, metadata, str(tmp_path))
+
+    assert metadata["upc"] == "0656465465801"
