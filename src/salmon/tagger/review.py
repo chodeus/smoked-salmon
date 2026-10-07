@@ -315,6 +315,7 @@ def suggest_release_type(folder_hint: str | None, title: str | None, durations: 
         return folder_hint
     if not durations:
         return None
+    # A length mutagen cannot read is 0, so unknown lengths leave the track count to decide.
     total = sum(durations)
     if total >= _ALBUM_MIN_SECONDS or len(durations) > _EP_MAX_TRACKS:
         rls_type = "Album"
