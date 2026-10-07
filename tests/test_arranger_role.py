@@ -1,4 +1,4 @@
-"""The Arranger artist role: credited on RED and OPS, dropped on DIC (ported from upstream #498)."""
+"""The Arranger artist role: credited on RED and OPS, dropped on DIC."""
 
 from typing import TYPE_CHECKING, cast
 

@@ -74,7 +74,7 @@ def test_the_library_folder_names_the_release_type_whatever_the_files_imply() ->
     assert review.suggest_release_type("EP", "Album", [200] * 12) == "EP"
 
 
-# Ported from upstream (smokin-salmon/smoked-salmon#595): with no library folder, the files decide.
+# With no library folder, the files decide.
 @pytest.mark.parametrize(
     ("title", "durations", "expected"),
     [

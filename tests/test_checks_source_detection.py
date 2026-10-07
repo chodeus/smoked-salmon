@@ -1,4 +1,4 @@
-"""Media source detection from the album's files (upstream #588), asserted in upstream's answer shape."""
+"""Media source detection from the album's files, asserted in upstream's answer shape."""
 
 import os
 import struct

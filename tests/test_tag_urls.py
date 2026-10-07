@@ -1,6 +1,6 @@
 """Reading the store URL a release's own files carry in their tags (#545)."""
 
-# Ported from upstream (smokin-salmon/smoked-salmon#562): its tagger/tag_urls.py is this fork's checks/source.py.
+# Upstream's tagger/tag_urls.py is this fork's checks/source.py.
 
 import struct
 

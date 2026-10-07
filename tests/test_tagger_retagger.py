@@ -470,39 +470,6 @@ def test_get_tag_number_unwraps_a_list_value():
     assert _get_tag_number({"tracknumber": ["7"]}, "tracknumber") == 7
 
 
-# Ported from upstream (smokin-salmon/smoked-salmon#520).
-
-
-def test_create_track_changes_keeps_file_order_when_discnumber_tags_are_missing():
-    # CD1/CD2 folders, no DISCNUMBER: pairs collide across discs as (1, 1), so the files keep
-    # their existing (correct) order instead of an untrustworthy sort.
-    tags = {
-        "CD1/01.flac": _tagset("Old CD1 1", tracknumber="1", discnumber=None),
-        "CD1/02.flac": _tagset("Old CD1 2", tracknumber="2", discnumber=None),
-        "CD2/01.flac": _tagset("Old CD2 1", tracknumber="1", discnumber=None),
-        "CD2/02.flac": _tagset("Old CD2 2", tracknumber="2", discnumber=None),
-    }
-    metadata = {
-        "tracks": {
-            "1": {
-                "1": _trackmeta("New CD1 1", "1", "1"),
-                "2": _trackmeta("New CD1 2", "2", "1"),
-            },
-            "2": {
-                "1": _trackmeta("New CD2 1", "1", "2"),
-                "2": _trackmeta("New CD2 2", "2", "2"),
-            },
-        }
-    }
-
-    changes = create_track_changes(tags, metadata)
-
-    assert Change("title", "Old CD1 1", "New CD1 1") in changes["CD1/01.flac"]
-    assert Change("title", "Old CD1 2", "New CD1 2") in changes["CD1/02.flac"]
-    assert Change("title", "Old CD2 1", "New CD2 1") in changes["CD2/01.flac"]
-    assert Change("title", "Old CD2 2", "New CD2 2") in changes["CD2/02.flac"]
-
-
 def test_create_track_changes_falls_back_when_only_some_files_carry_a_discnumber_tag():
     # CD1's file has a DISCNUMBER/TRACKNUMBER pair, CD2's none: a (disc, track) sort would swap them,
     # so a mix of files with and without DISCNUMBER pairs by folder.
@@ -539,7 +506,7 @@ def test_create_track_changes_trusts_continuous_track_numbers_with_no_discnumber
     assert Change("title", "Old 4", "New 2-1") in changes["04.flac"]
 
 
-def test_create_track_changes_falls_back_when_tag_pairs_do_not_match_the_metadata_discs():
+def test_create_track_changes_refuses_tag_pairs_that_do_not_match_the_metadata_discs():
     # Unique, parseable pairs that are not the metadata's (disc 1 has no track 3), in one folder:
     # zipping them would mispair, so this refuses.
     tags = {

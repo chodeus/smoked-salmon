@@ -1,4 +1,4 @@
-"""Prompt defaults from the files when they agree (upstream #595); a typed answer still wins."""
+"""Prompt defaults from the files when they agree; a typed answer still wins."""
 
 from functools import partial
 from pathlib import Path
