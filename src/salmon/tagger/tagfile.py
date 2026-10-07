@@ -242,3 +242,21 @@ class TagFile:
         mut = self.mut
         if mut is not None:
             mut.save()
+
+
+def parse_tag_number(tracktags, field):
+    """The tag's number, or None when it is absent or not a number (unlike ``_get_tag_number``, no default)."""
+    value = tracktags.get(field) if isinstance(tracktags, dict) else getattr(tracktags, field, None)
+
+    if isinstance(value, list) and value:
+        value = value[0]
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.split("/")[0]
+        # str.isdecimal(), not str.isdigit(): isdigit() accepts some Unicode digits (superscript
+        # "2") that int() then rejects, while isdecimal() is true for exactly what int() accepts.
+        return int(value) if value.isdecimal() else None
+    if isinstance(value, int):
+        return value
+    return None

@@ -1,4 +1,4 @@
-"""DICMusic's upload form: the sample rate it requires for 24bit Lossless (#421, upstream #552)."""
+"""DICMusic's upload form: the sample rate it requires for 24bit Lossless."""
 
 import struct
 from pathlib import Path

@@ -63,6 +63,31 @@ def test_record_and_lookup_roundtrip(tmp_path) -> None:
     assert not any(out.iterdir()), "nothing lands inside the album"
 
 
+def test_a_record_from_before_records_named_their_folder_is_still_used(tmp_path) -> None:
+    out = tmp_path / "Album [WEB FLAC]"
+    out.mkdir()
+    sidecar = Path(conversions._sidecar(str(out)))
+    sidecar.parent.mkdir()
+    sidecar.write_text(json.dumps(DOWNCONVERT))
+
+    facts = conversions.conversion_of(str(out))
+
+    assert facts == DOWNCONVERT
+
+
+def test_a_record_found_under_another_case_is_the_same_folders(tmp_path) -> None:
+    out = tmp_path / "Album [WEB FLAC]"
+    out.mkdir()
+    conversions.record_conversion(str(out), **DOWNCONVERT)
+    other_case = tmp_path / "album [web flac]"
+    if not other_case.is_dir():
+        pytest.skip("this filesystem is case-sensitive")
+
+    facts = conversions.conversion_of(str(other_case))
+
+    assert facts is not None
+
+
 def test_two_folders_under_one_parent_keep_both_records(tmp_path) -> None:
     first, second = tmp_path / "A [WEB FLAC]", tmp_path / "B [WEB FLAC]"
 
@@ -337,6 +362,24 @@ def test_a_folder_beside_a_library_still_gets_its_record(tmp_path, monkeypatch) 
     conversions.record_conversion(str(out), **DOWNCONVERT)
 
     assert (tmp_path / conversions.REGISTRY_DIR / f"{out.name}.json").exists()
+
+
+def test_a_dry_run_copy_takes_its_record_into_its_run_directory(tmp_path, monkeypatch) -> None:
+    from salmon import dryrun
+    from salmon.uploader.staging import staged_source
+
+    downloads = tmp_path / "downloads"
+    album = tmp_path / "seeding" / "Album [WEB FLAC]"
+    album.mkdir(parents=True)
+    (album / "01.flac").write_bytes(b"x")
+    downloads.mkdir()
+    monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
+    conversions.record_conversion(str(album), **DOWNCONVERT)
+
+    with dryrun.mode(), staged_source(str(album), scratch=True) as (staged, _rename_into):
+        carried = os.path.exists(conversions._sidecar(staged))
+
+    assert carried
 
 
 def test_staging_a_library_album_takes_its_record_along(tmp_path, monkeypatch) -> None:

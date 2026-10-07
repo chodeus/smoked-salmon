@@ -1,4 +1,4 @@
-"""Downconversion uploads: a converted folder that cannot be read is skipped, the rest go on (upstream #552)."""
+"""Downconversion uploads: a converted folder that cannot be read is skipped, the rest go on."""
 
 import contextlib
 import struct

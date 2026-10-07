@@ -655,6 +655,7 @@ async def _upload_staged(
         if group_id is None:
             searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
             if len(searchstrs) > 0:
+                # A failed lookup ends the run: this tracker's group drives the deletion offer and the later re-checks.
                 group_id = await check_existing_group(gazelle_site, searchstrs, release=rls_data)
 
         spectral_ids = None
@@ -689,7 +690,9 @@ async def _upload_staged(
             skip_initial_review,
             apply_ai_suggestions,
             rls_type_hint=suggest_release_type(
-                folder_type, rls_data.get("title"), [info.get("duration") or 0 for info in audio_info.values()]
+                folder_type,
+                metadata.get("title") or rls_data.get("title"),
+                [info.get("duration") or 0 for info in audio_info.values()],
             ),
             rename_into=rename_into,
             max_path_length=run_path_limit,
@@ -703,7 +706,7 @@ async def _upload_staged(
         our_title = metadata["title"]
         track_data = concat_track_data(tags, audio_info)
         if flac_group is not None:
-            # Matched on the reviewed metadata, so an edited catalogue number or edition moves the pick.
+            # Matched on the reviewed metadata, so an edited year or edition title moves the pick.
             source_flac = await choose_source_flac(flac_group, metadata)
             if source_flac is None:
                 raise click.Abort
@@ -1502,6 +1505,7 @@ async def upload_and_report(
         source: Media source.
         override_description: Override torrent description.
         override_lossy_comment: Override lossy comment.
+        conversion_note: How the folder was converted, appended to the generated description.
 
     Returns:
         Tuple of (torrent_id, group_id, torrent_path, torrent_content, url).

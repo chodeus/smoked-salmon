@@ -196,7 +196,7 @@ def dupe_row(tracker: str, results: list[dict]) -> Row:
         names.append(f"{name} ({editions})" if editions else name)
     detail = (
         f"{len(results)} possible match(es): {', '.join(names)}. "
-        "A different catalogue number or tracklist is a different release; confirm it is not a duplicate."
+        "A different tracklist is a different release; a catalogue number is not. Confirm it is not a duplicate."
     )
     return Row(f"dupe:{tracker}", label, WARN, detail)
 
