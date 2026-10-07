@@ -685,9 +685,12 @@ async def _upload_staged(
         if not group_id:
             group_id = await recheck_dupe(gazelle_site, searchstrs, metadata)
             click.echo()
+        # From here on the review may have changed the artists, title or catno: search with the reviewed metadata.
+        searchstrs = generate_dupe_check_searchstrs(metadata["artists"], metadata["title"], metadata["catno"])
+        our_title = metadata["title"]
         track_data = concat_track_data(tags, audio_info)
         if flac_group is not None:
-            # Matched on the reviewed metadata, so an edited catalogue number or edition moves the pick.
+            # Matched on the reviewed metadata, so an edited year or edition title moves the pick.
             source_flac = await choose_source_flac(flac_group, metadata)
             if source_flac is None:
                 raise click.Abort
@@ -737,15 +740,13 @@ async def _upload_staged(
         spectrals_path = get_spectrals_path(path)
         spectral_urls = await handle_spectrals_upload_and_deletion(spectrals_path, spectral_ids)
     if cfg.upload.requests.last_minute_dupe_check:
-        await last_min_dupe_check(gazelle_site, searchstrs)
+        await last_min_dupe_check(gazelle_site, searchstrs, our_title)
 
     remaining_gazelle_sites = follow_up_trackers(trackers, gazelle_site.site_code)
     tracker = gazelle_site.site_code
     torrent_id = None
     cover_url = None
     stored_cover_urls: dict[str, str] = {}  # cover URL cached per image host (trackers may use different hosts)
-    # Regenerate searchstrs (will be used to search for requests)
-    searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
 
     seedbox_uploader = UploadManager()
     uploaded: list[str] = []  # The URL of each torrent uploaded, for an abort to list
@@ -761,7 +762,6 @@ async def _upload_staged(
                 gazelle_site = salmon.trackers.get_class(tracker)()
 
                 click.secho(f"Uploading to {gazelle_site.base_url}", fg="cyan", bold=True)
-                searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
                 # The reviewed metadata, not the tags: an edit to artist, title or year must move the match with it.
                 # A torrent already seeds from the folder: never offer to delete it.
                 group_id = await check_existing_group(gazelle_site, searchstrs, offer_deletion=False, release=metadata)
@@ -1034,7 +1034,7 @@ async def recheck_dupe(gazelle_site, searchstrs, metadata):
     return None
 
 
-async def last_min_dupe_check(gazelle_site, searchstrs):
+async def last_min_dupe_check(gazelle_site, searchstrs, our_title=None):
     """Check for dupes in the log one last time before upload.
 
     Helpful if you are uploading something in race like conditions.
@@ -1042,10 +1042,11 @@ async def last_min_dupe_check(gazelle_site, searchstrs):
     Args:
         gazelle_site: The tracker API instance.
         searchstrs: Search strings for dupe checking.
+        our_title: Our release's title, so an upload sharing only the artist is not flagged.
     """
     # Should really avoid asking if already shown the same releases from the log.
     click.secho(f"Last Minute Dupe Check on {gazelle_site.site_code}", fg="cyan")
-    recent_uploads = await dupe_check_recent_torrents(gazelle_site, searchstrs)
+    recent_uploads = await dupe_check_recent_torrents(gazelle_site, searchstrs, our_title)
     if recent_uploads:
         print_recent_upload_results(gazelle_site, recent_uploads, " / ".join(searchstrs))
         if not click.confirm(

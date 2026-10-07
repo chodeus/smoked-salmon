@@ -10,7 +10,9 @@ import pytest
 from salmon import cfg
 from salmon.errors import AbortAndDeleteFolder, RequestError, RequestFailedError
 from salmon.uploader.dupe_checker import (
+    _catno_note,
     _confirm_group_id,
+    _held_in_group,
     _prompt_for_group_id,
     _prompt_for_recent_upload_results,
     _sanitize_album_for_dupe_check,
@@ -654,7 +656,7 @@ WEB_FLAC = {"source": "WEB", "format": "FLAC", "encoding": "Lossless", "year": 2
 
 
 def test_matching_torrents_flags_the_same_format_in_the_same_edition():
-    matches = matching_torrents(make_result(100), WEB_FLAC)
+    matches = _held_in_group(make_result(100), WEB_FLAC)
 
     assert matches == [{"media": "WEB", "format": "FLAC", "encoding": "Lossless"}]
 
@@ -669,7 +671,8 @@ def test_matching_torrents_flags_the_same_format_in_the_same_edition():
     ],
 )
 def test_matching_torrents_ignores_other_formats_editions_and_no_release(release):
-    assert matching_torrents(make_result(100), release) == []
+    # A search result: its group year is groupYear, which _held_in_group reads.
+    assert _held_in_group(make_result(100), release) == []
 
 
 def test_matching_torrents_uses_the_remaster_year_when_the_torrent_has_one():
@@ -690,21 +693,33 @@ def _group_with(**edition):
     return rset
 
 
-def test_matching_torrents_skips_another_catalogue_number():
-    """Two releases in one group can share year and format; the catalogue number tells them apart."""
+def test_another_catalogue_number_is_the_same_edition_and_noted():
+    """A catalogue number never tells editions apart, so the DUPE RISK line names ours instead."""
     rset = _group_with(remasterCatalogueNumber="1200214726676")
+    held = rset["torrents"][0]
 
-    other = matching_torrents(rset, {**WEB_FLAC, "catno": "1200214425593"})
-    same = matching_torrents(rset, {**WEB_FLAC, "catno": "12002-14726676"})
-    unknown = matching_torrents(rset, WEB_FLAC)
+    assert matching_torrents(rset, {**WEB_FLAC, "catno": "1200214425593"}) == rset["torrents"]
+    assert _catno_note(held, rset, {**WEB_FLAC, "catno": "1200214425593"}) == (
+        " (catalogue number differs: ours 1200214425593)"
+    )
+    assert _catno_note(held, rset, {**WEB_FLAC, "catno": "12002-14726676"}) == ""
+    assert _catno_note(held, rset, WEB_FLAC) == ""
 
-    assert other == []
-    assert same == rset["torrents"]
-    assert unknown == rset["torrents"]
+
+def test_an_html_escaped_edition_is_the_same_edition():
+    rset = _group_with(remasterTitle="Collector&#39;s Edition", remasterCatalogueNumber="R&amp;B-01")
+    held = rset["torrents"][0]
+    release = {**WEB_FLAC, "edition_title": "Collector's Edition", "catno": "R&B-01"}
+
+    matches = matching_torrents(rset, release)
+    note = _catno_note(held, rset, release)
+
+    assert matches == rset["torrents"]
+    assert note == ""
 
 
 def test_a_remaster_without_its_own_catalogue_number_still_counts():
-    """The group's number belongs to the original release; a remaster that lacks one is unknown, not different."""
+    """A catalogue number never tells editions apart: a remaster without one, beside the group's, still matches."""
     rset = _group_with(remasterCatalogueNumber="")
     rset["group"] = {"catalogueNumber": "ORIG-001"}
 
@@ -713,15 +728,74 @@ def test_a_remaster_without_its_own_catalogue_number_still_counts():
     assert matches == rset["torrents"]
 
 
-def test_an_original_release_uses_the_group_catalogue_number():
+def test_an_original_release_is_noted_against_the_group_catalogue_number():
     rset = make_result(100)
-    rset["group"] = {"catalogueNumber": "ORIG-001"}
+    rset["group"] = {"catalogueNumber": "ORIG-001", "year": 2024}
+    held = rset["torrents"][0]
 
-    other = matching_torrents(rset, {**WEB_FLAC, "catno": "NEW-002"})
-    same = matching_torrents(rset, {**WEB_FLAC, "catno": "ORIG-001"})
+    assert _catno_note(held, rset, {**WEB_FLAC, "catno": "NEW-002"}) == " (catalogue number differs: ours NEW-002)"
+    assert _catno_note(held, rset, {**WEB_FLAC, "catno": "ORIG-001"}) == ""
 
-    assert other == []
-    assert same == rset["torrents"]
+
+async def test_a_dupe_of_another_catalogue_number_is_flagged_and_abort_pre_typed(fake_tracker, install_prompt, capsys):
+    install_prompt(USE_DEFAULT)
+    result = make_result(100)
+    result["torrents"] = [
+        {
+            "media": "WEB",
+            "format": "FLAC",
+            "encoding": "Lossless",
+            "remasterYear": 2024,
+            "remasterRecordLabel": "Label",
+            "remasterCatalogueNumber": "0123456789012",
+        }
+    ]
+
+    with pytest.raises(click.Abort):
+        await _confirm_group_id(fake_tracker, 100, [result], {**WEB_FLAC, "catno": "CAT-100"})
+    out = capsys.readouterr().out
+
+    assert (
+        "DUPE RISK: this edition already has 2024 / Label / 0123456789012 / WEB / FLAC / Lossless "
+        "(catalogue number differs: ours CAT-100); the site removes exact duplicates unless this upload trumps it."
+    ) in out
+
+
+async def test_every_held_torrent_of_the_edition_is_named(fake_tracker, install_prompt, capsys):
+    install_prompt(USE_DEFAULT)
+    result = make_result(100)
+    torrent = {"media": "WEB", "format": "FLAC", "encoding": "Lossless", "remasterYear": 2024}
+    result["torrents"] = [{**torrent, "remasterTitle": "A"}, {**torrent, "remasterTitle": "B"}]
+
+    with pytest.raises(click.Abort):
+        await _confirm_group_id(fake_tracker, 100, [result], WEB_FLAC)
+
+    out = capsys.readouterr().out
+    risks = [line for line in out.splitlines() if line.startswith("DUPE RISK")]
+    assert len(risks) == 2
+    assert any("2024 / A / WEB / FLAC / Lossless" in line for line in risks)
+    assert any("2024 / B / WEB / FLAC / Lossless" in line for line in risks)
+
+
+async def test_another_year_with_another_catalogue_number_is_no_dupe_risk(fake_tracker, install_prompt, capsys):
+    """Regression guard: the year still tells editions apart."""
+    install_prompt(USE_DEFAULT)
+    result = make_result(100)
+    result["torrents"] = [
+        {
+            "media": "WEB",
+            "format": "FLAC",
+            "encoding": "Lossless",
+            "remasterYear": 2015,
+            "remasterCatalogueNumber": "0123456789012",
+        }
+    ]
+
+    confirmed = await _confirm_group_id(fake_tracker, 100, [result], {**WEB_FLAC, "catno": "CAT-100"})
+    out = capsys.readouterr().out
+
+    assert confirmed is True
+    assert "DUPE RISK" not in out
 
 
 def test_matching_torrents_skips_another_edition_title():

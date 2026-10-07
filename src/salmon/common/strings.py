@@ -1,3 +1,4 @@
+import html
 import re
 import unicodedata
 
@@ -16,8 +17,16 @@ def plain_spaces(text: str) -> str:
 
 def comparable(text: object) -> str:
     """Casefolded letters and digits of any script, accents and punctuation dropped, for loose equality of names."""
-    plain = unicodedata.normalize("NFKD", "" if text is None else str(text)).casefold()
+    # Trackers send HTML-escaped text ("Collector&#39;s"): unescaped first, or the entity's letters would count.
+    plain = unicodedata.normalize("NFKD", html.unescape("" if text is None else str(text))).casefold()
     return "".join(char for char in plain if char.isalnum())
+
+
+def artist_keys(artists) -> set[str]:
+    """comparable() forms a listing may name the artists by: each main one (all, if none is main), and all together."""
+    pairs = list(artists or [])
+    names = [name for name, importance in pairs if importance == "main"] or [name for name, _ in pairs]
+    return ({comparable(name) for name in names} | {comparable("".join(names))}) - {""}
 
 
 def make_searchstrs(artists, album, normalize=False) -> list[str]:
