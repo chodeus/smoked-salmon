@@ -182,8 +182,8 @@ def test_a_v1_track_number_alone_is_not_text(tmp_path, comment_end, flagged) -> 
     assert result is flagged
 
 
-def test_a_tag_mutagen_cannot_parse_is_not_flagged_and_does_not_crash(tmp_path, monkeypatch) -> None:
-    """A malformed ID3v2 tag mutagen refuses to parse is not the flagged case, and never aborts the upload."""
+def test_a_tag_mutagen_cannot_read_is_noted_and_does_not_crash(tmp_path, monkeypatch) -> None:
+    """mutagen raises one error for a malformed tag and a failed read, so either gets a note, never a pass."""
     path = tmp_path / "a.mp3"
     path.write_bytes(b"ID3\x02\x00\x00\x00\x00\x00\x00" + b"\x00" * 300 + _id3v1_tag())
     parsed = []
@@ -194,9 +194,11 @@ def test_a_tag_mutagen_cannot_parse_is_not_flagged_and_does_not_crash(tmp_path, 
 
     monkeypatch.setattr(tag_rules, "ID3", raise_unsupported)
 
-    flagged = has_blank_id3v2_alongside_id3v1(str(path))
+    messages = process_tag_issues(str(tmp_path), scene=False)
 
-    assert flagged is False
+    assert messages == [
+        "a.mp3: could not read its ID3v2 tag (mutagen cannot parse this ID3v2 version); check it by hand."
+    ]
     assert parsed == [str(path)]
 
 
