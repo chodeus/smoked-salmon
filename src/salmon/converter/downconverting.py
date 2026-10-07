@@ -71,6 +71,43 @@ def _build_output_path(path: str, bit_depth: BitDepth, sample_rate: int | None, 
         The output directory path string.
     """
     foldername = os.path.basename(path)
+    # Imported here: foldername imports this package, through salmon.converter.conversions.
+    from salmon.tagger.foldername import (
+        drop_resolution_token,
+        holds_resolution_token,
+        resolution_token,
+        swap_resolution_token,
+    )
+
+    try:
+        audio_info = gather_audio_info(path)
+    except UploadError:
+        # A file it cannot read names the output as before, so an existing one is still found and skipped.
+        audio_info = {}
+    # From the source's files, and only where the name holds it as its own word, never digits inside a title.
+    current_token = resolution_token(audio_info)
+    has_token = holds_resolution_token(foldername, current_token)
+    # A {resolution}-only name has no "24bit"/"16bit FLAC" wording: swap its token for the conversion's
+    # in place instead of the bit-depth rewriting below.
+    carries_bit_depth_wording = bool(re.search(r"\d+ ?bit FLAC", foldername, flags=re.IGNORECASE))
+
+    if has_token and not carries_bit_depth_wording:
+        target_rate = sample_rate
+        if target_rate is None:
+            (source_rate,) = {info["sample rate"] for info in audio_info.values()}
+            target_rate = _resolve_sample_rate(source_rate)
+        new_token = resolution_token({"_": {"precision": bit_depth, "sample rate": target_rate}})
+        if new_token:
+            foldername = swap_resolution_token(foldername, current_token, new_token)
+        else:
+            foldername = drop_resolution_token(foldername, current_token)
+        return os.path.join(output_dir or os.path.dirname(path), foldername)
+
+    if has_token:
+        # A template pairing {format} and {resolution} (e.g. "24bit FLAC 24-96"): drop the stale
+        # token so the FLAC/bit-depth rewriting below does not have to work around it.
+        foldername = drop_resolution_token(foldername, current_token)
+
     if re.search(r"24 ?bit FLAC", foldername, flags=re.IGNORECASE):
         foldername = re.sub(r"24 ?bit FLAC", "FLAC", foldername, flags=re.IGNORECASE)
     elif re.search("FLAC", foldername, flags=re.IGNORECASE):

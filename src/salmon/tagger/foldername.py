@@ -20,18 +20,6 @@ from salmon.errors import UploadError
 from salmon.tagger.audio_info import gather_audio_info
 
 
-def resolution(path: str) -> str:
-    """Bit depth and sample rate of the folder's first track, like "24-96"; empty for lossy files and for 16/44.1."""
-    first = next(iter(gather_audio_info(path, sort_by_tracknumber=True).values()), None)
-    if not first:
-        return ""
-    bits, rate = first.get("precision"), first.get("sample rate")
-    # Lossy files report no bit depth, and a zero one is not a depth a folder name should claim.
-    if not bits or not rate or (bits == 16 and rate == 44100):
-        return ""
-    return f"{bits}-{rate / 1000:g}"
-
-
 def rename_folder(path, metadata, auto_rename, check=True, parent=None):
     """
     Create a revised folder name from the new metadata and present it to the
@@ -45,7 +33,7 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
     old_base = os.path.basename(path)
     template_fields = {name for _, name, _, _ in Formatter().parse(cfg.upload.formatting.folder_template) if name}
     if "resolution" in template_fields:
-        metadata = {**metadata, "resolution": resolution(path)}
+        metadata = {**metadata, "resolution": _resolution(path)}
     new_base = generate_folder_name(metadata)
     if metadata["scene"]:
         new_base = old_base
@@ -181,6 +169,57 @@ def _move_specs_folder(src: str, dst: str) -> None:
     carry_specs_claim(old_real, dst)
 
 
+def _resolution(path):
+    """Bit depth and sample rate of the folder's tracks, like "24-96"; blank for lossy, 16/44.1, zero or mixed."""
+    return resolution_token(gather_audio_info(path))
+
+
+def resolution_token(audio_info):
+    """_resolution from a gather_audio_info mapping, so the converters know a name's exact token."""
+    bits = {info["precision"] for info in audio_info.values()}
+    rates = {info["sample rate"] for info in audio_info.values()}
+    if len(bits) != 1 or len(rates) != 1:
+        return ""
+    (bit_depth,), (sample_rate,) = bits, rates
+    if not bit_depth or not sample_rate or (bit_depth == 16 and sample_rate == 44100):
+        return ""
+    return f"{bit_depth}-{sample_rate / 1000:g}"
+
+
+def _token_span(foldername, token):
+    """Where the name's last standalone token is, or None: "1924-48" in a title holds "24-48" but not as a token."""
+    # Anywhere in the name, as a template may put {resolution} outside brackets; the last match wins.
+    matches = list(re.finditer(r"(?<![\w.-])" + re.escape(token) + r"(?![\w.-])", foldername)) if token else []
+    return matches[-1].span() if matches else None
+
+
+def holds_resolution_token(foldername, token) -> bool:
+    """Whether the folder name carries token as its own word."""
+    return _token_span(foldername, token) is not None
+
+
+def swap_resolution_token(foldername, token, new):
+    """Replace the name's standalone resolution token with new; a name without one is left as it is."""
+    span = _token_span(foldername, token)
+    return foldername if span is None else foldername[: span[0]] + new + foldername[span[1] :]
+
+
+def drop_resolution_token(foldername, token):
+    """Remove the name's standalone resolution token, one space beside it, and a bracket pair it leaves empty."""
+    span = _token_span(foldername, token)
+    if span is None:
+        return foldername
+    start, end = span
+    if start > 0 and foldername[start - 1] == " ":
+        start -= 1
+    elif end < len(foldername) and foldername[end] == " ":
+        end += 1
+    name = foldername[:start] + foldername[end:]
+    if 0 < start < len(name) and name[start - 1] in "[({" and name[start] in "])}":
+        name = name[: start - 1].rstrip(" ") + name[start + 1 :]
+    return name.strip()
+
+
 def generate_folder_name(metadata):
     """
     Fill in the values from the folder template using the metadata, then strip
@@ -191,10 +230,31 @@ def generate_folder_name(metadata):
     keys = [fn for _, fn, _, _ in Formatter().parse(template) if fn]
     for k in keys.copy():
         if not metadata.get(k):
-            template = strip_template_keys(template, k)
+            template = _strip_blank_resolution(template) if k == "resolution" else strip_template_keys(template, k)
             keys.remove(k)
     sub_metadata = _fix_format(metadata, keys)
     return template.format(**{k: _sub_illegal_characters(sub_metadata[k]) for k in keys})
+
+
+def _strip_blank_resolution(template):
+    """Drop a blank {resolution} field (any conversion or spec), and the bracket around it if that empties it."""
+    pieces = list(Formatter().parse(template))
+    literals = [literal for literal, *_ in pieces]
+    for i, (_literal, field, _spec, _conversion) in enumerate(pieces):
+        if field != "resolution":
+            continue
+        literals[i] = literals[i].rstrip()
+        after = literals[i + 1].lstrip() if i + 1 < len(literals) else ""
+        if literals[i][-1:] in ("[", "(", "{") and after[:1] == {"[": "]", "(": ")", "{": "}"}[literals[i][-1]]:
+            literals[i] = literals[i][:-1].rstrip()
+            literals[i + 1] = after[1:]
+    parts = []
+    for literal, (_literal, field, spec, conversion) in zip(literals, pieces, strict=True):
+        parts.append(literal.replace("{", "{{").replace("}", "}}"))
+        if field is not None and field != "resolution":
+            parts.append("{" + field + (f"!{conversion}" if conversion else "") + (f":{spec}" if spec else "") + "}")
+    template = re.sub(r"\s+", " ", "".join(parts)).strip()
+    return re.sub(r" *- *$", "", template)
 
 
 def _compile_artist_str(artist_data):

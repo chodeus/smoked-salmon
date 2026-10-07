@@ -270,6 +270,86 @@ def test_all_formats_selects_every_possible_conversion() -> None:
     ) == (False, ("320", "V0"))
 
 
+def test_a_cross_upload_sends_the_targets_own_form_fields(tmp_path: Path, monkeypatch) -> None:
+    sent: list[dict] = []
+
+    class Target:
+        base_url = "https://dicmusic.com"
+
+        def upload_form_fields(self, metadata, track_data):
+            rates = sorted(track["sample rate"] for track in track_data.values())
+            return {"sample_rate": f"{metadata['encoding']} {rates}"}
+
+        async def upload(self, data, _files):
+            sent.append(data)
+            return 1, 2
+
+    async def returning(value):
+        return value
+
+    monkeypatch.setattr(cross_upload_module, "_release_path", lambda _response: tmp_path)
+    monkeypatch.setattr(cross_upload_module, "_verify_release_files", lambda *_args: None)
+    monkeypatch.setattr(
+        cross_upload_module,
+        "_compile_data",
+        lambda *_args: {"bitrate": "24bit Lossless", "artists[]": ["A"], "title": "T"},
+    )
+    monkeypatch.setattr(cross_upload_module, "_rehost_red_images", lambda data, *_args: returning(data))
+    monkeypatch.setattr(cross_upload_module, "check_existing_group", lambda *_args, **_kwargs: returning(None))
+    monkeypatch.setattr(cross_upload_module, "generate_torrent", lambda *_args: ("/t.torrent", None))
+    monkeypatch.setattr(cross_upload_module, "compile_files", lambda *_args: returning({}))
+    monkeypatch.setattr(cross_upload_module, "gather_audio_info", lambda _path: {"01.flac": {"sample rate": 96000}})
+
+    async def run():
+        return await cross_upload_module._upload_response(
+            {"torrent": {"format": "FLAC", "encoding": "24bit Lossless", "media": "WEB"}},
+            cast("Any", SourceSite()),
+            cast("Any", Target()),
+        )
+
+    anyio.run(run)
+
+    assert sent[0]["sample_rate"] == "24bit Lossless [96000]"
+
+
+def test_a_16_bit_cross_upload_reads_no_audio_files(tmp_path: Path, monkeypatch) -> None:
+    read: list[str] = []
+
+    class Target:
+        base_url = "https://dicmusic.com"
+
+        def upload_form_fields(self, _metadata, _track_data):
+            return {}
+
+        async def upload(self, _data, _files):
+            return 1, 2
+
+    async def returning(value):
+        return value
+
+    monkeypatch.setattr(cross_upload_module, "_release_path", lambda _response: tmp_path)
+    monkeypatch.setattr(cross_upload_module, "_verify_release_files", lambda *_args: None)
+    monkeypatch.setattr(
+        cross_upload_module, "_compile_data", lambda *_args: {"bitrate": "Lossless", "artists[]": ["A"], "title": "T"}
+    )
+    monkeypatch.setattr(cross_upload_module, "_rehost_red_images", lambda data, *_args: returning(data))
+    monkeypatch.setattr(cross_upload_module, "check_existing_group", lambda *_args, **_kwargs: returning(None))
+    monkeypatch.setattr(cross_upload_module, "generate_torrent", lambda *_args, **_kwargs: ("/t.torrent", None))
+    monkeypatch.setattr(cross_upload_module, "compile_files", lambda *_args: returning({}))
+    monkeypatch.setattr(cross_upload_module, "gather_audio_info", lambda path: read.append(path) or {})
+
+    async def run():
+        return await cross_upload_module._upload_response(
+            {"torrent": {"format": "FLAC", "encoding": "Lossless", "media": "WEB"}},
+            cast("Any", SourceSite()),
+            cast("Any", Target()),
+        )
+
+    anyio.run(run)
+
+    assert read == []
+
+
 def test_existing_group_skips_duplicate_original(tmp_path: Path, monkeypatch) -> None:
     conversion_calls = []
 

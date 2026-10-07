@@ -1,8 +1,24 @@
+from typing import Any
+
 import asyncclick as click
 
 from salmon import cfg
 from salmon.common import UploadFiles
+from salmon.errors import UploadRefusedError
 from salmon.trackers.base import BaseGazelleApi
+
+SAMPLE_RATES = {
+    44100: "44.1kHz",
+    48000: "48kHz",
+    88200: "88.2kHz",
+    96000: "96kHz",
+    176400: "176.4kHz",
+    192000: "192kHz",
+}
+
+
+def _khz(rate: int) -> str:
+    return f"{rate / 1000:g} kHz"
 
 
 class DICApi(BaseGazelleApi):
@@ -88,3 +104,24 @@ class DICApi(BaseGazelleApi):
         enriched_data = {**data, **self.specific_params}
 
         return await super().upload(enriched_data, files)
+
+    def upload_form_fields(self, metadata: dict[str, Any], track_data: dict[str, Any]) -> dict[str, str]:
+        """DIC's sample_rate field for a 24bit Lossless torrent; UploadRefusedError for mixed or unlisted rates."""
+        if metadata["encoding"] != "24bit Lossless":
+            return {}
+
+        rates = sorted({track["sample rate"] for track in track_data.values()})
+        if len(rates) != 1:
+            found = ", ".join(_khz(rate) for rate in rates) or "none"
+            raise UploadRefusedError(
+                f"{self.site_string} takes one sample rate per torrent, and the files of this one have "
+                f"{found}: not uploading it there."
+            )
+        rate = rates[0]
+        if rate not in SAMPLE_RATES:
+            offered = ", ".join(_khz(rate) for rate in SAMPLE_RATES)
+            raise UploadRefusedError(
+                f"The files of this torrent are {_khz(rate)}, and {self.site_string}'s upload form has no "
+                f"sample rate option for it (only {offered}): not uploading it there."
+            )
+        return {"sample_rate": SAMPLE_RATES[rate]}

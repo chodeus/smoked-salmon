@@ -1,0 +1,115 @@
+"""An MP3 transcode output name must not keep a stale {resolution} token from the source name."""
+
+from salmon.converter import transcoding
+from salmon.errors import UploadError
+
+# What the tag/foldername step would produce with a template combining {format} and {resolution}:
+# a 24-bit/96kHz FLAC folder.
+SOURCE_24_96 = "/downloads/Artist - Title (2024) [WEB 24bit FLAC 24-96]"
+SOURCE_NO_TOKEN = "/downloads/Artist - Title (2024) [WEB 24bit FLAC]"
+
+
+def _stub_24_96(monkeypatch) -> None:
+    monkeypatch.setattr(
+        transcoding,
+        "gather_audio_info",
+        lambda path: {"01.flac": {"precision": 24, "sample rate": 96000}},
+    )
+
+
+def test_transcode_to_v0_drops_the_resolution_token(monkeypatch) -> None:
+    _stub_24_96(monkeypatch)
+
+    new_path = transcoding._build_output_path(SOURCE_24_96, "V0")
+
+    assert new_path == "/downloads/Artist - Title (2024) [WEB MP3 V0]"
+
+
+def test_transcode_to_320_drops_the_resolution_token(monkeypatch) -> None:
+    _stub_24_96(monkeypatch)
+
+    new_path = transcoding._build_output_path(SOURCE_24_96, "320")
+
+    assert new_path == "/downloads/Artist - Title (2024) [WEB MP3 320]"
+
+
+def test_a_name_without_a_resolution_token_is_unaffected(monkeypatch) -> None:
+    # Regression: the default template (no {resolution}) must transcode exactly as before.
+    _stub_24_96(monkeypatch)
+
+    new_path = transcoding._build_output_path(SOURCE_NO_TOKEN, "V0")
+    assert new_path == "/downloads/Artist - Title (2024) [WEB MP3 V0]"
+    new_path = transcoding._build_output_path(SOURCE_NO_TOKEN, "320")
+    assert new_path == "/downloads/Artist - Title (2024) [WEB MP3 320]"
+
+
+def test_a_resolution_only_name_transcodes_with_no_token(monkeypatch) -> None:
+    # Same "[{source} FLAC {resolution}]" style source used in the downconverting tests.
+    monkeypatch.setattr(
+        transcoding,
+        "gather_audio_info",
+        lambda path: {"01.flac": {"precision": 24, "sample rate": 192000}},
+    )
+    source = "/downloads/Artist - Album (2020) [WEB FLAC 24-192]"
+
+    new_path = transcoding._build_output_path(source, "V0")
+    assert new_path == "/downloads/Artist - Album (2020) [WEB MP3 V0]"
+
+
+def test_a_bare_bracketed_token_leaves_no_empty_brackets(monkeypatch) -> None:
+    # "Album [24-192]" has nothing else in the brackets: token removal must take them too.
+    monkeypatch.setattr(
+        transcoding,
+        "gather_audio_info",
+        lambda path: {"01.flac": {"precision": 24, "sample rate": 192000}},
+    )
+    source = "/downloads/Album [24-192]"
+
+    new_path = transcoding._build_output_path(source, "V0")
+
+    assert "[]" not in new_path
+    assert new_path == "/downloads/Album [MP3 V0]"
+
+
+def test_only_the_measured_token_is_removed_not_a_look_alike_in_the_title(monkeypatch) -> None:
+    # A "24-96" in the album title is not a resolution token unless the files say so.
+    monkeypatch.setattr(
+        transcoding,
+        "gather_audio_info",
+        lambda path: {"01.flac": {"precision": 16, "sample rate": 44100}},
+    )
+    source = "/downloads/Artist - 24-96 (2024) [WEB FLAC]"
+
+    new_path = transcoding._build_output_path(source, "V0")
+    assert new_path == "/downloads/Artist - 24-96 (2024) [WEB MP3 V0]"
+
+
+def test_digits_in_the_title_are_not_taken_for_the_token(monkeypatch) -> None:
+    monkeypatch.setattr(
+        transcoding, "gather_audio_info", lambda path: {"01.flac": {"precision": 24, "sample rate": 48000}}
+    )
+    source = "/downloads/Artist - Complete Recordings 1924-48 (2021) [WEB 24bit FLAC]"
+
+    new_path = transcoding._build_output_path(source, "320")
+
+    assert new_path == "/downloads/Artist - Complete Recordings 1924-48 (2021) [WEB MP3 320]"
+
+
+def test_a_token_first_in_its_brackets_leaves_no_stray_space(monkeypatch) -> None:
+    _stub_24_96(monkeypatch)
+
+    new_path = transcoding._build_output_path("/downloads/Artist - Title (2024) [24-96 WEB FLAC]", "V0")
+
+    assert new_path == "/downloads/Artist - Title (2024) [WEB MP3 V0]"
+
+
+def _unreadable(_path):
+    raise UploadError("Could not read audio file: 01.flac")
+
+
+def test_an_unreadable_source_file_names_the_output_as_before(monkeypatch) -> None:
+    monkeypatch.setattr(transcoding, "gather_audio_info", _unreadable)
+
+    new_path = transcoding._build_output_path(SOURCE_24_96, "V0")
+
+    assert new_path == "/downloads/Artist - Title (2024) [WEB MP3 V0 24-96]"

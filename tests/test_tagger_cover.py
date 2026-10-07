@@ -1,11 +1,13 @@
 """Embedded artwork becomes the folder's cover before anything else has to fetch or strip it."""
 
 import importlib
+import io
 from pathlib import Path
 from types import SimpleNamespace
 
 import anyio
 from mutagen.id3 import PictureType
+from PIL import Image
 
 from salmon import cfg
 from salmon.tagger import cover
@@ -27,7 +29,16 @@ def _fake_flac(monkeypatch, pictures):
     monkeypatch.setattr(cfg.upload.formatting, "lowercase_cover", True)
 
 
-def _front(data=b"jpeg-bytes", mime="image/jpeg"):
+def _image(fmt: str) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), (200, 30, 30)).save(buffer, fmt)
+    return buffer.getvalue()
+
+
+JPEG, PNG, GIF = _image("jpeg"), _image("png"), _image("gif")
+
+
+def _front(data=JPEG, mime="image/jpeg"):
     return SimpleNamespace(type=PictureType.COVER_FRONT, mime=mime, data=data)
 
 
@@ -37,11 +48,11 @@ def test_extract_embedded_cover_writes_the_front_picture(album_dir, monkeypatch)
     result = cover.extract_embedded_cover(str(album_dir))
 
     assert result == str(album_dir / "cover.jpg")
-    assert (album_dir / "cover.jpg").read_bytes() == b"jpeg-bytes"
+    assert (album_dir / "cover.jpg").read_bytes() == JPEG
 
 
 def test_extract_embedded_cover_names_png_pictures_png(album_dir, monkeypatch) -> None:
-    _fake_flac(monkeypatch, [_front(b"png-bytes", "image/png")])
+    _fake_flac(monkeypatch, [_front(PNG, "image/png")])
 
     result = cover.extract_embedded_cover(str(album_dir))
 
@@ -67,18 +78,47 @@ def test_no_picture_means_no_cover_file(album_dir, monkeypatch) -> None:
     assert not any(Path(album_dir).glob("cover.*"))
 
 
-def test_unsupported_picture_types_are_skipped_in_favour_of_a_supported_one(album_dir, monkeypatch) -> None:
-    _fake_flac(monkeypatch, [_front(b"webp-bytes", "image/webp"), _front(b"png-bytes", "IMAGE/PNG")])
+def test_another_image_format_is_saved_as_png(album_dir, monkeypatch) -> None:
+    # A cover file must be JPEG or PNG; upstream's #522 converts the rest instead of skipping them.
+    _fake_flac(monkeypatch, [_front(GIF, "image/gif")])
 
     result = cover.extract_embedded_cover(str(album_dir))
 
     assert result == str(album_dir / "cover.png")
-    assert (album_dir / "cover.png").read_bytes() == b"png-bytes"
+    assert Image.open(album_dir / "cover.png").format == "PNG"
     assert not (album_dir / "cover.jpg").exists()
 
 
-def test_only_unsupported_pictures_means_no_cover_file(album_dir, monkeypatch) -> None:
-    _fake_flac(monkeypatch, [_front(b"webp-bytes", "image/webp")])
+def test_the_pictures_own_format_names_the_file_whatever_its_mime_type_says(album_dir, monkeypatch) -> None:
+    _fake_flac(monkeypatch, [_front(PNG, "image/jpeg")])
+
+    written = cover.extract_embedded_cover(str(album_dir))
+
+    assert written == str(album_dir / "cover.png")
+
+
+def test_a_16_bit_picture_is_saved_scaled_down_not_white(album_dir, monkeypatch) -> None:
+    buffer = io.BytesIO()
+    Image.new("I;16", (4, 4), 32768).save(buffer, "TIFF")
+    _fake_flac(monkeypatch, [_front(buffer.getvalue(), "image/tiff")])
+
+    written = cover.extract_embedded_cover(str(album_dir))
+
+    assert written is not None
+    assert Image.open(written).convert("L").getpixel((0, 0)) == 128
+
+
+def test_an_unreadable_picture_is_skipped_in_favour_of_a_readable_one(album_dir, monkeypatch) -> None:
+    _fake_flac(monkeypatch, [_front(b"not an image", "image/webp"), _front(PNG, "IMAGE/PNG")])
+
+    result = cover.extract_embedded_cover(str(album_dir))
+
+    assert result == str(album_dir / "cover.png")
+    assert (album_dir / "cover.png").read_bytes() == PNG
+
+
+def test_only_unreadable_pictures_means_no_cover_file(album_dir, monkeypatch) -> None:
+    _fake_flac(monkeypatch, [_front(b"not an image", "image/webp")])
 
     result = cover.extract_embedded_cover(str(album_dir))
 

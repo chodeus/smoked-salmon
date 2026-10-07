@@ -965,6 +965,10 @@ class BaseGazelleApi:
                 f"API upload failed, response: {_safe_response_excerpt(self._scrub(str(resp)))}"
             ) from err
 
+    def upload_form_fields(self, metadata: dict[str, Any], track_data: dict[str, Any]) -> dict[str, str]:
+        """Upload form fields only this tracker has, for one torrent; UploadRefusedError if none describes it."""
+        return {}
+
     async def site_page_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Upload torrent via upload.php.
 

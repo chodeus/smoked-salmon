@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import asyncclick as click
 import pyperclip
+from mutagen import MutagenError
 
 import salmon.trackers
 from salmon import cfg, dryrun
@@ -1336,6 +1337,34 @@ async def execute_downconversion_tasks(
             )
             await anyio.sleep(0.1)
 
+            # The upload describes the converted files (their sample rate, for one), not the source's.
+            # A folder that was already there may hold other files: then it is not this conversion.
+            try:
+                converted_info = gather_audio_info(new_path)
+            except (UploadError, MutagenError) as e:
+                click.secho(f"  Could not read {new_path} ({e}): not uploading it.", fg="red", bold=True)
+                continue
+            if converted_info.keys() != track_data.keys():
+                click.secho(
+                    f"  {new_path} does not hold the same audio files as the source: not uploading it.",
+                    fg="red",
+                    bold=True,
+                )
+                continue
+            # Nor is it this conversion if its files are not in the format the task makes.
+            expected = (task["target_bitdepth"], task["target_sample_rate"])
+            found = sorted({(info["precision"], info["sample rate"]) for info in converted_info.values()})
+            if found != [expected]:
+                found_formats = ", ".join(f"{bits} bit {rate / 1000:g} kHz" for bits, rate in found)
+                click.secho(
+                    f"  {new_path} holds {found_formats} files, not {expected[0]} bit {expected[1] / 1000:g} kHz: "
+                    "not uploading it.",
+                    fg="red",
+                    bold=True,
+                )
+                continue
+            conversion_track_data = {name: {**track, **converted_info[name]} for name, track in track_data.items()}
+
             # Update metadata for this conversion
             conversion_metadata = metadata.copy()
             conversion_metadata["format"], conversion_metadata["encoding"] = downconversion_format(task)
@@ -1352,7 +1381,7 @@ async def execute_downconversion_tasks(
                 group_id,
                 conversion_metadata,
                 cover_url,
-                track_data,
+                conversion_track_data,
                 hybrid,
                 lossy_master,
                 spectral_urls,

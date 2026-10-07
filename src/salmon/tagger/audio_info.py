@@ -48,7 +48,10 @@ def metadata_size(mut) -> int | None:
     pictures = getattr(mut, "pictures", None)
     blocks = getattr(mut, "metadata_blocks", None)
     if pictures is not None and blocks is not None:
-        return sum(len(picture.data) for picture in pictures) + sum(block.length for block in blocks if block.code == 1)
+        # Each PICTURE block whole: its own fields (MIME type, dimensions, lengths) count against the limit too.
+        return sum(len(picture.write()) for picture in pictures) + sum(
+            block.length for block in blocks if block.code == 1
+        )
     size = getattr(getattr(mut, "tags", None), "size", None)
     return size if isinstance(size, int) else None
 
