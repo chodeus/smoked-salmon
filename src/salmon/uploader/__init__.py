@@ -1387,6 +1387,7 @@ async def execute_downconversion_tasks(
                     bold=True,
                 )
                 continue
+            # Keys may predate check_folder_structure's truncation: only values are read, as the description is ours.
             conversion_track_data = {name: {**track, **converted_info[name]} for name, track in track_data.items()}
 
             # Update metadata for this conversion
