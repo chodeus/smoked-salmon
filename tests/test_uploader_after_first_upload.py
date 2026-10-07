@@ -338,3 +338,23 @@ def test_a_spectrals_folder_salmon_did_not_make_is_kept_when_nothing_is_picked(m
     os.mkdir(theirs)
     anyio.run(lambda: spectrals.post_upload_spectral_check(FakeSite(), album, 1, None, {}, "WEB", None))  # type: ignore[arg-type]
     assert os.path.isdir(theirs)
+
+
+def test_every_trackers_conversions_are_checked_against_the_runs_path_limit(flow, monkeypatch) -> None:
+    _calls, _executed, _set_fake = flow
+    task = {"name": "MP3 320", "action": "transcode", "encoding": "320"}
+    limits: list[int | None] = []
+
+    async def choose(*_args):
+        return [task]
+
+    async def execute(*_args, max_path_length=None, **_kwargs):
+        limits.append(max_path_length)
+
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
+    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args: [task])
+    monkeypatch.setattr(salmon.uploader, "prompt_downconversion_choice", choose)
+    monkeypatch.setattr(salmon.uploader, "execute_downconversion_tasks", execute)
+    _upload(["RED", "OPS"])
+
+    assert limits == [180, 180]
