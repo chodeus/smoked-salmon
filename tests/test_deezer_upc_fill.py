@@ -154,6 +154,30 @@ def test_fill_upc_from_deezer_leaves_a_non_deezer_source_alone(tmp_path, monkeyp
     assert asked == []
 
 
+def test_fill_upc_from_deezer_takes_two_forms_of_one_album_as_one(tmp_path, monkeypatch) -> None:
+    (tmp_path / "01.flac").write_bytes(b"")
+    _tagged(monkeypatch, {"source": [DEEZER_URL], "url": ["https://deezer.com/album/322064097/"]})
+    asked = _deezer_answers(monkeypatch, {"upc": "0656465465801"})
+
+    metadata = {"upc": None}
+    anyio.run(metadata_mod.fill_upc_from_deezer, metadata, str(tmp_path))
+
+    assert metadata["upc"] == "0656465465801"
+    assert asked == ["/album/322064097"]
+
+
+def test_fill_upc_from_deezer_makes_no_request_for_two_deezer_albums(tmp_path, monkeypatch) -> None:
+    (tmp_path / "01.flac").write_bytes(b"")
+    _tagged(monkeypatch, {"source": [DEEZER_URL], "url": ["https://www.deezer.com/album/111"]})
+    asked = _deezer_answers(monkeypatch, {"upc": "should not be read"})
+
+    metadata = {"upc": None}
+    anyio.run(metadata_mod.fill_upc_from_deezer, metadata, str(tmp_path))
+
+    assert metadata["upc"] is None
+    assert asked == []
+
+
 def test_fill_upc_from_deezer_makes_no_request_with_no_store_url(tmp_path, monkeypatch) -> None:
     (tmp_path / "01.flac").write_bytes(b"")
     _tagged(monkeypatch, {"title": ["A Song"]})
@@ -218,10 +242,12 @@ def test_a_deezer_upc_matching_the_catno_clears_the_catno(tmp_path, monkeypatch)
 
 @pytest.mark.parametrize("metadata", [{}, {"catno": "X"}, {"upc": "X"}])
 def test_dedupe_catno_against_upc_tolerates_missing_keys(metadata: dict) -> None:
-    """Manually edited metadata can omit either key entirely; this must not raise KeyError (CodeRabbit, #562)."""
+    """Hand-edited metadata may omit either key: nothing raises, and nothing changes."""
+    before = dict(metadata)
+
     metadata_mod._dedupe_catno_against_upc(metadata)
 
-    assert metadata.get("catno") != metadata.get("upc") or not metadata.get("catno")
+    assert metadata == before
 
 
 def test_get_metadata_clears_a_catno_that_repeats_the_filled_upc(tmp_path, monkeypatch) -> None:

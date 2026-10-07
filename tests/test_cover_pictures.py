@@ -1,4 +1,4 @@
-"""Embedding, shrinking and saving cover pictures (ported from upstream #522 and #528, on the fork's strip)."""
+"""Embedding, shrinking and saving cover pictures."""
 
 import io
 import random

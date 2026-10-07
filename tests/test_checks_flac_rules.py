@@ -75,9 +75,7 @@ def test_rules_flag_an_id3_tag_only_inside_a_flac() -> None:
 
     warnings = collect_upload_warnings("RED", FOLDER, tracks)
 
-    assert warnings == [
-        "ID3 tag inside a FLAC (2.2.10.8, a trump reason); the integrity re-encode removes it: 01. Song.flac"
-    ]
+    assert warnings == ["ID3 tag inside a FLAC (2.2.10.8, a trump reason), left in place: 01. Song.flac"]
 
 
 def test_rules_flag_an_uncompressed_flac() -> None:

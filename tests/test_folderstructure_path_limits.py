@@ -1,4 +1,4 @@
-"""The path limit is the run's trackers' (MAX_PATH_LENGTH), not always the strictest (upstream #565)."""
+"""The path limit is the run's trackers' (MAX_PATH_LENGTH), not always the strictest."""
 
 import pytest
 

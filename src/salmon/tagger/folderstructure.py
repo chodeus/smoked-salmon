@@ -96,13 +96,14 @@ def _check_path_lengths(path: str, scene: bool, max_path_length: int | None = No
 
     Paths are measured as the tracker counts them — the torrent's top-level folder
     plus what sits under it — not against the download directory, which only matches
-    when the album happens to live there. Files up to 70 characters over are
-    truncated; beyond that they cannot be safely shortened and raise immediately.
+    when the album happens to live there. A file name that can be shortened enough is
+    truncated; one that cannot raises immediately.
 
     Args:
         path: Absolute path to the release folder being checked.
         scene: Whether the release is a scene release. Scene releases are never
             auto-truncated; any offending path raises instead.
+        max_path_length: The run's limit; the strictest tracker's when not given.
 
     Raises:
         NoncompliantFolderStructure: If any path exceeds the limit and cannot be

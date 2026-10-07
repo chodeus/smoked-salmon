@@ -21,6 +21,7 @@ from salmon.errors import RequestError
 from salmon.images import HOSTS
 from salmon.images.red import bare_image_url
 from salmon.release_notification import FORK_URL, get_version, has_upload_footer, upload_footer
+from salmon.tagger.audio_info import gather_audio_info
 from salmon.uploader.dupe_checker import check_existing_group, generate_dupe_check_searchstrs
 from salmon.uploader.upload import compile_files, generate_torrent
 
@@ -220,6 +221,9 @@ async def _upload_response(
             transcodes,
         )
         return 0, target_group_id
+    # The target's own form fields (DIC: a 24bit Lossless torrent's sample rate), refused before anything is sent.
+    track_data = gather_audio_info(str(path)) if "24bit" in data["bitrate"] else {}
+    form_fields = target_site.upload_form_fields({"encoding": data["bitrate"]}, track_data)
     data = await _rehost_red_images(data, source_site, target_site)
     # Add to an existing target group if the album is already there, rather than
     # creating a duplicate group and splitting the swarm.
@@ -233,7 +237,7 @@ async def _upload_response(
     torrent_path, torrent = generate_torrent(target_site, str(path), normalize=False)
     files = await compile_files(str(path), torrent, {"source": source_torrent["media"]})
     click.secho(f"Uploading {path.name} using {torrent_path}...", fg="yellow")
-    torrent_id, group_id = await target_site.upload(data, files)
+    torrent_id, group_id = await target_site.upload({**data, **form_fields}, files)
 
     if downconvert or transcodes:
         original_url = f"{target_site.base_url}/torrents.php?id={group_id}&torrentid={torrent_id}"

@@ -64,9 +64,7 @@ def collect_upload_warnings(site_code: str, folder_name: str, track_data: dict) 
             )
         if filename.lower().endswith(".flac"):
             if track.get("id3"):
-                warnings.append(
-                    f"ID3 tag inside a FLAC (2.2.10.8, a trump reason); the integrity re-encode removes it: {filename}"
-                )
+                warnings.append(f"ID3 tag inside a FLAC (2.2.10.8, a trump reason), left in place: {filename}")
             if is_uncompressed(track):
                 warnings.append(f"Uncompressed FLAC (2.2.10.10, not allowed); recompress it (salmon up -c): {filename}")
         sample_rate = track.get("sample rate")
@@ -89,13 +87,15 @@ def path_limit_for(site_codes) -> int:
     return min((MAX_PATH_LENGTH.get(code, STRICTEST_PATH_LENGTH) for code in site_codes), default=STRICTEST_PATH_LENGTH)
 
 
-def _has_id3v1_block(filepath: str) -> bool:
+def _id3v1_holds_text(filepath: str) -> bool:
+    """Whether the file ends in an ID3v1 block with anything in its text fields."""
     with open(filepath, "rb") as handle:
         handle.seek(0, os.SEEK_END)
         if handle.tell() < 128:
             return False
         handle.seek(-128, os.SEEK_END)
-        return handle.read(3) == b"TAG"
+        block = handle.read(128)
+    return block[:3] == b"TAG" and bool(block[3:127].strip(b"\0 "))
 
 
 def _has_id3v2_header(filepath: str) -> bool:
@@ -105,10 +105,11 @@ def _has_id3v2_header(filepath: str) -> bool:
 
 def has_blank_id3v2_alongside_id3v1(filepath: str) -> bool:
     """True for an MP3 whose filled-in ID3v1 tag sits beside a frameless ID3v2 tag, both found on disk."""
-    if not (_has_id3v1_block(filepath) and _has_id3v2_header(filepath)):
+    if not (_id3v1_holds_text(filepath) and _has_id3v2_header(filepath)):
         return False
     try:
-        tags = ID3(filepath)
+        # load_v1=False: mutagen otherwise reads the v1 fields into the v2 tag, and a blank v2 looks filled.
+        tags = ID3(filepath, load_v1=False)
     except (MutagenError, OSError):
         return False
     return not any(tags.getall(key) for key in tags)
@@ -127,7 +128,10 @@ def process_tag_issues(path: str, *, scene: bool) -> list[str]:
                 )
                 continue
             try:
-                FLAC(filepath).save(deleteid3=True)
+                flac = FLAC(filepath)
+                padding = sum(block.length for block in flac.metadata_blocks if block.code == 1)
+                # The original padding, not the freed ID3 bytes too, which would count against the 1 MiB rule.
+                flac.save(deleteid3=True, padding=lambda _info, keep=padding: keep)
             except (MutagenError, OSError) as e:
                 messages.append(f"{filename}: could not remove its ID3 tag ({e}); remove it by hand.")
             else:
