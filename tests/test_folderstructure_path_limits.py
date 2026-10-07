@@ -72,6 +72,16 @@ def test_multi_tracker_upload_disabled_uses_only_this_trackers_limit(monkeypatch
     assert uploader._max_path_length_for_run("OPS", None, None) == 255
 
 
+@pytest.mark.parametrize(("trackers", "limit"), [([], 255), (["OPS", "RED"], 180)])
+def test_an_explicit_tracker_list_is_the_runs_reach_even_when_empty(monkeypatch, trackers, limit) -> None:
+    monkeypatch.setattr(cfg.upload, "multi_tracker_upload", True)
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
+
+    result = uploader._max_path_length_for_run("OPS", trackers, None)
+
+    assert result == limit
+
+
 def test_dic_keeps_the_180_default_pending_confirmation(monkeypatch) -> None:
     monkeypatch.setattr(cfg.upload, "multi_tracker_upload", True)
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["DIC"])
