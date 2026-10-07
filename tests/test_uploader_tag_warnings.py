@@ -1,4 +1,4 @@
-"""A FLAC's ID3 tag is stripped (a scene release only warned about) and the upload goes on (upstream #565)."""
+"""A FLAC's ID3 tag is stripped (a scene release only warned about) and the upload goes on."""
 
 import struct
 

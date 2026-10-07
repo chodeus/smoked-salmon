@@ -1,4 +1,4 @@
-"""FLAC ID3 tags stripped unless scene, the dual-ID3 MP3 case and the path helper (upstream #565)."""
+"""FLAC ID3 tags stripped unless scene, the dual-ID3 MP3 case and the path helper."""
 
 import shutil
 import struct
