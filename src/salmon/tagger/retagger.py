@@ -404,7 +404,7 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
     )
 
     # Disc folders stay CD01 and track numbers two digits wide; only a release kept in one folder is padded
-    # to its largest disc and track numbers, so its files sort by disc, then track (upstream #479).
+    # to its largest disc and track numbers, so its files sort by disc, then track.
     disc_digits, track_digits = 2, 2
     if multi_disc and not split_multi_disc_into_folders:
         disc_digits = len(str(max((_get_tag_number(t, "discnumber") for t in tags.values()), default=1)))
