@@ -1,6 +1,7 @@
 import base64
 import os
 import xmlrpc.client
+from collections.abc import Mapping
 from urllib.parse import unquote, urlparse
 
 import asyncclick as click
@@ -42,8 +43,18 @@ class TorrentClient:
     def login(self):
         raise NotImplementedError
 
-    def add_to_downloader(self, remote_folder, torrent, is_paused, label):
+    def add_to_downloader(self, remote_folder, torrent, is_paused, label) -> bool:
         raise NotImplementedError
+
+
+def _qbittorrent_add_succeeded(result: object) -> bool:
+    """Whether torrents_add added it: Web API 2.14+ (qBittorrent 5.2+) answers JSON counts, older "Ok."/"Fails."."""
+    if isinstance(result, Mapping):
+        success_count = result.get("success_count", 0)
+        failure_count = result.get("failure_count", 0)
+        pending_count = result.get("pending_count", 0)
+        return failure_count == 0 and (success_count + pending_count) >= 1
+    return result == "Ok."
 
 
 class QBittorrentClient(TorrentClient):
@@ -67,19 +78,24 @@ class QBittorrentClient(TorrentClient):
             click.secho(f"Connect to qBittorrent failed: {self._redact(str(e))}", fg="red", bold=True)
             return None
 
-    def add_to_downloader(self, remote_folder, torrent, is_paused, label):
+    def add_to_downloader(self, remote_folder, torrent, is_paused, label) -> bool:
         if not self.client:
             return False
 
         try:
             click.secho("Adding torrent to qBittorrent...", fg="yellow")
-            self.client.torrents_add(
+            result = self.client.torrents_add(
                 torrent_files=torrent, save_path=remote_folder, is_paused=is_paused, category=label
             )
+            if not _qbittorrent_add_succeeded(result):
+                click.secho(
+                    f"Failed to add torrent: qBittorrent returned {self._redact(repr(result))}", fg="red", bold=True
+                )
+                return False
             click.secho("Torrent added successfully", fg="green")
             return True
         except Exception as e:
-            click.secho(f"Failed to add torrent: {e}", fg="red", bold=True)
+            click.secho(f"Failed to add torrent: {self._redact(str(e))}", fg="red", bold=True)
             return False
 
 
@@ -105,22 +121,26 @@ class TransmissionClient(TorrentClient):
             click.secho(f"Connect to Transmission failed: {self._redact(str(e))}", fg="red", bold=True)
             return None
 
-    def add_to_downloader(self, remote_folder, torrent, is_paused, label):
+    def add_to_downloader(self, remote_folder, torrent, is_paused, label) -> bool:
         if not self.client:
             return False
 
         try:
             click.secho("Adding torrent to Transmission...", fg="yellow")
-            self.client.add_torrent(
+            # A duplicate also comes back as a Torrent object, so it counts as success here.
+            result = self.client.add_torrent(
                 torrent=torrent,
                 download_dir=remote_folder,
                 paused=is_paused,
                 labels=([label] if label else None),
             )
+            if not result:
+                click.secho("Failed to add torrent: Transmission returned no torrent", fg="red", bold=True)
+                return False
             click.secho("Torrent added successfully", fg="green")
             return True
         except Exception as e:
-            click.secho(f"Failed to add torrent: {e}", fg="red", bold=True)
+            click.secho(f"Failed to add torrent: {self._redact(str(e))}", fg="red", bold=True)
             return False
 
 
@@ -143,7 +163,7 @@ class DelugeClient(TorrentClient):
             click.secho(f"Connect to Deluge failed: {self._redact(str(e))}", fg="red", bold=True)
             return None
 
-    def add_to_downloader(self, remote_folder, torrent, is_paused, label):
+    def add_to_downloader(self, remote_folder, torrent, is_paused, label) -> bool:
         if not self.client:
             return False
 
@@ -157,8 +177,12 @@ class DelugeClient(TorrentClient):
                 {"download_location": remote_folder, "add_paused": is_paused},
             )
 
+            if not result:
+                click.secho("Failed to add torrent: Deluge refused it (already present?)", fg="red", bold=True)
+                return False
+
             # Set label if provided
-            if label and result:
+            if label:
                 try:
                     click.secho(f"Setting label '{label}' for torrent...", fg="yellow")
                     self.client.call("label.set_torrent", result, label)
@@ -172,19 +196,16 @@ class DelugeClient(TorrentClient):
                             self.client.call("label.set_torrent", result, label)
                             click.secho(f"Label '{label}' set successfully", fg="green")
                         except Exception as add_label_error:
-                            click.secho(f"Failed to create/set label: {add_label_error}", fg="red")
+                            click.secho(f"Failed to create/set label: {self._redact(str(add_label_error))}", fg="red")
                     else:
-                        click.secho(f"Failed to set label: {label_error}", fg="red")
+                        click.secho(f"Failed to set label: {self._redact(str(label_error))}", fg="red")
                 else:
                     click.secho(f"Label '{label}' set successfully", fg="green")
 
-            if not result:
-                click.secho("Deluge did not add the torrent (rejected or already present)", fg="red", bold=True)
-                return False
             click.secho("Torrent added successfully", fg="green")
             return True
         except Exception as e:
-            click.secho(f"Failed to add torrent: {e}", fg="red", bold=True)
+            click.secho(f"Failed to add torrent: {self._redact(str(e))}", fg="red", bold=True)
             return False
 
 
@@ -200,7 +221,8 @@ class RuTorrentClient(TorrentClient):
             click.secho(f"Connect to ruTorrent failed: {self._redact(str(e))}", fg="red", bold=True)
             return None
 
-    def add_to_downloader(self, remote_folder, torrent, is_paused, label):
+    def add_to_downloader(self, remote_folder, torrent, is_paused, label) -> bool:
+        # load.raw*_verbose answers 0 either way: True only means the call did not raise.
         if not self.client:
             return False
 
@@ -221,7 +243,7 @@ class RuTorrentClient(TorrentClient):
             click.secho("Torrent added successfully", fg="green")
             return True
         except Exception as e:
-            click.secho(f"Failed to add torrent: {e}", fg="red", bold=True)
+            click.secho(f"Failed to add torrent: {self._redact(str(e))}", fg="red", bold=True)
             return False
 
 

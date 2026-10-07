@@ -693,8 +693,8 @@ class RecordingSeedbox:
         self.tasks = []
         self.site_codes = []
 
-    def add_upload_task(self, directory, task_type, is_flac, site_code=None):
-        self.tasks.append((directory, task_type, is_flac))
+    def add_upload_task(self, directory, task_type, is_flac, folder=None, site_code=None):
+        self.tasks.append((directory, task_type, is_flac, folder))
         self.site_codes.append(site_code)
 
 
@@ -846,8 +846,9 @@ async def test_upload_and_report_queues_seedbox_folder_then_seed_tasks(monkeypat
     args = uar_args(fake_tracker, seedbox)
     await upload_and_report(**args)
     assert seedbox.tasks == [
-        (args["path"], "folder", True),
-        (TORRENT_PATH, "seed", True),
+        (args["path"], "folder", True, None),
+        # The seed names its folder, so a failed copy of that folder skips it.
+        (TORRENT_PATH, "seed", True, args["path"]),
     ]
 
 

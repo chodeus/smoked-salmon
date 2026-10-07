@@ -2,6 +2,7 @@ import argparse
 import collections
 import os
 import posixpath
+from urllib.parse import unquote, urlparse
 
 import anyio
 import asyncclick as click
@@ -35,8 +36,16 @@ def _resolve_shell_path(remote_folder: str, extra_args: list[str]) -> str:
 
 
 def seedbox_secrets(seedbox: Seedbox) -> list[str]:
-    """The secrets a seedbox's rclone remote and extra_args carry, masked wherever rclone echoes them."""
-    return secret_values(seedbox.extra_args, seedbox.url)
+    """The secrets a seedbox's rclone remote, extra_args and torrent client URL carry, to mask wherever echoed."""
+    secrets = secret_values(seedbox.extra_args, seedbox.url)
+    try:
+        password = urlparse(seedbox.torrent_client).password
+    except ValueError:
+        password = None
+    if password:
+        # Written percent-encoded in the URL, and decoded by the time a client error repeats it.
+        secrets += [password, unquote(password)]
+    return secrets
 
 
 async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str) -> bool:
@@ -75,6 +84,8 @@ async def _add_to_downloader(
     torrent_path: str,
     label: str,
     add_paused: bool,
+    secrets: list[str],
+    seedbox_name: str,
 ) -> bool:
     """Read a torrent file and add it to the download client.
 
@@ -84,22 +95,36 @@ async def _add_to_downloader(
         torrent_path: Local path to the .torrent file.
         label: Label to apply in the download client.
         add_paused: Whether to add the torrent in paused state.
+        secrets: Values to mask in an error, from seedbox_secrets.
+        seedbox_name: The seedbox's name (or its masked url) to name in a failure line.
 
     Returns:
-        True if the torrent was added successfully, False otherwise.
+        True if the client reported the torrent was added, False otherwise.
     """
     async with await anyio.open_file(torrent_path, "rb") as f:
         torrent = await f.read()
     try:
-        success = client.add_to_downloader(shell_path, torrent, is_paused=add_paused, label=label)
+        added = client.add_to_downloader(shell_path, torrent, is_paused=add_paused, label=label)
     except Exception as e:
-        click.secho(f"Failed to add torrent to client: {e}", fg="red")
+        click.secho(f"Failed to add torrent to client on {seedbox_name}: {redact_secrets(str(e), secrets)}", fg="red")
         return False
-    if not success:
-        click.secho("FAILED to add torrent to client", fg="red", bold=True)
+    if not added:
+        click.secho(f"Torrent was not added to the client on {seedbox_name}", fg="red")
         return False
     click.secho("Torrent added to client successfully", fg="green")
     return True
+
+
+def _seedbox_display_name(seedbox: Seedbox, secrets: list[str]) -> str:
+    """The name to blame in a failure line: the seedbox's `name`, else its masked `url`."""
+    if seedbox.name:
+        return seedbox.name
+    return redact_secrets(seedbox.url, secrets)
+
+
+def _enabled_seedboxes() -> list[Seedbox]:
+    """Return the configured seedboxes that are not disabled with `enabled = false`."""
+    return [seedbox for seedbox in cfg.seedbox if seedbox.enabled]
 
 
 class UploadManager:
@@ -111,28 +136,32 @@ class UploadManager:
 
     def __init__(self) -> None:
         self._client_cache: dict[str, TorrentClient] = {}
-        # Each task: (seedbox, local_path, task_type)
-        self.tasks: collections.deque[tuple[Seedbox, str, str]] = collections.deque()
+        # (seedbox, local_path, task_type, folder): folder is the release folder, so a failed copy
+        # skips only that folder's seeds on that seedbox.
+        self.tasks: collections.deque[tuple[Seedbox, str, str, str]] = collections.deque()
         if dryrun.active():
             # Setting up a torrent client logs into it. A dry run queues nothing, so it needs none.
-            if any(seedbox.enabled for seedbox in cfg.seedbox):
+            if _enabled_seedboxes():
                 dryrun.say("not connecting to the seedboxes' torrent clients.")
             return
+
         click.secho("Initializing upload managers", fg="cyan")
-        for seedbox in cfg.seedbox:
-            if not seedbox.enabled:
-                continue
+        for seedbox in _enabled_seedboxes():
+            secrets = seedbox_secrets(seedbox)
             try:
                 if seedbox.torrent_client not in self._client_cache:
                     self._client_cache[seedbox.torrent_client] = TorrentClientGenerator.parse_libtc_url(
                         seedbox.torrent_client
                     )
-                click.secho(f"Configured {seedbox.type} uploader to {seedbox.url}", fg="yellow")
+                click.secho(
+                    redact_secrets(f"Configured {seedbox.type} uploader to {seedbox.url}", secrets), fg="yellow"
+                )
             except DryRunRefused:
-                # Were the skip above missed, the client's refusal to log in must stop the run.
+                # Were the skip above missed, the client's refusal to log in must stop the run, not read as
+                # a seedbox that failed to configure.
                 raise
             except Exception as e:
-                click.secho(f"Failed to configure {seedbox.type} uploader: {e}", fg="red")
+                click.secho(f"Failed to configure {seedbox.type} uploader: {redact_secrets(str(e), secrets)}", fg="red")
 
     def _client(self, seedbox: Seedbox) -> TorrentClient:
         """Look up the cached torrent client for a seedbox entry.
@@ -145,28 +174,40 @@ class UploadManager:
         """
         return self._client_cache[seedbox.torrent_client]
 
-    def add_upload_task(self, directory: str, task_type: str, is_flac: bool, site_code: str | None = None) -> None:
+    def add_upload_task(
+        self,
+        directory: str,
+        task_type: str,
+        is_flac: bool,
+        folder: str | None = None,
+        site_code: str | None = None,
+    ) -> None:
         """Queue upload tasks for a path across all configured seedboxes.
 
         Args:
             directory: Local folder path (for "folder" tasks) or .torrent file path (for "seed" tasks).
             task_type: Either "folder" to transfer files or "seed" to add to the download client.
             is_flac: Whether the release is FLAC; skips seedboxes with flac_only=True if False.
-            site_code: Tracker this upload went to; skips seedboxes pinned to other trackers.
+            folder: For a "seed" task (required), the release folder its torrent was built from.
+            site_code: Tracker this upload went to. Skips a seedbox whose `trackers` is set and
+                does not contain it; a seedbox with no `trackers` still matches every tracker.
+
+        Raises:
+            DryRunRefused: In a dry run, which copies nothing to a seedbox and adds nothing to a client.
         """
         dryrun.refuse(f"queue {directory} for a seedbox copy or a torrent client")
+        task_folder = folder if task_type == "seed" else directory
+        if task_folder is None:
+            raise ValueError("A seed task needs the folder its torrent was built from.")
         click.secho(f"Preparing upload tasks for: {directory}", fg="cyan")
-        for seedbox in cfg.seedbox:
-            if not seedbox.enabled:
-                continue
+        for seedbox in _enabled_seedboxes():
             if seedbox.torrent_client not in self._client_cache:
                 continue
             if seedbox.flac_only and not is_flac:
                 continue
-            # No trackers listed = every tracker, so single-destination configs are unaffected.
             if seedbox.trackers and (site_code or "").upper() not in seedbox.trackers:
                 continue
-            task = (seedbox, directory, task_type)
+            task = (seedbox, directory, task_type, task_folder)
             if task in self.tasks:
                 continue
             if task_type == "seed":
@@ -183,39 +224,70 @@ class UploadManager:
             return
 
         click.secho(f"Executing {len(self.tasks)} upload tasks", fg="cyan")
-        failed_copies: set[int] = set()  # id(seedbox): names are optional and need not be unique
-        for i, (seedbox, local_path, task_type) in enumerate(self.tasks, 1):
+        # Keyed by (id(seedbox), folder): a failed copy of one folder must not skip the seed of a
+        # different folder queued for the same seedbox.
+        failed_folders: set[tuple[int, str]] = set()
+        failed_copies = 0
+        failed_seeds = 0
+        for i, (seedbox, local_path, task_type, folder) in enumerate(self.tasks, 1):
             click.secho(
                 f"\nTask {i}/{len(self.tasks)}: {task_type.upper()} - {os.path.basename(local_path)}",
                 fg="cyan",
             )
+            secrets = seedbox_secrets(seedbox)
             try:
                 if task_type == "folder":
-                    if seedbox.type == "rclone" and not await _rclone_upload_folder(
-                        seedbox, seedbox.directory, local_path
-                    ):
-                        failed_copies.add(id(seedbox))
+                    if seedbox.type == "rclone":
+                        succeeded = await _rclone_upload_folder(seedbox, seedbox.directory, local_path)
+                        if not succeeded:
+                            failed_folders.add((id(seedbox), folder))
+                            failed_copies += 1
                 elif task_type == "seed":
+                    if (id(seedbox), folder) in failed_folders:
+                        click.secho(
+                            redact_secrets(
+                                f"Skipping seed on {_seedbox_display_name(seedbox, secrets)}: "
+                                f"the Rclone upload of {folder} failed, "
+                                f"so {local_path} was not added to the client there. Add it by hand once "
+                                "the files have been copied.",
+                                secrets,
+                            ),
+                            fg="red",
+                        )
+                        failed_seeds += 1
+                        continue
                     client = self._client(seedbox)
                     if seedbox.type == "rclone":
                         shell_path = _resolve_shell_path(seedbox.directory, seedbox.extra_args)
                     else:
                         shell_path = seedbox.directory or os.path.abspath(cfg.directory.download_directory)
-                    add_paused = seedbox.add_paused
-                    if id(seedbox) in failed_copies:
-                        # Nothing is behind the torrent yet; paused, it never announces an empty seed.
-                        click.secho(
-                            f"Folder copy to {seedbox.name} failed; adding the torrent paused. "
-                            "Copy the folder by hand, then recheck and resume it.",
-                            fg="red",
-                            bold=True,
-                        )
-                        add_paused = True
-                    success = await _add_to_downloader(client, shell_path, local_path, seedbox.label, add_paused)
-                    if not success:
-                        click.secho(f"Seed task failed for seedbox: {seedbox.name}", fg="red")
+                    added = await _add_to_downloader(
+                        client,
+                        shell_path,
+                        local_path,
+                        seedbox.label,
+                        seedbox.add_paused,
+                        secrets,
+                        _seedbox_display_name(seedbox, secrets),
+                    )
+                    if not added:
+                        failed_seeds += 1
             except Exception as e:
-                click.secho(f"Critical error during task: {e}", fg="red")
+                click.secho(f"Critical error during task: {redact_secrets(str(e), secrets)}", fg="red")
+                if task_type == "folder":
+                    # A raising folder task is a failed copy too: its seeds must not be added.
+                    failed_folders.add((id(seedbox), folder))
+                    failed_copies += 1
+                elif task_type == "seed":
+                    failed_seeds += 1
 
-        click.secho("\nAll upload tasks processed", fg="green")
+        if failed_copies or failed_seeds:
+            parts = []
+            if failed_copies:
+                parts.append(f"{failed_copies} {'copy' if failed_copies == 1 else 'copies'}")
+            if failed_seeds:
+                parts.append(f"{failed_seeds} seed task{'' if failed_seeds == 1 else 's'}")
+            click.secho(f"\n{' and '.join(parts)} failed; see above", fg="red")
+        else:
+            click.secho("\nAll upload tasks processed", fg="green")
         self.tasks.clear()
