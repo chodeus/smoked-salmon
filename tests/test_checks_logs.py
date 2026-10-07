@@ -89,7 +89,7 @@ def _patch_cambia(monkeypatch, output: FakeCambiaOutput) -> None:
 
 def _patch_file_crcs(monkeypatch, crc_by_name: dict[str, str]) -> None:
     async def fake_calculate_file_crc_async(filepath: str, _: object = None) -> str:
-        return crc_by_name[filepath.rsplit("/", 1)[-1]]
+        return crc_by_name[os.path.basename(filepath)]
 
     monkeypatch.setattr(logs, "_calculate_file_crc_async", fake_calculate_file_crc_async)
 
@@ -106,7 +106,7 @@ def _record_file_crcs(monkeypatch, crc_by_name: dict[str, str]) -> list[str]:
 
     async def fake_calculate_file_crc_async(filepath: str, _: object = None) -> str:
         checked.append(filepath)
-        return crc_by_name[filepath.rsplit("/", 1)[-1]]
+        return crc_by_name[os.path.basename(filepath)]
 
     monkeypatch.setattr(logs, "_calculate_file_crc_async", fake_calculate_file_crc_async)
     return checked
