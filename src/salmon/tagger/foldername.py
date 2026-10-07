@@ -188,6 +188,7 @@ def resolution_token(audio_info):
 
 def _token_span(foldername, token):
     """Where the name's last standalone token is, or None: "1924-48" in a title holds "24-48" but not as a token."""
+    # Anywhere in the name, as a template may put {resolution} outside brackets; the last match wins.
     matches = list(re.finditer(r"(?<![\w.-])" + re.escape(token) + r"(?![\w.-])", foldername)) if token else []
     return matches[-1].span() if matches else None
 
@@ -236,10 +237,23 @@ def generate_folder_name(metadata):
 
 
 def _strip_blank_resolution(template):
-    """Drop a blank {resolution} placeholder (format spec too) and its bracket only if that empties it."""
-    template = re.sub(r"\s*\{resolution(?::[^}]*)?\}", "", template)
-    template = re.sub(r"[\[{(]\s*[\]})]", "", template)
-    template = re.sub(r"\s+", " ", template).strip()
+    """Drop a blank {resolution} field (any conversion or spec), and the bracket around it if that empties it."""
+    pieces = list(Formatter().parse(template))
+    literals = [literal for literal, *_ in pieces]
+    for i, (_literal, field, _spec, _conversion) in enumerate(pieces):
+        if field != "resolution":
+            continue
+        literals[i] = literals[i].rstrip()
+        after = literals[i + 1].lstrip() if i + 1 < len(literals) else ""
+        if literals[i][-1:] in ("[", "(", "{") and after[:1] == {"[": "]", "(": ")", "{": "}"}[literals[i][-1]]:
+            literals[i] = literals[i][:-1].rstrip()
+            literals[i + 1] = after[1:]
+    parts = []
+    for literal, (_literal, field, spec, conversion) in zip(literals, pieces, strict=True):
+        parts.append(literal.replace("{", "{{").replace("}", "}}"))
+        if field is not None and field != "resolution":
+            parts.append("{" + field + (f"!{conversion}" if conversion else "") + (f":{spec}" if spec else "") + "}")
+    template = re.sub(r"\s+", " ", "".join(parts)).strip()
     return re.sub(r" *- *$", "", template)
 
 

@@ -188,6 +188,20 @@ def test_a_cover_that_is_not_a_readable_image_is_skipped(tmp_path, capsys) -> No
     assert "Could not read cover file" in output
 
 
+def test_a_truncated_cover_is_not_embedded(tmp_path, capsys) -> None:
+    noise = random.Random(7).randbytes(200 * 200 * 3)
+    buffer = io.BytesIO()
+    Image.frombytes("RGB", (200, 200), noise).save(buffer, "jpeg")
+    (tmp_path / "cover.jpg").write_bytes(buffer.getvalue()[: len(buffer.getvalue()) // 2])
+    _write_flac(tmp_path / "01.flac")
+
+    cover.compress_pictures(str(tmp_path))
+
+    audio = FLAC(tmp_path / "01.flac")
+    assert audio.pictures == []
+    assert "Could not read cover file" in capsys.readouterr().out
+
+
 def test_a_cover_pil_refuses_as_a_decompression_bomb_is_skipped(tmp_path, monkeypatch, capsys) -> None:
     # PIL raises Image.DecompressionBombError, not an OSError, for an image it judges too large to open safely.
     monkeypatch.setattr(cover.Image, "MAX_IMAGE_PIXELS", 10)
@@ -243,3 +257,31 @@ def test_a_taken_temporary_name_raises_rather_than_touching_that_file(tmp_path, 
 
     assert sorted(file.name for file in tmp_path.iterdir()) == [f".{'0' * 32}.part"]
     assert (tmp_path / f".{'0' * 32}.part").read_bytes() == b"someone else's"
+
+
+def _strip(folder: Path) -> list[str]:
+    return cover.strip_oversized_pictures(str(folder), {"01.flac": {"tag size": 2 * MIB}})
+
+
+def test_a_32_bit_picture_that_has_no_8_bit_scale_is_kept_embedded(tmp_path) -> None:
+    buffer = io.BytesIO()
+    Image.new("I", (10, 10), 100_000).save(buffer, "tiff")
+    _write_flac(tmp_path / "01.flac", pictures=((PictureType.COVER_FRONT, buffer.getvalue().ljust(2 * MIB, b"\0")),))
+
+    stripped = _strip(tmp_path)
+
+    assert stripped == []
+    assert len(FLAC(tmp_path / "01.flac").pictures) == 1
+    assert not list(tmp_path.glob("cover.*"))
+
+
+def test_an_unreadable_front_cover_falls_back_to_a_readable_picture(tmp_path) -> None:
+    back = _image("jpeg")
+    pictures = ((PictureType.COVER_FRONT, b"not an image" * 200_000), (PictureType.COVER_BACK, back))
+    _write_flac(tmp_path / "01.flac", pictures=pictures)
+
+    stripped = _strip(tmp_path)
+
+    assert stripped == ["01.flac"]
+    assert FLAC(tmp_path / "01.flac").pictures == []
+    assert (tmp_path / "cover.jpg").read_bytes() == back
