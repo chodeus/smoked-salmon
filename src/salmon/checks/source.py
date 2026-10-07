@@ -151,7 +151,11 @@ def detect_source(path: str) -> dict:
     """{source, confidence, reasons}: "confirmed" if proven and uncontradicted, "likely" for a hint, else "unknown"."""
     if not get_audio_files(path):
         return _unknown(["No audio files found."])
-    evidence = _gather(path)
+    try:
+        evidence = _gather(path)
+    except OSError as error:
+        # An unread log or folder could hide a rip log, so nothing is confirmed.
+        return _unknown([f"Could not read {os.path.basename(error.filename or path)}: {error.strerror or error}."])
     sources = set(evidence.proofs.values())
     sides = _vinyl_sides(evidence.tracknumbers)
     proofs = "; ".join(evidence.proofs)
@@ -210,21 +214,26 @@ def _gather(path: str) -> _Evidence:
 
 
 def _rip_log(path: str) -> str | None:
-    """The name of the first CD ripper's log in the folder, if there is one."""
-    for root, _dirs, files in sorted(os.walk(path)):
+    """The name of the first CD ripper's log in the folder, if any; OSError if a log or folder is unreadable."""
+    for root, _dirs, files in sorted(os.walk(path, onerror=_raise_unless_gone)):
         for name in sorted(files):
             if not name.lower().endswith(".log"):
                 continue
             try:
                 with open(os.path.join(root, name), "rb") as fh:
                     head = fh.read(_LOG_HEAD_BYTES)
-            except OSError:
+            except FileNotFoundError:
                 continue
             # EAC writes its logs in UTF-16 with a byte order mark.
             encoding = "utf-16" if head[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8"
             if _RIPPERS.search(head.decode(encoding, "ignore")):
                 return name
     return None
+
+
+def _raise_unless_gone(error: OSError) -> None:
+    if not isinstance(error, FileNotFoundError):
+        raise error
 
 
 def _tag_proofs(mut) -> dict[str, str]:
