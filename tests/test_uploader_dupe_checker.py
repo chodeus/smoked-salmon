@@ -706,8 +706,20 @@ def test_another_catalogue_number_is_the_same_edition_and_noted():
     assert _catno_note(held, rset, WEB_FLAC) == ""
 
 
+def test_an_html_escaped_edition_is_the_same_edition():
+    rset = _group_with(remasterTitle="Collector&#39;s Edition", remasterCatalogueNumber="R&amp;B-01")
+    held = rset["torrents"][0]
+    release = {**WEB_FLAC, "edition_title": "Collector's Edition", "catno": "R&B-01"}
+
+    matches = matching_torrents(rset, release)
+    note = _catno_note(held, rset, release)
+
+    assert matches == rset["torrents"]
+    assert note == ""
+
+
 def test_a_remaster_without_its_own_catalogue_number_still_counts():
-    """The group's number belongs to the original release; a remaster that lacks one is unknown, not different."""
+    """A catalogue number never tells editions apart: a remaster without one, beside the group's, still matches."""
     rset = _group_with(remasterCatalogueNumber="")
     rset["group"] = {"catalogueNumber": "ORIG-001"}
 
@@ -741,11 +753,12 @@ async def test_a_dupe_of_another_catalogue_number_is_flagged_and_abort_pre_typed
 
     with pytest.raises(click.Abort):
         await _confirm_group_id(fake_tracker, 100, [result], {**WEB_FLAC, "catno": "CAT-100"})
+    out = capsys.readouterr().out
 
     assert (
         "DUPE RISK: this edition already has 2024 / Label / 0123456789012 / WEB / FLAC / Lossless "
         "(catalogue number differs: ours CAT-100); the site removes exact duplicates unless this upload trumps it."
-    ) in capsys.readouterr().out
+    ) in out
 
 
 async def test_every_held_torrent_of_the_edition_is_named(fake_tracker, install_prompt, capsys):

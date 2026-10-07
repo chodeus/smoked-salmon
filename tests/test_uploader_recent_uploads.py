@@ -133,3 +133,10 @@ def test_dupe_check_recent_torrents_requires_shared_title_word_not_just_shared_a
     assert different_title_upload not in hits
     assert same_title_upload in hits
     assert collab_title_upload in hits
+
+
+@pytest.mark.parametrize("ours, logged", [("Rock 'n' Roll", "Rock'n'Roll"), ("Lovin\u2019", "Lovin'")])
+def test_title_words_ignore_punctuation(ours: str, logged: str) -> None:
+    words = _title_words(ours), _title_words(logged)
+
+    assert words[0] == words[1]
