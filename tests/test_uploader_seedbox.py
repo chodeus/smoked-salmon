@@ -766,6 +766,53 @@ def test_rclone_not_installed_skips_seeding(monkeypatch, tmp_path) -> None:
     assert client.torrents == []
 
 
+def test_a_folder_task_that_raises_skips_its_seed_and_masks_the_error(monkeypatch, tmp_path, capsys) -> None:
+    clients: dict[str, _RecordingClient] = {}
+
+    async def broken(*_args) -> bool:
+        raise RuntimeError("remote box:UNIQUESECRET went away")
+
+    monkeypatch.setattr(
+        seedbox.cfg,
+        "seedbox",
+        [
+            _box(
+                type="rclone",
+                url="box",
+                extra_args=["--sftp-pass", "UNIQUESECRET"],
+                torrent_client="qbittorrent+http://b:1",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        seedbox.TorrentClientGenerator,
+        "parse_libtc_url",
+        staticmethod(lambda url: clients.setdefault(url, _RecordingClient())),
+    )
+    monkeypatch.setattr(seedbox, "_rclone_upload_folder", broken)
+
+    anyio.run(_queue_one_release(tmp_path).execute_upload)
+
+    out = capsys.readouterr().out
+    assert clients["qbittorrent+http://b:1"].torrents == []
+    assert "Critical error during task" in out
+    assert "UNIQUESECRET" not in out
+
+
+def test_a_seed_task_without_its_folder_is_refused(monkeypatch) -> None:
+    monkeypatch.setattr(seedbox.cfg, "seedbox", [])
+    manager = seedbox.UploadManager()
+
+    with pytest.raises(ValueError, match="folder"):
+        manager.add_upload_task("/torrents/Album.torrent", task_type="seed", is_flac=True)
+
+
+def test_a_percent_encoded_client_password_is_masked_decoded_too() -> None:
+    box = _box(torrent_client="qbittorrent+http://user:pa%40ss-UNIQUE@b:1")
+
+    assert {"pa%40ss-UNIQUE", "pa@ss-UNIQUE"} <= set(seedbox.seedbox_secrets(box))
+
+
 def _queue_one_release(tmp_path) -> "seedbox.UploadManager":
     release = tmp_path / "Artist - Album (2020) [WEB FLAC]"
     release.mkdir()
@@ -908,8 +955,8 @@ def test_qbittorrent_ok_response_is_reported_as_added(monkeypatch, capsys) -> No
     assert "Torrent added successfully" in out
 
 
-def test_qbittorrent_5_1_metadata_success_is_reported_as_added(monkeypatch, capsys) -> None:
-    # Web API v2.14.0+ (qBittorrent 5.1+) answers with a JSON object instead of "Ok."/"Fails.".
+def test_qbittorrent_api_2_14_metadata_success_is_reported_as_added(monkeypatch, capsys) -> None:
+    # Web API 2.14+ (qBittorrent 5.2+) answers with a JSON object instead of "Ok."/"Fails.".
     class FakeApi:
         def torrents_add(self, **kwargs):
             return {"success_count": 1, "failure_count": 0, "pending_count": 0, "added_torrent_ids": ["abc"]}
@@ -923,7 +970,7 @@ def test_qbittorrent_5_1_metadata_success_is_reported_as_added(monkeypatch, caps
     assert "Torrent added successfully" in out
 
 
-def test_qbittorrent_5_1_metadata_failure_is_reported_as_not_added(monkeypatch, capsys) -> None:
+def test_qbittorrent_api_2_14_metadata_failure_is_reported_as_not_added(monkeypatch, capsys) -> None:
     class FakeApi:
         def torrents_add(self, **kwargs):
             return {"success_count": 0, "failure_count": 1, "pending_count": 0, "added_torrent_ids": []}
