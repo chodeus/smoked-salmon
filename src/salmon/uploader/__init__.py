@@ -647,6 +647,7 @@ async def _upload_staged(
         if group_id is None:
             searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
             if len(searchstrs) > 0:
+                # A failed lookup ends the run: this tracker's group drives the deletion offer and the later re-checks.
                 group_id = await check_existing_group(gazelle_site, searchstrs, release=rls_data)
 
         spectral_ids = None
