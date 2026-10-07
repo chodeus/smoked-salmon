@@ -14,7 +14,7 @@ from salmon.common import handle_scrape_errors, make_searchstrs, re_strip
 from salmon.common.strings import artist_keys, comparable
 from salmon.search import SEARCHSOURCES, run_metasearch
 from salmon.sources.deezer import DeezerBase, album_upc
-from salmon.tagger.combine import combine_metadatas
+from salmon.tagger.combine import combine_metadatas, get_source_from_link
 from salmon.tagger.sources import METASOURCES
 from salmon.tagger.sources.base import generate_artists, standardize_genres
 
@@ -22,17 +22,12 @@ _NOT_ALBUM_PAGE = re.compile(r"/(?:track|playlist)/", re.IGNORECASE)
 _TYPE_SUFFIX = re.compile(r"\s*(?:-\s*(?:EP|Single)|[(\[](?:EP|Single)[)\]])\s*$", re.IGNORECASE)
 
 
-def _metasource_of(url: str) -> str | None:
-    """The metadata source that scrapes this URL, if any."""
-    return next((name for name, source in METASOURCES.items() if source.Scraper.regex.match(url)), None)
-
-
 def files_store_url(path: str) -> str | None:
     """The one scraped-store album URL the files' tags hold (SOURCE, URL, WWW, ...); None for none or two."""
     sourced, other = tag_urls(path)
 
     def album(url: str) -> bool:
-        return is_store_url(url) and not _NOT_ALBUM_PAGE.search(url) and _metasource_of(url) is not None
+        return is_store_url(url) and not _NOT_ALBUM_PAGE.search(url) and get_source_from_link(url) is not None
 
     if len({url.rstrip("/") for url in sourced + other if album(url)}) != 1:
         return None
@@ -96,18 +91,11 @@ async def fill_upc_from_deezer(metadata: dict[str, Any], path: str) -> None:
     if metadata.get("upc"):
         return
     sourced, other = tag_urls(path)
-    url = _first_deezer_album_url(sourced) or _first_deezer_album_url(other)
-    if not url:
+    albums = {url for url in (*sourced, *other) if (match := DeezerBase.regex.search(url)) and match[1] == "album"}
+    # Two Deezer albums in the tags say nothing about which edition this is.
+    if len(albums) != 1:
         return
-    metadata["upc"] = await album_upc(url)
-
-
-def _first_deezer_album_url(urls: list[str]) -> str | None:
-    for url in urls:
-        match = DeezerBase.regex.search(url)
-        if match and match[1] == "album":
-            return url
-    return None
+    metadata["upc"] = await album_upc(albums.pop())
 
 
 def _dedupe_catno_against_upc(metadata: dict[str, Any]) -> None:
@@ -167,7 +155,7 @@ def suggest_choice(
     """The metadata prompt's default: the files' URL (starred for WEB) and the matching result of another store."""
     parts = [f"{'*' if rls_data.get('source') == 'WEB' else ''}{url}"] if url else []
     match = _matching_choice(choices, search_results, rls_data, track_count)
-    if match is not None and (url is None or choices[match][0] != _metasource_of(url)):
+    if match is not None and (url is None or choices[match][0] != get_source_from_link(url)):
         parts.append(str(match))
     return " ".join(parts) or None
 
