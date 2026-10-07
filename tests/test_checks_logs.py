@@ -208,7 +208,7 @@ TWO_DISC_CRCS = {"d1-01.flac": "D1-1", "d1-02.flac": "D1-2", "d2-01.flac": "D2-1
 
 def test_a_log_in_a_disc_folder_checks_only_that_disc(tmp_path, monkeypatch) -> None:
     # One log per disc folder: each log's CRCs are checked against its own disc's files, not
-    # against every file in the release, which decoded a 3-disc release three times (#444).
+    # against every file in the release, which would decode a 3-disc release three times.
     basepath = _write_files(
         tmp_path, ["CD1/CD1.log", "CD1/d1-01.flac", "CD1/d1-02.flac", "CD2/CD2.log", "CD2/d2-01.flac", "CD2/d2-02.flac"]
     )
