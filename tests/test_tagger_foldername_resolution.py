@@ -97,7 +97,7 @@ def test_the_token_lands_in_the_folder_name_when_the_template_uses_it(monkeypatc
 
 
 def test_a_blank_token_strips_cleanly(monkeypatch, tmp_path) -> None:
-    # 16/44.1 renders no resolution, and the bracket around it disappears too.
+    # 16/44.1 renders no resolution: the field goes, and its bracket stays for the words beside it.
     calls = _stub_audio_info(monkeypatch, {"01.flac": {"precision": 16, "sample rate": 44100}})
     monkeypatch.setattr(cfg.upload.formatting, "folder_template", WITH_TOKEN)
     monkeypatch.setattr(cfg.directory, "download_directory", str(tmp_path))
@@ -166,3 +166,16 @@ def test_a_blank_token_keeps_escaped_braces_and_takes_a_conversion(monkeypatch, 
 
     assert renamed == str(tmp_path / "Illy - journaling [WEB FLAC] {resolution}")
     assert calls == [str(album)]
+
+
+def test_a_blank_token_takes_only_its_own_emptied_bracket(monkeypatch, tmp_path) -> None:
+    _stub_audio_info(monkeypatch, {"01.flac": {"precision": 16, "sample rate": 44100}})
+    template = "{artists} - {title} {{}} () [{resolution}]"
+    monkeypatch.setattr(cfg.upload.formatting, "folder_template", template)
+    monkeypatch.setattr(cfg.directory, "download_directory", str(tmp_path))
+    album = tmp_path / "old name"
+    album.mkdir()
+
+    renamed = foldername.rename_folder(str(album), METADATA, auto_rename=True, check=False)
+
+    assert renamed == str(tmp_path / "Illy - journaling {} ()")

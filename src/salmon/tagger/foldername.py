@@ -237,16 +237,23 @@ def generate_folder_name(metadata):
 
 
 def _strip_blank_resolution(template):
-    """Drop a blank {resolution} field (any conversion or spec) and its bracket only if that empties it."""
+    """Drop a blank {resolution} field (any conversion or spec), and the bracket around it if that empties it."""
+    pieces = list(Formatter().parse(template))
+    literals = [literal for literal, *_ in pieces]
+    for i, (_literal, field, _spec, _conversion) in enumerate(pieces):
+        if field != "resolution":
+            continue
+        literals[i] = literals[i].rstrip()
+        after = literals[i + 1].lstrip() if i + 1 < len(literals) else ""
+        if literals[i][-1:] in ("[", "(", "{") and after[:1] == {"[": "]", "(": ")", "{": "}"}[literals[i][-1]]:
+            literals[i] = literals[i][:-1].rstrip()
+            literals[i + 1] = after[1:]
     parts = []
-    for literal, field, spec, conversion in Formatter().parse(template):
+    for literal, (_literal, field, spec, conversion) in zip(literals, pieces, strict=True):
         parts.append(literal.replace("{", "{{").replace("}", "}}"))
-        if field == "resolution":
-            parts[-1] = parts[-1].rstrip()
-        elif field is not None:
+        if field is not None and field != "resolution":
             parts.append("{" + field + (f"!{conversion}" if conversion else "") + (f":{spec}" if spec else "") + "}")
-    template = re.sub(r"\[\s*\]|\(\s*\)|\{\{\s*\}\}", "", "".join(parts))
-    template = re.sub(r"\s+", " ", template).strip()
+    template = re.sub(r"\s+", " ", "".join(parts)).strip()
     return re.sub(r" *- *$", "", template)
 
 

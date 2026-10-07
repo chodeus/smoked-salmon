@@ -257,3 +257,31 @@ def test_a_taken_temporary_name_raises_rather_than_touching_that_file(tmp_path, 
 
     assert sorted(file.name for file in tmp_path.iterdir()) == [f".{'0' * 32}.part"]
     assert (tmp_path / f".{'0' * 32}.part").read_bytes() == b"someone else's"
+
+
+def _strip(folder: Path) -> list[str]:
+    return cover.strip_oversized_pictures(str(folder), {"01.flac": {"tag size": 2 * MIB}})
+
+
+def test_a_32_bit_picture_that_has_no_8_bit_scale_is_kept_embedded(tmp_path) -> None:
+    buffer = io.BytesIO()
+    Image.new("I", (10, 10), 100_000).save(buffer, "tiff")
+    _write_flac(tmp_path / "01.flac", pictures=((PictureType.COVER_FRONT, buffer.getvalue().ljust(2 * MIB, b"\0")),))
+
+    stripped = _strip(tmp_path)
+
+    assert stripped == []
+    assert len(FLAC(tmp_path / "01.flac").pictures) == 1
+    assert not list(tmp_path.glob("cover.*"))
+
+
+def test_an_unreadable_front_cover_falls_back_to_a_readable_picture(tmp_path) -> None:
+    back = _image("jpeg")
+    pictures = ((PictureType.COVER_FRONT, b"not an image" * 200_000), (PictureType.COVER_BACK, back))
+    _write_flac(tmp_path / "01.flac", pictures=pictures)
+
+    stripped = _strip(tmp_path)
+
+    assert stripped == ["01.flac"]
+    assert FLAC(tmp_path / "01.flac").pictures == []
+    assert (tmp_path / "cover.jpg").read_bytes() == back
