@@ -105,9 +105,6 @@ def test_a_new_group_takes_the_description_override(monkeypatch) -> None:
     assert data["release_desc"] == "[b]Source:[/b] the original"
 
 
-# Ported from upstream (smokin-salmon/smoked-salmon#496).
-
-
 def _two_track_data() -> dict[str, dict[str, Any]]:
     return {
         "01. Track One.flac": {
