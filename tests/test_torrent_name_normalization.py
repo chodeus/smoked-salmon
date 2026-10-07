@@ -86,6 +86,16 @@ def test_torrent_name_normalization_default_leaves_names_untouched(tmp_path: Pat
     assert names == [DECOMPOSED_NAME]
 
 
+def test_normalize_false_names_the_files_as_on_disk(tmp_path: Path, monkeypatch) -> None:
+    album = _make_album(tmp_path)
+    monkeypatch.setattr(cfg.upload, "torrent_name_normalization", "NFC")
+    gazelle_site = cast("BaseGazelleApi", cast("object", FakeGazelleApi(str(tmp_path))))
+
+    _tpath, t = generate_torrent(gazelle_site, str(album), normalize=False)
+
+    assert _file_names(t) == [DECOMPOSED_NAME]
+
+
 def test_torrent_name_normalization_rejects_invalid_value() -> None:
     with pytest.raises(ValueError, match="torrent_name_normalization"):
         Upload(torrent_name_normalization="nfc")

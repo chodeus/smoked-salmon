@@ -229,7 +229,8 @@ async def _upload_response(
     existing_group = await check_existing_group(target_site, searchstrs, offer_deletion=False)
     if existing_group:
         data = {**data, "groupid": existing_group}
-    torrent_path, torrent = generate_torrent(target_site, str(path))
+    # Seeded from the files already on disk, so the torrent must name them exactly as they are.
+    torrent_path, torrent = generate_torrent(target_site, str(path), normalize=False)
     files = await compile_files(str(path), torrent, {"source": source_torrent["media"]})
     click.secho(f"Uploading {path.name} using {torrent_path}...", fg="yellow")
     torrent_id, group_id = await target_site.upload(data, files)
