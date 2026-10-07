@@ -1,4 +1,4 @@
-"""Batch uploads to an image host share a few reused connections (#475), against a local fake host."""
+"""Batch uploads to an image host share a few reused connections, against a local fake host."""
 
 import asyncio
 import contextlib

@@ -1,4 +1,4 @@
-"""A timed-out image upload (aiohttp's plain TimeoutError) must not crash the upload, on any host (#428)."""
+"""A timed-out image upload (aiohttp's plain TimeoutError) must not crash the upload, on any host."""
 
 import asyncio
 from pathlib import Path
