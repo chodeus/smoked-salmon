@@ -1,4 +1,4 @@
-"""Torrent file name normalization (upstream issue #431)."""
+"""Torrent file name normalization."""
 
 import shutil
 import unicodedata
