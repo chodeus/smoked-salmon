@@ -222,7 +222,8 @@ async def _upload_response(
         )
         return 0, target_group_id
     # The target's own form fields (DIC: a 24bit Lossless torrent's sample rate), refused before anything is sent.
-    form_fields = target_site.upload_form_fields({"encoding": data["bitrate"]}, gather_audio_info(str(path)))
+    track_data = gather_audio_info(str(path)) if "24bit" in data["bitrate"] else {}
+    form_fields = target_site.upload_form_fields({"encoding": data["bitrate"]}, track_data)
     data = await _rehost_red_images(data, source_site, target_site)
     # Add to an existing target group if the album is already there, rather than
     # creating a duplicate group and splitting the swarm.
