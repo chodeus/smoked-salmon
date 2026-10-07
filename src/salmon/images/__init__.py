@@ -7,7 +7,7 @@ import pyperclip
 
 from salmon import cfg, dryrun
 from salmon.common import AliasedCommands, commandgroup, is_http_url
-from salmon.config.validations import host_refusal, spectrals_refusal
+from salmon.config.validations import ARTWORK_ONLY_HOSTS, host_refusal, spectrals_refusal
 from salmon.errors import ImageUploadFailed
 from salmon.images import catbox, imgbb, imgbox, oeimg, ptscreens, ra, red
 from salmon.images.base import BaseImageUploader
@@ -95,6 +95,12 @@ async def up(filepaths: tuple[str, ...], image_host: str | None, tracker: str | 
             image_host = image_host_for_tracker(tracker, image_host)
         except ImageHostRefused as error:
             raise click.BadParameter(str(error), param_hint="'--image-host'") from None
+    elif image_host in ARTWORK_ONLY_HOSTS:
+        # Only a tracker's own album artwork may go there, so the tracker has to be named.
+        raise click.BadParameter(
+            f"{image_host} is only for a tracker's own album artwork: name it with --tracker (e.g. -t RED).",
+            param_hint="'--image-host'",
+        )
     await upload_images(filepaths, HOSTS[image_host or cfg.image.image_uploader])
 
 

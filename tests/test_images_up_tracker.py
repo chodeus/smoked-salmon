@@ -97,6 +97,14 @@ def test_red_host_is_accepted_for_red(monkeypatch, tmp_path, uploads) -> None:
     assert uploads == ["red"]
 
 
+def test_red_host_needs_the_tracker_named(monkeypatch, tmp_path, uploads) -> None:
+    _config(monkeypatch)
+    result = _up(tmp_path, "-i", "red")
+    assert result.exit_code == 2
+    assert "red is only for a tracker's own album artwork" in result.output
+    assert uploads == []
+
+
 def test_ra_is_accepted_for_any_tracker(monkeypatch, tmp_path, uploads) -> None:
     _config(monkeypatch)
     result = _up(tmp_path, "-i", "ra", "-t", "DIC")
@@ -114,15 +122,14 @@ def test_an_unknown_or_unconfigured_tracker_is_a_usage_error(monkeypatch, tmp_pa
     assert uploads == []
 
 
-def test_without_a_tracker_nothing_changes(monkeypatch, tmp_path, uploads) -> None:
-    # Regression guard: [image.<tracker>] settings are not read, the default is
-    # [image] image_uploader, and -i is accepted as is, red included (there is no tracker to refuse it for).
+def test_without_a_tracker_the_shared_settings_apply(monkeypatch, tmp_path, uploads) -> None:
+    # [image.<tracker>] settings are not read: the default is [image] image_uploader, and -i is taken as given.
     _config(monkeypatch, image_uploader="imgbox", ops={"image_uploader": "catbox"})
     default_result = _up(tmp_path)
-    explicit_result = _up(tmp_path, "-i", "red")
+    explicit_result = _up(tmp_path, "-i", "catbox")
     assert default_result.exit_code == 0, default_result.output
     assert explicit_result.exit_code == 0, explicit_result.output
-    assert uploads == ["imgbox", "red"]
+    assert uploads == ["imgbox", "catbox"]
     result = _up(tmp_path, "-i", "nope")
     assert result.exit_code == 2
     assert "nope is not a valid image host" in result.output
