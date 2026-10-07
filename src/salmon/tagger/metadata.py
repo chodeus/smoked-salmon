@@ -29,9 +29,20 @@ def files_store_url(path: str) -> str | None:
     def album(url: str) -> bool:
         return is_store_url(url) and not _NOT_ALBUM_PAGE.search(url) and get_source_from_link(url) is not None
 
-    if len({url.rstrip("/") for url in sourced + other if album(url)}) != 1:
+    if len({_album_identity(url) for url in sourced + other if album(url)}) != 1:
         return None
     return next((url for url in sourced if album(url)), None)
+
+
+def _album_identity(url: str) -> tuple[str, ...] | None:
+    """(source, release id) of a store album URL, so its other forms (locale, host, slash) count once."""
+    source = get_source_from_link(url)
+    match = METASOURCES[source].Scraper.regex.search(url) if source else None
+    if source is None or match is None:
+        return None
+    groups = [group.lower() for group in match.groups() if group]
+    # The release id is the last group; a Bandcamp slug is unique only on its own host, the first group.
+    return (source, groups[0], groups[-1]) if source == "Bandcamp" else (source, groups[-1])
 
 
 async def get_metadata(path: str, tags: dict[str, Any], rls_data: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
@@ -81,7 +92,8 @@ def _explain_default(default: str | None, choices: dict[int, tuple[str, str]]) -
         elif part.isdigit() and int(part) in choices:
             source = choices[int(part)][0]
             click.secho(
-                f"Pre-typed {part}: the {source} result matching the files' artist, title, track count and year.",
+                f"Pre-typed {part}: the {source} result matching the files' artist and title (and track count and "
+                "year where it gives them).",
                 fg="cyan",
             )
 
@@ -91,11 +103,14 @@ async def fill_upc_from_deezer(metadata: dict[str, Any], path: str) -> None:
     if metadata.get("upc"):
         return
     sourced, other = tag_urls(path)
-    albums = {url for url in (*sourced, *other) if (match := DeezerBase.regex.search(url)) and match[1] == "album"}
+    deezer_albums = [
+        url for url in (*sourced, *other) if (found := DeezerBase.regex.search(url)) and found[1] == "album"
+    ]
+    albums = {_album_identity(url): url for url in deezer_albums}
     # Two Deezer albums in the tags say nothing about which edition this is.
     if len(albums) != 1:
         return
-    metadata["upc"] = await album_upc(albums.pop())
+    metadata["upc"] = await album_upc(next(iter(albums.values())))
 
 
 def _dedupe_catno_against_upc(metadata: dict[str, Any]) -> None:

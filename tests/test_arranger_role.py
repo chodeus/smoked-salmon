@@ -28,6 +28,18 @@ def test_discogs_arranged_by_maps_to_arranger() -> None:
     assert ("Some Arranger", "arranger") in artists
 
 
+def test_discogs_arranged_by_keeps_main_for_the_same_artist() -> None:
+    track = {
+        "artists": [{"name": "Main Artist"}],
+        "extraartists": [{"name": "Main Artist", "role": "Arranged By"}],
+    }
+
+    artists = parse_artists([], track)
+
+    assert ("Main Artist", "main") in artists
+    assert ("Main Artist", "arranger") in artists
+
+
 def test_compile_artist_str_excludes_arranger() -> None:
     # Only main artists appear in the folder name, exactly like producer already does.
     artist_str = foldername._compile_artist_str(

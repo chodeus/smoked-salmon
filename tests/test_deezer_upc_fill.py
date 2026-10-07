@@ -154,6 +154,18 @@ def test_fill_upc_from_deezer_leaves_a_non_deezer_source_alone(tmp_path, monkeyp
     assert asked == []
 
 
+def test_fill_upc_from_deezer_takes_two_forms_of_one_album_as_one(tmp_path, monkeypatch) -> None:
+    (tmp_path / "01.flac").write_bytes(b"")
+    _tagged(monkeypatch, {"source": [DEEZER_URL], "url": ["https://deezer.com/album/322064097/"]})
+    asked = _deezer_answers(monkeypatch, {"upc": "0656465465801"})
+
+    metadata = {"upc": None}
+    anyio.run(metadata_mod.fill_upc_from_deezer, metadata, str(tmp_path))
+
+    assert metadata["upc"] == "0656465465801"
+    assert asked == ["/album/322064097"]
+
+
 def test_fill_upc_from_deezer_makes_no_request_for_two_deezer_albums(tmp_path, monkeypatch) -> None:
     (tmp_path / "01.flac").write_bytes(b"")
     _tagged(monkeypatch, {"source": [DEEZER_URL], "url": ["https://www.deezer.com/album/111"]})

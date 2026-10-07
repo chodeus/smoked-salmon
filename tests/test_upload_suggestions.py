@@ -310,7 +310,7 @@ def test_the_pretyped_metadata_answer_is_explained(capsys) -> None:
 
     out = capsys.readouterr().out
     assert f"Pre-typed *{QOBUZ_URL}: the store page in the files' tags" in out
-    assert "Pre-typed 7: the Deezer result matching the files' artist, title, track count and year." in out
+    assert "Pre-typed 7: the Deezer result matching the files' artist and title (and track count and year" in out
 
 
 def test_the_metadata_prompt_says_how_several_answers_combine(monkeypatch) -> None:

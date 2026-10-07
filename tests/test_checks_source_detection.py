@@ -4,6 +4,7 @@ import struct
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import anyio
 import pytest
@@ -294,6 +295,18 @@ def test_a_rip_log_beside_hi_res_files_conflicts(tmp_path) -> None:
     (album / "EAC.log").write_bytes(EAC_LOG.encode("utf-16"))
 
     assert detect_source(str(album)) is None
+
+
+@pytest.mark.parametrize(("codec", "expected"), [("mp4a.40.2", "CD"), ("alac", None)], ids=["aac", "alac"])
+def test_only_lossless_audio_above_cd_contradicts_a_rip_log(tmp_path, monkeypatch, codec, expected) -> None:
+    (tmp_path / "01.m4a").write_bytes(b"")
+    (tmp_path / "EAC.log").write_bytes(EAC_LOG.encode("utf-16"))
+    info = SimpleNamespace(bits_per_sample=16, sample_rate=48000, codec=codec)
+    monkeypatch.setattr(source_mod, "MutagenFile", lambda _path: SimpleNamespace(tags={}, info=info))
+
+    detected = detect_source(str(tmp_path))
+
+    assert (detected.source if detected else None) == expected
 
 
 def test_a_rip_log_beside_vinyl_sides_conflicts(tmp_path) -> None:
