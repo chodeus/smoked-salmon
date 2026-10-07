@@ -122,6 +122,11 @@ RED_IMAGE_PROXY_TARGETS = frozenset({"OPS"})
 SpectralSelectionLiteral = Literal["*", "+", "0"]
 
 
+def spectrals_refusal(host: str) -> str | None:
+    """Why `host` may not take spectrals: its own spectral rule first, else the [image] specs_uploader rule."""
+    return SPECTRALS_REFUSED.get(host) or host_refusal(None, "specs_uploader", host)
+
+
 def host_refusal(code: str | None, kind: str, host: str) -> str | None:
     """Why `host` may not fill `kind` under [image] (code None) or [image.<code>], or None if it may."""
     if host in ARTWORK_ONLY_HOSTS and not (kind == "cover_uploader" and _OWN_COVER_HOSTS.get(code or "") == host):

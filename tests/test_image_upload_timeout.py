@@ -17,7 +17,7 @@ from salmon.images import catbox, imgbb, oeimg, ptscreens, ra
 
 REAL_HOSTS = ("https://catbox.moe", "https://ptscreens.com")
 
-# The five modules the brief asks to fix, and the host each one talks to.
+# The host modules that must catch a timed-out upload, and the host each one talks to.
 TIMEOUT_MODULES = {
     "catbox": (catbox, "https://catbox.moe"),
     "imgbb": (imgbb, "https://api.imgbb.com"),

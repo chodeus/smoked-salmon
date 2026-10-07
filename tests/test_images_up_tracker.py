@@ -128,7 +128,7 @@ def test_without_a_tracker_nothing_changes(monkeypatch, tmp_path, uploads) -> No
     assert "nope is not a valid image host" in result.output
 
 
-def test_the_resolution_serves_other_callers(monkeypatch) -> None:
+def test_a_trackers_host_and_a_hand_picked_one_resolve_by_the_cover_rule(monkeypatch) -> None:
     _config(monkeypatch, image_uploader="imgbox", dic={"image_uploader": "catbox"})
     assert images.image_host_for_tracker("DIC") == "catbox"
     assert images.image_host_for_tracker("RED") == "imgbox"

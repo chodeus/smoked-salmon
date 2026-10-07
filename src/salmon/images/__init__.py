@@ -7,7 +7,7 @@ import pyperclip
 
 from salmon import cfg, dryrun
 from salmon.common import AliasedCommands, commandgroup, is_http_url
-from salmon.config.validations import SPECTRALS_REFUSED, host_refusal
+from salmon.config.validations import host_refusal, spectrals_refusal
 from salmon.errors import ImageUploadFailed
 from salmon.images import catbox, imgbb, imgbox, oeimg, ptscreens, ra, red
 from salmon.images.base import BaseImageUploader
@@ -22,8 +22,7 @@ HOSTS = {
     "red": red,
 }
 
-# How many uploads to one image host a batch runs at once, each on a connection of its own,
-# reused from one image to the next. Chosen by measurement against a local fake host.
+# How many uploads to one image host a batch runs at once; a host with a shared session reuses its connections.
 UPLOAD_CONNECTIONS = 8
 
 
@@ -39,11 +38,7 @@ def validate_image_host(ctx: click.Context, param: click.Parameter, value: str |
 
 
 def image_host_for_tracker(tracker: str, explicit_host: str | None = None) -> str:
-    """The host for images on `tracker`'s pages: explicit_host if allowed there, else the tracker's image_uploader.
-
-    Raises:
-        ImageHostRefused: If explicit_host may not be used for that tracker's images, with the reason.
-    """
+    """The host for `tracker`'s images: its image_uploader, or explicit_host if the cover rule allows it there."""
     if explicit_host is None:
         return cfg.image.resolve(tracker, "image_uploader")
     # A host picked by hand is held to the cover rule, the most a tracker's own pages allow.
@@ -174,9 +169,7 @@ async def _upload_groups(
             for _ in range(UPLOAD_CONNECTIONS):
                 tg.start_soon(worker)
     except BaseExceptionGroup as group:
-        # Raise what an upload raised as it is, as a plain gather would, not wrapped in a group.
-        if len(group.exceptions) != 1:
-            raise
+        # The first error as it is, as a plain gather would: two workers can fail in the same step.
         raised = group.exceptions[0]
     if raised is not None:
         raise raised
@@ -251,7 +244,7 @@ async def _handle_failed_spectrals(spectrals, successful) -> dict:
     Returns:
         Dictionary of uploaded URLs.
     """
-    spec_hosts = {k: v for k, v in HOSTS.items() if k not in SPECTRALS_REFUSED}
+    spec_hosts = {k: v for k, v in HOSTS.items() if spectrals_refusal(k) is None}
     while True:
         host_input: str = await click.prompt(
             click.style(
@@ -263,8 +256,8 @@ async def _handle_failed_spectrals(spectrals, successful) -> dict:
             default="catbox",
         )
         host = host_input.lower()
-        if host in SPECTRALS_REFUSED:
-            click.secho(f"{host} can't be used for spectrals: {SPECTRALS_REFUSED[host]}.", fg="red")
+        if (reason := spectrals_refusal(host)) is not None:
+            click.secho(f"{host} can't be used for spectrals: {reason}.", fg="red")
         elif host not in spec_hosts:
             click.secho(f"{host} is an invalid image host. Please choose another one.", fg="red")
         else:
