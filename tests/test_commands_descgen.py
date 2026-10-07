@@ -1,4 +1,4 @@
-"""`salmon descgen` closes every BBCode tag it opens (ported from upstream #597). No metadata source is contacted."""
+"""`salmon descgen` closes every BBCode tag it opens. No metadata source is contacted."""
 
 import re
 

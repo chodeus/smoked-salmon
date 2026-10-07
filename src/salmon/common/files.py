@@ -38,7 +38,10 @@ def shares_files(path: str) -> bool:
     errors: list[OSError] = []
     for root, folders, files in os.walk(path, onerror=errors.append):
         for name in (*folders, *files):
-            entry = os.lstat(os.path.join(root, name))
+            try:
+                entry = os.lstat(os.path.join(root, name))
+            except OSError:
+                return True  # Gone or unreadable mid-walk: as for an unreadable folder, assume a link.
             if stat.S_ISLNK(entry.st_mode) or (stat.S_ISREG(entry.st_mode) and entry.st_nlink > 1):
                 return True
     return bool(errors)  # An unreadable folder could hide a link.

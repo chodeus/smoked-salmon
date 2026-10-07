@@ -498,39 +498,6 @@ def test_get_tag_number_unwraps_a_list_value():
     assert _get_tag_number({"tracknumber": ["7"]}, "tracknumber") == 7
 
 
-# Ported from upstream (smokin-salmon/smoked-salmon#520).
-
-
-def test_create_track_changes_keeps_file_order_when_discnumber_tags_are_missing():
-    # CD1/CD2 folders, no DISCNUMBER: pairs collide across discs as (1, 1), so the files keep
-    # their existing (correct) order instead of an untrustworthy sort.
-    tags = {
-        "CD1/01.flac": _tagset("Old CD1 1", tracknumber="1", discnumber=None),
-        "CD1/02.flac": _tagset("Old CD1 2", tracknumber="2", discnumber=None),
-        "CD2/01.flac": _tagset("Old CD2 1", tracknumber="1", discnumber=None),
-        "CD2/02.flac": _tagset("Old CD2 2", tracknumber="2", discnumber=None),
-    }
-    metadata = {
-        "tracks": {
-            "1": {
-                "1": _trackmeta("New CD1 1", "1", "1"),
-                "2": _trackmeta("New CD1 2", "2", "1"),
-            },
-            "2": {
-                "1": _trackmeta("New CD2 1", "1", "2"),
-                "2": _trackmeta("New CD2 2", "2", "2"),
-            },
-        }
-    }
-
-    changes = create_track_changes(tags, metadata)
-
-    assert Change("title", "Old CD1 1", "New CD1 1") in changes["CD1/01.flac"]
-    assert Change("title", "Old CD1 2", "New CD1 2") in changes["CD1/02.flac"]
-    assert Change("title", "Old CD2 1", "New CD2 1") in changes["CD2/01.flac"]
-    assert Change("title", "Old CD2 2", "New CD2 2") in changes["CD2/02.flac"]
-
-
 def test_create_track_changes_falls_back_when_only_some_files_carry_a_discnumber_tag():
     # CD1's file has a DISCNUMBER/TRACKNUMBER pair, CD2's none: a (disc, track) sort would swap them,
     # so a mix of files with and without DISCNUMBER pairs by folder.
@@ -567,7 +534,7 @@ def test_create_track_changes_trusts_continuous_track_numbers_with_no_discnumber
     assert Change("title", "Old 4", "New 2-1") in changes["04.flac"]
 
 
-def test_create_track_changes_falls_back_when_tag_pairs_do_not_match_the_metadata_discs():
+def test_create_track_changes_refuses_tag_pairs_that_do_not_match_the_metadata_discs():
     # Unique, parseable pairs that are not the metadata's (disc 1 has no track 3), in one folder:
     # zipping them would mispair, so this refuses.
     tags = {
@@ -621,8 +588,8 @@ def test_create_track_changes_refuses_a_flat_folder_without_disc_tags():
         create_track_changes(tags, metadata)
 
 
-def test_tag_files_stops_on_a_flat_folder_without_disc_tags_instead_of_crashing(capsys):
-    # The same layout through tag_files: it prints the refusal and returns, so the upload goes on.
+def test_tag_files_stops_on_a_flat_folder_without_disc_tags_instead_of_crashing():
+    # The same layout through tag_files: it raises UploadError, which stops the upload.
     tags = {
         name: _tagset(f"Old {name}", tracknumber=track, discnumber=None)
         for name, track in (
@@ -740,9 +707,8 @@ def test_create_track_changes_orders_by_file_name_when_a_name_holds_a_digit_int_
     assert Change("title", "Old Second", "New Second") in changes["02.flac"]
 
 
-def test_tag_files_stops_when_one_disc_folder_is_genuinely_ambiguous(capsys):
-    # CD1's files have no track tags and tie on file name too: tag_files prints the refusal
-    # and returns, so the upload goes on with the current tags.
+def test_tag_files_stops_when_one_disc_folder_is_genuinely_ambiguous():
+    # CD1's files have no track tags and tie on file name too: tag_files raises UploadError, stopping the upload.
     tags = {
         "CD1/Track.flac": _tagset("Old A", tracknumber=None, discnumber=None),
         "CD1/track.flac": _tagset("Old B", tracknumber=None, discnumber=None),
@@ -812,9 +778,6 @@ def test_a_track_count_mismatch_stops_the_retag():
     metadata = {"tracks": {"1": {str(n): _trackmeta(f"New {n}", str(n), "1") for n in (1, 2)}}}
     with pytest.raises(UploadError, match="Track count mismatch"):
         create_track_changes(tags, metadata)
-
-
-# Ported from upstream (smokin-salmon/smoked-salmon#479).
 
 
 def _contents(root):
@@ -1100,3 +1063,36 @@ def test_rename_files_never_replaces_a_file_when_two_folders_go_to_one_disc_fold
     assert _contents(tmp_path) == before
     assert ("CD01/cover.jpg", "Disc 1/cover.jpg") in tree
     assert ("CD01/cover.1.jpg", "Disc 1 bonus/cover.jpg") in tree
+
+
+def test_disc_tags_order_a_flat_folder_when_the_metadata_has_one_disc():
+    files = {
+        "01 Alpha.flac": ("1", "1"),
+        "02 Beta.flac": ("1", "2"),
+        "01 Gamma.flac": ("2", "1"),
+        "02 Delta.flac": ("2", "2"),
+    }
+    tags = {name: _tagset(f"Old {name}", tracknumber=track, discnumber=disc) for name, (disc, track) in files.items()}
+    metadata = {"tracks": {"1": {str(n): _trackmeta(f"New {n}", str(n), "1") for n in range(1, 5)}}}
+
+    changes = create_track_changes(tags, metadata)
+
+    for n, name in enumerate(files, 1):
+        assert Change("title", f"Old {name}", f"New {n}") in changes[name]
+
+
+def test_tracks_numbered_through_one_tagged_disc_fill_the_metadata_discs():
+    tags = {f"0{n}.flac": _tagset(f"Old {n}", tracknumber=str(n), discnumber="1") for n in range(1, 5)}
+
+    changes = create_track_changes(tags, _two_discs_of_two())
+
+    assert Change("title", "Old 3", "New 2-1") in changes["03.flac"]
+    assert Change("title", "Old 4", "New 2-2") in changes["04.flac"]
+
+
+def test_names_without_a_number_are_not_an_order():
+    tags = {name: _tagset(f"Old {name}", tracknumber="1", discnumber=None) for name in ("Zebra.flac", "Apple.flac")}
+    metadata = {"tracks": {"1": {"1": _trackmeta("New 1", "1", "1"), "2": _trackmeta("New 2", "2", "1")}}}
+
+    with pytest.raises(UploadError, match="DISCNUMBER and TRACKNUMBER"):
+        create_track_changes(tags, metadata)

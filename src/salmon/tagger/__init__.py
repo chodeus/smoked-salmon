@@ -131,7 +131,7 @@ async def tag(
 
         metadata, source_url = await get_metadata(path, tags, rls_data)
         durations = [info.get("duration") or 0 for info in audio_info.values()]
-        rls_type_hint = suggest_release_type(folder_type, rls_data.get("title"), durations)
+        rls_type_hint = suggest_release_type(folder_type, metadata.get("title") or rls_data.get("title"), durations)
         metadata = await review_metadata_with_ai(
             metadata,
             rls_data,

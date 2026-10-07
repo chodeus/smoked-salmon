@@ -57,7 +57,7 @@ def _as_cover_file(picture: Picture) -> tuple[str, bytes] | None:
                 image.load()
                 return ("jpg" if image.format == "JPEG" else "png"), picture.data
             buffer = io.BytesIO()
-            image.convert("RGBA").save(buffer, "png")
+            _eight_bit(image).convert("RGBA").save(buffer, "png")
             return "png", buffer.getvalue()
     except Exception:
         return None
@@ -87,9 +87,14 @@ def _flatten_to_rgb(image: Image.Image) -> Image.Image:
         background = Image.new("RGB", rgba.size, (255, 255, 255))
         background.paste(rgba, mask=rgba.getchannel("A"))
         return background
+    return _eight_bit(image).convert("RGB")
+
+
+def _eight_bit(image: Image.Image) -> Image.Image:
+    """A 16/32-bit integer mode scaled to 8 bits (convert alone clips it to white); any other as it is."""
     if image.mode in ("I", "I;16", "I;16B", "I;16L"):
-        return image.convert("I").point(lambda v: v / 256).convert("RGB")
-    return image.convert("RGB")
+        return image.convert("I").point(lambda v: v / 256).convert("L")
+    return image
 
 
 def extract_embedded_cover(path: str) -> str | None:
@@ -245,9 +250,10 @@ def strip_oversized_pictures(path: str, track_data: dict) -> list[str]:
             "(a trump reason); removing them.",
             fg="yellow",
         )
-        front = next((picture for picture in audio.pictures if picture.type == PictureType.COVER_FRONT), None)
+        pictures = [picture for picture in audio.pictures if picture.data]
+        front = next((p for p in pictures if p.type == PictureType.COVER_FRONT), pictures[0] if pictures else None)
         if front is not None and not _existing_cover(path) and not _write_picture(path, front):
-            # The embedded cover is the only copy of the artwork: never strip it unsaved.
+            # The embedded picture (the front cover, else the first) is the only copy of the artwork: never strip it.
             click.secho(
                 f"{filename}: left as it is, as its front cover could not be read as an image to keep.", fg="red"
             )
