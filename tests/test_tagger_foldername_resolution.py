@@ -152,3 +152,17 @@ def test_an_escaped_token_does_not_read_the_files(monkeypatch, tmp_path) -> None
 
     assert renamed == str(tmp_path / "Illy - journaling [{resolution}]")
     assert calls == []
+
+
+def test_a_blank_token_keeps_escaped_braces_and_takes_a_conversion(monkeypatch, tmp_path) -> None:
+    calls = _stub_audio_info(monkeypatch, {"01.flac": {"precision": 16, "sample rate": 44100}})
+    template = "{artists} - {title} [{source} FLAC {resolution!s}] {{resolution}}"
+    monkeypatch.setattr(cfg.upload.formatting, "folder_template", template)
+    monkeypatch.setattr(cfg.directory, "download_directory", str(tmp_path))
+    album = tmp_path / "old name"
+    album.mkdir()
+
+    renamed = foldername.rename_folder(str(album), METADATA, auto_rename=True, check=False)
+
+    assert renamed == str(tmp_path / "Illy - journaling [WEB FLAC] {resolution}")
+    assert calls == [str(album)]

@@ -245,19 +245,21 @@ def strip_oversized_pictures(path: str, track_data: dict) -> list[str]:
         except Exception as error:
             click.secho(f"{filename}: could not read the FLAC metadata ({type(error).__name__}); left as is.", fg="red")
             continue
-        click.secho(
-            f"{filename}: {humanfriendly.format_size(size, binary=True)} of pictures and padding exceeds 1 MiB "
-            "(a trump reason); removing them.",
-            fg="yellow",
-        )
         pictures = [picture for picture in audio.pictures if picture.data]
         front = next((p for p in pictures if p.type == PictureType.COVER_FRONT), pictures[0] if pictures else None)
         if front is not None and not _existing_cover(path) and not _write_picture(path, front):
             # The embedded picture (the front cover, else the first) is the only copy of the artwork: never strip it.
             click.secho(
-                f"{filename}: left as it is, as its front cover could not be read as an image to keep.", fg="red"
+                f"{filename}: pictures and padding exceed 1 MiB (a trump reason), but left as they are: "
+                "the embedded artwork could not be read as an image to keep.",
+                fg="red",
             )
             continue
+        click.secho(
+            f"{filename}: {humanfriendly.format_size(size, binary=True)} of pictures and padding exceeds 1 MiB "
+            "(a trump reason); removing them.",
+            fg="yellow",
+        )
         audio.clear_pictures()
         audio.save(padding=get_8kib_padding)
         stripped.append(filename)
@@ -289,8 +291,11 @@ def compress_pictures(path):
         # the image gets what is left once they are written with no data.
         picture = Picture()
         try:
-            picture.mime = Image.open(cover_file).get_format_mimetype()
-        except (OSError, Image.DecompressionBombError) as e:
+            # Decoded, not just identified: a truncated image still opens.
+            with Image.open(cover_file) as image:
+                image.load()
+                picture.mime = image.get_format_mimetype()
+        except (OSError, ValueError, Image.DecompressionBombError) as e:
             click.secho(f"Could not read cover file {cover_file} as an image ({e}); leaving it out.", fg="red")
             continue
 

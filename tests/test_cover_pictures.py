@@ -188,6 +188,20 @@ def test_a_cover_that_is_not_a_readable_image_is_skipped(tmp_path, capsys) -> No
     assert "Could not read cover file" in output
 
 
+def test_a_truncated_cover_is_not_embedded(tmp_path, capsys) -> None:
+    noise = random.Random(7).randbytes(200 * 200 * 3)
+    buffer = io.BytesIO()
+    Image.frombytes("RGB", (200, 200), noise).save(buffer, "jpeg")
+    (tmp_path / "cover.jpg").write_bytes(buffer.getvalue()[: len(buffer.getvalue()) // 2])
+    _write_flac(tmp_path / "01.flac")
+
+    cover.compress_pictures(str(tmp_path))
+
+    audio = FLAC(tmp_path / "01.flac")
+    assert audio.pictures == []
+    assert "Could not read cover file" in capsys.readouterr().out
+
+
 def test_a_cover_pil_refuses_as_a_decompression_bomb_is_skipped(tmp_path, monkeypatch, capsys) -> None:
     # PIL raises Image.DecompressionBombError, not an OSError, for an image it judges too large to open safely.
     monkeypatch.setattr(cover.Image, "MAX_IMAGE_PIXELS", 10)
