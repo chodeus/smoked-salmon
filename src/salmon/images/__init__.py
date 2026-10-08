@@ -1,12 +1,10 @@
-import contextlib
 from collections.abc import Callable, Sequence
 
 import anyio
 import asyncclick as click
-import pyperclip
 
 from salmon import cfg, dryrun
-from salmon.common import AliasedCommands, commandgroup, is_http_url
+from salmon.common import AliasedCommands, commandgroup, copy_to_clipboard, is_http_url
 from salmon.config.validations import ARTWORK_ONLY_HOSTS, host_refusal, spectrals_refusal
 from salmon.errors import ImageUploadFailed
 from salmon.images import catbox, imgbb, imgbox, oeimg, ptscreens, ra, red
@@ -129,9 +127,7 @@ async def upload_images(filepaths: Sequence[str], image_host) -> list[str]:
                 raise ImageUploadFailed(f"{image_host.__name__} returned no usable URL: {str(url)[:200]!r}")
             click.secho(url)
         if cfg.upload.description.copy_uploaded_url_to_clipboard:
-            # Clipboard is unavailable on headless servers; never fail the upload over it.
-            with contextlib.suppress(Exception):
-                pyperclip.copy("\n".join(urls))
+            copy_to_clipboard("\n".join(urls))
         return urls
     except (ImageUploadFailed, ValueError) as error:
         click.secho(f"Image Upload Failed. {error}", fg="red")

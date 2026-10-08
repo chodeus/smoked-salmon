@@ -624,11 +624,15 @@ class BaseGazelleApi:
 
         server_wait = parse_retry_after(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
         if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
+            if resp.status != HTTPStatus.TOO_MANY_REQUESTS and not idempotent:
+                # Only a 429 says the tracker did not act: another error status naming
+                # the rate limit may come after it did, so the outcome is unknown.
+                raise failure(f"Rate limit exceeded ({resp.status})")
             retry_after = min(_RATE_LIMIT_WAIT if server_wait is None else server_wait, _MAX_SERVER_WAIT)
             click.secho(f"Rate limit exceeded, waiting {retry_after:g} seconds...", fg="yellow")
             # Every request to this tracker waits, not just this one; its retry waits in the limiter.
             self._rate_limiter.pause(retry_after)
-            raise failure("Rate limit exceeded", not_acted_on=True)
+            raise failure(f"Rate limit exceeded ({resp.status})", not_acted_on=True)
 
         if resp.status == HTTPStatus.UNAUTHORIZED:
             click.secho(
@@ -724,18 +728,14 @@ class BaseGazelleApi:
             The torrent group ID as int, or None if not found.
         """
         url = self.base_url + "/torrents.php"
-        try:
-            resp = await self._request("GET", url, params={"torrentid": torrentid}, timeout_secs=5)
-        except TimeoutError:
-            click.secho("Connection to API timed out, try script again later. Gomen!", fg="red")
-            raise click.Abort() from None
+        resp = await self._request("GET", url, params={"torrentid": torrentid}, timeout_secs=5)
         parsed = urlparse(resp.url)
         query = parse_qs(parsed.query)
         group_id = query.get("id", [None])[0]
         if group_id:
             return int(group_id)
         click.secho("Couldn't retrieve torrent_group_id from torrent_id, no Redirect found!", fg="red")
-        raise click.Abort()
+        return None
 
     async def get_request(self, id: int) -> dict:
         """Get information about a request.
@@ -1006,9 +1006,6 @@ class BaseGazelleApi:
         if "requests.php" in resp_url:
             try:
                 torrent_id = self.parse_torrent_id_from_filled_request_page(resp_text)
-                group_id = await self.get_redirect_torrentgroupid(torrent_id) or 0
-                click.secho(f"Filled request: {resp_url}", fg="green")
-                return torrent_id, group_id
             except (TypeError, ValueError) as err:
                 soup = BeautifulSoup(resp_text, "lxml")
                 error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
@@ -1018,6 +1015,14 @@ class BaseGazelleApi:
                     if p_tag:
                         error_message = _safe_response_excerpt(self._scrub(p_tag.text))
                 raise RequestError(f"Request fill failed: {error_message}") from err
+            click.secho(f"Filled request: {resp_url}", fg="green")
+            try:
+                group_id = await self.get_redirect_torrentgroupid(torrent_id) or 0
+            except RequestError as err:
+                # The torrent is up: raising would report it failed, and it would go unseeded.
+                click.secho(f"Could not look up the group of torrent {torrent_id}: {err}", fg="yellow")
+                group_id = 0
+            return torrent_id, group_id
         try:
             return self.parse_most_recent_torrent_and_group_id_from_group_page(resp_text)
         except TypeError as err:

@@ -376,3 +376,27 @@ def test_every_trackers_conversions_are_checked_against_the_runs_path_limit(flow
     _upload(["RED", "OPS"])
 
     assert limits == [180, 180]
+
+
+def test_an_upload_with_no_group_id_offers_no_conversions(flow, monkeypatch, capsys) -> None:
+    calls, executed, _ = flow
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
+    offered: list[bool] = []
+
+    async def request_fill(site, *_args, **_kwargs):
+        return 7, 0, "/t.torrent", b"", f"{site.base_url}/torrents.php?torrentid=7"
+
+    async def choose(*_args):
+        offered.append(True)
+        return []
+
+    monkeypatch.setattr(salmon.uploader, "upload_and_report", request_fill)
+    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args: [{"name": "MP3 320"}])
+    monkeypatch.setattr(salmon.uploader, "prompt_downconversion_choice", choose)
+    _upload(None)
+
+    assert offered == []
+    assert "print_torrents" not in [name for name, _site, _kw in calls]
+    assert "No group id came back" in capsys.readouterr().out
+    assert executed == [True]

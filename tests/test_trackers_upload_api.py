@@ -658,6 +658,25 @@ async def test_site_page_upload_request_fill_success_resolves_group_via_redirect
     assert calls[1]["params"] == {"torrentid": 789}
 
 
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        RequestFailedError("Network error: timed out"),
+        http(text="", url="https://dummy.example/torrents.php?torrentid=789"),
+    ],
+    ids=["failed", "no-redirect"],
+)
+async def test_a_filled_request_whose_group_lookup_fails_is_still_an_upload(api, capsys, lookup):
+    fill_html = '<html><body><a href="torrents.php?torrentid=789">Yes</a></body></html>'
+    script_requests(api, [http(text=fill_html, url="https://dummy.example/requests.php?action=view&id=77"), lookup])
+    api.authkey = "AK"
+
+    result = await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
+
+    assert result == (789, 0)
+    assert "Filled request" in capsys.readouterr().out
+
+
 async def test_site_page_upload_request_fill_failure_extracts_error(api):
     fill_error_html = "<html><body><div><div><h2>Error</h2></div><p>Request already filled</p></div></body></html>"
     script_requests(api, [http(text=fill_error_html, url="https://dummy.example/requests.php?action=takefill")])
@@ -930,20 +949,13 @@ async def test_get_redirect_torrentgroupid_found_returns_int_group_id(api):
     assert calls[0]["params"] == {"torrentid": 5}
 
 
-async def test_get_redirect_torrentgroupid_without_redirect_raises_abort(api, capsys):
+async def test_get_redirect_torrentgroupid_without_redirect_returns_none(api, capsys):
     script_requests(api, [http(url="https://dummy.example/torrents.php?torrentid=5")])
 
-    with pytest.raises(click.Abort):
-        await api.get_redirect_torrentgroupid(5)
+    result = await api.get_redirect_torrentgroupid(5)
+
+    assert result is None
     assert "no Redirect found" in capsys.readouterr().out
-
-
-async def test_get_redirect_torrentgroupid_timeout_raises_abort(api, capsys):
-    script_requests(api, [TimeoutError("timed out")])
-
-    with pytest.raises(click.Abort):
-        await api.get_redirect_torrentgroupid(5)
-    assert "timed out" in capsys.readouterr().out
 
 
 async def test_label_rls_fetches_every_page_exactly_once(api):
