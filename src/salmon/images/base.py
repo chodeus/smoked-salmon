@@ -12,8 +12,7 @@ mimetypes.init()
 
 _UploadFile = Callable[[Any, str], Awaitable[tuple[str, str | None]]]
 
-# aiohttp's default, 5 min total and 30 s to connect. The total counts the wait for a pooled connection, so batches
-# queue before aiohttp; it stays because the read timeout starts only once the body is sent.
+# 5 min total per aiohttp request, including any pool wait; 30 s to connect. Batch items queue before aiohttp.
 UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=300, sock_connect=30)
 
 

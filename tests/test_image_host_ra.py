@@ -11,7 +11,7 @@ from salmon.images import ra
 @pytest.fixture(autouse=True)
 def _ra_key(monkeypatch) -> None:
     # The config refuses ra without a key; the test config has none.
-    monkeypatch.setattr(ra.cfg.image, "ra_key", "key")
+    monkeypatch.setattr(ra.cfg.image, "ra_key", "ra-test-0001")
 
 
 async def _serve(handler) -> web.AppRunner:
@@ -98,7 +98,8 @@ def test_ra_without_a_key_says_so(tmp_path, monkeypatch) -> None:
         anyio.run(_run_upload, tmp_path)
 
 
-def test_ra_error_echoing_the_key_is_masked(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("key", ["ra-secret-0123456789", "k3y"])
+def test_ra_error_echoing_the_key_is_masked(tmp_path, monkeypatch, key) -> None:
     async def handle_upload(request: web.Request) -> web.Response:
         data = await request.post()
         return web.Response(text=f"bad request: api_key={data.get('api_key')}", status=400)
@@ -106,7 +107,7 @@ def test_ra_error_echoing_the_key_is_masked(tmp_path, monkeypatch) -> None:
     async def run() -> str:
         runner = await _serve(handle_upload)
         monkeypatch.setattr(ra, "UPLOAD_URL", _local_url(runner))
-        monkeypatch.setattr(ra.cfg.image, "ra_key", "ra-secret-0123456789")
+        monkeypatch.setattr(ra.cfg.image, "ra_key", key)
         try:
             with pytest.raises(ImageUploadFailed) as error:
                 await _run_upload(tmp_path)
@@ -116,5 +117,5 @@ def test_ra_error_echoing_the_key_is_masked(tmp_path, monkeypatch) -> None:
 
     message = anyio.run(run)
 
-    assert "ra-secret-0123456789" not in message
+    assert key not in message
     assert "[REDACTED]" in message
