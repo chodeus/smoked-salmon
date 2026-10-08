@@ -520,7 +520,8 @@ async def test_api_key_upload_request_fill_failed_returns_zero_ids(api, capsys):
     result = await api.api_key_upload({}, UploadFiles(torrent_data=b"torrent"))
 
     assert result == (0, 0)
-    assert "Request fill failed!" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Request fill failed!" in out
 
 
 async def test_api_key_upload_fill_request_shape_reports_url_and_returns_ids(api, capsys):
@@ -674,7 +675,8 @@ async def test_a_filled_request_whose_group_lookup_fails_is_still_an_upload(api,
     result = await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
 
     assert result == (789, 0)
-    assert "Filled request" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Filled request" in out
 
 
 async def test_a_fill_that_fails_after_the_torrent_was_stored_is_still_an_upload(api, capsys):
@@ -706,9 +708,22 @@ async def test_site_page_upload_request_fill_failure_extracts_error(api):
     script_requests(api, [http(text=fill_error_html, url="https://dummy.example/requests.php?action=takefill")])
     api.passkey = "PK"
 
-    with pytest.raises(RequestError) as excinfo:
+    with pytest.raises(UnknownOutcomeError) as excinfo:
         await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
-    assert "Request fill failed: Request already filled" in str(excinfo.value)
+    assert "filling the request failed: Request already filled" in str(excinfo.value)
+
+
+async def test_a_failed_fill_with_no_torrent_id_is_looked_up_by_its_infohash(api, tmp_path):
+    torrent = _real_torrent(tmp_path)
+    fill_error_html = "<html><body><div><div><h2>Error</h2></div><p>Request already filled</p></div></body></html>"
+    found = '{"status": "success", "response": {"torrent": {"id": 789}, "group": {"id": 456}}}'
+    takefill = http(text=fill_error_html, url="https://dummy.example/requests.php?action=takefill")
+    calls = script_requests(api, [takefill, http(text=found)])
+
+    result = await api.site_page_upload({}, UploadFiles(torrent_data=torrent))
+
+    assert result == (789, 456)
+    assert [c["method"] for c in calls] == ["POST", "GET"]
 
 
 async def test_a_long_request_fill_error_is_capped(api):
@@ -947,7 +962,8 @@ async def test_append_to_torrent_description_success_prepends_text(api, capsys):
     assert dict(calls[1]["data"])["release_desc"] == "Spectrals: Old description"
     # Authenticated before the page is read, so _scrub knows the authkey the form repeats.
     assert [call["needs_authkey"] for call in calls] == [True, False]
-    assert "Added spectrals to the torrent description." in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Added spectrals to the torrent description." in out
 
 
 async def test_append_to_torrent_description_error_page_raises_request_error(api):
@@ -979,7 +995,8 @@ async def test_get_redirect_torrentgroupid_without_redirect_returns_none(api, ca
     result = await api.get_redirect_torrentgroupid(5)
 
     assert result is None
-    assert "no Redirect found" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "no Redirect found" in out
 
 
 async def test_label_rls_fetches_every_page_exactly_once(api):

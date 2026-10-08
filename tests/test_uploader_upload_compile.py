@@ -767,7 +767,8 @@ async def test_upload_and_report_happy_path_returns_ids_url_and_writes_comment(m
     # The torrent is rewritten with the permalink as its comment.
     assert state["content"].comment == url
     with open(torrent_path, "rb") as f:
-        assert f.read() == f"comment={url}".encode()
+        written = f.read()
+    assert written == f"comment={url}".encode()
     assert os.listdir(os.path.dirname(torrent_path)) == ["album.torrent"]
     # Not lossy: no report is filed.
     assert state["reports"] == []
@@ -909,9 +910,11 @@ async def test_a_torrent_rewrite_that_fails_partway_still_seeds_the_torrent_as_g
 
     assert [task[1] for task in seedbox.tasks] == ["folder", "seed"]
     with open(state["torrent_path"], "rb") as f:
-        assert f.read() == b"as generated"
+        written = f.read()
+    assert written == b"as generated"
     assert os.listdir(tmp_path) == ["album.torrent"]
-    assert "Could not add the URL" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Could not add the URL" in out
 
 
 async def test_a_missing_clipboard_does_not_stop_the_upload_being_seeded(monkeypatch, fake_tracker, tmp_path, capsys):
@@ -926,7 +929,8 @@ async def test_a_missing_clipboard_does_not_stop_the_upload_being_seeded(monkeyp
     await upload_and_report(**uar_args(fake_tracker, seedbox))
 
     assert [task[1] for task in seedbox.tasks] == ["folder", "seed"]
-    assert "Could not copy to the clipboard: no copy/paste mechanism" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Could not copy to the clipboard: no copy/paste mechanism" in out
 
 
 @pytest.mark.parametrize("error_cls", [UploadError, RequestError])

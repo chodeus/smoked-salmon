@@ -624,15 +624,15 @@ class BaseGazelleApi:
 
         server_wait = parse_retry_after(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
         if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
-            if resp.status != HTTPStatus.TOO_MANY_REQUESTS and not idempotent:
-                # Only a 429 says the tracker did not act: another error status naming
-                # the rate limit may come after it did, so the outcome is unknown.
-                raise failure(f"Rate limit exceeded ({resp.status})")
             retry_after = min(_RATE_LIMIT_WAIT if server_wait is None else server_wait, _MAX_SERVER_WAIT)
             click.secho(f"Rate limit exceeded, waiting {retry_after:g} seconds...", fg="yellow")
             # Every request to this tracker waits, not just this one; its retry waits in the limiter.
             self._rate_limiter.pause(retry_after)
-            raise failure(f"Rate limit exceeded ({resp.status})", not_acted_on=True)
+            # Only a 429 says the tracker did not act: another error status naming
+            # the rate limit may come after it did, so the outcome is unknown.
+            raise failure(
+                f"Rate limit exceeded ({resp.status})", not_acted_on=resp.status == HTTPStatus.TOO_MANY_REQUESTS
+            )
 
         if resp.status == HTTPStatus.UNAUTHORIZED:
             click.secho(
@@ -1004,7 +1004,7 @@ class BaseGazelleApi:
                     f"Site upload failed: {_safe_response_excerpt(self._scrub(match[1]))} ({response.status})"
                 )
         if "requests.php" in resp_url:
-            return await self._request_fill_result(data, resp_text, resp_url)
+            return await self._request_fill_result(data, files, resp_text, resp_url)
         try:
             return self.parse_most_recent_torrent_and_group_id_from_group_page(resp_text)
         except TypeError:
@@ -1012,17 +1012,19 @@ class BaseGazelleApi:
             reason = f"its answer was not the group page: {_safe_response_excerpt(self._scrub(resp_text))}"
             return await self._find_lost_upload(files, UnknownOutcomeError(reason))
 
-    async def _request_fill_result(self, data: dict, resp_text: str, resp_url: str) -> tuple[int, int]:
+    async def _request_fill_result(
+        self, data: dict, files: UploadFiles, resp_text: str, resp_url: str
+    ) -> tuple[int, int]:
         """The ids of an upload that went on to fill a request; Gazelle stores the torrent before it tries the fill."""
         query = parse_qs(urlparse(resp_url).query)
         try:
             torrent_id = self.parse_torrent_id_from_filled_request_page(resp_text)
             click.secho(f"Filled request: {self._scrub(resp_url)}", fg="green")
-        except (TypeError, ValueError) as err:
+        except (TypeError, ValueError):
             reason = self._request_fill_error(resp_text)
             stored = query.get("torrentid", [""])[0]
             if not stored.isdigit():
-                raise RequestError(f"Request fill failed: {reason}") from err
+                return await self._find_lost_upload(files, UnknownOutcomeError(f"filling the request failed: {reason}"))
             torrent_id = int(stored)
             request = query.get("requestid", [""])[0]
             where = self.request_url(int(request)) if request.isdigit() else "the request"
@@ -1032,7 +1034,7 @@ class BaseGazelleApi:
         try:
             return torrent_id, await self.get_redirect_torrentgroupid(torrent_id) or 0
         except RequestError as err:
-            # The torrent is up: raising would report it failed, and it would go unseeded.
+            # _request has already retried this GET. The torrent is up: raising would report it failed, unseeded.
             click.secho(f"Could not look up the group of torrent {torrent_id}: {err}", fg="yellow")
             return torrent_id, 0
 

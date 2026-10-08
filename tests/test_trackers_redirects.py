@@ -482,8 +482,12 @@ async def test_a_failed_rehost_fetch_never_carries_the_signed_url(monkeypatch):
 
 
 @pytest.mark.parametrize(("status", "error", "sends"), [(500, UnknownOutcomeError, 1), (429, RetryableError, 2)])
-async def test_only_a_429_lets_a_post_naming_the_rate_limit_be_sent_again(serve, api_for, status, error, sends):
+async def test_only_a_429_lets_a_post_naming_the_rate_limit_be_sent_again(
+    serve, api_for, monkeypatch, status, error, sends
+):
     posts: list[int] = []
+    pauses: list[float] = []
+    monkeypatch.setattr(SharedLimiter, "pause", lambda _self, seconds: pauses.append(seconds))
 
     async def upload(request: web.Request) -> web.Response:
         posts.append(status)
@@ -495,6 +499,8 @@ async def test_only_a_429_lets_a_post_naming_the_rate_limit_be_sent_again(serve,
     with pytest.raises(error, match=f"Rate limit exceeded \\({status}\\)"):
         await twice(api_for(url), "POST", f"{url}/upload.php", data={"a": "b"})
     assert len(posts) == sends
+    # Either way the tracker named its rate limit, so every request to it waits.
+    assert pauses == [0.0] * sends
 
 
 def test_a_paused_budget_holds_every_request_until_the_pause_ends():

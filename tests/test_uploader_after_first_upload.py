@@ -398,5 +398,6 @@ def test_an_upload_with_no_group_id_offers_no_conversions(flow, monkeypatch, cap
 
     assert offered == []
     assert "print_torrents" not in [name for name, _site, _kw in calls]
-    assert "No group id came back" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "No group id came back" in out
     assert executed == [True]
