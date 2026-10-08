@@ -252,3 +252,40 @@ async def test_a_cover_download_that_times_out_says_so(tmp_path, monkeypatch, ca
     assert result is None
     out = capsys.readouterr().out
     assert "Failed to download cover image (ERROR TimeoutError)" in out
+
+
+def _noisy_jpeg() -> bytes:
+    """A JPEG big enough that a cut-off copy still has a whole header."""
+    buffer = io.BytesIO()
+    Image.frombytes("RGB", (64, 64), bytes(range(256)) * 48).save(buffer, "jpeg", quality=95)
+    return buffer.getvalue()
+
+
+async def test_a_cover_cut_off_with_no_content_length_is_not_kept(tmp_path, monkeypatch, cover_server) -> None:
+    monkeypatch.setattr(cfg.upload.formatting, "lowercase_cover", False)
+    body = _noisy_jpeg()
+
+    async def ends_early(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "image/jpeg"})
+        response.enable_chunked_encoding()
+        await response.prepare(request)
+        await response.write(body[: len(body) // 2])
+        await response.write_eof()
+        return response
+
+    result = await cover._download_cover(str(tmp_path), await cover_server(ends_early))
+
+    assert result is None
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_a_failed_cover_download_never_prints_its_url(tmp_path, monkeypatch, capsys, cover_server) -> None:
+    async def loops(request: web.Request) -> web.Response:
+        raise web.HTTPFound(f"{request.path}?sig=test-sig-0001")
+
+    result = await cover._download_cover(str(tmp_path), await cover_server(loops))
+
+    assert result is None
+    out = capsys.readouterr().out
+    assert "test-sig-0001" not in out
+    assert "Failed to download cover image (ERROR TooManyRedirects)" in out

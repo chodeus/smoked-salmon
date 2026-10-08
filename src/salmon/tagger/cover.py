@@ -164,7 +164,10 @@ def _is_valid_cover(cover_path: str | IO[bytes]) -> bool:
         True if the file is a valid JPEG or PNG image.
     """
     try:
-        mime = Image.open(cover_path).get_format_mimetype()
+        with Image.open(cover_path) as image:
+            mime = image.get_format_mimetype()
+            # Every pixel: a download cut off with no Content-Length still has a valid header.
+            image.load()
     except Exception:
         return False
     return mime in ("image/jpeg", "image/png")
@@ -203,7 +206,8 @@ async def _download_cover(path: str, cover_url: str) -> str | None:
                     click.secho(f"\nFailed to download cover image (ERROR over {_MAX_COVER_BYTES} bytes)", fg="red")
                     return None
     except (aiohttp.ClientError, TimeoutError) as e:
-        click.secho(f"\nFailed to download cover image (ERROR {str(e) or type(e).__name__})", fg="red")
+        # By type: an aiohttp error can repeat the URL, and a cover URL can be signed.
+        click.secho(f"\nFailed to download cover image (ERROR {type(e).__name__})", fg="red")
         return None
 
     if not _is_valid_cover(io.BytesIO(data)):
