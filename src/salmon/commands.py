@@ -24,6 +24,7 @@ from salmon.config import find_config_path, get_default_config_path, get_user_cf
 from salmon.errors import UploadError
 from salmon.sources.tidal import credentials_configured as tidal_credentials_configured
 from salmon.tagger.audio_info import gather_audio_info, recompress_path
+from salmon.tagger.sources import METASOURCES
 from salmon.uploader.description import build_tracklist_description
 from salmon.uploader.seedbox import seedbox_secrets
 from salmon.uploader.spectrals import (
@@ -70,6 +71,21 @@ async def descgen(urls: tuple[str, ...]) -> None:
     if not urls:
         click.secho("You must specify at least one URL", fg="red")
         return
+
+    # Checked before any scrape starts, so a bad argument sends no request and ends without a traceback.
+    unsupported = [url for url in urls if not any(source.Scraper.regex.match(url) for source in METASOURCES.values())]
+    if unsupported:
+        sources = ", ".join(METASOURCES)
+        for url in unsupported:
+            if os.path.isdir(url):
+                click.secho(
+                    f"{url} is a folder; descgen takes store URLs ({sources}), `salmon up` writes the description "
+                    "itself.",
+                    fg="red",
+                )
+            else:
+                click.secho(f"{url} is not a release URL descgen supports. It takes URLs from {sources}.", fg="red")
+        raise click.exceptions.Exit(1)
 
     description = await build_tracklist_description(urls)
     click.secho("\nDescription:\n", fg="yellow", bold=True)

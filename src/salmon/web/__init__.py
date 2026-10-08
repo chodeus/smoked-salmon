@@ -11,8 +11,11 @@ from salmon.web import spectrals
 web_cfg = cfg.upload.web_interface
 
 
-async def create_app_async() -> web.AppRunner:
+async def create_app_async(specs_path: str | None = None) -> web.AppRunner:
     """Create and start the aiohttp web application.
+
+    Args:
+        specs_path: The folder of spectral images to serve under the static URL's ``/specs``.
 
     Returns:
         The AppRunner instance for the web server.
@@ -21,7 +24,7 @@ async def create_app_async() -> web.AppRunner:
         OSError: If the port is already in use.
     """
     app = web.Application()
-    add_routes(app)
+    add_routes(app, specs_path)
     aiohttp_jinja2.setup(app, loader=jinja2.FileSystemLoader(join(dirname(__file__), "templates")))
     runner = web.AppRunner(app)
     await runner.setup()
@@ -32,13 +35,18 @@ async def create_app_async() -> web.AppRunner:
     return runner
 
 
-def add_routes(app: web.Application) -> None:
+def add_routes(app: web.Application, specs_path: str | None = None) -> None:
     """Add routes to the web application.
 
     Args:
         app: The aiohttp web application.
+        specs_path: The folder of spectral images to serve under the static URL's ``/specs``.
     """
-    app.router.add_static("/static", join(dirname(__file__), "static"), follow_symlinks=True)
+    # Served from their own folder at the URL the templates use: linking them into the package's static folder
+    # needed a privilege Windows does not give by default, wrote into the installed package, and was shared by runs.
+    if specs_path is not None:
+        app.router.add_static("/static/specs", specs_path)
+    app.router.add_static("/static", join(dirname(__file__), "static"))
     app.router.add_route("GET", "/", handle_index)
     app.router.add_route("GET", "/spectrals", spectrals.handle_spectrals)
     app["static_root_url"] = web_cfg.static_root_url

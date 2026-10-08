@@ -29,3 +29,30 @@ jobs:
 
       - name: Run tests
         run: uv run pytest -q
+
+  # CPython 3.14, with every dependency from a wheel. uv installs the newest Python by default, and a dependency
+  # with no wheel for it gets built from source on users' machines (pyoxipng on 3.14 needed Rust and Visual Studio).
+  # The runners have Rust, so without UV_NO_BUILD such a build would pass here unnoticed. Not a required check.
+  pytest-py314:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      UV_PYTHON: "3.14"
+      UV_NO_BUILD: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest -q
