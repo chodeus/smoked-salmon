@@ -378,6 +378,40 @@ def test_every_trackers_conversions_are_checked_against_the_runs_path_limit(flow
     assert limits == [180, 180]
 
 
+def test_an_albums_own_spectrals_folder_survives_the_real_check(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(spectrals.cfg.directory, "tmp_dir", None)
+    monkeypatch.setattr(spectrals.cfg.directory, "download_directory", str(tmp_path))
+    album = tmp_path / "Album"
+    (album / "Spectrals").mkdir(parents=True)
+    (album / "Spectrals" / "mine.png").write_bytes(b"mine")
+    made: list[str] = []
+
+    async def generate(_path, spectrals_path, _audio_info):
+        made.append(spectrals_path)
+        return {}
+
+    monkeypatch.setattr(spectrals, "generate_spectrals_all", generate)
+    monkeypatch.setattr(spectrals, "print_frequency_guidance", lambda *_a: _done("ok"))
+    monkeypatch.setattr(spectrals, "view_spectrals", lambda *_a: _done(None))
+    monkeypatch.setattr(spectrals, "prompt_lossy_master", lambda *_a, **_k: _done(False))
+    monkeypatch.setattr(spectrals, "prompt_spectrals", lambda *_a, **_k: _done({}))
+    anyio.run(lambda: spectrals.post_upload_spectral_check(FakeSite(), str(album), 1, None, {}, "WEB", None))  # type: ignore[arg-type]
+
+    assert (album / "Spectrals" / "mine.png").read_bytes() == b"mine"
+    assert os.path.dirname(made[0]) == str(tmp_path)
+    assert not os.path.exists(made[0])
+
+
+def test_an_upload_without_spectrals_leaves_the_albums_own_spectrals_folder(monkeypatch, tmp_path) -> None:
+    album = _nothing_picked(monkeypatch, tmp_path)
+    own = os.path.join(album, "Spectrals")
+    os.mkdir(own)
+
+    anyio.run(lambda: spectrals.handle_spectrals_upload_and_deletion(spectrals.get_spectrals_path(album), None))
+
+    assert os.path.isdir(own)
+
+
 def test_an_upload_with_no_group_id_offers_no_conversions(flow, monkeypatch, capsys) -> None:
     calls, executed, _ = flow
     monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
