@@ -235,3 +235,54 @@ def test_a_folder_made_where_salmon_removed_its_own_is_the_users(monkeypatch, tm
     specs.mkdir()
 
     assert not spectrals.made_by_salmon(str(specs))
+
+
+def test_a_library_albums_spectrals_follow_it_to_the_renamed_copy(monkeypatch, dirs) -> None:
+    downloads, _seeding = dirs
+    library = downloads.parent / "library"
+    library.mkdir()
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(library)])
+    album = _album(library / "Old Name")
+    _write_spectrals(Path(get_spectrals_path(str(album))))
+
+    new_path = foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False)
+
+    assert _files(Path(get_spectrals_path(new_path))) == SPECTRAL_FILES
+
+
+def test_salmons_spectrals_beside_an_albums_own_follow_the_rename(dirs) -> None:
+    _downloads, seeding = dirs
+    album = _album(seeding / "Old Name")
+    (album / "Spectrals").mkdir()
+    (album / "Spectrals" / "theirs.png").write_bytes(b"theirs")
+    _write_spectrals(Path(get_spectrals_path(str(album))))
+
+    new_path = foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False)
+
+    assert (album / "Spectrals" / "theirs.png").read_bytes() == b"theirs"
+    assert (Path(new_path) / "Spectrals" / "theirs.png").read_bytes() == b"theirs"
+    assert _files(Path(get_spectrals_path(new_path))) == SPECTRAL_FILES
+
+
+def test_a_file_named_spectrals_in_the_album_gets_salmons_folder_beside_it(dirs) -> None:
+    downloads, seeding = dirs
+    album = _album(seeding / "Album")
+    (album / "Spectrals").write_bytes(b"not a folder")
+
+    made = create_specs_folder(str(album))
+
+    assert (album / "Spectrals").read_bytes() == b"not a folder"
+    assert Path(made).parent == downloads
+
+
+def test_a_scene_release_keeps_its_tmp_dir_spectrals_in_place(monkeypatch, dirs, tmp_path) -> None:
+    _downloads, seeding = dirs
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
+    album = _album(seeding / "Old Name")
+    _write_spectrals(tmp_dir / "spectrals_Old Name")
+
+    foldername.rename_folder(str(album), _metadata(scene=True), auto_rename=True, check=False)
+
+    assert _files(tmp_dir / "spectrals_Old Name") == SPECTRAL_FILES

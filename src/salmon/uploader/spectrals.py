@@ -343,16 +343,17 @@ def spectrals_dir() -> str | None:
 
 
 def get_spectrals_path(path):
-    """Get the path to the spectrals folder for an album."""
+    """The spectrals folder salmon makes for an album: never one of the user's own, which salmon would replace."""
     base_name = os.path.basename(path.rstrip("/"))
     if (beside := spectrals_dir()) is not None:
         # Create a unique subfolder for this album
         return os.path.join(beside, f"spectrals_{base_name}")
-    if cfg.directory.protects(path):
-        # Never inside a library album: the folder is replaced, then deleted. The digest keeps same-named albums apart.
+    in_album = os.path.join(path, "Spectrals")
+    if cfg.directory.protects(path) or (os.path.lexists(in_album) and not made_by_salmon(in_album)):
+        # Never inside a library album, nor over the album's own Spectrals. The digest keeps same-named albums apart.
         digest = hashlib.sha1(os.path.realpath(path).encode(), usedforsecurity=False).hexdigest()[:8]
         return os.path.join(cfg.directory.download_directory, f"spectrals_{base_name} {digest}")
-    return os.path.join(path, "Spectrals")
+    return in_album
 
 
 # Spectrals folders salmon made, by real path: a rename moves only these, never a folder of the user's own.
