@@ -224,8 +224,10 @@ def test_stripping_keeps_the_padding_the_file_had(tmp_path) -> None:
     path.write_bytes(b"ID3" + bytes([3, 0, 0]) + size + bytes(5_000) + path.read_bytes())
 
     process_tag_issues(str(tmp_path), scene=False)
+    stripped = not has_id3_tag(str(path))
     after = sum(block.length for block in FLAC(str(path)).metadata_blocks if block.code == 1)
 
+    assert stripped
     assert after == before
 
 
