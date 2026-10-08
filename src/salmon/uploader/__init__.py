@@ -371,9 +371,9 @@ def converted_from_note(conversion: dict[str, Any] | None, url: str | None) -> s
 
 def _max_path_length_for_run(site_code: str, trackers: list[str] | None, flac_group: dict | None) -> int:
     """The run's path limit: this tracker's, or the strictest of all the run may reach (-t, multi_tracker_upload)."""
-    if flac_group is not None or (not trackers and not cfg.upload.multi_tracker_upload):
+    if flac_group is not None or not (trackers or cfg.upload.multi_tracker_upload):
         return path_limit_for([site_code])
-    return path_limit_for([site_code, *(trackers or salmon.trackers.tracker_list)])
+    return path_limit_for(follow_up_trackers(trackers, site_code))
 
 
 async def next_tracker(preselected: bool, remaining: list[str]) -> str | None:
@@ -1387,6 +1387,7 @@ async def execute_downconversion_tasks(
                     bold=True,
                 )
                 continue
+            # Keys may predate check_folder_structure's truncation: only values are read, as the description is ours.
             conversion_track_data = {name: {**track, **converted_info[name]} for name, track in track_data.items()}
 
             # Update metadata for this conversion

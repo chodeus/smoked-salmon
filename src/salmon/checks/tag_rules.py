@@ -95,7 +95,9 @@ def _id3v1_holds_text(filepath: str) -> bool:
             return False
         handle.seek(-128, os.SEEK_END)
         block = handle.read(128)
-    return block[:3] == b"TAG" and bool(block[3:127].strip(b"\0 "))
+    # Byte 126 is the ID3v1.1 track number when byte 125 is zero, else the comment's end.
+    text = block[3:125] if block[125] == 0 else block[3:127]
+    return block[:3] == b"TAG" and bool(text.strip(b"\0 "))
 
 
 def _has_id3v2_header(filepath: str) -> bool:
@@ -104,14 +106,11 @@ def _has_id3v2_header(filepath: str) -> bool:
 
 
 def has_blank_id3v2_alongside_id3v1(filepath: str) -> bool:
-    """True for an MP3 whose filled-in ID3v1 tag sits beside a frameless ID3v2 tag, both found on disk."""
+    """True for an MP3 with a filled-in ID3v1 tag beside a frameless ID3v2 tag; MutagenError or OSError if unread."""
     if not (_id3v1_holds_text(filepath) and _has_id3v2_header(filepath)):
         return False
-    try:
-        # load_v1=False: mutagen otherwise reads the v1 fields into the v2 tag, and a blank v2 looks filled.
-        tags = ID3(filepath, load_v1=False)
-    except (MutagenError, OSError):
-        return False
+    # load_v1=False: mutagen otherwise reads the v1 fields into the v2 tag, and a blank v2 looks filled.
+    tags = ID3(filepath, load_v1=False)
     return not any(tags.getall(key) for key in tags)
 
 
@@ -138,8 +137,14 @@ def process_tag_issues(path: str, *, scene: bool) -> list[str]:
                 messages.append(
                     f"Removed an ID3 tag from {filename} (RED and OPS do not allow ID3 tags in FLAC files)."
                 )
-        elif lower.endswith(".mp3") and has_blank_id3v2_alongside_id3v1(filepath):
-            messages.append(
-                f"{filename}: MP3 file has a filled-in ID3v1 tag and a blank ID3v2 tag (RED and OPS can trump it)."
-            )
+        elif lower.endswith(".mp3"):
+            try:
+                dual = has_blank_id3v2_alongside_id3v1(filepath)
+            except (MutagenError, OSError) as e:
+                messages.append(f"{filename}: could not read its ID3v2 tag ({e}); check it by hand.")
+                continue
+            if dual:
+                messages.append(
+                    f"{filename}: MP3 file has a filled-in ID3v1 tag and a blank ID3v2 tag (RED and OPS can trump it)."
+                )
     return messages

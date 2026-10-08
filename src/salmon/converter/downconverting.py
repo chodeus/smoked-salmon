@@ -79,7 +79,11 @@ def _build_output_path(path: str, bit_depth: BitDepth, sample_rate: int | None, 
         swap_resolution_token,
     )
 
-    audio_info = gather_audio_info(path)
+    try:
+        audio_info = gather_audio_info(path)
+    except UploadError:
+        # A file it cannot read names the output as before, so an existing one is still found and skipped.
+        audio_info = {}
     # From the source's files, and only where the name holds it as its own word, never digits inside a title.
     current_token = resolution_token(audio_info)
     has_token = holds_resolution_token(foldername, current_token)

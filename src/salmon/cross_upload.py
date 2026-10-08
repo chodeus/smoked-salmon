@@ -221,7 +221,7 @@ async def _upload_response(
             transcodes,
         )
         return 0, target_group_id
-    # The target's own form fields (DIC: a 24bit Lossless torrent's sample rate), refused before anything is sent.
+    # The target's own form fields (DIC: a 24bit Lossless torrent's sample rate), refused before the upload POST.
     track_data = gather_audio_info(str(path)) if "24bit" in data["bitrate"] else {}
     form_fields = target_site.upload_form_fields({"encoding": data["bitrate"]}, track_data)
     data = await _rehost_red_images(data, source_site, target_site)
