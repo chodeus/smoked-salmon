@@ -3,15 +3,19 @@
 import shutil
 import unicodedata
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from salmon import cfg
 from salmon.config.validations import Upload
-from salmon.uploader.upload import generate_torrent
+from salmon.errors import UploadRefusedError
+from salmon.uploader.upload import _normalize_torrent_names, generate_torrent
 
 if TYPE_CHECKING:
+    from torf import Torrent
+
     from salmon.trackers.base import BaseGazelleApi
 
 COMPOSED_NAME = "Café.flac"
@@ -107,6 +111,15 @@ def test_a_normalized_torrent_no_longer_reads_the_files_on_disk(tmp_path: Path, 
     dumped = t.dump()
 
     assert dumped
+
+
+def test_two_files_that_normalize_to_one_path_are_refused() -> None:
+    """Built by hand: a normalization-insensitive file system (APFS) cannot hold both names."""
+    files = [{"length": 1, "path": ["CD1", COMPOSED_NAME]}, {"length": 1, "path": ["CD1", DECOMPOSED_NAME]}]
+    t = SimpleNamespace(metainfo={"info": {"name": "Album", "files": files}})
+
+    with pytest.raises(UploadRefusedError, match="CD1/Café.flac once NFC-normalized"):
+        _normalize_torrent_names(cast("Torrent", t), "NFC")
 
 
 def test_torrent_name_normalization_rejects_invalid_value() -> None:

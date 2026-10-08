@@ -10,6 +10,7 @@ from torf import Torrent
 from salmon import cfg, dryrun
 from salmon.common import UploadFiles, str_to_int_if_int
 from salmon.constants import ARTIST_IMPORTANCES
+from salmon.errors import UploadRefusedError
 from salmon.release_notification import upload_footer
 from salmon.sources import SOURCE_ICONS
 from salmon.tagger.pre_data import parse_artists
@@ -347,12 +348,18 @@ def generate_catno(metadata: dict[str, Any]) -> str:
 
 
 def _normalize_torrent_names(t: Torrent, form: Literal["NFC", "NFD"]) -> None:
-    """Unicode-normalize every file path name in the info dict; the caller writes with validate=False and reloads."""
+    """Unicode-normalize every file path name in the info dict; UploadRefusedError if two paths become one."""
     info = t.metainfo["info"]
     info["name"] = unicodedata.normalize(form, info["name"])
-    if "files" in info:
-        for fileinfo in info["files"]:
-            fileinfo["path"] = [unicodedata.normalize(form, part) for part in fileinfo["path"]]
+    seen: set[tuple[str, ...]] = set()
+    for fileinfo in info.get("files", []):
+        fileinfo["path"] = [unicodedata.normalize(form, part) for part in fileinfo["path"]]
+        if tuple(fileinfo["path"]) in seen:
+            raise UploadRefusedError(
+                f"Two files are both {'/'.join(fileinfo['path'])} once {form}-normalized: rename one, "
+                'or set torrent_name_normalization to "none".'
+            )
+        seen.add(tuple(fileinfo["path"]))
 
 
 def generate_torrent(gazelle_site: "BaseGazelleApi", path: str, normalize: bool = True) -> tuple[str, Torrent]:
