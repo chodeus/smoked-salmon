@@ -188,6 +188,9 @@ session = 'get-from-site-cookie'
 
 # # enable seedbox uploading
 # upload_to_seedbox = true
+# # "NFC" / "NFD" (""/"none": as on disk): the form of the file names your client seeds; rclone keeps names
+# # as they are unless extra_args has --local-unicode-normalization, so this must match the copied files.
+# torrent_name_normalization = ""
 
 # [upload.search]
 # limit = 3
@@ -223,6 +226,8 @@ session = 'get-from-site-cookie'
 # icons_in_descriptions = true
 # fullwidth_replacements = false
 # empty_track_comment_tag = true
+# # Wrap artist names in [artist][/artist] BBCode in the group description's tracklist.
+# artist_tags_in_tracklist = false
 
 # [upload.web_interface]
 # # web interface settings

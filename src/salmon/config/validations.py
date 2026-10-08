@@ -301,6 +301,7 @@ class UploadDescription(BaseStruct):
     fullwidth_replacements: bool = False
     # TODO: should this be in description?
     empty_track_comment_tag: bool = True
+    artist_tags_in_tracklist: bool = False
 
 
 class UploadWebInterface(BaseStruct):
@@ -380,6 +381,10 @@ class Upload(BaseStruct):
 
     upload_to_seedbox: bool = True
 
+    # Normalize file names in generated .torrent files: "" or "none" (default) keeps them as on disk.
+    # "NFC" / "NFD" must be the form of the files the client seeds, or it cannot find them.
+    torrent_name_normalization: str = ""
+
     # TODO: take these out of the upload struct!
     search: UploadSearch = msgspec.field(default_factory=UploadSearch)
     formatting: UploadFormatting = msgspec.field(default_factory=UploadFormatting)
@@ -388,6 +393,14 @@ class Upload(BaseStruct):
     requests: UploadRequests = msgspec.field(default_factory=UploadRequests)
     compression: UploadCompression = msgspec.field(default_factory=UploadCompression)
     ai_review: UploadAiReview = msgspec.field(default_factory=UploadAiReview)
+
+    def __post_init__(self):
+        valid_normalizations = ("", "none", "NFC", "NFD")
+        if self.torrent_name_normalization not in valid_normalizations:
+            raise ValueError(
+                "upload.torrent_name_normalization must be one of "
+                f"{valid_normalizations}, got {self.torrent_name_normalization!r}"
+            )
 
 
 class Cfg(BaseStruct):
