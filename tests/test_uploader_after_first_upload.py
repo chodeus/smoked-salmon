@@ -410,3 +410,28 @@ def test_an_upload_without_spectrals_leaves_the_albums_own_spectrals_folder(monk
     anyio.run(lambda: spectrals.handle_spectrals_upload_and_deletion(spectrals.get_spectrals_path(album), None))
 
     assert os.path.isdir(own)
+
+
+def test_an_upload_with_no_group_id_offers_no_conversions(flow, monkeypatch, capsys) -> None:
+    calls, executed, _ = flow
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
+    offered: list[bool] = []
+
+    async def request_fill(site, *_args, **_kwargs):
+        return 7, 0, "/t.torrent", b"", f"{site.base_url}/torrents.php?torrentid=7"
+
+    async def choose(*_args):
+        offered.append(True)
+        return []
+
+    monkeypatch.setattr(salmon.uploader, "upload_and_report", request_fill)
+    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args: [{"name": "MP3 320"}])
+    monkeypatch.setattr(salmon.uploader, "prompt_downconversion_choice", choose)
+    _upload(None)
+
+    assert offered == []
+    assert "print_torrents" not in [name for name, _site, _kw in calls]
+    out = capsys.readouterr().out
+    assert "No group id came back" in out
+    assert executed == [True]

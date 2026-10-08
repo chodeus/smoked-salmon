@@ -9,6 +9,7 @@ from typing import TypeVar
 import aiohttp
 import asyncclick as click
 import msgspec
+import pyperclip
 
 from salmon.common.aliases import AliasedCommands
 from salmon.common.constants import RE_FEAT
@@ -65,6 +66,7 @@ __all__ = [
     "ScrapeError",
     "commandgroup",
     "prompt_async",
+    "copy_to_clipboard",
     "flush_stdin",
     "str_to_int_if_int",
     "handle_scrape_errors",
@@ -143,6 +145,14 @@ class Prompt:
 
 
 prompt_async = Prompt()
+
+
+def copy_to_clipboard(text: str) -> None:
+    """Copy text to the clipboard, or say why not: a headless server has none, and nothing may fail over it."""
+    try:
+        pyperclip.copy(text)
+    except Exception as err:
+        click.secho(f"Could not copy to the clipboard: {err}", fg="yellow")
 
 
 def flush_stdin():

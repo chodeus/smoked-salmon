@@ -1,3 +1,4 @@
+import contextlib
 import functools
 import os
 import platform
@@ -6,8 +7,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 import anyio
 import asyncclick as click
-import pyperclip
 from mutagen import MutagenError
+from torf import TorfError
 
 import salmon.trackers
 from salmon import cfg, dryrun
@@ -18,7 +19,7 @@ from salmon.checks.logs import check_log_cambia
 from salmon.checks.source import detect_source
 from salmon.checks.tag_rules import collect_upload_warnings, path_limit_for, process_tag_issues
 from salmon.checks.upconverts import upload_upconvert_test
-from salmon.common import AlbumPath, commandgroup, decade_tag, tagify
+from salmon.common import AlbumPath, commandgroup, copy_to_clipboard, decade_tag, tagify
 from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
 from salmon.constants import ENCODINGS, FORMATS, SOURCES, TAG_ENCODINGS
 from salmon.converter.conversions import conversion_of
@@ -899,15 +900,24 @@ async def _upload_staged(
                             format=rls_data["format"],
                         )
 
-                    if not dryrun.active():
+                    if not group_id:
+                        # Conversions with no group id would each start a new group beside this one.
+                        click.secho(
+                            f"\nNo group id came back for {url}: no conversions are offered for it.", fg="yellow"
+                        )
+                    elif not dryrun.active():
                         await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
 
-                if get_downconversion_options(rls_data, track_data) and (
-                    source_flac is not None
-                    or cfg.upload.yes_all
-                    or click.confirm(
-                        click.style("\nWould you like to check downconversion options?", fg="magenta"),
-                        default=True,
+                if (
+                    group_id
+                    and get_downconversion_options(rls_data, track_data)
+                    and (
+                        source_flac is not None
+                        or cfg.upload.yes_all
+                        or click.confirm(
+                            click.style("\nWould you like to check downconversion options?", fg="magenta"),
+                            default=True,
+                        )
                     )
                 ):
                     selected_tasks = await prompt_downconversion_choice(rls_data, track_data, held)
@@ -1545,16 +1555,39 @@ async def upload_and_report(
             source_url=source_url,
         )
 
-    # Generate URL
+    url = finish_upload(
+        gazelle_site, path, torrent_id, torrent_path, torrent_content, metadata.get("format", ""), seedbox_uploader
+    )
+    return torrent_id, group_id, torrent_path, torrent_content, url
+
+
+def finish_upload(
+    gazelle_site: "BaseGazelleApi",
+    path: str,
+    torrent_id: int,
+    torrent_path: str,
+    torrent_content: Any,
+    format: str,
+    seedbox_uploader: UploadManager,
+) -> str:
+    """Write the uploaded torrent with its URL and queue it for seeding; it is up, so nothing here may raise."""
     url = f"{gazelle_site.base_url}/torrents.php?torrentid={torrent_id}"
     if dryrun.active():
         # Nothing was uploaded: nothing to seed, and no URL to copy.
         if cfg.upload.upload_to_seedbox:
             dryrun.say("not copying it to a seedbox or adding it to a torrent client.")
-        return torrent_id, group_id, torrent_path, torrent_content, url
+        return url
 
     torrent_content.comment = url
-    torrent_content.write(torrent_path, overwrite=True)
+    part = f"{torrent_path}.part"
+    try:
+        # Replaced whole: a write that fails partway would leave no torrent to seed from.
+        torrent_content.write(part, overwrite=True)
+        os.replace(part, torrent_path)
+    except (OSError, TorfError) as err:
+        with contextlib.suppress(OSError):
+            os.remove(part)
+        click.secho(f"Could not add the URL to {torrent_path} ({err}); it seeds without it.", fg="yellow")
 
     # Display success message
     click.secho(
@@ -1565,20 +1598,19 @@ async def upload_and_report(
 
     # Copy URL to clipboard
     if cfg.upload.description.copy_uploaded_url_to_clipboard:
-        pyperclip.copy(url)
+        copy_to_clipboard(url)
 
     # Add to seedbox upload queue
     if cfg.upload.upload_to_seedbox:
         click.secho("Add uploading task.", fg="green")
-        # Check if it's a FLAC file
-        is_flac = metadata.get("format", "").upper() == "FLAC"
+        is_flac = format.upper() == "FLAC"
         site_code = gazelle_site.site_code
         seedbox_uploader.add_upload_task(path, task_type="folder", is_flac=is_flac, site_code=site_code)
         seedbox_uploader.add_upload_task(
             torrent_path, task_type="seed", is_flac=is_flac, folder=path, site_code=site_code
         )
 
-    return torrent_id, group_id, torrent_path, torrent_content, url
+    return url
 
 
 def convert_genres(genres, year=None):

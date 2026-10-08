@@ -457,8 +457,8 @@ async def _rehost_red_image(url: str, source_site: "BaseGazelleApi", image_host:
                 if len(content) > max_bytes:
                     raise click.ClickException(f"RED image {shown} exceeds the {max_bytes}-byte limit.")
     except (aiohttp.ClientError, TimeoutError, RequestError) as error:
-        # aiohttp's error text repeats the request URL, signature included; name the type only.
-        raise click.ClickException(f"Could not download RED image {shown} ({type(error).__name__}).") from error
+        # Not chained: aiohttp's error text repeats the signed URL, and the web UI prints the traceback.
+        raise click.ClickException(f"Could not download RED image {shown} ({type(error).__name__}).") from None
 
     with TemporaryDirectory() as directory:
         image_path = Path(directory) / f"image{suffix}"
