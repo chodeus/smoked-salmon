@@ -46,7 +46,8 @@ def add_routes(app: web.Application, specs_path: str | None = None) -> None:
     # needed a privilege Windows does not give by default, wrote into the installed package, and was shared by runs.
     if specs_path is not None:
         app.router.add_static("/static/specs", specs_path)
-    app.router.add_static("/static", join(dirname(__file__), "static"))
+    # The package's own files: an install that links them (UV_LINK_MODE=symlink) still serves them.
+    app.router.add_static("/static", join(dirname(__file__), "static"), follow_symlinks=True)
     app.router.add_route("GET", "/", handle_index)
     app.router.add_route("GET", "/spectrals", spectrals.handle_spectrals)
     app[aiohttp_jinja2.static_root_key] = web_cfg.static_root_url

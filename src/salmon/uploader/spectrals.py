@@ -1,3 +1,4 @@
+import contextlib
 import errno
 import hashlib
 import os
@@ -347,7 +348,8 @@ async def _compress_with_oxipng_program(program: str, filepath: str) -> bool:
     except (TimeoutError, OSError):
         pass
     finally:
-        if os.path.exists(tmp_path):
+        # Best effort: a copy something still holds open must not stop the spectrals that follow.
+        with contextlib.suppress(OSError):
             os.remove(tmp_path)
     click.secho(f"Could not compress {os.path.basename(filepath)} with oxipng; it is uploaded as it is.", fg="yellow")
     return False

@@ -166,3 +166,20 @@ def test_with_pyoxipng_the_program_is_never_looked_up(monkeypatch, tmp_path) -> 
     anyio.run(partial(spectrals._compress_spectrals, str(path)))
 
     assert looked_up == []
+
+
+@posix_only
+def test_a_temporary_copy_that_cannot_be_removed_does_not_stop_the_spectrals(monkeypatch, tmp_path, capsys) -> None:
+    _hide_pyoxipng(monkeypatch)
+    _fake_program(monkeypatch, tmp_path, "exit 1")
+    path = _spectrals_dir(tmp_path)
+
+    def held_open(_path):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(spectrals.os, "remove", held_open)
+
+    anyio.run(partial(spectrals._compress_spectrals, str(path)))
+
+    assert (path / "01 Full.png").read_bytes() == b"png 1 Full"
+    assert "Could not compress 01 Full.png" in capsys.readouterr().out
