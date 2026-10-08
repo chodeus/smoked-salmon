@@ -119,7 +119,7 @@ def test_two_files_that_normalize_to_one_path_are_refused() -> None:
     t = SimpleNamespace(metainfo={"info": {"name": "Album", "files": files}})
 
     with pytest.raises(UploadRefusedError, match="CD1/Café.flac once NFC-normalized"):
-        _normalize_torrent_names(cast("Torrent", t), "NFC")
+        _normalize_torrent_names(cast("Torrent", cast("object", t)), "NFC")
 
 
 def test_torrent_name_normalization_rejects_invalid_value() -> None:
