@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import anyio
+import pytest
+from aiohttp import web
 from mutagen.id3 import PictureType
 from PIL import Image
 
@@ -178,3 +180,59 @@ def test_sanitizing_a_single_flac_saves_the_embedded_cover_first(tmp_path, monke
 
     assert result is True
     assert order == [f"extract:{album}", "sanitize:01.flac"]
+
+
+def _jpeg() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buffer, "jpeg")
+    return buffer.getvalue()
+
+
+@pytest.fixture
+async def cover_server():
+    runners: list[web.AppRunner] = []
+
+    async def _serve(handler) -> str:
+        app = web.Application()
+        app.router.add_get("/cover.jpg", handler)
+        runner = web.AppRunner(app, access_log=None)
+        await runner.setup()
+        await web.TCPSite(runner, "127.0.0.1", 0).start()
+        runners.append(runner)
+        return f"http://127.0.0.1:{runner.addresses[0][1]}/cover.jpg"
+
+    yield _serve
+    for runner in runners:
+        await runner.cleanup()
+
+
+async def test_a_cover_download_cut_off_partway_leaves_no_file(tmp_path, monkeypatch, cover_server) -> None:
+    monkeypatch.setattr(cfg.upload.formatting, "lowercase_cover", False)
+    body = _jpeg()
+
+    async def cut_off(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Length": str(len(body) * 10), "Content-Type": "image/jpeg"})
+        await response.prepare(request)
+        await response.write(body[:40])
+        assert request.transport is not None
+        request.transport.close()
+        return response
+
+    result = await cover._download_cover(str(tmp_path), await cover_server(cut_off))
+
+    assert result is None
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_a_downloaded_cover_is_written_whole(tmp_path, monkeypatch, cover_server) -> None:
+    monkeypatch.setattr(cfg.upload.formatting, "lowercase_cover", False)
+    body = _jpeg()
+
+    async def whole(_request: web.Request) -> web.Response:
+        return web.Response(body=body, content_type="image/jpeg")
+
+    result = await cover._download_cover(str(tmp_path), await cover_server(whole))
+
+    assert result == str(tmp_path / "Cover.jpg")
+    assert [entry.name for entry in tmp_path.iterdir()] == ["Cover.jpg"]
+    assert (tmp_path / "Cover.jpg").read_bytes() == body

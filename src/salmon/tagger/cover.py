@@ -3,10 +3,9 @@ import io
 import os
 import re
 import uuid
-from typing import cast
+from typing import IO, cast
 
 import aiohttp
-import anyio
 import asyncclick as click
 import humanfriendly
 from mutagen import PaddingInfo
@@ -18,6 +17,8 @@ from salmon import cfg
 from salmon.common import get_audio_files
 from salmon.constants import TAG_TRUMP_SIZE
 
+# A cover is a few MiB: this stops a wrong URL from filling memory.
+_MAX_COVER_BYTES = 25 * 1024 * 1024
 _COVER_FILE = re.compile(r"^(cover|folder)\.(jpe?g|png)$", re.IGNORECASE)
 
 
@@ -153,7 +154,7 @@ async def download_cover_if_nonexistent(path: str, cover_url: str | None) -> tup
     return None, None
 
 
-def _is_valid_cover(cover_path: str) -> bool:
+def _is_valid_cover(cover_path: str | IO[bytes]) -> bool:
     """Check if the file at cover_path is a valid JPEG or PNG image.
 
     Args:
@@ -186,6 +187,7 @@ async def _download_cover(path: str, cover_url: str) -> str | None:
     cover_path = os.path.join(path, cover_image_filename)
 
     timeout = aiohttp.ClientTimeout(total=30)
+    data = bytearray()
     try:
         async with (
             aiohttp.ClientSession(timeout=timeout) as session,
@@ -195,17 +197,20 @@ async def _download_cover(path: str, cover_url: str) -> str | None:
                 click.secho(f"\nFailed to download cover image (ERROR {response.status})", fg="red")
                 return None
 
-            async with await anyio.open_file(cover_path, "wb") as f:
-                async for chunk in response.content.iter_chunked(5096):
-                    await f.write(chunk)
-    except aiohttp.ClientError as e:
-        click.secho(f"\nFailed to download cover image (ERROR {e})", fg="red")
+            async for chunk in response.content.iter_chunked(64 * 1024):
+                data += chunk
+                if len(data) > _MAX_COVER_BYTES:
+                    click.secho(f"\nFailed to download cover image (ERROR over {_MAX_COVER_BYTES} bytes)", fg="red")
+                    return None
+    except (aiohttp.ClientError, TimeoutError) as e:
+        click.secho(f"\nFailed to download cover image (ERROR {e or type(e).__name__})", fg="red")
         return None
 
-    if not _is_valid_cover(cover_path):
-        os.remove(cover_path)
+    if not _is_valid_cover(io.BytesIO(data)):
         click.secho("\nFailed to download cover image (ERROR file is not an image [JPEG, PNG])", fg="red")
         return None
+    # Written whole: a download cut off partway would pass for the folder's cover on the next run.
+    _write_whole_file(cover_path, bytes(data))
 
     click.secho(f"Cover image downloaded: {cover_image_filename} ", fg="yellow")
     return cover_path
