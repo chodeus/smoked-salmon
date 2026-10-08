@@ -1,5 +1,6 @@
 """Torrent file name normalization."""
 
+import os
 import shutil
 import unicodedata
 from pathlib import Path
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from torf import Torrent
 
 from salmon import cfg
 from salmon.config.validations import Upload
@@ -14,8 +16,6 @@ from salmon.errors import UploadRefusedError
 from salmon.uploader.upload import _normalize_torrent_names, generate_torrent
 
 if TYPE_CHECKING:
-    from torf import Torrent
-
     from salmon.trackers.base import BaseGazelleApi
 
 COMPOSED_NAME = "Café.flac"
@@ -32,7 +32,7 @@ class FakeGazelleApi:
 def _make_album(tmp_path: Path) -> Path:
     album = tmp_path / "Album"
     album.mkdir()
-    # Written with the decomposed (NFD) form, as macOS file systems hand back names.
+    # Named in the decomposed (NFD) form, so NFC normalization has something to change.
     (album / DECOMPOSED_NAME).write_bytes(b"not really flac data")
     return album
 
@@ -111,6 +111,23 @@ def test_a_normalized_torrent_no_longer_reads_the_files_on_disk(tmp_path: Path, 
     dumped = t.dump()
 
     assert dumped
+
+
+def test_a_watch_folder_that_takes_the_torrent_at_once_does_not_break_the_upload(tmp_path: Path, monkeypatch) -> None:
+    album = _make_album(tmp_path)
+    monkeypatch.setattr(cfg.upload, "torrent_name_normalization", "NFC")
+    write = Torrent.write
+
+    def write_then_import(self, filepath, **kwargs) -> None:
+        write(self, filepath, **kwargs)
+        os.remove(filepath)
+
+    monkeypatch.setattr(Torrent, "write", write_then_import)
+    gazelle_site = cast("BaseGazelleApi", cast("object", FakeGazelleApi(str(tmp_path))))
+
+    _tpath, t = generate_torrent(gazelle_site, str(album))
+
+    assert _file_names(t) == [unicodedata.normalize("NFC", DECOMPOSED_NAME)]
 
 
 def test_two_files_that_normalize_to_one_path_are_refused() -> None:

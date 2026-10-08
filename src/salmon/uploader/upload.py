@@ -387,15 +387,12 @@ def generate_torrent(gazelle_site: "BaseGazelleApi", path: str, normalize: bool 
         f"{os.path.basename(path)} - {gazelle_site.site_string}.torrent",
     )
     normalization = cfg.upload.torrent_name_normalization if normalize else "none"
-    if normalization in ("", "none"):
-        t.write(tpath, overwrite=True)
-    else:
+    if normalization not in ("", "none"):
         form: Literal["NFC", "NFD"] = "NFC" if normalization == "NFC" else "NFD"
         _normalize_torrent_names(t, form)
-        # The new names no longer match the files on disk: write without validating, then reload
-        # so later dumps and the infohash do not validate against disk either.
-        t.write(tpath, overwrite=True, validate=False)
-        t = Torrent.read(tpath)
+        # Reloaded in memory, so dumps no longer validate against disk; never from tpath, a watch folder may take it.
+        t = Torrent.read_stream(t.dump(validate=False))
+    t.write(tpath, overwrite=True)
     click.secho(" done!", fg="yellow")
     return tpath, t
 
