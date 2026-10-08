@@ -16,7 +16,7 @@ from salmon.checks.blacklist import red_blacklist_reason
 from salmon.checks.integrity import resolve_integrity_for_upload
 from salmon.checks.logs import check_log_cambia
 from salmon.checks.source import detect_source
-from salmon.checks.tag_rules import collect_upload_warnings
+from salmon.checks.tag_rules import collect_upload_warnings, path_limit_for, process_tag_issues
 from salmon.checks.upconverts import upload_upconvert_test
 from salmon.common import AlbumPath, commandgroup, decade_tag, tagify
 from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
@@ -369,6 +369,13 @@ def converted_from_note(conversion: dict[str, Any] | None, url: str | None) -> s
     return conversion_note(url or "", conversion.get("sample_rate"), cast("BitDepth", conversion.get("bit_depth", 16)))
 
 
+def _max_path_length_for_run(site_code: str, trackers: list[str] | None, flac_group: dict | None) -> int:
+    """The run's path limit: this tracker's, or the strictest of all the run may reach (-t, multi_tracker_upload)."""
+    if flac_group is not None or not (trackers or cfg.upload.multi_tracker_upload):
+        return path_limit_for([site_code])
+    return path_limit_for(follow_up_trackers(trackers, site_code))
+
+
 async def next_tracker(preselected: bool, remaining: list[str]) -> str | None:
     """Next site to upload to: the next of the ones picked up front, else ask."""
     if preselected:
@@ -666,6 +673,8 @@ async def _upload_staged(
         if new_source_url is not None:
             source_url = new_source_url
             click.secho(f"New Source URL: {source_url}", fg="yellow")
+        # The strictest limit of every tracker this run may reach: its conversions are checked against it too.
+        run_path_limit = _max_path_length_for_run(gazelle_site.site_code, trackers, flac_group)
         path, metadata, tags, audio_info = await edit_metadata(
             path,
             tags,
@@ -686,6 +695,7 @@ async def _upload_staged(
                 [info.get("duration") or 0 for info in audio_info.values()],
             ),
             rename_into=rename_into,
+            max_path_length=run_path_limit,
         )
 
         if not group_id:
@@ -927,6 +937,7 @@ async def _upload_staged(
                             source,
                             url,
                             uploaded=uploaded,
+                            max_path_length=run_path_limit,
                         )
             except RequestError as e:
                 click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
@@ -963,6 +974,7 @@ async def edit_metadata(
     apply_ai_suggestions: bool = False,
     rls_type_hint: str | None = None,
     rename_into: str | None = None,
+    max_path_length: int | None = None,
 ) -> tuple[str, dict[str, Any], dict[str, "TagFile"], dict[str, dict[str, Any]]]:
     """Edit release metadata in an interactive loop until the user confirms.
 
@@ -983,6 +995,7 @@ async def edit_metadata(
         skip_initial_review: Skip the first manual metadata review before AI review.
         apply_ai_suggestions: Automatically apply AI review suggestions when present.
         rename_into: Directory the renamed folder goes into instead of download_directory.
+        max_path_length: The run's path limit, which the folder is checked against.
 
     Returns:
         A tuple of (path, metadata, tags, audio_info) after editing is complete.
@@ -1004,6 +1017,11 @@ async def edit_metadata(
             tag_files(path, tags, metadata, auto_rename)
 
         tags = await check_tags(path)
+        tag_messages = process_tag_issues(path, scene=metadata["scene"])
+        if tag_messages:
+            click.secho("\nTag notes:", fg="yellow", bold=True)
+            for message in tag_messages:
+                click.secho(f"  - {message}", fg="yellow")
         if not metadata["scene"] and recompress:
             try:
                 await recompress_path(path)
@@ -1012,7 +1030,9 @@ async def edit_metadata(
         path = rename_folder(path, metadata, auto_rename, parent=rename_into)
         if not metadata["scene"]:
             rename_files(path, tags, metadata, auto_rename, spectral_ids, source)
-        await check_folder_structure(path, metadata["scene"], essential_only=essential_only)
+        await check_folder_structure(
+            path, metadata["scene"], essential_only=essential_only, max_path_length=max_path_length
+        )
 
         if not skip_integrity_check:
             await resolve_integrity_for_upload(path, scene=metadata["scene"], assume_yes=cfg.upload.yes_all)
@@ -1288,6 +1308,7 @@ async def execute_downconversion_tasks(
     base_url: str,
     *,
     uploaded: list[str] | None = None,
+    max_path_length: int | None = None,
 ) -> None:
     """Execute the selected downconversion tasks.
 
@@ -1310,7 +1331,10 @@ async def execute_downconversion_tasks(
         source: Media source.
         base_url: Base URL for the original upload.
         uploaded: Where to add the URL of each torrent uploaded.
+        max_path_length: The run's path limit; this tracker's when not given.
     """
+    if max_path_length is None:
+        max_path_length = path_limit_for([gazelle_site.site_code])
     if uploaded is None:
         uploaded = []
 
@@ -1363,6 +1387,7 @@ async def execute_downconversion_tasks(
                     bold=True,
                 )
                 continue
+            # Keys may predate check_folder_structure's truncation: only values are read, as the description is ours.
             conversion_track_data = {name: {**track, **converted_info[name]} for name, track in track_data.items()}
 
             # Update metadata for this conversion
@@ -1372,7 +1397,7 @@ async def execute_downconversion_tasks(
             # Generate description for conversion
             description = generate_conversion_description(base_url, sample_rate, task["target_bitdepth"])
             click.secho(f"  Generated description: {description[:100]}...", fg="blue")
-            await check_folder_structure(new_path, conversion_metadata["scene"])
+            await check_folder_structure(new_path, conversion_metadata["scene"], max_path_length=max_path_length)
 
             # Upload the converted version
             torrent_id, group_id, torrent_path, torrent_content, new_url = await upload_and_report(
@@ -1414,7 +1439,7 @@ async def execute_downconversion_tasks(
             # Generate description for transcode
             description = generate_transcode_description(base_url, task["encoding"])
             click.secho(f"  Generated description: {description[:100]}...", fg="blue")
-            await check_folder_structure(transcoded_path, transcode_metadata["scene"])
+            await check_folder_structure(transcoded_path, transcode_metadata["scene"], max_path_length=max_path_length)
 
             # Upload the transcoded version
             torrent_id, group_id, torrent_path, torrent_content, new_url = await upload_and_report(
