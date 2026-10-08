@@ -324,7 +324,7 @@ async def test_api_call_non_json_body_is_masked_and_capped(api):
 
 
 async def test_a_network_error_masks_the_clients_credentials(api, monkeypatch):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     install_fake_aiohttp(monkeypatch, [aiohttp.ClientConnectionError(f"failed: https://dummy.example/x/{api.cookie}")])
     api._authenticated = True
 
@@ -341,7 +341,7 @@ async def test_api_call_persistent_network_error_raises_retryable_error(api, mon
     # After 5 attempts the network failure surfaces as RetryableError, which
     # is part of the RequestError hierarchy so callers catching RequestError
     # handle it too.
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [aiohttp.ClientConnectionError("connection refused")])
     api._authenticated = True
 
@@ -410,7 +410,7 @@ async def test_request_without_api_key_sends_the_session_cookie(api, monkeypatch
 
 
 async def test_request_rate_limited_retries_and_succeeds(api, monkeypatch):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(
         monkeypatch,
         [
@@ -1094,7 +1094,7 @@ def _real_torrent(tmp_path) -> bytes:
     ids=["answer-dropped", "timeout", "502", "503", "501", "524"],
 )
 async def test_a_post_that_may_have_reached_the_tracker_is_sent_once(api, monkeypatch, outcome):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [outcome])
     api._authenticated = True
 
@@ -1114,7 +1114,7 @@ async def test_an_unusual_5xx_on_a_get_fails_without_a_retry(api, monkeypatch):
 
 async def test_a_post_that_never_connected_is_retried(api, monkeypatch):
     # Nothing reached the tracker, so sending it again cannot do anything twice.
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [_connect_refused()])
     api._authenticated = True
 
@@ -1141,7 +1141,7 @@ def _record_sleeps(monkeypatch) -> list[float]:
     ids=["missing", "seconds", "negative", "garbage", "far-future date"],
 )
 async def test_a_429_pauses_the_tracker_for_any_retry_after_form(api, monkeypatch, retry_after, expected):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     pauses: list[float] = []
     # Recorded, not applied, so the retry is not held for real time.
     monkeypatch.setattr(SharedLimiter, "pause", lambda _self, seconds: pauses.append(seconds))
@@ -1158,7 +1158,7 @@ async def test_a_429_pauses_the_tracker_for_any_retry_after_form(api, monkeypatc
 
 @pytest.mark.parametrize(("method", "expected"), [("GET", [3.0]), ("POST", [])])
 async def test_a_5xx_retry_after_is_honoured_only_when_retried(api, monkeypatch, method, expected):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     sleeps = _record_sleeps(monkeypatch)
     captured = install_fake_aiohttp(
         monkeypatch, [FakeAiohttpResponse(status=503, headers={"Retry-After": "3"}), FakeAiohttpResponse(text="ok")]
@@ -1177,7 +1177,7 @@ async def test_a_5xx_retry_after_is_honoured_only_when_retried(api, monkeypatch,
 
 
 async def test_a_post_refused_with_429_is_retried(api, monkeypatch):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(
         monkeypatch,
         [FakeAiohttpResponse(status=429, headers={"Retry-After": "0"}), FakeAiohttpResponse(text="ok")],
@@ -1192,7 +1192,7 @@ async def test_a_post_refused_with_429_is_retried(api, monkeypatch):
 @pytest.mark.parametrize("status", [429, 401, 403, 404])
 async def test_a_failure_after_the_post_was_redirected_is_an_unknown_outcome(api, monkeypatch, status):
     # A redirect means the tracker already acted on the POST, whatever the later hop answers.
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     hop = FakeAiohttpResponse(
         status=302, url="https://dummy.example/upload.php", headers={"Location": "/torrents.php?id=5"}
     )
@@ -1251,7 +1251,7 @@ async def test_a_post_bounced_straight_to_login_stays_a_login_error(api, monkeyp
 
 
 async def test_an_idempotent_post_keeps_retrying(api, monkeypatch):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [aiohttp.ServerDisconnectedError()])
     api._authenticated = True
 
@@ -1261,7 +1261,7 @@ async def test_an_idempotent_post_keeps_retrying(api, monkeypatch):
 
 
 async def test_a_get_whose_answer_is_dropped_is_still_retried(api, monkeypatch):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [aiohttp.ServerDisconnectedError()])
     api._authenticated = True
 
@@ -1355,7 +1355,7 @@ async def tracker_that_drops_answers():
 
 async def test_a_real_dropped_answer_to_a_post_is_not_resent(api, monkeypatch, tracker_that_drops_answers):
     # Pins the exception aiohttp really raises here, which the fakes above can only assume.
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     base, hits = tracker_that_drops_answers
     api.base_url = base
     api._authenticated = True
@@ -1366,7 +1366,7 @@ async def test_a_real_dropped_answer_to_a_post_is_not_resent(api, monkeypatch, t
 
 
 async def test_a_real_dropped_answer_to_a_get_is_retried(api, monkeypatch, tracker_that_drops_answers):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     base, hits = tracker_that_drops_answers
     api.base_url = base
     api._authenticated = True
@@ -1398,7 +1398,7 @@ async def test_a_report_with_an_unknown_outcome_is_not_filed_again(capsys):
 
 async def test_opss_own_report_is_not_resent_either(monkeypatch):
     # OPS overrides report_lossy_master with its own takereport POST.
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [aiohttp.ServerDisconnectedError()])
     ops = OpsApi()
     ops._authenticated = True

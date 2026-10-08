@@ -494,7 +494,7 @@ async def test_only_a_429_lets_a_post_naming_the_rate_limit_be_sent_again(
         return web.Response(text="Upstream rate limit check failed", status=status, headers={"Retry-After": "0"})
 
     url = await serve(upload=upload)
-    twice = cast("Any", BaseGazelleApi._request).retry_with(stop=stop_after_attempt(2))
+    twice = cast("Any", BaseGazelleApi._send).retry_with(stop=stop_after_attempt(2))
 
     with pytest.raises(error, match=f"Rate limit exceeded \\({status}\\)"):
         await twice(api_for(url), "POST", f"{url}/upload.php", data={"a": "b"})
@@ -527,7 +527,7 @@ async def test_a_429_pauses_the_tracker_for_every_client(serve, api_for, monkeyp
 
     url = await serve(ajax=ajax)
     first, second = api_for(url), api_for(url)
-    once = cast("Any", BaseGazelleApi._request).retry_with(stop=stop_after_attempt(1))
+    once = cast("Any", BaseGazelleApi._send).retry_with(stop=stop_after_attempt(1))
     rate_limited = asyncio.create_task(once(first, "GET", f"{url}/ajax.php", params={"action": "a"}))
     while not hits:
         await asyncio.sleep(0.01)

@@ -353,8 +353,8 @@ class HttpResponse(msgspec.Struct, frozen=True):
 class BaseGazelleApi:
     """Base API client for Gazelle-based trackers."""
 
-    # Subclasses must set these attributes before calling __init__
-    cookie: str
+    # Subclasses must set these attributes before calling __init__; a tracker with no session configured has none.
+    cookie: str = ""
     base_url: str
     tracker_url: str
     site_code: str
@@ -381,6 +381,8 @@ class BaseGazelleApi:
         self.authkey: str | None = None
         self.passkey: str | None = None
         self._authenticated = False
+        self._authentication: asyncio.Task[None] | None = None
+        self._authentication_waiters = 0
         self._session: aiohttp.ClientSession | None = None
         self._pool_owner: set[aiohttp.ClientSession] | None = None
 
@@ -476,17 +478,27 @@ class BaseGazelleApi:
         self._authenticated = True
 
     async def ensure_authenticated(self) -> None:
-        """Ensure we are authenticated before making requests."""
-        if not self._authenticated:
-            await self.authenticate()
+        """Ensure we are authenticated before making requests.
 
-    @retry(
-        retry=retry_if_exception_type(RetryableError),
-        stop=stop_after_attempt(5),
-        # Jitter keeps a batch that failed together from retrying in one salvo.
-        wait=wait_exponential(multiplier=1, min=1, max=30) + wait_random(0, 2),
-        reraise=True,
-    )
+        Requests that go out together on a fresh client share one authentication attempt, so one index call
+        instead of one each. If it fails, each of them gets its error; a call made once it is over tries again.
+        The attempt runs on its own, and is cancelled only when no request waits for it any more.
+        """
+        if self._authenticated:
+            return
+        if self._authentication is None or self._authentication.done():
+            self._authentication = asyncio.create_task(self.authenticate())
+        attempt = self._authentication
+        self._authentication_waiters += 1
+        try:
+            await asyncio.shield(attempt)
+        finally:
+            self._authentication_waiters -= 1
+            if not self._authentication_waiters and not attempt.done():
+                attempt.cancel()
+                # A request arriving meanwhile must not wait on an attempt being cancelled.
+                self._authentication = None
+
     async def _request(
         self,
         method: str,
@@ -523,6 +535,34 @@ class BaseGazelleApi:
                 reached the tracker, so it is not sent again.
             RequestFailedError: With binary, if the answer holds more than 25 MiB. Not retried.
         """
+        # A dry run only reads from the tracker; each sending step skips itself, and this stops any that was missed.
+        if method != "GET" and dryrun.active():
+            dryrun.refuse(f"send {method} {self._scrub(url)} to {self.site_string}")
+        # An api key request that sends no auth field needs no index call for the authkey.
+        # Outside _send's retries: the attempt makes its own tries, which a retried request would repeat.
+        if needs_authkey and not (params and params.get("action") == "index"):
+            await self.ensure_authenticated()
+        return await self._send(method, url, params, data, timeout_secs, prefer_api_key, idempotent, binary)
+
+    @retry(
+        retry=retry_if_exception_type(RetryableError),
+        stop=stop_after_attempt(5),
+        # Jitter keeps a batch that failed together from retrying in one salvo.
+        wait=wait_exponential(multiplier=1, min=1, max=30) + wait_random(0, 2),
+        reraise=True,
+    )
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        params: dict[str, Any] | None = None,
+        data: Any = None,
+        timeout_secs: int = 10,
+        prefer_api_key: bool = False,
+        idempotent: bool | None = None,
+        binary: bool = False,
+    ) -> HttpResponse:
+        """One request as _request describes it, retried while it may be sent again; authentication is done."""
         if idempotent is None:
             idempotent = method.upper() != "POST"
         # Once the tracker redirects, it has acted on the request, whatever happens next.
@@ -533,13 +573,6 @@ class BaseGazelleApi:
             if idempotent or (not_acted_on and not redirected):
                 return RetryableError(message)
             return UnknownOutcomeError(message)
-
-        # A dry run only reads from the tracker; each sending step skips itself, and this stops any that was missed.
-        if method != "GET" and dryrun.active():
-            dryrun.refuse(f"send {method} {self._scrub(url)} to {self.site_string}")
-        # An api key request that sends no auth field needs no index call for the authkey.
-        if needs_authkey and not (params and params.get("action") == "index"):
-            await self.ensure_authenticated()
 
         use_api_key = prefer_api_key and bool(self.api_key)
         headers = {**self.headers, **({"Authorization": f"{self.api_key_prefix}{self.api_key}"} if use_api_key else {})}
