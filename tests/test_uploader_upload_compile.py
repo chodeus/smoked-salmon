@@ -287,6 +287,16 @@ def test_compile_data_hybrid_forces_tracklist_and_drops_encode_specifics(tracker
     assert "https://i.ibb.co/hPnL0dT/cdq.png" not in data["release_desc"]
 
 
+def test_a_lossy_hybrid_tracklist_names_no_bit_depth(tracker, pinned_cfg):
+    tracks = make_track_data()
+    for track in tracks.values():
+        track["precision"] = None
+
+    data = compile_data_new_group(tracker, "/p", make_metadata(), tracks, True, COVER_URL, None, None, None, None)
+
+    assert "01. Intro [i](3:05)[/i] [44.1 kHz]" in data["release_desc"]
+
+
 def test_compile_data_new_group_year_and_group_year_go_to_different_fields(tracker, pinned_cfg):
     data = compile_data_new_group(
         tracker,

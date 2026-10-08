@@ -1,5 +1,6 @@
 """Embedded artwork becomes the folder's cover before anything else has to fetch or strip it."""
 
+import asyncio
 import importlib
 import io
 from pathlib import Path
@@ -236,3 +237,18 @@ async def test_a_downloaded_cover_is_written_whole(tmp_path, monkeypatch, cover_
     assert result == str(tmp_path / "Cover.jpg")
     assert [entry.name for entry in tmp_path.iterdir()] == ["Cover.jpg"]
     assert (tmp_path / "Cover.jpg").read_bytes() == body
+
+
+async def test_a_cover_download_that_times_out_says_so(tmp_path, monkeypatch, capsys, cover_server) -> None:
+    real_timeout = cover.aiohttp.ClientTimeout
+    monkeypatch.setattr(cover.aiohttp, "ClientTimeout", lambda **_kwargs: real_timeout(total=0.2))
+
+    async def stalled(_request: web.Request) -> web.Response:
+        await asyncio.sleep(2)
+        return web.Response(body=_jpeg(), content_type="image/jpeg")
+
+    result = await cover._download_cover(str(tmp_path), await cover_server(stalled))
+
+    assert result is None
+    out = capsys.readouterr().out
+    assert "Failed to download cover image (ERROR TimeoutError)" in out

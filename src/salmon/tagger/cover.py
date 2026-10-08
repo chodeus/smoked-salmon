@@ -203,7 +203,7 @@ async def _download_cover(path: str, cover_url: str) -> str | None:
                     click.secho(f"\nFailed to download cover image (ERROR over {_MAX_COVER_BYTES} bytes)", fg="red")
                     return None
     except (aiohttp.ClientError, TimeoutError) as e:
-        click.secho(f"\nFailed to download cover image (ERROR {e or type(e).__name__})", fg="red")
+        click.secho(f"\nFailed to download cover image (ERROR {str(e) or type(e).__name__})", fg="red")
         return None
 
     if not _is_valid_cover(io.BytesIO(data)):
