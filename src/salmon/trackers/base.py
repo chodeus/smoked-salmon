@@ -280,6 +280,9 @@ def _tracker_limiter(site_code: str) -> SharedLimiter:
 
 # An upload that fills a request takes two hops; one spare.
 _MAX_REDIRECTS = 3
+# The most a binary answer (an image on the tracker's own host) may hold. Reading stops there.
+_MAX_BINARY_BODY = 25 * 1024 * 1024
+_BINARY_READ_CHUNK = 64 * 1024
 _REDIRECT_STATUSES = frozenset(
     {
         HTTPStatus.MOVED_PERMANENTLY,
@@ -343,6 +346,8 @@ class HttpResponse(msgspec.Struct, frozen=True):
     text: str
     url: str
     status: int
+    # The body as bytes, for a request made with binary=True (its text is then empty).
+    content: bytes = b""
 
 
 class BaseGazelleApi:
@@ -492,6 +497,7 @@ class BaseGazelleApi:
         prefer_api_key: bool = False,
         idempotent: bool | None = None,
         needs_authkey: bool = True,
+        binary: bool = False,
     ) -> HttpResponse:
         """Authenticated HTTP request, returns response data.
 
@@ -506,6 +512,8 @@ class BaseGazelleApi:
                 (no Authorization header).
             idempotent: Whether sending the request twice does no more than sending it
                 once. Defaults to True for everything but POST.
+            binary: Read a successful answer as bytes, into the response's content, streamed and
+                capped at 25 MiB; its text is then empty.
 
         Returns:
             HttpResponse with text, url, status, and headers.
@@ -513,6 +521,7 @@ class BaseGazelleApi:
         Raises:
             UnknownOutcomeError: A request that is not idempotent failed after it may have
                 reached the tracker, so it is not sent again.
+            RequestFailedError: With binary, if the answer holds more than 25 MiB. Not retried.
         """
         if idempotent is None:
             idempotent = method.upper() != "POST"
@@ -561,15 +570,20 @@ class BaseGazelleApi:
                         ) as resp,
                     ):
                         # sock_read resets on every chunk, so a trickled body needs its own bound.
+                        content = b""
                         async with asyncio.timeout(timeout_secs):
-                            text = await resp.text()
+                            if binary and resp.ok and resp.status not in _REDIRECT_STATUSES:
+                                content = await self._read_capped(resp)
+                                text = ""
+                            else:
+                                text = await resp.text()
                         if cfg.upload.debug_tracker_connection:
-                            self._debug_response(resp, text)
+                            self._debug_response(resp, text if text or not binary else f"<{len(content)} bytes>")
                         if not resp.ok:
                             await self._raise_for_status(resp, self._scrub(text), failure, idempotent)
                         location = resp.headers.get(aiohttp.hdrs.LOCATION)
                         if resp.status not in _REDIRECT_STATUSES or not location:
-                            return HttpResponse(text=text, url=str(resp.url), status=resp.status)
+                            return HttpResponse(text=text, url=str(resp.url), status=resp.status, content=content)
                         try:
                             method, data, url = self._next_hop(
                                 str(resp.url), resp.status, method, data, location, idempotent
@@ -595,12 +609,38 @@ class BaseGazelleApi:
             # By type only: a RequestFailedError's message holds response text.
             raise UnknownOutcomeError(f"{self.site_string} failed on a later hop ({type(err).__name__})") from err
 
+    @property
+    def has_session_cookie(self) -> bool:
+        """Whether a session cookie is configured. Site pages outside the API need one."""
+        return bool(self.cookie.strip())
+
+    def _secrets(self) -> set[str | None]:
+        """This client's own credentials, as configured and as sent, which a tracker answer may repeat."""
+        return {self.api_key, self.authkey, self.passkey, self.cookie, *self._get_cookies().values()}
+
+    async def _read_capped(self, resp: aiohttp.ClientResponse) -> bytes:
+        """Read an answer's body as bytes, as it comes, and stop once it holds more than _MAX_BINARY_BODY.
+
+        Raises:
+            RequestFailedError: If the body is larger: the tracker would send the same answer again.
+        """
+        too_large = RequestFailedError(
+            f"{self.site_string} sent more than {_MAX_BINARY_BODY // (1024 * 1024)} MiB: not reading the rest"
+        )
+        if resp.content_length is not None and resp.content_length > _MAX_BINARY_BODY:
+            raise too_large
+        body = bytearray()
+        async for chunk in resp.content.iter_chunked(_BINARY_READ_CHUNK):
+            body += chunk
+            if len(body) > _MAX_BINARY_BODY:
+                raise too_large
+        return bytes(body)
+
     def _scrub(self, text: str) -> str:
         """_redact, plus this client's own credentials wherever a tracker answer repeats them."""
         text = _redact(text)
-        secrets = {self.api_key, self.authkey, self.passkey, self.cookie, *self._get_cookies().values()}
         # Longest first, so a secret containing another is masked whole.
-        for secret in sorted((s for s in secrets if s and len(s) >= 8), key=len, reverse=True):
+        for secret in sorted((s for s in self._secrets() if s and len(s) >= 8), key=len, reverse=True):
             text = text.replace(secret, "[REDACTED]")
         return text
 
@@ -1101,6 +1141,12 @@ class BaseGazelleApi:
             click.echo(f"    {'/'.join(file.parts[1:]) or file}  ({format_size(file.size, binary=True)})")
         group_id = data.get("groupid")
         return dryrun.NEW_TORRENT_ID, group_id if group_id else dryrun.NEW_GROUP_ID
+
+    def skip_upload_marks(self) -> None:
+        """Ask for none of the marks this tracker's upload form has for the uploader's own work, and send none.
+
+        For a re-post, such as a cross-upload. A tracker whose form has no such marks has nothing to skip.
+        """
 
     async def report_lossy_master(self, torrent_id: int, comment: str, source: str) -> bool:
         """Report torrent for lossy master/web approval.
