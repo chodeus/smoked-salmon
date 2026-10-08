@@ -287,6 +287,9 @@ _MAX_BINARY_BODY = 25 * 1024 * 1024
 _BINARY_READ_CHUNK = 64 * 1024
 # The site log pages a recent-uploads check reads; cross-upload's request budget counts them.
 SITE_LOG_PAGES = 10
+# Seconds before the first and the last lookup of an upload whose answer was lost: the tracker may still be on it.
+_LOST_UPLOAD_FIRST_WAIT = 10
+_LOST_UPLOAD_SECOND_WAIT = 30
 _REDIRECT_STATUSES = frozenset(
     {
         HTTPStatus.MOVED_PERMANENTLY,
@@ -1159,12 +1162,28 @@ class BaseGazelleApi:
         return _safe_response_excerpt(self._scrub(resp_text))
 
     async def _find_lost_upload(self, files: UploadFiles, err: UnknownOutcomeError) -> tuple[int, int]:
-        """Look an upload whose answer was lost up once, by its infohash, and return its ids."""
-        click.secho(f"Could not tell whether {self.site_string} took the upload ({err}), looking it up...", fg="yellow")
+        """Look an upload whose answer was lost up by its infohash, after a wait and once more if not found yet."""
         try:
             # Gazelle's API documentation asks for the hash in uppercase.
             infohash = Torrent.read_stream(files.torrent_data).infohash.upper()
-            found = await self.api_call("torrent", params={"hash": infohash})
+            click.secho(
+                f"Could not tell whether {self.site_string} took the upload ({err}). "
+                f"Waiting {_LOST_UPLOAD_FIRST_WAIT} s for {self.site_string} to finish processing it, "
+                "then looking it up...",
+                fg="yellow",
+            )
+            await asyncio.sleep(_LOST_UPLOAD_FIRST_WAIT)
+            try:
+                found = await self.api_call("torrent", params={"hash": infohash})
+            except RequestFailedError as not_found:
+                # The tracker answered, without the torrent. Any other failure is not worth another request.
+                click.secho(
+                    f"{self.site_string} does not have it yet ({_safe_response_excerpt(self._scrub(str(not_found)))}). "
+                    f"Waiting {_LOST_UPLOAD_SECOND_WAIT} s more, then looking it up one last time...",
+                    fg="yellow",
+                )
+                await asyncio.sleep(_LOST_UPLOAD_SECOND_WAIT)
+                found = await self.api_call("torrent", params={"hash": infohash})
             torrent_id, group_id = int(found["torrent"]["id"]), int(found["group"]["id"])
         except (RequestError, TorfError, KeyError, TypeError, ValueError) as lookup_err:
             # A non-JSON answer arrives here whole, and a logged-in page's links carry secrets.
@@ -1174,6 +1193,14 @@ class BaseGazelleApi:
                 f"its infohash did not confirm it ({reason}). The upload may still have gone through: "
                 f"check your uploads on {self.site_string} before uploading it again."
             ) from lookup_err
+        except asyncio.CancelledError:
+            # Ctrl-C while waiting: still warn before the user uploads it again.
+            click.secho(
+                f"Stopped before finding out. The upload may still have gone through: check your uploads on "
+                f"{self.site_string} before uploading it again.",
+                fg="yellow",
+            )
+            raise
         click.secho(f"Found the upload on {self.site_string}: torrent {torrent_id}.", fg="green")
         return torrent_id, group_id
 

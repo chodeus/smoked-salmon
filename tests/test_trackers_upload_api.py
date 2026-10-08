@@ -1310,7 +1310,8 @@ async def test_an_upload_answer_salmon_cannot_read_is_looked_up_by_its_infohash(
 @pytest.mark.parametrize("method", ["api_key_upload", "site_page_upload"])
 async def test_a_lost_upload_not_found_says_it_may_have_gone_through(api, tmp_path, method):
     torrent = _real_torrent(tmp_path)
-    calls = script_requests(api, [UnknownOutcomeError("answer lost"), http(text='{"status": "failure"}')])
+    not_found = '{"status": "failure"}'
+    calls = script_requests(api, [UnknownOutcomeError("answer lost"), http(text=not_found), http(text=not_found)])
     api.authkey = "AK"
 
     with pytest.raises(UnknownOutcomeError) as excinfo:
@@ -1319,7 +1320,8 @@ async def test_a_lost_upload_not_found_says_it_may_have_gone_through(api, tmp_pa
     assert "may still have gone through" in str(excinfo.value)
     # The lookup may have failed rather than come back empty.
     assert "did not confirm it" in str(excinfo.value)
-    assert [c["method"] for c in calls] == ["POST", "GET"]
+    # Looked up once more after the second wait, and no more.
+    assert [c["method"] for c in calls] == ["POST", "GET", "GET"]
 
 
 async def test_the_description_edit_is_sent_as_idempotent(api):
