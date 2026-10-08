@@ -12,7 +12,6 @@ from salmon.errors import AbortAndDeleteFolder, RequestError, RequestFailedError
 from salmon.uploader.dupe_checker import (
     _catno_note,
     _confirm_group_id,
-    _held_in_group,
     _prompt_for_group_id,
     _prompt_for_recent_upload_results,
     _sanitize_album_for_dupe_check,
@@ -21,10 +20,12 @@ from salmon.uploader.dupe_checker import (
     filter_unnecessary_searchstrs,
     generate_dupe_check_searchstrs,
     get_search_results,
+    held_in_group,
     matching_torrents,
     print_recent_upload_results,
     print_search_results,
     print_torrents,
+    recheck_edition,
 )
 
 # ---------------------------------------------------------------------------
@@ -656,7 +657,7 @@ WEB_FLAC = {"source": "WEB", "format": "FLAC", "encoding": "Lossless", "year": 2
 
 
 def test_matching_torrents_flags_the_same_format_in_the_same_edition():
-    matches = _held_in_group(make_result(100), WEB_FLAC)
+    matches = held_in_group(make_result(100), WEB_FLAC)
 
     assert matches == [{"media": "WEB", "format": "FLAC", "encoding": "Lossless"}]
 
@@ -671,8 +672,8 @@ def test_matching_torrents_flags_the_same_format_in_the_same_edition():
     ],
 )
 def test_matching_torrents_ignores_other_formats_editions_and_no_release(release):
-    # A search result: its group year is groupYear, which _held_in_group reads.
-    assert _held_in_group(make_result(100), release) == []
+    # A search result: its group year is groupYear, which held_in_group reads.
+    assert held_in_group(make_result(100), release) == []
 
 
 def test_matching_torrents_uses_the_remaster_year_when_the_torrent_has_one():
@@ -1026,3 +1027,60 @@ async def test_check_existing_group_yes_all_does_not_skip_prompts(fake_tracker, 
     actual = await check_existing_group(fake_tracker, ["artist album"])
     assert actual is None
     assert queue.calls == 1
+
+
+def _held_group(group_id=555):
+    """A fetched group whose one torrent is a WEB FLAC of the group's own year."""
+    response = make_torrentgroup_response(group_id)
+    response["torrents"] = [{"id": 7, "media": "WEB", "format": "FLAC", "encoding": "Lossless"}]
+    return response
+
+
+async def test_a_given_group_holding_the_reviewed_edition_asks_with_abort_pretyped(
+    fake_tracker, install_prompt, capsys
+):
+    fake_tracker.api_responses["torrentgroup"] = _held_group()
+    install_prompt(USE_DEFAULT)
+
+    with pytest.raises(click.Abort):
+        await recheck_edition(fake_tracker, 555, WEB_FLAC, None)
+    out = capsys.readouterr().out
+    assert "DUPE RISK: this edition already has" in out
+
+
+async def test_a_group_the_review_moved_into_a_held_edition_asks_again(fake_tracker, install_prompt):
+    fake_tracker.api_responses["torrentgroup"] = _held_group()
+    queue = install_prompt("n")
+
+    result = await recheck_edition(fake_tracker, 555, WEB_FLAC, {**WEB_FLAC, "year": 2010})
+
+    assert result is None
+    assert queue.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("release", "weighed_against"),
+    [(WEB_FLAC, WEB_FLAC), ({**WEB_FLAC, "year": 2010}, None)],
+    ids=["already-named", "not-held"],
+)
+async def test_a_group_with_nothing_newly_held_is_kept_without_asking(
+    fake_tracker, install_prompt, release, weighed_against
+):
+    fake_tracker.api_responses["torrentgroup"] = _held_group()
+    queue = install_prompt()
+
+    result = await recheck_edition(fake_tracker, 555, release, weighed_against)
+
+    assert result == 555
+    assert queue.calls == 0
+
+
+async def test_a_failed_recheck_keeps_the_group_and_says_so(fake_tracker, install_prompt, capsys):
+    fake_tracker.api_responses["torrentgroup"] = RequestFailedError("down")
+    install_prompt()
+
+    result = await recheck_edition(fake_tracker, 555, WEB_FLAC, None)
+
+    assert result == 555
+    out = capsys.readouterr().out
+    assert "Could not re-check group 555 on" in out
