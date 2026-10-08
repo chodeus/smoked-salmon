@@ -245,8 +245,8 @@ async def check_log_cambia(logpath: str, basepath: str) -> None:
         raise LogCheckSkipped("The log lists no tracks, so there are no CRCs to check.")
     expected_crcs = Counter(last_copy_hash.values())
 
-    # A single-disc log checks its own folder's audio (one decode per disc, #444), or the whole release when
-    # that holds none; a log covering several discs always checks the whole release (#479).
+    # A single-disc log checks its own folder's audio (one decode per disc), or the whole release when that
+    # holds none; a log covering several discs always checks the whole release.
     multi_disc = len({pl.toc.accurip_tocid.hash for pl in parsed_logs}) > 1
     files_to_check = [] if multi_disc else _find_audio_files(os.path.dirname(logpath))
     files_to_check = files_to_check or _find_audio_files(basepath)

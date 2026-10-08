@@ -58,7 +58,6 @@ def test_generate_t_description_omits_empty_more_info_after_source_filter() -> N
 
 
 def test_a_new_group_takes_the_description_override(monkeypatch) -> None:
-    # Upstream #587: compile_data_new_group used to ignore it.
     from types import SimpleNamespace
 
     from salmon.uploader.upload import compile_data_new_group

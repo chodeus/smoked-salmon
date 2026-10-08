@@ -94,7 +94,12 @@ def _build_output_path(path: str, bitrate: Bitrate, output_dir: str | None = Non
     # Imported here: foldername imports this package, through salmon.converter.conversions.
     from salmon.tagger.foldername import drop_resolution_token, resolution_token
 
-    foldername = drop_resolution_token(foldername, resolution_token(gather_audio_info(path)))
+    try:
+        audio_info = gather_audio_info(path)
+    except UploadError:
+        # A file it cannot read names the output as before, so an existing one is still found and refused.
+        audio_info = {}
+    foldername = drop_resolution_token(foldername, resolution_token(audio_info))
 
     if FLAC_FOLDER_RE.search(foldername):
         if LOSSLESS_FOLDER_RE.search(foldername):

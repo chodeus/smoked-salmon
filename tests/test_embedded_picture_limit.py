@@ -127,6 +127,18 @@ def test_strip_never_deletes_a_front_cover_it_could_not_save(album_dir, monkeypa
     assert not list(album_dir.glob("cover.*"))
 
 
+def test_strip_that_keeps_unreadable_artwork_announces_no_removal(album_dir, monkeypatch, capsys) -> None:
+    track_data = _album_with_flac(monkeypatch, 2 * MIB)
+    monkeypatch.setattr(_FakeFLAC, "unreadable", True)
+    monkeypatch.setattr(_FakeFLAC, "picture_type", PictureType.OTHER)
+
+    cover.strip_oversized_pictures(str(album_dir), track_data)
+
+    output = capsys.readouterr().out
+    assert "removing them" not in output
+    assert "the embedded artwork could not be read" in output
+
+
 def test_strip_leaves_pictures_under_the_threshold_alone(album_dir, monkeypatch) -> None:
     track_data = _album_with_flac(monkeypatch, 900 * 1024)
 
@@ -188,9 +200,29 @@ def test_a_failed_compression_is_not_embedded(album_dir, monkeypatch) -> None:
     monkeypatch.setattr(cover, "get_audio_files", lambda path, *a, **k: ["01. Song.flac"])
     monkeypatch.setattr(cover, "FLAC", _NoPictures)
     monkeypatch.setattr(cover, "compress_to_target_size", lambda *_a: None)
-    image = SimpleNamespace(thumbnail=lambda *_x: None, get_format_mimetype=lambda: "image/jpeg", mode="RGB")
-    image.convert = lambda *_x: image
-    monkeypatch.setattr(cover.Image, "open", lambda *_a: image)
+
+    class _Image:
+        mode = "RGB"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        def load(self):
+            pass
+
+        def thumbnail(self, *_x):
+            pass
+
+        def get_format_mimetype(self):
+            return "image/jpeg"
+
+        def convert(self, *_x):
+            return self
+
+    monkeypatch.setattr(cover.Image, "open", lambda *_a: _Image())
     said: list[str] = []
     monkeypatch.setattr(cover.click, "secho", lambda message, **_kwargs: said.append(str(message)))
     (album_dir / "cover.jpg").write_bytes(b"x" * (2 * MIB))

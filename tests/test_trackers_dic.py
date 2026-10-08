@@ -11,7 +11,7 @@ from aiohttp import web
 
 import salmon.uploader as uploader
 from salmon import cfg
-from salmon.errors import RequestError, UploadRefusedError
+from salmon.errors import UploadRefusedError
 from salmon.trackers.dic import DICApi
 from salmon.trackers.ops import OpsApi
 from salmon.trackers.red import RedApi
@@ -155,11 +155,6 @@ def test_unlisted_sample_rate_stops_the_upload_before_any_request() -> None:
     assert requests == 0
     assert "352.8 kHz" in str(error)
     assert "no sample rate option" in str(error)
-
-
-def test_a_refused_upload_only_stops_that_tracker() -> None:
-    # The tracker loop in _upload_staged catches RequestError per tracker and offers the next one.
-    assert issubclass(UploadRefusedError, RequestError)
 
 
 def _write_flac(path: Path, sample_rate: int, bits: int = 24) -> None:

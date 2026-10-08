@@ -90,8 +90,8 @@ def _usable(data: Any, name: str) -> bool:
         return False
     # A record from before records named their folder is trusted as it was; a case-insensitive volume opens
     # the record of "Album" for "album", and that is the same folder.
-    output = data.get("output")
-    if output is not None and (not isinstance(output, str) or output.casefold() != name.casefold()):
+    output = data.get("output", name)
+    if not isinstance(output, str) or output.casefold() != name.casefold():
         return False
     # Hashable before any membership test: a list or object from a hand-edited file must read as unusable.
     kind, bitrate, bit_depth = data.get("kind"), data.get("bitrate"), data.get("bit_depth")

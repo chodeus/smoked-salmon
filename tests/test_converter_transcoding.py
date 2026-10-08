@@ -65,4 +65,5 @@ async def test_a_multichannel_source_writes_no_destination_at_all(tmp_path, monk
         await transcode_folder(str(source), "320")
 
     # Extras are copied before encoding, so a late refusal left a folder behind.
-    assert not os.path.isdir(_build_output_path(str(source), "320"))
+    destination = _build_output_path(str(source), "320")
+    assert not os.path.isdir(destination)

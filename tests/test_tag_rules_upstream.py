@@ -21,17 +21,19 @@ from salmon.checks.tag_rules import (
 
 FRAME_HEADER = bytes([0xFF, 0xFB, 0x90, 0x00])
 FRAME_SIZE = 417
+# Stands in for a FLAC's audio frames: compared byte for byte, never decoded, so not for `flac -t`.
+AUDIO_FRAMES = b"\xff\xf8" + bytes(range(256)) * 4
 
 
 def _flac_bytes(body: bytes = b"") -> bytes:
     return b"fLaC" + body
 
 
-def _write_flac(path, *, title: str | None = None) -> None:
-    """Write a minimal but mutagen-readable FLAC: a STREAMINFO block, optionally tagged."""
+def _write_flac(path, *, title: str | None = None, audio: bytes = b"") -> None:
+    """Write a minimal but mutagen-readable FLAC: a STREAMINFO block, optionally tagged, then `audio`."""
     streaminfo = struct.pack(">HH", 4096, 4096) + bytes(6)
     streaminfo += ((44100 << 44) | (1 << 41) | (15 << 36)).to_bytes(8, "big") + bytes(16)
-    path.write_bytes(b"fLaC" + bytes([0x80]) + len(streaminfo).to_bytes(3, "big") + streaminfo)
+    path.write_bytes(b"fLaC" + bytes([0x80]) + len(streaminfo).to_bytes(3, "big") + streaminfo + audio)
     if title is not None:
         tagged = FLAC(str(path))
         tagged["title"] = title
@@ -72,13 +74,13 @@ def _write_mp3_v2_only(path) -> None:
     mut.save(v1=0)
 
 
-def _write_mp3_v1_and_blank_v2(path, v1_title: bytes = b"Hello") -> None:
+def _write_mp3_v1_and_blank_v2(path, v1_title: bytes = b"Hello", comment_end: bytes = b"\0\0") -> None:
     _write_mp3_frames(path)
     mut = MP3(str(path))
     mut.add_tags()
     mut.save(v1=0)
-    with open(path, "ab") as handle:  # An ID3v1 block: TAG, a 30-byte title, the rest, and the genre byte.
-        handle.write(b"TAG" + v1_title.ljust(30, b"\0") + bytes(94) + b"\xff")
+    with open(path, "ab") as handle:  # An ID3v1 block: TAG, a 30-byte title, the rest, bytes 125-126, the genre.
+        handle.write(b"TAG" + v1_title.ljust(30, b"\0") + bytes(92) + comment_end + b"\xff")
 
 
 def _write_mp3_v1_and_good_v2(path) -> None:
@@ -171,28 +173,47 @@ def test_a_blank_v1_next_to_a_blank_v2_is_not_flagged(tmp_path) -> None:
     assert flagged is False
 
 
-def test_a_tag_mutagen_cannot_parse_is_not_flagged_and_does_not_crash(tmp_path, monkeypatch) -> None:
-    """A malformed ID3v2 tag mutagen refuses to parse is not the flagged case, and never aborts the upload."""
+@pytest.mark.parametrize(("comment_end", "flagged"), [(b"\0\x05", False), (b"ok", True)])
+def test_a_v1_track_number_alone_is_not_text(tmp_path, comment_end, flagged) -> None:
+    """Bytes 125-126 hold a v1.1 track number when byte 125 is zero, else the end of a v1.0 comment."""
     path = tmp_path / "a.mp3"
-    path.write_bytes(b"ID3\x02\x00\x00\x00\x00\x00\x00" + b"\x00" * 300 + b"TAG" + b"\x00" * 125)
+    _write_mp3_v1_and_blank_v2(path, v1_title=b"", comment_end=comment_end)
 
-    def raise_unsupported(_filepath):
+    result = has_blank_id3v2_alongside_id3v1(str(path))
+
+    assert result is flagged
+
+
+def test_a_tag_mutagen_cannot_read_is_noted_and_does_not_crash(tmp_path, monkeypatch) -> None:
+    """mutagen raises one error for a malformed tag and a failed read, so either gets a note, never a pass."""
+    path = tmp_path / "a.mp3"
+    path.write_bytes(b"ID3\x02\x00\x00\x00\x00\x00\x00" + b"\x00" * 300 + _id3v1_tag())
+    parsed = []
+
+    def raise_unsupported(filepath, *, load_v1):
+        parsed.append(filepath)
         raise ID3UnsupportedVersionError("mutagen cannot parse this ID3v2 version")
 
     monkeypatch.setattr(tag_rules, "ID3", raise_unsupported)
 
-    assert has_blank_id3v2_alongside_id3v1(str(path)) is False
+    messages = process_tag_issues(str(tmp_path), scene=False)
+
+    assert messages == [
+        "a.mp3: could not read its ID3v2 tag (mutagen cannot parse this ID3v2 version); check it by hand."
+    ]
+    assert parsed == [str(path)]
 
 
 def test_stripping_removes_a_leading_id3v2_header_but_keeps_the_stream_and_tags(tmp_path) -> None:
     path = tmp_path / "01.flac"
-    _write_flac(path, title="Hello")
+    _write_flac(path, title="Hello", audio=AUDIO_FRAMES)
     _prepend_id3v2_header(path)
     assert has_id3_tag(str(path)) is True
 
     messages = process_tag_issues(str(tmp_path), scene=False)
 
     assert has_id3_tag(str(path)) is False
+    assert path.read_bytes().endswith(AUDIO_FRAMES)
     assert FLAC(str(path))["title"] == ["Hello"]
     assert FLAC(str(path)).info.sample_rate == 44100
     assert messages == ["Removed an ID3 tag from 01.flac (RED and OPS do not allow ID3 tags in FLAC files)."]
@@ -200,26 +221,30 @@ def test_stripping_removes_a_leading_id3v2_header_but_keeps_the_stream_and_tags(
 
 def test_stripping_keeps_the_padding_the_file_had(tmp_path) -> None:
     path = tmp_path / "01.flac"
-    _write_flac(path, title="Hello")
+    _write_flac(path, title="Hello", audio=AUDIO_FRAMES)
     before = sum(block.length for block in FLAC(str(path)).metadata_blocks if block.code == 1)
     size = bytes((5_000 >> shift) & 0x7F for shift in (21, 14, 7, 0))  # ID3v2 sizes are synchsafe
     path.write_bytes(b"ID3" + bytes([3, 0, 0]) + size + bytes(5_000) + path.read_bytes())
 
     process_tag_issues(str(tmp_path), scene=False)
+    stripped = not has_id3_tag(str(path))
     after = sum(block.length for block in FLAC(str(path)).metadata_blocks if block.code == 1)
 
+    assert stripped
     assert after == before
+    assert path.read_bytes().endswith(AUDIO_FRAMES)
 
 
 def test_stripping_removes_a_trailing_id3v1_block_but_keeps_the_stream_and_tags(tmp_path) -> None:
     path = tmp_path / "01.flac"
-    _write_flac(path, title="Hello")
+    _write_flac(path, title="Hello", audio=AUDIO_FRAMES)
     _append_id3v1_block(path)
     assert has_id3_tag(str(path)) is True
 
     messages = process_tag_issues(str(tmp_path), scene=False)
 
     assert has_id3_tag(str(path)) is False
+    assert path.read_bytes().endswith(AUDIO_FRAMES)
     assert FLAC(str(path))["title"] == ["Hello"]
     assert messages == ["Removed an ID3 tag from 01.flac (RED and OPS do not allow ID3 tags in FLAC files)."]
 
@@ -291,4 +316,6 @@ def test_a_clean_compressed_flac_has_no_messages(tmp_path) -> None:
     path = tmp_path / "01.flac"
     _write_flac(path)
 
-    assert process_tag_issues(str(tmp_path), scene=False) == []
+    messages = process_tag_issues(str(tmp_path), scene=False)
+
+    assert messages == []
