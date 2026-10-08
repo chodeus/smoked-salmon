@@ -19,6 +19,8 @@ from salmon.constants import TAG_TRUMP_SIZE
 
 # A cover is a few MiB: this stops a wrong URL from filling memory.
 _MAX_COVER_BYTES = 25 * 1024 * 1024
+# 8000x8000: far past any store's artwork, well short of Pillow's decompression-bomb limit.
+_MAX_COVER_PIXELS = 64_000_000
 _COVER_FILE = re.compile(r"^(cover|folder)\.(jpe?g|png)$", re.IGNORECASE)
 
 
@@ -166,6 +168,9 @@ def _is_valid_cover(cover_path: str | IO[bytes]) -> bool:
     try:
         with Image.open(cover_path) as image:
             mime = image.get_format_mimetype()
+            # Read from the header: a small file can claim pixels that would take gigabytes to load.
+            if image.width * image.height > _MAX_COVER_PIXELS:
+                return False
             # Every pixel: a download cut off with no Content-Length still has a valid header.
             image.load()
     except Exception:

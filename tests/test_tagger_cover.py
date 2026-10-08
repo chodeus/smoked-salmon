@@ -280,8 +280,8 @@ async def test_a_cover_cut_off_with_no_content_length_is_not_kept(tmp_path, monk
 
 
 async def test_a_failed_cover_download_never_prints_its_url(tmp_path, monkeypatch, capsys, cover_server) -> None:
-    async def loops(request: web.Request) -> web.Response:
-        raise web.HTTPFound(f"{request.path}?sig=test-sig-0001")
+    async def loops(_request: web.Request) -> web.Response:
+        raise web.HTTPFound("/cover.jpg?sig=test-sig-0001")
 
     result = await cover._download_cover(str(tmp_path), await cover_server(loops))
 
@@ -289,3 +289,14 @@ async def test_a_failed_cover_download_never_prints_its_url(tmp_path, monkeypatc
     out = capsys.readouterr().out
     assert "test-sig-0001" not in out
     assert "Failed to download cover image (ERROR TooManyRedirects)" in out
+
+
+def test_a_cover_whose_size_would_take_gigabytes_to_load_is_refused() -> None:
+    """A small file can claim a huge image: 9000x9000 is under Pillow's own limit, far over any cover."""
+    huge = io.BytesIO()
+    Image.new("1", (9000, 9000)).save(huge, "png")
+    usual = io.BytesIO(_jpeg())
+
+    assert len(huge.getvalue()) < 1_000_000
+    assert cover._is_valid_cover(io.BytesIO(huge.getvalue())) is False
+    assert cover._is_valid_cover(usual) is True
