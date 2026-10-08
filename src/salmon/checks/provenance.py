@@ -1,13 +1,15 @@
 """Who made these files, and does what they claim match what they are.
 
-Rippers, stores and resellers stamp their own markers into the tags — 'EAC
-FLAC -8', 'QOBUZ', 'hd24bit.com'. Those markers are the cheapest provenance
-signal there is, and a marker that contradicts the audio (a 24bit claim on a
-16bit file) is worth more than any spectrogram.
+Rippers, stores and resellers stamp their own markers into the tags: 'EAC FLAC -8', 'QOBUZ',
+'hd24bit.com'. A marker alone is ordinary and says nothing; one the audio contradicts (a 24bit claim
+on a 16bit file, a CD ripper on a 96 kHz file) is worth a look before uploading. This only warns.
 """
 
 import os
 import re
+from typing import Any
+
+from mutagen.flac import StreamInfo as FlacStreamInfo
 
 from salmon.checks.source import field_name, tag_texts, tag_url_fields
 from salmon.tagger.tags import gather_tags
@@ -27,16 +29,34 @@ MARKER_FIELDS = (
 
 # A bare domain has to swallow its port and path too, or "hd24bit.com/24bit"
 # leaves "/24bit" behind and the leftover reads as a claim about the audio.
+# Any all-letter suffix counts as a domain ("hd24bit.de"), but not a claim before the dot ("24bit.Hi-Res")
+# nor a file extension after it ("24bit.flac", "EAC.log"): those are what the markers say.
 _URL_RE = re.compile(
     r"(?:https?://|www\.)\S+"
-    r"|\b[\w-]+\.(?:com|net|org|io|co|me|ru|to|cc|sh)\b(?::\d+)?(?:[/?#]\S*)?",
+    r"|(?<![\w-])(?!\d{2}\s*-?\s*bit\.)[\w-]+\."
+    r"(?!(?:flac|wav|aiff?|alac|ape|wv|ogg|opus|dsf|dff|log|cue|txt|nfo|jpe?g|png|pdf)\b)[a-z]{2,24}\b"
+    r"(?::\d+)?(?:[/?#]\S*)?",
     re.IGNORECASE,
 )
 _DEPTH_CLAIM_RE = re.compile(r"(\d{2})\s*-?\s*bit", re.IGNORECASE)
 
+# Programs that only rip CDs, so their marker means the audio was 16 bit / 44.1 kHz when it was made.
+# XLD, dBpoweramp, CUETools, fre:ac and EZ CD Audio Converter are left out on purpose: they also convert
+# downloaded files, and their marker on a clean hi-res WEB release would be a false alarm.
+_CD_RIPPER_RE = re.compile(r"\b(?:exact\s+audio\s+copy|eac|whipper|morituri|rubyripper|cueripper)\b", re.IGNORECASE)
+_CD_DEPTH = 16
+_CD_RATE = 44100
 
-def _file_provenance(filename: str, tagfile) -> dict:
-    """Vendor string, marker tags and the file's real bit depth."""
+
+def lossless_depth(info: Any) -> int | None:
+    """The bit depth of a FLAC or ALAC file; None for a lossy one, whose depth says nothing about its source."""
+    if isinstance(info, FlacStreamInfo) or getattr(info, "codec", None) == "alac":
+        return getattr(info, "bits_per_sample", None) or None
+    return None
+
+
+def _file_provenance(filename: str, tagfile: Any) -> dict[str, Any]:
+    """Vendor string, marker tags and the file's real bit depth and sample rate."""
     mut = getattr(tagfile, "mut", None)
     tags = getattr(mut, "tags", None)
     markers: dict[str, str] = {}
@@ -53,28 +73,37 @@ def _file_provenance(filename: str, tagfile) -> dict:
         "file": filename,
         "vendor": getattr(tags, "vendor", None),
         "markers": markers,
-        "bitdepth": getattr(info, "bits_per_sample", None),
+        "bitdepth": lossless_depth(info),
+        "samplerate": getattr(info, "sample_rate", None) or None,
     }
 
 
-def _contradictions(files: list[dict]) -> list[str]:
-    """Markers that claim a bit depth the audio does not have."""
+def _khz(rate: int) -> str:
+    return f"{rate / 1000:g}kHz"
+
+
+def _contradictions(files: list[dict[str, Any]]) -> list[str]:
+    """Markers that claim something the audio is not: a bit depth, or a CD rip."""
     found = []
     for entry in files:
-        depth = entry["bitdepth"]
-        if not depth:
-            continue
+        depth, rate = entry["bitdepth"], entry["samplerate"]
         for field, text in entry["markers"].items():
             # A depth inside a domain is part of the name of whoever ripped it
             # ("hd24bit.com"), not an assertion about this file. The URL still
-            # shows up as a marker, so nothing is hidden — it just isn't a claim.
-            for claim in _DEPTH_CLAIM_RE.findall(_URL_RE.sub(" ", text)):
-                if int(claim) != depth:
-                    found.append(f"{entry['file']}: {field} claims {claim}bit, the audio is {depth}bit")
+            # shows up as a marker, so nothing is hidden: it just isn't a claim.
+            text = _URL_RE.sub(" ", text)
+            if depth:
+                for claim in _DEPTH_CLAIM_RE.findall(text):
+                    if int(claim) != depth:
+                        found.append(f"{entry['file']}: {field} claims {claim}bit, the audio is {depth}bit")
+            ripper = _CD_RIPPER_RE.search(text)
+            if ripper and ((depth and depth != _CD_DEPTH) or (rate and rate != _CD_RATE)):
+                audio = "/".join(part for part in (f"{depth}bit" if depth else "", _khz(rate) if rate else "") if part)
+                found.append(f"{entry['file']}: {field} names {ripper.group()}, a CD ripper, but the audio is {audio}")
     return found
 
 
-def gather_provenance(path: str) -> dict:
+def gather_provenance(path: str) -> dict[str, Any]:
     """Encoder and source markers across an album, plus any claim the audio contradicts."""
     try:
         tags = gather_tags(path)

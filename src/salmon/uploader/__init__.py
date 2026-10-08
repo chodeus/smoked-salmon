@@ -17,6 +17,7 @@ from salmon.checks.do_not_upload import Candidate, do_not_upload_reason
 from salmon.checks.high_rate import sixteen_bit_notice
 from salmon.checks.integrity import resolve_integrity_for_upload
 from salmon.checks.logs import check_log_cambia
+from salmon.checks.provenance import gather_provenance
 from salmon.checks.source import detect_source
 from salmon.checks.tag_rules import (
     SIXTEEN_BIT_ABOVE_48KHZ,
@@ -616,6 +617,19 @@ def _sixteen_bit_refusal(tracker: str, audio_info: dict[str, Any]) -> bool:
     return False
 
 
+def _warn_about_provenance(path: str) -> None:
+    """Print each ripper or store marker in the tags that the audio contradicts.
+
+    Read before the files are retagged, which can blank or replace their comments. Only warns: it never
+    stops the upload or changes an answer, and prints nothing when no marker contradicts the audio.
+    """
+    contradictions = gather_provenance(path)["contradictions"]
+    if contradictions:
+        click.secho("\nTag markers the audio contradicts:", fg="yellow", bold=True)
+        for note in contradictions:
+            click.secho(f"  - {note}", fg="yellow")
+
+
 def _another_can_follow(trackers: list[str] | None, site_code: str) -> bool:
     """Whether the run can go on to a tracker other than site_code."""
     others = [site for site in follow_up_trackers(trackers, site_code) if site != site_code]
@@ -697,6 +711,10 @@ async def _upload_staged(
 
         if source == "CD" and not skip_log_check:
             await _check_logs(path)
+
+        if conversion is None:
+            # A conversion keeps its source's tags (sox copies them), so its source's claims are no news.
+            _warn_about_provenance(path)
 
         # A release the first tracker's list forbids gets no group search there; the review may change the names.
         tags_refusal = _do_not_upload_refusal(gazelle_site.site_code, rls_data)

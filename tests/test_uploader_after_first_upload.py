@@ -595,3 +595,17 @@ def test_a_listed_first_tracker_is_not_weighed_or_searched(flow, monkeypatch) ->
     names_and_sites = [(name, site) for name, site, _kw in calls]
     assert ("recheck_edition", "RED") not in names_and_sites
     assert [site for name, site in names_and_sites if name == "upload_and_report"] == ["OPS"]
+
+
+@pytest.mark.parametrize("conversion", [None, {"source": "Album [24-96]"}], ids=["an-album", "salmons-conversion"])
+def test_the_markers_are_weighed_except_on_salmons_own_conversions(flow, monkeypatch, conversion) -> None:
+    _calls, _executed, _set_fake = flow
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+    monkeypatch.setattr(salmon.uploader, "conversion_of", lambda _path: conversion)
+    monkeypatch.setattr(salmon.uploader, "converted_from_note", lambda *_args: None)
+    warned: list[str] = []
+    monkeypatch.setattr(salmon.uploader, "_warn_about_provenance", warned.append)
+
+    _upload(None)
+
+    assert warned == ([] if conversion else ["/release"])
