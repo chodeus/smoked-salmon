@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from salmon.checks import do_not_upload
 from salmon.checks import preflight as pf
 
 NO_FILE_CHECKS: list[str] = []
@@ -193,8 +194,8 @@ def test_no_dupes_is_green():
     assert pf.dupe_row("OPS", []).verdict == pf.OK
 
 
-def test_blacklisted_release_blocks():
-    assert pf.blacklist_row("RED", "on the Do-Not-Upload list").verdict == pf.BLOCK
+def test_a_listed_release_blocks():
+    assert pf.do_not_upload_row("RED", "on the Do-Not-Upload list").verdict == pf.BLOCK
 
 
 async def test_run_checks_blocks_until_a_source_is_chosen(album_dir, monkeypatch):
@@ -303,18 +304,40 @@ async def test_unselected_checks_are_skipped_not_dropped(album_dir, monkeypatch)
     assert verdicts["mqa"] != pf.SKIP
 
 
-async def test_a_failing_blacklist_lookup_blocks_rather_than_clears(album_dir, monkeypatch):
-    """Fail closed: an unreadable blacklist must never look like 'not blacklisted'."""
+def _lists(monkeypatch, folder, **lists: str) -> None:
+    """Make salmon read its Do-Not-Upload lists from folder: the text given for each tracker, else an empty list."""
+    folder.mkdir()
+    for tracker, name in do_not_upload.LISTS.items():
+        (folder / name).write_text(lists.get(tracker, ""), encoding="utf-8")
+    monkeypatch.setattr(do_not_upload, "LISTS_DIR", folder)
+
+
+def _tagged_x_y(monkeypatch) -> None:
     monkeypatch.setattr(
         pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
     )
-    monkeypatch.setattr(
-        pf, "_release_identity", lambda _p: {"artists": [("X", "main")], "title": "Y", "label": None, "catno": None}
-    )
+    identity = {"artists": [("X", "main")], "title": "Y", "edition_title": None, "label": None, "catno": None}
+    monkeypatch.setattr(pf, "_release_identity", lambda _p: identity)
     monkeypatch.setattr(pf, "get_search_results", lambda *_a: _empty())
-    monkeypatch.setattr(pf, "red_blacklist_reason", lambda *_a: (_ for _ in ()).throw(RuntimeError("bad toml")))
+
+
+async def test_an_unreadable_list_blocks_rather_than_clears(album_dir, monkeypatch, tmp_path):
+    """Fail closed: a list salmon cannot read must never look like 'not listed'."""
+    _tagged_x_y(monkeypatch)
+    _lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nnot toml")
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED"])
-    assert "blacklist:RED" in result["blocking"]
+    assert "do-not-upload:RED" in result["blocking"]
+
+
+async def test_a_release_on_ops_list_blocks_ops_only(album_dir, monkeypatch, tmp_path):
+    _tagged_x_y(monkeypatch)
+    _lists(monkeypatch, tmp_path / "lists", OPS="[[entry]]\nartist = 'X'\nnote = 'Fakes only.'\n")
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED", "OPS", "DIC"])
+    assert result["blocking"] == ["do-not-upload:OPS"]
+    assert [r["id"] for r in result["rows"] if r["id"].startswith("do-not-upload")] == [
+        "do-not-upload:RED",
+        "do-not-upload:OPS",
+    ]
 
 
 async def _empty():

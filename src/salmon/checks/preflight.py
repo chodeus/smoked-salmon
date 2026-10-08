@@ -13,7 +13,7 @@ import msgspec
 
 import salmon.trackers
 from salmon.checks import album, provenance
-from salmon.checks.blacklist import red_blacklist_reason
+from salmon.checks.do_not_upload import LISTS, Candidate, do_not_upload_reason
 
 # Not `from salmon.checks import integrity` — the click Command of that name in
 # checks/__init__.py shadows the module.
@@ -251,11 +251,11 @@ def rules_row(tracker: str, folder_name: str, track_data: dict) -> Row:
     return Row(f"rules:{tracker}", label, WARN, " ".join(warnings[:2]))
 
 
-def blacklist_row(tracker: str, reason: str | None) -> Row:
-    label = f"{tracker} blacklist"
+def do_not_upload_row(tracker: str, reason: str | None) -> Row:
+    label = f"Do-Not-Upload ({tracker})"
     if reason:
-        return Row(f"blacklist:{tracker}", label, BLOCK, reason)
-    return Row(f"blacklist:{tracker}", label, OK, "Not on the Do-Not-Upload list.")
+        return Row(f"do-not-upload:{tracker}", label, BLOCK, reason)
+    return Row(f"do-not-upload:{tracker}", label, OK, f"Not on {tracker}'s Do-Not-Upload list.")
 
 
 def _release_identity(path: str) -> dict:
@@ -269,8 +269,14 @@ def _release_identity(path: str) -> dict:
         if not tags:
             return {}
         first = next(iter(tags.values()))
-        title, _edition = parse_title(first.album) if first.album else (None, None)
-        return {"artists": construct_artists_li(tags), "title": title, "label": first.label, "catno": first.catno}
+        title, edition = parse_title(first.album) if first.album else (None, None)
+        return {
+            "artists": construct_artists_li(tags),
+            "title": title,
+            "edition_title": edition,
+            "label": first.label,
+            "catno": first.catno,
+        }
     except Exception:
         return {}
 
@@ -287,7 +293,7 @@ def _audio_info(path: str) -> dict:
         return {}
 
 
-async def _tracker_rows(tracker: str, identity: dict) -> tuple[list[Row], dict]:
+async def _tracker_rows(tracker: str, identity: dict, source: str | None) -> tuple[list[Row], dict]:
     """Verdict rows for one tracker, plus the matches behind them for the UI to list."""
     rows: list[Row] = []
     raw: dict[str, dict] = {}
@@ -300,14 +306,10 @@ async def _tracker_rows(tracker: str, identity: dict) -> tuple[list[Row], dict]:
     else:
         rows.append(dupe_row(tracker, results))
         raw[f"dupe:{tracker}"] = {"searchstrs": searchstrs, "matches": dupe_matches(site.base_url, results)}
-    if tracker == "RED":
-        try:
-            reason = red_blacklist_reason(identity["artists"], identity["title"], identity["label"])
-        except Exception as e:
-            # Fail closed: an unreadable blacklist must not silently clear a release.
-            rows.append(Row("blacklist:RED", "RED blacklist", BLOCK, f"Could not check the blacklist: {e}"))
-        else:
-            rows.append(blacklist_row(tracker, reason))
+    if tracker in LISTS:
+        # An unreadable list gives a reason too: it refuses everything, so the row blocks.
+        release = Candidate.from_metadata({**identity, "source": source})
+        rows.append(do_not_upload_row(tracker, do_not_upload_reason(tracker, release)))
     return rows, raw
 
 
@@ -320,7 +322,7 @@ async def run_checks(
     """Run the selected album checks and return verdict rows plus the raw results.
 
     checks defaults to all of them; trackers adds a duplicate search per site and,
-    for RED, a blacklist row. Pass no trackers to check the files alone.
+    for RED and OPS, a Do-Not-Upload row. Pass no trackers to check the files alone.
     """
     selected = CHECK_IDS if checks is None else tuple(checks)
     guess = await asyncio.to_thread(detect_source, path)
@@ -348,7 +350,7 @@ async def run_checks(
             rows.append(rules_row(tracker, folder, track_data))
         if identity.get("title"):
             for tracker in trackers:
-                tracker_rows, tracker_raw = await _tracker_rows(tracker, identity)
+                tracker_rows, tracker_raw = await _tracker_rows(tracker, identity, ctx["source"])
                 rows.extend(tracker_rows)
                 raw.update(tracker_raw)
         else:

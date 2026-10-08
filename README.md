@@ -16,7 +16,7 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 > **What this fork adds on top of upstream master**
 > - A full browser interface (`salmon web`) behind a shared-secret token, with inline spectrals and interactive prompts.
 > - Per-tracker image hosts, per-tracker seedbox destinations, and site-aware upload rules (path limits, bit-depth/sample-rate policy).
-> - A RED do-not-upload blacklist that blocks matching releases before anything is sent to RED.
+> - RED's and OPS's Do-Not-Upload lists, which stop a listed release before anything is made or sent for that tracker.
 > - `--dry-run`, RED↔OPS cross-upload, and a single-mount (`/config` + `/data`) container layout.
 > - Fixes for upstream issues #353, #356, #358, #429, #430, #432, #433, plus Apple Music / Tidal repairs and multi-disc log handling.
 >
@@ -30,7 +30,7 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 - **Upconvert Detection** – Checks 24-bit flac files for potential upconverts. 16-bit files are reported as out of scope rather than as a failed test, since wasted-bit analysis only says anything above 16-bit.
 - **MQA Detection** – Checks files for common MQA markers.
 - **Duplicate Upload Detection** – Prevents redundant uploads. Every match is listed with each existing torrent's format, encoding, media, edition and log score, so you can see what a group already holds without leaving the page.  
-- **Blacklist Enforcement** – A release on RED's do-not-upload list is blocked before anything is sent to RED; other trackers in the same run continue.  
+- **Do-Not-Upload Lists** – salmon ships a copy of RED's and OPS's Do-Not-Upload lists (fakes, unreleased albums, bootlegs, some whole discographies and labels; some entries only for one media, such as WEB), and never uploads a listed release to that tracker, with or without `--yes-all`: it says which entry matched and why, and the run goes on to the other trackers. A legitimate copy needs that tracker's staff approval first. The maintainers update the lists with salmon's releases.  
 - **Dry Run** – `--dry-run` builds and validates a complete upload without posting it.  
 - **Spectral Analysis** – Generates, compresses, and verifies spectrals, shown inline in the web interface, alongside an averaged frequency plot per track.  
 - **Frequency Analysis** – One averaged-spectrum curve per track, plus the two measurements that tell a lossy encoder from a master: a brick-wall lowpass in the band where MP3 and AAC encoders cut (12.8–20.6 kHz), and highs that flip between content and the bit-depth floor while the music plays, which is an encoder running short of bits. The cutoff alone raises nothing — honest masters roll off early, and many 44.1 kHz masters have a wall near 21 kHz from sample-rate conversion or an anti-alias filter — so a track is flagged only on the marks, and a compilation whose tracks stop at different frequencies is left alone.  
@@ -393,9 +393,9 @@ Every CLI command has a web equivalent, so nothing is terminal-only:
 
 #### Pre-flight verification
 
-The Upload page verifies an album before anything is staged. It runs the same checks the upload itself runs — provenance, rip log, file integrity, MQA, upconversion — plus a duplicate search on every tracker you select and, for RED, its Do-Not-Upload list. The duplicate search needs a readable album tag; if the title cannot be read it is reported as skipped rather than passed. Each comes back as a row you can read at a glance, and a duplicate row expands to every match it found rather than naming the first two.
+The Upload page verifies an album before anything is staged. It runs the same checks the upload itself runs — provenance, rip log, file integrity, MQA, upconversion — plus a duplicate search on every tracker you select and, for RED and OPS, their Do-Not-Upload lists. The duplicate search needs a readable album tag; if the title cannot be read it is reported as skipped rather than passed. Each comes back as a row you can read at a glance, and a duplicate row expands to every match it found rather than naming the first two.
 
-A failed integrity check, MQA, upconversion or a blacklisted release **blocks** the upload and cannot be overridden. Softer signals — an imperfect rip log, a missing log, a possible duplicate, a tag whose claim the audio contradicts — need an explicit acknowledgement instead. Ordinary tag markers such as an `EAC` or `QOBUZ` comment are reported without warning: warning on every one of them would teach you to tick the box without reading it. Changing the path, source, trackers or any skip box invalidates the verdict, so a stale green cannot let something through. Dry runs post nothing and skip the gate.
+A failed integrity check, MQA, upconversion or a release on a Do-Not-Upload list **blocks** the upload and cannot be overridden. Softer signals — an imperfect rip log, a missing log, a possible duplicate, a tag whose claim the audio contradicts — need an explicit acknowledgement instead. Ordinary tag markers such as an `EAC` or `QOBUZ` comment are reported without warning: warning on every one of them would teach you to tick the box without reading it. Changing the path, source, trackers or any skip box invalidates the verdict, so a stale green cannot let something through. Dry runs post nothing and skip the gate.
 
 #### Source detection
 
