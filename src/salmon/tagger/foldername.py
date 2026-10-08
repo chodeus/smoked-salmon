@@ -80,7 +80,7 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
         os.makedirs(new_path_dirname)
 
     # Imported here: the uploader package imports this module.
-    from salmon.uploader.spectrals import get_spectrals_path
+    from salmon.uploader.spectrals import get_spectrals_path, made_by_salmon
 
     # Check if hardlinks can be used
     same_volume = os.stat(path).st_dev == os.stat(cfg.directory.download_directory).st_dev
@@ -91,7 +91,7 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
     # Spectrals salmon made before this rename follow the album, wherever they are and whatever remove_source_dir
     # says. get_spectrals_path never names a Spectrals folder of the album's own: that is copied like any other.
     specs_path = get_spectrals_path(path)
-    carry_specs = os.path.isdir(specs_path)
+    carry_specs = made_by_salmon(specs_path)
     in_source = carry_specs and _is_direct_child(specs_path, path)
     ignore = _ignoring_top_level(path, os.path.basename(specs_path)) if in_source else None
 
@@ -145,14 +145,13 @@ def _ignoring_top_level(top: str, name: str):
 def _move_specs_folder(src: str, dst: str) -> None:
     """Move a spectrals folder to `dst`, replacing a stale one there, and carry salmon's claim on it."""
     # Imported here: the uploader package imports this module.
-    from salmon.uploader.spectrals import carry_specs_claim
+    from salmon.uploader.spectrals import carry_specs_claim, make_way_for_spectrals
 
     if os.path.exists(dst) and os.path.samefile(src, dst):
         # A scene release keeps its name, so its folder outside the album is already in place.
         return
     old_real = os.path.realpath(src)
-    if os.path.isdir(dst):
-        shutil.rmtree(dst)
+    make_way_for_spectrals(dst)
     shutil.move(src, dst)
     carry_specs_claim(old_real, dst)
 

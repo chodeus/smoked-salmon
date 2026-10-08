@@ -369,11 +369,12 @@ def made_by_salmon(spectrals_path: str) -> bool:
     if os.path.islink(spectrals_path):
         return False
     try:
-        names = os.listdir(spectrals_path)
+        with os.scandir(spectrals_path) as entries:
+            is_file = {entry.name: entry.is_file(follow_symlinks=False) for entry in entries}
     except OSError:
         return False
-    images = [name for name in names if not name.startswith(".") and name not in _BROWSER_LITTER]
-    if not all(_SALMON_SPECTRAL.fullmatch(name) for name in images):
+    images = [name for name in is_file if not name.startswith(".") and name not in _BROWSER_LITTER]
+    if not all(_SALMON_SPECTRAL.fullmatch(name) and is_file[name] for name in images):
         return False
     # By content too: spectrals an earlier run left (salmon specs -nd, an interrupted check) are still salmon's.
     return bool(images) or os.path.realpath(spectrals_path) in _made_specs_folders
@@ -391,6 +392,17 @@ def drop_specs_claim(spectrals_path: str) -> None:
     _made_specs_folders.discard(os.path.realpath(spectrals_path))
 
 
+def make_way_for_spectrals(spectrals_path: str) -> None:
+    """Clear spectrals_path for salmon's folder: remove salmon's own or an empty folder, refuse anything else."""
+    if not os.path.lexists(spectrals_path):
+        return
+    empty = not os.path.islink(spectrals_path) and os.path.isdir(spectrals_path) and not os.listdir(spectrals_path)
+    if not (empty or made_by_salmon(spectrals_path)):
+        # Chosen earlier (a web job) or outside the album: whatever is there now is not known to be salmon's.
+        raise click.ClickException(f"Not replacing {spectrals_path}: it holds files salmon did not make. Move them.")
+    shutil.rmtree(spectrals_path)
+
+
 def create_specs_folder(path, spectrals_path=None):
     """Create the spectrals folder, emptying it first.
 
@@ -400,8 +412,7 @@ def create_specs_folder(path, spectrals_path=None):
     """
     if spectrals_path is None:
         spectrals_path = get_spectrals_path(path)
-    if os.path.isdir(spectrals_path):
-        shutil.rmtree(spectrals_path)
+    make_way_for_spectrals(spectrals_path)
     os.mkdir(spectrals_path)
     _made_specs_folders.add(os.path.realpath(spectrals_path))
     return spectrals_path

@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+import asyncclick as click
 import pytest
 
 from salmon import cfg, dryrun
@@ -93,7 +94,7 @@ def test_a_stale_tmp_dir_spectrals_folder_of_the_new_name_is_replaced(monkeypatc
     album = _album(seeding / "Old Name")
     _write_spectrals(tmp_dir / "spectrals_Old Name")
     (tmp_dir / f"spectrals_{NEW_NAME}").mkdir()
-    (tmp_dir / f"spectrals_{NEW_NAME}" / "stale.png").write_bytes(b"stale")
+    (tmp_dir / f"spectrals_{NEW_NAME}" / "01 Full.png").write_bytes(b"stale")
 
     foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False)
 
@@ -342,3 +343,52 @@ def test_salmons_tmp_dir_spectrals_follow_a_rename_into_the_same_folder(monkeypa
     foldername.rename_folder(str(link), _metadata(), auto_rename=True, check=False)
 
     assert _files(tmp_dir / f"spectrals_{NEW_NAME}") == SPECTRAL_FILES
+
+
+def test_a_folder_of_the_new_name_holding_other_files_stops_the_rename(monkeypatch, dirs, tmp_path) -> None:
+    _downloads, seeding = dirs
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
+    album = _album(seeding / "Old Name")
+    _write_spectrals(tmp_dir / "spectrals_Old Name")
+    (tmp_dir / f"spectrals_{NEW_NAME}").mkdir()
+    (tmp_dir / f"spectrals_{NEW_NAME}" / "theirs.png").write_bytes(b"theirs")
+
+    with pytest.raises(click.ClickException, match="files salmon did not make"):
+        foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False)
+
+    assert (tmp_dir / f"spectrals_{NEW_NAME}" / "theirs.png").read_bytes() == b"theirs"
+    assert _files(tmp_dir / "spectrals_Old Name") == SPECTRAL_FILES
+
+
+def test_a_folder_at_the_old_name_that_is_not_salmons_stays_put(monkeypatch, dirs, tmp_path) -> None:
+    _downloads, seeding = dirs
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
+    album = _album(seeding / "Old Name")
+    (tmp_dir / "spectrals_Old Name").mkdir()
+    (tmp_dir / "spectrals_Old Name" / "theirs.png").write_bytes(b"theirs")
+
+    foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False)
+
+    assert (tmp_dir / "spectrals_Old Name" / "theirs.png").read_bytes() == b"theirs"
+    assert not (tmp_dir / f"spectrals_{NEW_NAME}").exists()
+
+
+@pytest.mark.parametrize("theirs", ["a file", "a folder named like a spectral"])
+def test_making_spectrals_over_a_folder_that_is_not_salmons_is_refused(tmp_path, theirs: str) -> None:
+    # As when a web job's destination, chosen when it was queued, is taken by the time it runs.
+    specs = tmp_path / "spectrals_Album"
+    specs.mkdir()
+    if theirs == "a file":
+        (specs / "theirs.png").write_bytes(b"theirs")
+    else:
+        (specs / "01 Full.png").mkdir()
+        (specs / "01 Full.png" / "theirs.png").write_bytes(b"theirs")
+
+    with pytest.raises(click.ClickException, match="files salmon did not make"):
+        create_specs_folder("", str(specs))
+
+    assert len(list(specs.rglob("theirs.png"))) == 1
