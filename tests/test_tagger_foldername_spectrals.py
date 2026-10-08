@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from salmon import cfg
+from salmon import cfg, dryrun
 from salmon.tagger import foldername
 from salmon.uploader.spectrals import create_specs_folder, get_spectrals_path
 
@@ -286,3 +286,59 @@ def test_a_scene_release_keeps_its_tmp_dir_spectrals_in_place(monkeypatch, dirs,
     foldername.rename_folder(str(album), _metadata(scene=True), auto_rename=True, check=False)
 
     assert _files(tmp_dir / "spectrals_Old Name") == SPECTRAL_FILES
+
+
+def test_a_dry_run_makes_spectrals_beside_an_albums_own_in_its_run_directory(dirs, tmp_path) -> None:
+    _downloads, seeding = dirs
+    album = _album(seeding / "Album")
+    (album / "Spectrals").mkdir()
+    (album / "Spectrals" / "theirs.png").write_bytes(b"theirs")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    with dryrun.mode(), dryrun.writing_into(str(run_dir)):
+        made = create_specs_folder(str(album))
+
+    assert Path(made).parent == run_dir
+
+
+def test_spectrals_an_earlier_run_left_in_the_album_are_still_salmons(dirs) -> None:
+    _downloads, seeding = dirs
+    album = _album(seeding / "Album")
+    left = album / "Spectrals"
+    left.mkdir()
+    for name in ("01 Full.png", "01 Zoom.png", "01 Frequency.png", ".DS_Store"):
+        (left / name).write_bytes(b"old")
+
+    made = create_specs_folder(str(album))
+
+    assert Path(made) == left
+    assert list(left.iterdir()) == []
+
+
+def test_a_symlinked_spectrals_folder_is_never_salmons(dirs, tmp_path) -> None:
+    downloads, seeding = dirs
+    album = _album(seeding / "Album")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "01 Full.png").write_bytes(b"theirs")
+    (album / "Spectrals").symlink_to(elsewhere)
+
+    made = create_specs_folder(str(album))
+
+    assert (elsewhere / "01 Full.png").read_bytes() == b"theirs"
+    assert Path(made).parent == downloads
+
+
+def test_salmons_tmp_dir_spectrals_follow_a_rename_into_the_same_folder(monkeypatch, dirs, tmp_path) -> None:
+    downloads, seeding = dirs
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
+    link = seeding / "Old Name"
+    link.symlink_to(_album(downloads / NEW_NAME))
+    _write_spectrals(tmp_dir / "spectrals_Old Name")
+
+    foldername.rename_folder(str(link), _metadata(), auto_rename=True, check=False)
+
+    assert _files(tmp_dir / f"spectrals_{NEW_NAME}") == SPECTRAL_FILES

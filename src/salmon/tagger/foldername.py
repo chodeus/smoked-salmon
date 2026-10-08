@@ -95,7 +95,8 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
     in_source = carry_specs and _is_direct_child(specs_path, path)
     ignore = _ignoring_top_level(path, os.path.basename(specs_path)) if in_source else None
 
-    if os.path.exists(path) and os.path.exists(new_path) and os.path.samefile(path, new_path):
+    same_folder = os.path.exists(path) and os.path.exists(new_path) and os.path.samefile(path, new_path)
+    if same_folder:
         click.secho(f"Skipping copy, same location already for '{new_path}'", fg="yellow")
     else:
         if use_hardlinks:
@@ -112,13 +113,15 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
             shutil.copytree(path, new_path, dirs_exist_ok=True, ignore=ignore)
             click.secho(f"Copied folder to '{new_path}'.", fg="yellow")
 
-        if carry_specs:
-            # Moved, not copied: the source must not keep a Spectrals folder the upload never deletes.
-            _move_specs_folder(specs_path, get_spectrals_path(new_path))
+    if carry_specs:
+        # Moved, not copied: the source must not keep a Spectrals folder the upload never deletes. Also for the same
+        # folder, as a case-only rename still renames salmon's folder outside it.
+        _move_specs_folder(specs_path, get_spectrals_path(new_path))
 
-        if cfg.upload.formatting.remove_source_dir and in_library:
+    if not same_folder and cfg.upload.formatting.remove_source_dir:
+        if in_library:
             click.secho(f"Not removing {path}: it is in library_dirs, or holds one.", fg="yellow")
-        elif cfg.upload.formatting.remove_source_dir:
+        else:
             shutil.rmtree(path)
     carry_conversion(path, new_path)
     return new_path

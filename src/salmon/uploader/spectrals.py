@@ -352,17 +352,31 @@ def get_spectrals_path(path):
     if cfg.directory.protects(path) or (os.path.lexists(in_album) and not made_by_salmon(in_album)):
         # Never inside a library album, nor over the album's own Spectrals. The digest keeps same-named albums apart.
         digest = hashlib.sha1(os.path.realpath(path).encode(), usedforsecurity=False).hexdigest()[:8]
-        return os.path.join(cfg.directory.download_directory, f"spectrals_{base_name} {digest}")
+        outside = dryrun.scratch_dir() if dryrun.active() else cfg.directory.download_directory
+        return os.path.join(outside, f"spectrals_{base_name} {digest}")
     return in_album
 
 
-# Spectrals folders salmon made, by real path: a rename moves only these, never a folder of the user's own.
+# Spectrals folders salmon made in this process, by real path: an empty folder is salmon's only if it is one of these.
 _made_specs_folders: set[str] = set()
+# The images salmon writes into a spectrals folder, and what a file browser leaves beside them.
+_SALMON_SPECTRAL = re.compile(r"\d{2,} (?:Full|Zoom|Frequency)\.png")
+_BROWSER_LITTER = {"Thumbs.db", "desktop.ini"}
 
 
 def made_by_salmon(spectrals_path: str) -> bool:
-    """Whether salmon made this spectrals folder in this process."""
-    return os.path.realpath(spectrals_path) in _made_specs_folders
+    """Whether a spectrals folder is salmon's: only salmon's spectral images in it, or empty and made by salmon."""
+    if os.path.islink(spectrals_path):
+        return False
+    try:
+        names = os.listdir(spectrals_path)
+    except OSError:
+        return False
+    images = [name for name in names if not name.startswith(".") and name not in _BROWSER_LITTER]
+    if not all(_SALMON_SPECTRAL.fullmatch(name) for name in images):
+        return False
+    # By content too: spectrals an earlier run left (salmon specs -nd, an interrupted check) are still salmon's.
+    return bool(images) or os.path.realpath(spectrals_path) in _made_specs_folders
 
 
 def carry_specs_claim(old_real: str, new_path: str) -> None:
