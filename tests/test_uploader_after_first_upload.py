@@ -472,14 +472,40 @@ def test_the_first_trackers_group_is_weighed_against_the_reviewed_edition(flow, 
         seen.append((group_id, release["title"], weighed_against))
         return group_id
 
+    async def edit_metadata(*_args, **_kwargs):
+        reviewed = {"artists": [("Artist", "main")], "title": "Album (Reviewed)", "label": "Label", "catno": None}
+        return "/release", {**reviewed, "cover": None}, {}, {}
+
     set_fake("recheck_edition", recheck)
+    set_fake("edit_metadata", edit_metadata)
     if given:
         _upload(None)
     else:
         _upload_unpicked(None)
 
-    assert [(group_id, title) for group_id, title, _weighed in seen] == [(5, "Album")]
+    assert [(group_id, title) for group_id, title, _weighed in seen] == [(5, "Album (Reviewed)")]
     assert (seen[0][2] is None) is given
+
+
+def test_a_pick_is_weighed_as_the_tags_had_it_though_the_scrape_edits_them(flow, monkeypatch) -> None:
+    _calls, _executed, set_fake = flow
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+    weighed_years: list[int] = []
+
+    async def get_metadata(_path, _tags, rls_data):
+        # As combine_metadatas does with its base: the chosen scrape lands in the tags' release itself.
+        rls_data["year"] = 2005
+        return rls_data, None
+
+    async def recheck(_site, group_id, _release, weighed_against):
+        weighed_years.append(weighed_against["year"])
+        return group_id
+
+    set_fake("get_metadata", get_metadata)
+    set_fake("recheck_edition", recheck)
+    _upload_unpicked(None)
+
+    assert weighed_years == [2020]
 
 
 def test_conversions_the_edition_already_holds_are_left_out_after_the_flac(flow, monkeypatch, capsys) -> None:

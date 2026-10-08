@@ -1084,3 +1084,13 @@ async def test_a_failed_recheck_keeps_the_group_and_says_so(fake_tracker, instal
     assert result == 555
     out = capsys.readouterr().out
     assert "Could not re-check group 555 on" in out
+
+
+async def test_a_group_id_given_as_text_reuses_the_group_just_fetched(fake_tracker, install_prompt):
+    fake_tracker.api_responses["torrentgroup"] = _held_group()
+    install_prompt("y")
+
+    result = await recheck_edition(fake_tracker, "555", WEB_FLAC, None)  # type: ignore[arg-type]
+
+    assert result == "555"
+    assert fake_tracker.api_calls == [("torrentgroup", {"id": "555"})]

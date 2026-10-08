@@ -460,7 +460,8 @@ async def recheck_edition(
     if all(torrent.get("id") in named for torrent in held_in_group(group, release)):
         return group_id
     click.secho(f"\nThe reviewed edition is already in group {group_id}:", fg="red", bold=True)
-    return group_id if await _confirm_group_id(gazelle_site, group_id, [group], release) else None
+    # The fetched id, an int: -g gives a string, which would not find the group just fetched.
+    return group_id if await _confirm_group_id(gazelle_site, group["groupId"], [group], release) else None
 
 
 async def print_torrents(

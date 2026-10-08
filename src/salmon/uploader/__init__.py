@@ -662,7 +662,8 @@ async def _upload_staged(
             if len(searchstrs) > 0:
                 try:
                     group_id = await check_existing_group(gazelle_site, searchstrs, release=rls_data)
-                    weighed_against = rls_data
+                    # A copy: picking scraped metadata edits rls_data in place (combine_metadatas' base).
+                    weighed_against = dict(rls_data)
                 except RequestError as e:
                     # Skipped like a later tracker; a request is this tracker's, so with one the run ends.
                     others = [
