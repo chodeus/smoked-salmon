@@ -21,6 +21,8 @@ MAX_PATH_LENGTH = {"RED": 180, "OPS": 255}
 # The folder is prepared once, before a tracker is chosen, so it has to satisfy the
 # strictest destination it might go to.
 STRICTEST_PATH_LENGTH = min(MAX_PATH_LENGTH.values())
+# What each tracker does with 16bit files above 48 kHz: refuses them, or lets them be trumped.
+SIXTEEN_BIT_ABOVE_48KHZ = {"RED": "trumpable", "OPS": "refused"}
 STANDARD_SAMPLE_RATES = {44100, 48000, 88200, 96000, 176400, 192000}
 # A FLAC storing verbatim frames reaches raw PCM; the margin allows for the frame headers' own overhead.
 UNCOMPRESSED_RATIO = 0.99
@@ -68,17 +70,8 @@ def collect_upload_warnings(site_code: str, folder_name: str, track_data: dict) 
             if is_uncompressed(track):
                 warnings.append(f"Uncompressed FLAC (2.2.10.10, not allowed); recompress it (salmon up -c): {filename}")
         sample_rate = track.get("sample rate")
-        precision = track.get("precision")
         if sample_rate and sample_rate not in STANDARD_SAMPLE_RATES:
             warnings.append(f"Non-standard sample rate {sample_rate} Hz may be rejected: {filename}")
-        elif precision == 16 and sample_rate and sample_rate > 48000:
-            # OPS forbids it outright; RED only makes it trumpable.
-            if site_code == "OPS":
-                warnings.append(
-                    f"16-bit above 48 kHz is not permitted on OPS — downsample to 16/44.1 or 16/48: {filename}"
-                )
-            else:
-                warnings.append(f"16-bit above 48 kHz is trumpable on RED — downsample to 16/44.1 or 16/48: {filename}")
     return warnings
 
 

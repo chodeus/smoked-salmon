@@ -13,6 +13,8 @@ from torf import Torrent
 import salmon.trackers
 from salmon import cfg
 from salmon.checks.do_not_upload import Candidate, do_not_upload_reason
+from salmon.checks.high_rate import sixteen_bit_notice
+from salmon.checks.tag_rules import SIXTEEN_BIT_ABOVE_48KHZ
 from salmon.common import commandgroup, is_http_url
 from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
 from salmon.constants import ARTIST_IMPORTANCES
@@ -224,8 +226,14 @@ async def _upload_response(
             transcodes,
         )
         return 0, target_group_id
+    # Any FLAC, whatever its label: no tracker's torrent says its sample rate, and a label can be wrong.
+    rule = SIXTEEN_BIT_ABOVE_48KHZ.get(target_site.site_code, "") if source_torrent["format"] == "FLAC" else ""
+    track_data = gather_audio_info(str(path)) if rule or "24bit" in data["bitrate"] else {}
+    if rule and (notice := sixteen_bit_notice(target_site.site_code, rule, track_data)):
+        if rule == "refused":
+            raise click.ClickException(f"Not uploading to {target_site.site_string}: {notice}")
+        click.secho(notice, fg="yellow")
     # The target's own form fields (DIC: a 24bit Lossless torrent's sample rate), refused before the upload POST.
-    track_data = gather_audio_info(str(path)) if "24bit" in data["bitrate"] else {}
     form_fields = target_site.upload_form_fields({"encoding": data["bitrate"]}, track_data)
     data = await _rehost_red_images(data, source_site, target_site)
     # Add to an existing target group if the album is already there, rather than

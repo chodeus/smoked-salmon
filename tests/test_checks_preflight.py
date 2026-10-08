@@ -549,3 +549,12 @@ def test_the_identity_keeps_the_edition_title(monkeypatch):
     monkeypatch.setattr(pf, "construct_artists_li", lambda _tags: [("Artist", "main")])
     identity = pf._release_identity("/album")
     assert (identity["title"], identity["edition_title"]) == ("Night Songs", "Deluxe Edition")
+
+
+def test_16bit_above_48khz_blocks_for_ops_and_warns_for_red():
+    files = {"01.flac": {"sample rate": 96000, "precision": 16}}
+    ops, red = pf.sixteen_bit_row("OPS", files), pf.sixteen_bit_row("RED", files)
+    assert ops is not None and ops.verdict == pf.BLOCK
+    assert red is not None and red.verdict == pf.WARN
+    assert pf.sixteen_bit_row("DIC", files) is None
+    assert pf.sixteen_bit_row("OPS", {"01.flac": {"sample rate": 96000, "precision": 24}}) is None
