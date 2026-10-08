@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import aiohttp
 import asyncclick as click
 import pytest
 from aiohttp import web
@@ -17,7 +18,7 @@ import salmon.cross_upload as cross_upload
 from salmon import cfg
 from salmon.errors import ImageUploadFailed, LoginError, RequestError, RequestFailedError, UnknownOutcomeError
 from salmon.images import red as red_image_host
-from salmon.trackers.base import BaseGazelleApi, SharedLimiter, _same_origin, _tracker_limiter
+from salmon.trackers.base import BaseGazelleApi, RetryableError, SharedLimiter, _same_origin, _tracker_limiter
 
 
 class CountingLimiter(SharedLimiter):
@@ -453,6 +454,53 @@ async def test_a_refused_rehost_fetch_is_a_clean_error(monkeypatch):
             await cross_upload._rehost_red_image("https://evil.example/i/x.jpg", site, "catbox")
     finally:
         await site.close()
+
+
+async def test_a_failed_rehost_fetch_never_carries_the_signed_url(monkeypatch):
+    site = FakeApi("https://redacted.sh")
+
+    class CutOff:
+        def __init__(self, url: str, headers: dict[str, str] | None = None) -> None:
+            self.url = url
+
+        async def __aenter__(self) -> None:
+            raise aiohttp.ClientPayloadError(f"Response payload is not completed for {self.url}")
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(site, "site_get", CutOff)
+    signed = "https://redacted.sh/i/x.jpg?sig=test-sig-0001"
+    try:
+        with pytest.raises(click.ClickException) as caught:
+            await cross_upload._rehost_red_image(signed, site, "catbox")
+    finally:
+        await site.close()
+
+    # The web UI prints the whole traceback of a failed job, causes included.
+    assert "test-sig-0001" not in "".join(traceback.format_exception(caught.value))
+
+
+@pytest.mark.parametrize(("status", "error", "sends"), [(500, UnknownOutcomeError, 1), (429, RetryableError, 2)])
+async def test_only_a_429_lets_a_post_naming_the_rate_limit_be_sent_again(
+    serve, api_for, monkeypatch, status, error, sends
+):
+    posts: list[int] = []
+    pauses: list[float] = []
+    monkeypatch.setattr(SharedLimiter, "pause", lambda _self, seconds: pauses.append(seconds))
+
+    async def upload(request: web.Request) -> web.Response:
+        posts.append(status)
+        return web.Response(text="Upstream rate limit check failed", status=status, headers={"Retry-After": "0"})
+
+    url = await serve(upload=upload)
+    twice = cast("Any", BaseGazelleApi._request).retry_with(stop=stop_after_attempt(2))
+
+    with pytest.raises(error, match=f"Rate limit exceeded \\({status}\\)"):
+        await twice(api_for(url), "POST", f"{url}/upload.php", data={"a": "b"})
+    assert len(posts) == sends
+    # Either way the tracker named its rate limit, so every request to it waits.
+    assert pauses == [0.0] * sends
 
 
 def test_a_paused_budget_holds_every_request_until_the_pause_ends():
