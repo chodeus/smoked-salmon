@@ -1137,8 +1137,8 @@ def _record_sleeps(monkeypatch) -> list[float]:
 
 @pytest.mark.parametrize(
     ("retry_after", "expected"),
-    [(None, 20.0), ("7", 7.0), ("-5", 20.0), ("not a number", 20.0), ("Wed, 21 Oct 2099 07:28:00 GMT", 120.0)],
-    ids=["missing", "seconds", "negative", "garbage", "far-future date"],
+    [(None, 20), ("7", 7), ("-5", 20), ("not a number", 20), ("0.2", 2)],
+    ids=["missing", "seconds", "negative", "garbage", "under the spacing"],
 )
 async def test_a_429_pauses_the_tracker_for_any_retry_after_form(api, monkeypatch, retry_after, expected):
     monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))

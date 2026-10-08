@@ -1,5 +1,6 @@
 import asyncio
 import html
+import math
 import re
 import threading
 import time
@@ -27,6 +28,7 @@ from salmon.common.urls import parse_retry_after
 from salmon.constants import RELEASE_TYPES
 from salmon.errors import (
     LoginError,
+    RateLimitedError,
     RequestError,
     RequestFailedError,
     UnknownOutcomeError,
@@ -283,6 +285,8 @@ _MAX_REDIRECTS = 3
 # The most a binary answer (an image on the tracker's own host) may hold. Reading stops there.
 _MAX_BINARY_BODY = 25 * 1024 * 1024
 _BINARY_READ_CHUNK = 64 * 1024
+# The site log pages a recent-uploads check reads; cross-upload's request budget counts them.
+SITE_LOG_PAGES = 10
 _REDIRECT_STATUSES = frozenset(
     {
         HTTPStatus.MOVED_PERMANENTLY,
@@ -292,8 +296,12 @@ _REDIRECT_STATUSES = frozenset(
         HTTPStatus.PERMANENT_REDIRECT,
     }
 )
-# A 429 without a usable Retry-After waits this long; no server wait is taken past the cap.
-_RATE_LIMIT_WAIT = 20.0
+# A rate limit without a usable Retry-After waits this long, and none waits less than the limiter's spacing.
+_RATE_LIMIT_WAIT = 20
+_MIN_RATE_LIMIT_WAIT = 2
+# One request's rate-limit waits add up to this at most; a tracker asking for more fails it with RateLimitedError.
+_MAX_RATE_LIMIT_WAITS = 60
+# No 5xx Retry-After is waited past this.
 _MAX_SERVER_WAIT = 120.0
 # The request never left, so re-sending it is safe whatever it does.
 _NOT_SENT_ERRORS = (aiohttp.ClientConnectorError, aiohttp.ConnectionTimeoutError)
@@ -338,6 +346,14 @@ class RetryableError(RequestError):
     """Exception for retryable network errors."""
 
     pass
+
+
+def _rate_limit_wait(retry_after: str | None) -> int:
+    """How long to wait, in whole seconds, before sending a rate limited request again."""
+    wait = parse_retry_after(retry_after)
+    if wait is None:
+        return _RATE_LIMIT_WAIT
+    return max(math.ceil(wait), _MIN_RATE_LIMIT_WAIT)
 
 
 class HttpResponse(msgspec.Struct, frozen=True):
@@ -533,6 +549,7 @@ class BaseGazelleApi:
         Raises:
             UnknownOutcomeError: A request that is not idempotent failed after it may have
                 reached the tracker, so it is not sent again.
+            RateLimitedError: The tracker rate limits it and asks for more than 60 s of waits in all.
             RequestFailedError: With binary, if the answer holds more than 25 MiB. Not retried.
         """
         # A dry run only reads from the tracker; each sending step skips itself, and this stops any that was missed.
@@ -542,7 +559,8 @@ class BaseGazelleApi:
         # Outside _send's retries: the attempt makes its own tries, which a retried request would repeat.
         if needs_authkey and not (params and params.get("action") == "index"):
             await self.ensure_authenticated()
-        return await self._send(method, url, params, data, timeout_secs, prefer_api_key, idempotent, binary)
+        # One list for every attempt, so the rate limit waits add up across the retries.
+        return await self._send(method, url, params, data, timeout_secs, prefer_api_key, idempotent, binary, [])
 
     @retry(
         retry=retry_if_exception_type(RetryableError),
@@ -561,8 +579,14 @@ class BaseGazelleApi:
         prefer_api_key: bool = False,
         idempotent: bool | None = None,
         binary: bool = False,
+        rate_limit_waits: list[int] | None = None,
     ) -> HttpResponse:
-        """One request as _request describes it, retried while it may be sent again; authentication is done."""
+        """One request as _request describes it, retried while it may be sent again; authentication is done.
+
+        rate_limit_waits holds the rate limit waits of the attempts before this one, and gets this one's.
+        """
+        if rate_limit_waits is None:
+            rate_limit_waits = []
         if idempotent is None:
             idempotent = method.upper() != "POST"
         # Once the tracker redirects, it has acted on the request, whatever happens next.
@@ -613,7 +637,7 @@ class BaseGazelleApi:
                         if cfg.upload.debug_tracker_connection:
                             self._debug_response(resp, text if text or not binary else f"<{len(content)} bytes>")
                         if not resp.ok:
-                            await self._raise_for_status(resp, self._scrub(text), failure, idempotent)
+                            await self._raise_for_status(resp, self._scrub(text), failure, idempotent, rate_limit_waits)
                         location = resp.headers.get(aiohttp.hdrs.LOCATION)
                         if resp.status not in _REDIRECT_STATUSES or not location:
                             return HttpResponse(text=text, url=str(resp.url), status=resp.status, content=content)
@@ -686,7 +710,12 @@ class BaseGazelleApi:
         click.secho(f"[DEBUG] response body: {self._scrub(text)}", fg="green")
 
     async def _raise_for_status(
-        self, resp: aiohttp.ClientResponse, text: str, failure: Callable[..., RequestError], idempotent: bool
+        self,
+        resp: aiohttp.ClientResponse,
+        text: str,
+        failure: Callable[..., RequestError],
+        idempotent: bool,
+        rate_limit_waits: list[int],
     ) -> NoReturn:
         """Raise the error a failed tracker answer calls for."""
         error_msg = text
@@ -697,15 +726,25 @@ class BaseGazelleApi:
 
         server_wait = parse_retry_after(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
         if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
-            retry_after = min(_RATE_LIMIT_WAIT if server_wait is None else server_wait, _MAX_SERVER_WAIT)
-            click.secho(f"Rate limit exceeded, waiting {retry_after:g} seconds...", fg="yellow")
-            # Every request to this tracker waits, not just this one; its retry waits in the limiter.
-            self._rate_limiter.pause(retry_after)
             # Only a 429 says the tracker did not act: another error status naming
             # the rate limit may come after it did, so the outcome is unknown.
-            raise failure(
+            error = failure(
                 f"Rate limit exceeded ({resp.status})", not_acted_on=resp.status == HTTPStatus.TOO_MANY_REQUESTS
             )
+            if not isinstance(error, RetryableError):
+                raise error
+            wait = _rate_limit_wait(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
+            waited = sum(rate_limit_waits)
+            if waited + wait > _MAX_RATE_LIMIT_WAITS:
+                already = f" more (after {waited} s already)" if waited else ""
+                message = f"{self.site_string} asks to wait {wait} s{already} before the next request; try again later"
+                click.secho(message, fg="red")
+                raise RateLimitedError(message)
+            rate_limit_waits.append(wait)
+            click.secho(f"Rate limit exceeded, waiting {wait} seconds...", fg="yellow")
+            # Every request to this tracker waits, not just this one; its retry waits in the limiter.
+            self._rate_limiter.pause(wait)
+            raise error
 
         if resp.status == HTTPStatus.UNAUTHORIZED:
             click.secho(
@@ -931,7 +970,7 @@ class BaseGazelleApi:
         resp = await self._request("GET", url, params={"action": "loglist", "torrentid": torrentid})
         return re.sub(r" ?\([^)]+\)", "", resp.text)
 
-    async def get_uploads_from_log(self, max_pages: int = 10) -> list:
+    async def get_uploads_from_log(self, max_pages: int = SITE_LOG_PAGES) -> list:
         """Crawl log pages and return uploads.
 
         Args:
@@ -941,7 +980,7 @@ class BaseGazelleApi:
             List of (torrent_id, artist, title) tuples.
         """
         # log.php is a site page: an API key doesn't open it, and without a cookie it bounces to login.
-        if not self.cookie.strip():
+        if not self.has_session_cookie:
             click.secho(
                 f"Skipping the recent-uploads check: the {self.site_string} site log needs a session cookie "
                 f"(tracker.{self.site_code.lower()}.session), and none is set.",

@@ -28,7 +28,10 @@ class FakeApi(BaseGazelleApi):
 @pytest.fixture(autouse=True)
 def _loose_rate_limit(monkeypatch) -> None:
     """A budget of its own per test: the shared one would hold each test to 5 requests in 10 s."""
-    monkeypatch.setattr("salmon.trackers.base._tracker_limiter", lambda _code: SharedLimiter(100, 1))
+    limiters: dict[str, SharedLimiter] = {}
+    monkeypatch.setattr(
+        "salmon.trackers.base._tracker_limiter", lambda code: limiters.setdefault(code, SharedLimiter(100, 1))
+    )
 
 
 async def _serve(handler) -> tuple[web.AppRunner, str]:
