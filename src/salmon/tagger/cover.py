@@ -157,14 +157,7 @@ async def download_cover_if_nonexistent(path: str, cover_url: str | None) -> tup
 
 
 def _is_valid_cover(cover_path: str | IO[bytes]) -> bool:
-    """Check if the file at cover_path is a valid JPEG or PNG image.
-
-    Args:
-        cover_path: Path to the image file.
-
-    Returns:
-        True if the file is a valid JPEG or PNG image.
-    """
+    """Whether cover_path, a path or an open binary file, holds a JPEG or PNG image of a cover's size."""
     try:
         with Image.open(cover_path) as image:
             mime = image.get_format_mimetype()

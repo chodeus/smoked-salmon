@@ -297,6 +297,9 @@ def test_a_cover_whose_size_would_take_gigabytes_to_load_is_refused() -> None:
     Image.new("1", (9000, 9000)).save(huge, "png")
     usual = io.BytesIO(_jpeg())
 
+    huge_is_valid = cover._is_valid_cover(io.BytesIO(huge.getvalue()))
+    usual_is_valid = cover._is_valid_cover(usual)
+
     assert len(huge.getvalue()) < 1_000_000
-    assert cover._is_valid_cover(io.BytesIO(huge.getvalue())) is False
-    assert cover._is_valid_cover(usual) is True
+    assert huge_is_valid is False
+    assert usual_is_valid is True
