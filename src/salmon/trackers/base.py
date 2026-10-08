@@ -921,11 +921,11 @@ class BaseGazelleApi:
             return await self._find_lost_upload(files, err)
         try:
             resp = msgspec.json.decode(response.text)
-        except (msgspec.DecodeError, ValueError) as e:
-            click.secho("❌ Failed to decode JSON response", fg="red", err=True)
-            click.secho(f"Status code: {response.status}", fg="red", err=True)
-            click.secho(f"Response text: {_safe_response_excerpt(self._scrub(response.text))}", fg="red", err=True)
-            raise click.Abort from e
+        except (msgspec.DecodeError, ValueError):
+            # The tracker may have taken it before answering with a page.
+            excerpt = _safe_response_excerpt(self._scrub(response.text))
+            reason = f"its answer was not JSON ({response.status}): {excerpt}"
+            return await self._find_lost_upload(files, UnknownOutcomeError(reason))
 
         try:
             if resp["status"] != "success":
@@ -1004,31 +1004,45 @@ class BaseGazelleApi:
                     f"Site upload failed: {_safe_response_excerpt(self._scrub(match[1]))} ({response.status})"
                 )
         if "requests.php" in resp_url:
-            try:
-                torrent_id = self.parse_torrent_id_from_filled_request_page(resp_text)
-            except (TypeError, ValueError) as err:
-                soup = BeautifulSoup(resp_text, "lxml")
-                error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
-                error_message = _safe_response_excerpt(self._scrub(resp_text))
-                if error and error.parent and error.parent.parent:
-                    p_tag = error.parent.parent.find("p")
-                    if p_tag:
-                        error_message = _safe_response_excerpt(self._scrub(p_tag.text))
-                raise RequestError(f"Request fill failed: {error_message}") from err
-            click.secho(f"Filled request: {resp_url}", fg="green")
-            try:
-                group_id = await self.get_redirect_torrentgroupid(torrent_id) or 0
-            except RequestError as err:
-                # The torrent is up: raising would report it failed, and it would go unseeded.
-                click.secho(f"Could not look up the group of torrent {torrent_id}: {err}", fg="yellow")
-                group_id = 0
-            return torrent_id, group_id
+            return await self._request_fill_result(data, resp_text, resp_url)
         try:
             return self.parse_most_recent_torrent_and_group_id_from_group_page(resp_text)
-        except TypeError as err:
-            raise RequestError(
-                f"Site upload failed, response text: {_safe_response_excerpt(self._scrub(resp_text))}"
-            ) from err
+        except TypeError:
+            # Neither an error the form shows nor the group page: the tracker may have taken it.
+            reason = f"its answer was not the group page: {_safe_response_excerpt(self._scrub(resp_text))}"
+            return await self._find_lost_upload(files, UnknownOutcomeError(reason))
+
+    async def _request_fill_result(self, data: dict, resp_text: str, resp_url: str) -> tuple[int, int]:
+        """The ids of an upload that went on to fill a request; Gazelle stores the torrent before it tries the fill."""
+        query = parse_qs(urlparse(resp_url).query)
+        try:
+            torrent_id = self.parse_torrent_id_from_filled_request_page(resp_text)
+            click.secho(f"Filled request: {self._scrub(resp_url)}", fg="green")
+        except (TypeError, ValueError) as err:
+            reason = self._request_fill_error(resp_text)
+            stored = query.get("torrentid", [""])[0]
+            if not stored.isdigit():
+                raise RequestError(f"Request fill failed: {reason}") from err
+            torrent_id = int(stored)
+            request = query.get("requestid", [""])[0]
+            where = self.request_url(int(request)) if request.isdigit() else "the request"
+            click.secho(f"The upload went through, but filling {where} failed: {reason}", fg="red", bold=True)
+        if data.get("groupid"):
+            return torrent_id, int(data["groupid"])
+        try:
+            return torrent_id, await self.get_redirect_torrentgroupid(torrent_id) or 0
+        except RequestError as err:
+            # The torrent is up: raising would report it failed, and it would go unseeded.
+            click.secho(f"Could not look up the group of torrent {torrent_id}: {err}", fg="yellow")
+            return torrent_id, 0
+
+    def _request_fill_error(self, resp_text: str) -> str:
+        """The error a request page shows, redacted and capped."""
+        soup = BeautifulSoup(resp_text, "lxml")
+        error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
+        if error and error.parent and error.parent.parent and (p_tag := error.parent.parent.find("p")):
+            return _safe_response_excerpt(self._scrub(p_tag.text))
+        return _safe_response_excerpt(self._scrub(resp_text))
 
     async def _find_lost_upload(self, files: UploadFiles, err: UnknownOutcomeError) -> tuple[int, int]:
         """Look an upload whose answer was lost up once, by its infohash, and return its ids."""

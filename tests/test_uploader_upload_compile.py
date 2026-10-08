@@ -669,7 +669,7 @@ async def test_prepare_and_upload_propagates_upload_error(tracker, album_dir, pi
     assert tracker.uploads == []
 
 
-async def test_prepare_and_upload_propagates_request_error(tracker, album_dir, pinned_cfg, tmp_path):
+async def test_prepare_and_upload_propagates_request_error(tracker, album_dir, pinned_cfg):
     tracker.upload_error = RequestError("Site upload failed: dupe (200)")
     with pytest.raises(RequestError, match="dupe"):
         await prepare_and_upload(**new_group_args(tracker, album_dir))
