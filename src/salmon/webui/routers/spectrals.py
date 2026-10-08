@@ -13,7 +13,7 @@ from salmon import cfg
 from salmon.checks.provenance import gather_provenance
 from salmon.checks.report import build_report
 from salmon.common.files import get_audio_files
-from salmon.config.validations import ARTWORK_ONLY_HOSTS
+from salmon.config.validations import spectrals_refusal
 from salmon.images import HOSTS, upload_images
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.uploader.frequency import assess, generate_frequency_plots
@@ -125,8 +125,8 @@ async def upload(req: UploadRequest) -> dict:
         raise HTTPException(status_code=422, detail=f"Unknown image host: {host_name}")
     # The config refuses to load with this host set for spectrals; a request must
     # not be able to reach around that, whatever the UI happens to send today.
-    if host_name in ARTWORK_ONLY_HOSTS:
-        raise HTTPException(status_code=422, detail=f"{host_name} does not allow spectral uploads")
+    if (reason := spectrals_refusal(host_name)) is not None:
+        raise HTTPException(status_code=422, detail=f"{host_name} does not allow spectral uploads: {reason}")
 
     spectrals_path = source_job.result["spectrals_path"]
     files = [os.path.join(spectrals_path, f) for f in source_job.result["files"]]

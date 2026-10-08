@@ -104,22 +104,45 @@ class Directory(BaseStruct):
         return self.is_library_path(path) or self.library_inside(path) is not None
 
 
-ImgUploaderLiteral = Literal["ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "red"]
+ImgUploaderLiteral = Literal["ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "ra", "red"]
 _HOST_KINDS = ("image_uploader", "cover_uploader", "specs_uploader")
 _TRACKER_CODES = ("red", "ops", "dic")
 # A tracker's own image host is for its album artwork only: opt in under [image.<tracker>], and it
 # is refused in every other slot (description images, spectrals, other trackers' covers).
 _OWN_COVER_HOSTS = {"red": "red"}
 ARTWORK_ONLY_HOSTS = frozenset(_OWN_COVER_HOSTS.values())
+# Hosts never used for spectrals, in any slot or prompt, and why.
+SPECTRALS_REFUSED = {
+    "red": "RED's rules forbid spectrals on its image host",
+    "ra": "Ra's owner asks not to use it for spectrals",
+}
 # Trackers that fetch and cache RED-hosted images themselves, so a BARE RED URL renders there
 # unchanged. Only bare: RED's per-viewer signed URLs 403 once the signature expires.
 RED_IMAGE_PROXY_TARGETS = frozenset({"OPS"})
 SpectralSelectionLiteral = Literal["*", "+", "0"]
 
 
+def spectrals_refusal(host: str) -> str | None:
+    """Why `host` may not take spectrals: its own spectral rule first, else the [image] specs_uploader rule."""
+    return SPECTRALS_REFUSED.get(host) or host_refusal(None, "specs_uploader", host)
+
+
+def host_refusal(code: str | None, kind: str, host: str) -> str | None:
+    """Why `host` may not fill `kind` under [image] (code None) or [image.<code>], or None if it may."""
+    if host in ARTWORK_ONLY_HOSTS and not (kind == "cover_uploader" and _OWN_COVER_HOSTS.get(code or "") == host):
+        owner = next(tracker for tracker, own in _OWN_COVER_HOSTS.items() if own == host)
+        return (
+            f"{owner.upper()}'s image host is for album artwork only, "
+            f"so it is valid solely as cover_uploader under [image.{owner}]"
+        )
+    if kind == "specs_uploader":
+        return SPECTRALS_REFUSED.get(host)
+    return None
+
+
 def host_allowed(code: str | None, kind: str, host: str) -> bool:
     """Whether `host` may fill `kind` under [image] (code None) or [image.<code>]."""
-    return host not in ARTWORK_ONLY_HOSTS or (kind == "cover_uploader" and _OWN_COVER_HOSTS.get(code or "") == host)
+    return host_refusal(code, kind, host) is None
 
 
 class ImageHostOverride(BaseStruct):
@@ -135,6 +158,7 @@ class ImageUploader(BaseStruct):
     ptscreens_key: str | None = None
     oeimg_key: str | None = None
     imgbb_key: str | None = None
+    ra_key: str | None = None
     remove_auto_downloaded_cover_image: bool = False
     auto_compress_cover: bool = False
     default_spectral_ids: SpectralSelectionLiteral | None = None
@@ -173,15 +197,13 @@ class ImageUploader(BaseStruct):
             raise ValueError("oeimage key not specified")
         if "imgbb" in hosts and self.imgbb_key is None:
             raise ValueError("imgbb key not specified")
+        if "ra" in hosts and self.ra_key is None:
+            raise ValueError("ra key not specified")
         for code, kind, host in selections:
-            if host_allowed(code, kind, host):
+            if (reason := host_refusal(code, kind, host)) is None:
                 continue
-            owner = next(tracker for tracker, own in _OWN_COVER_HOSTS.items() if own == host)
             section = f"[image.{code}]" if code else "[image]"
-            raise ValueError(
-                f'{section} {kind} = "{host}": {owner.upper()}\'s image host is for album artwork only, '
-                f"so it is valid solely as cover_uploader under [image.{owner}]. Use a neutral host here."
-            )
+            raise ValueError(f'{section} {kind} = "{host}": {reason}. Use another host here.')
 
 
 class TidalSettings(BaseStruct):

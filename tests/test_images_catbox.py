@@ -1,5 +1,7 @@
 """catbox ImageUploader: a 200 with no usable URL must raise, not report success."""
 
+from contextlib import asynccontextmanager
+
 import anyio
 import pytest
 
@@ -39,7 +41,11 @@ class _Session:
 
 
 def _upload(monkeypatch, tmp_path, body: str):
-    monkeypatch.setattr(catbox.aiohttp, "ClientSession", lambda: _Session(body))
+    @asynccontextmanager
+    async def fake_http_session(_self):
+        yield _Session(body)
+
+    monkeypatch.setattr(catbox.ImageUploader, "_http_session", fake_http_session)
     image = tmp_path / "cover.jpg"
     image.write_bytes(b"\xff\xd8\xff")
     return anyio.run(catbox.ImageUploader().upload_file, str(image))

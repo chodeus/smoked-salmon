@@ -9,42 +9,37 @@ from salmon.errors import ImageUploadFailed
 from salmon.images import base as images_base
 from salmon.images.base import BaseImageUploader
 
-HEADERS: dict[str, str] = {"X-API-Key": cfg.image.ptscreens_key or ""}
+UPLOAD_URL = "https://thesungod.xyz/api/image/upload"
 
 
 class ImageUploader(BaseImageUploader):
-    """Image uploader for ptscreens.com."""
+    """Image uploader for thesungod.xyz (Ra)."""
 
     async def upload_file(self, filename: str) -> tuple[str, None]:
-        """Upload image file to ptscreens.com.
-
-        Args:
-            filename: Path to the image file.
-
-        Returns:
-            Tuple of (url, deletion_url).
-
-        Raises:
-            ImageUploadFailed: If upload fails.
-        """
+        """Upload an image to thesungod.xyz: (url, None); ImageUploadFailed if it fails."""
+        key = cfg.image.ra_key
+        if not key:
+            raise ImageUploadFailed("Ra needs an API key: set ra_key under [image].")
         async with await anyio.open_file(filename, "rb") as f:
             file_data = await f.read()
 
         data = aiohttp.FormData()
-        data.add_field("source", file_data, filename=Path(filename).name)
+        data.add_field("api_key", key)
+        data.add_field("image", file_data, filename=Path(filename).name)
 
-        url = "https://ptscreens.com/api/1/upload"
         try:
             async with (
                 self._http_session() as session,
-                session.post(url, headers=HEADERS, data=data) as resp,
+                session.post(UPLOAD_URL, data=data) as resp,
             ):
                 body = await resp.text()
                 if resp.status >= 400:
-                    raise ImageUploadFailed(f"ptscreens returned {resp.status}: {body[:200]}")
-                r = msgspec.json.decode(body)
-                return r["image"]["url"], None
-        except (msgspec.DecodeError, ValueError, KeyError, TypeError) as e:
+                    # Masked: a server that echoes the request would repeat the key.
+                    shown = body.replace(key, "[REDACTED]")
+                    raise ImageUploadFailed(f"Ra returned {resp.status}: {shown[:200]}")
+                resp_data = msgspec.json.decode(body)
+                return resp_data["links"][0], None
+        except (msgspec.DecodeError, KeyError, IndexError, TypeError) as e:
             raise ImageUploadFailed(f"Failed decoding body: {e}") from e
         except TimeoutError as e:
             raise ImageUploadFailed(images_base.describe_upload_timeout(e)) from e

@@ -1,15 +1,16 @@
-import asyncio
 import contextlib
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Callable, Sequence
 
+import anyio
 import asyncclick as click
 import pyperclip
 
-from salmon import cfg
+from salmon import cfg, dryrun
 from salmon.common import AliasedCommands, commandgroup, is_http_url
+from salmon.config.validations import ARTWORK_ONLY_HOSTS, host_refusal, spectrals_refusal
 from salmon.errors import ImageUploadFailed
-from salmon.images import catbox, imgbb, imgbox, oeimg, ptscreens, red
+from salmon.images import catbox, imgbb, imgbox, oeimg, ptscreens, ra, red
+from salmon.images.base import BaseImageUploader
 
 HOSTS = {
     "catbox": catbox,
@@ -17,28 +18,45 @@ HOSTS = {
     "oeimg": oeimg,
     "imgbb": imgbb,
     "imgbox": imgbox,
+    "ra": ra,
     "red": red,
 }
 
+# How many uploads to one image host a batch runs at once; a host with a shared session reuses its connections.
+UPLOAD_CONNECTIONS = 8
 
-def validate_image_host(ctx: click.Context, param: click.Parameter, value: str) -> Any:
-    """Validate and return the image host module.
 
-    Args:
-        ctx: Click context.
-        param: Click parameter.
-        value: The image host name.
+class ImageHostRefused(ValueError):
+    """An image host may not be used for a tracker's images; the message says why."""
 
-    Returns:
-        The image host module.
 
-    Raises:
-        click.BadParameter: If the image host is invalid.
-    """
-    try:
-        return HOSTS[value]
-    except KeyError:
-        raise click.BadParameter(f"{value} is not a valid image host") from None
+def validate_image_host(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
+    """Validate an image host name, passing "no host given" through."""
+    if value is not None and value not in HOSTS:
+        raise click.BadParameter(f"{value} is not a valid image host")
+    return value
+
+
+def image_host_for_tracker(tracker: str, explicit_host: str | None = None) -> str:
+    """The host for `tracker`'s images: its image_uploader, or explicit_host if the cover rule allows it there."""
+    if explicit_host is None:
+        return cfg.image.resolve(tracker, "image_uploader")
+    # A host picked by hand is held to the cover rule, the most a tracker's own pages allow.
+    if (reason := host_refusal(tracker.lower(), "cover_uploader", explicit_host)) is not None:
+        raise ImageHostRefused(f"{explicit_host} can't be used for {tracker.upper()}'s images: {reason}")
+    return explicit_host
+
+
+def validate_tracker(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
+    """Validate a tracker given by code, in any case, against the configured trackers."""
+    if value is None:
+        return None
+    from salmon import trackers  # Read at run time, as the configured trackers are.
+
+    if value.upper() not in trackers.tracker_list:
+        configured = ", ".join(trackers.tracker_list) or "none"
+        raise click.BadParameter(f"{value} is not a tracker in your config (configured: {configured})")
+    return value.upper()
 
 
 @commandgroup.group(cls=AliasedCommands)
@@ -56,17 +74,38 @@ async def images() -> None:
 @click.option(
     "--image-host",
     "-i",
-    help="The name of the image host to upload to",
-    default=cfg.image.image_uploader,
+    help=(
+        "The image host to upload to. With --tracker, defaults to that tracker's image_uploader; "
+        "otherwise [image] image_uploader"
+    ),
+    default=None,
     callback=validate_image_host,
 )
-async def up(filepaths: tuple[str, ...], image_host: Any) -> None:
+@click.option(
+    "--tracker",
+    "-t",
+    help="The tracker the images are for: its image_uploader is the default host, and the host must be allowed there",
+    default=None,
+    callback=validate_tracker,
+)
+async def up(filepaths: tuple[str, ...], image_host: str | None, tracker: str | None) -> None:
     """Upload images to an image host."""
-    await upload_images(filepaths, image_host)
+    if tracker is not None:
+        try:
+            image_host = image_host_for_tracker(tracker, image_host)
+        except ImageHostRefused as error:
+            raise click.BadParameter(str(error), param_hint="'--image-host'") from None
+    elif image_host in ARTWORK_ONLY_HOSTS:
+        # Only a tracker's own album artwork may go there, so the tracker has to be named.
+        raise click.BadParameter(
+            f"{image_host} is only for a tracker's own album artwork: name it with --tracker (e.g. -t RED).",
+            param_hint="'--image-host'",
+        )
+    await upload_images(filepaths, HOSTS[image_host or cfg.image.image_uploader])
 
 
 async def upload_images(filepaths: Sequence[str], image_host) -> list[str]:
-    """Upload images to the specified host asynchronously.
+    """Upload images to the specified host, over at most UPLOAD_CONNECTIONS connections.
 
     Args:
         filepaths: File paths to upload.
@@ -75,15 +114,20 @@ async def upload_images(filepaths: Sequence[str], image_host) -> list[str]:
     Returns:
         List of uploaded URLs.
     """
-    urls = []
-    uploader = image_host.ImageUploader()
+    failures: list[Exception] = []
     try:
-        tasks = [uploader.upload_file(f) for f in filepaths]
-        for url, _deletion_url in await asyncio.gather(*tasks):
+        results = await _upload_groups(
+            image_host.ImageUploader(),
+            [[filepath] for filepath in filepaths],
+            on_failure=lambda _index, error: failures.append(error),
+        )
+        if failures:
+            raise failures[0]
+        urls = [group[0] for group in results if group is not None]
+        for url in urls:
             if not is_http_url(url):
                 raise ImageUploadFailed(f"{image_host.__name__} returned no usable URL: {str(url)[:200]!r}")
             click.secho(url)
-            urls.append(url)
         if cfg.upload.description.copy_uploaded_url_to_clipboard:
             # Clipboard is unavailable on headless servers; never fail the upload over it.
             with contextlib.suppress(Exception):
@@ -94,9 +138,49 @@ async def upload_images(filepaths: Sequence[str], image_host) -> list[str]:
         raise ImageUploadFailed("Failed to upload image") from error
 
 
-def chunker(seq, size=4):
-    for pos in range(0, len(seq), size):
-        yield seq[pos : pos + size]
+async def _upload_groups(
+    uploader: BaseImageUploader,
+    groups: Sequence[Sequence[str]],
+    on_start: Callable[[int], None] = lambda _index: None,
+    on_failure: Callable[[int, ImageUploadFailed], None] = lambda _index, _error: None,
+) -> list[list[str] | None]:
+    """Upload image groups over at most UPLOAD_CONNECTIONS; after a failure no new group starts (None for it)."""
+    # Here as well as in upload_file: refused in several workers at once, it would come out as a group.
+    if dryrun.active():
+        dryrun.refuse(f"upload {sum(len(paths) for paths in groups)} image(s) to {uploader.host}")
+    queue = iter([(index, position, path) for index, paths in enumerate(groups) for position, path in enumerate(paths)])
+    urls: list[list[str]] = [[""] * len(paths) for paths in groups]
+    started: set[int] = set()
+    failed: set[int] = set()
+
+    async def worker() -> None:
+        # Every worker takes from the same iterator, so each image is taken exactly once.
+        for index, position, path in queue:
+            if index not in started:
+                if failed:
+                    return  # The rest of the queue belongs to groups not started either.
+                started.add(index)
+                on_start(index)
+            try:
+                urls[index][position], _ = await uploader.upload_file(path)
+            except ImageUploadFailed as error:
+                if index not in failed:
+                    failed.add(index)
+                    on_failure(index, error)
+
+    raised: BaseException | None = None
+    try:
+        # The pool closes only once every worker is done, on success, failure or cancellation.
+        async with uploader.connections(UPLOAD_CONNECTIONS), anyio.create_task_group() as tg:
+            for _ in range(UPLOAD_CONNECTIONS):
+                tg.start_soon(worker)
+    except BaseExceptionGroup as group:
+        # The first error as it is, as a plain gather would: two workers can fail in the same step.
+        raised = group.exceptions[0]
+    if raised is not None:
+        raise raised
+
+    return [group_urls if index in started and index not in failed else None for index, group_urls in enumerate(urls)]
 
 
 async def upload_cover(cover_path: str | None, site_code: str | None = None) -> str | None:
@@ -134,26 +218,25 @@ async def upload_spectrals(spectrals, uploader=None, successful=None) -> dict:
     if uploader is None:
         uploader = HOSTS[cfg.image.specs_uploader]
 
-    response = {}
     successful = successful or set()
-    one_failed = False
-    uploader_instance = uploader.ImageUploader()
+    pending = [(sid, filename, paths) for sid, filename, paths in spectrals if sid not in successful]
 
-    for specs_block in chunker(spectrals):
-        tasks = [
-            _spectrals_handler(sid, filename, sp, uploader_instance)
-            for sid, filename, sp in specs_block
-            if sid not in successful
-        ]
-        for sid, urls in await asyncio.gather(*tasks):
-            if urls:
-                response[sid] = urls
-                successful.add(sid)
-            else:
-                one_failed = True
-        if one_failed:
-            retry_result = await _handle_failed_spectrals(spectrals, successful)
-            return {**response, **retry_result}
+    def on_start(index: int) -> None:
+        click.secho(f"Uploading spectrals for {pending[index][1]}...", fg="yellow")
+
+    def on_failure(index: int, error: ImageUploadFailed) -> None:
+        click.secho(f"Failed to upload spectrals for {pending[index][1]}: {error}", fg="red")
+
+    results = await _upload_groups(uploader.ImageUploader(), [paths for _, _, paths in pending], on_start, on_failure)
+
+    response = {}
+    for (sid, _, _), urls in zip(pending, results, strict=True):
+        if urls is not None:
+            response[sid] = urls
+            successful.add(sid)
+    if len(response) < len(pending):
+        retry_result = await _handle_failed_spectrals(spectrals, successful)
+        return {**response, **retry_result}
     return response
 
 
@@ -167,8 +250,7 @@ async def _handle_failed_spectrals(spectrals, successful) -> dict:
     Returns:
         Dictionary of uploaded URLs.
     """
-    # RED's rules forbid spectrals on its image host, so it is never a spectral option.
-    spec_hosts = {k: v for k, v in HOSTS.items() if k != "red"}
+    spec_hosts = {k: v for k, v in HOSTS.items() if spectrals_refusal(k) is None}
     while True:
         host_input: str = await click.prompt(
             click.style(
@@ -180,29 +262,9 @@ async def _handle_failed_spectrals(spectrals, successful) -> dict:
             default="catbox",
         )
         host = host_input.lower()
-        if host not in spec_hosts:
+        if (reason := spectrals_refusal(host)) is not None:
+            click.secho(f"{host} can't be used for spectrals: {reason}.", fg="red")
+        elif host not in spec_hosts:
             click.secho(f"{host} is an invalid image host. Please choose another one.", fg="red")
         else:
             return await upload_spectrals(spectrals, uploader=spec_hosts[host], successful=successful)
-
-
-async def _spectrals_handler(spec_id, filename, spectral_paths, uploader_instance):
-    """Handle uploading spectrals for a single file.
-
-    Args:
-        spec_id: The spectral ID.
-        filename: The audio filename.
-        spectral_paths: List of spectral image paths.
-        uploader_instance: The image uploader instance.
-
-    Returns:
-        Tuple of (spec_id, list of URLs or None).
-    """
-    try:
-        click.secho(f"Uploading spectrals for {filename}...", fg="yellow")
-        tasks = [uploader_instance.upload_file(f) for f in spectral_paths]
-        results = await asyncio.gather(*tasks)
-        return spec_id, [url for url, _ in results]
-    except ImageUploadFailed as e:
-        click.secho(f"Failed to upload spectrals for {filename}: {e}", fg="red")
-        return spec_id, None

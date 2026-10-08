@@ -51,8 +51,13 @@ def test_top_level_ptpimg_uploader_fails_with_a_clear_message(tmp_path: Path, re
         _parse_config(path)
     message = str(excinfo.value)
     assert f"$.image.{field}" in message
-    # RED's host is artwork-only, so suggesting it for these settings would fail again.
-    assert "(ptscreens, oeimg, catbox, imgbb, imgbox);" in message
+    # RED's host is artwork-only and Ra takes no spectrals: suggesting either there would fail again.
+    hosts = (
+        "ptscreens, oeimg, catbox, imgbb, imgbox"
+        if field == "specs_uploader"
+        else "ptscreens, oeimg, catbox, imgbb, imgbox, ra"
+    )
+    assert f"({hosts});" in message
 
 
 def test_per_tracker_ptpimg_cover_uploader_fails_with_a_clear_message(tmp_path: Path) -> None:
@@ -66,7 +71,7 @@ def test_per_tracker_ptpimg_cover_uploader_fails_with_a_clear_message(tmp_path: 
     message = str(excinfo.value)
     assert "$.image.red.cover_uploader" in message
     # RED's own host is valid in this one slot, so it is offered here.
-    assert "(ptscreens, oeimg, catbox, imgbb, imgbox, red);" in message
+    assert "(ptscreens, oeimg, catbox, imgbb, imgbox, ra, red);" in message
 
 
 def test_ptpimg_in_a_setting_that_is_not_a_host_keeps_its_own_error(tmp_path: Path) -> None:
