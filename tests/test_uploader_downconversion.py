@@ -233,7 +233,8 @@ def test_unreadable_converted_folder_leaves_the_main_upload_seeded(monkeypatch, 
         "UploadManager": lambda: manager,
         "check_requests": _returning_async(None),
         "upload_and_report": main_upload_then_conversions,
-        "print_torrents": _returning_async(),
+        "print_torrents": _returning_async({}),
+        "recheck_edition": _same_group,
     }.items():
         monkeypatch.setattr(uploader, name, fake)
     monkeypatch.setattr(uploader.cfg.upload, "yes_all", False)
@@ -251,3 +252,7 @@ def test_unreadable_converted_folder_leaves_the_main_upload_seeded(monkeypatch, 
     assert manager.executed == ["/release", str(tmp_path / "converted 16")]
     out = capsys.readouterr().out
     assert f"Could not read {tmp_path / 'converted 24'}" in out
+
+
+async def _same_group(_site, group_id, *_args):
+    return group_id

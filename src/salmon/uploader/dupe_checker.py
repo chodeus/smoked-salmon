@@ -432,6 +432,38 @@ async def _prompt_for_group_id(
             return None
 
 
+def _group_as_result(group: dict) -> dict:
+    """A group as the torrentgroup API returns it, with the fields of a search result that print_torrents reads."""
+    info = group["group"]
+    artist = "".join(a["name"] + " " for a in info["musicInfo"]["artists"])
+    return {**group, "groupName": info["name"], "artist": artist, "groupId": info["id"], "groupYear": info["year"]}
+
+
+async def recheck_edition(
+    gazelle_site: "BaseGazelleApi", group_id: int, release: dict, weighed_against: dict | None
+) -> int | None:
+    """Weigh a group picked before the review against the reviewed edition: the group to upload to, None for a new one.
+
+    Only a torrent the pick did not already name for weighed_against (the tags' release; None for -g) asks again.
+    """
+    try:
+        group = _group_as_result(await gazelle_site.torrentgroup(group_id))
+    except RequestError as err:
+        click.secho(
+            f"\nCould not re-check group {group_id} on {gazelle_site.site_string} against the reviewed edition "
+            f"({err}): check it holds no torrent like this one.",
+            fg="red",
+            bold=True,
+        )
+        return group_id
+    named = {torrent.get("id") for torrent in held_in_group(group, weighed_against)}
+    if all(torrent.get("id") in named for torrent in held_in_group(group, release)):
+        return group_id
+    click.secho(f"\nThe reviewed edition is already in group {group_id}:", fg="red", bold=True)
+    # The fetched id, an int: -g gives a string, which would not find the group just fetched.
+    return group_id if await _confirm_group_id(gazelle_site, group["groupId"], [group], release) else None
+
+
 async def print_torrents(
     gazelle_site: "BaseGazelleApi",
     group_id: int,
@@ -442,15 +474,7 @@ async def print_torrents(
     # If rset is not provided, fetch it from the API
     if rset is None:
         try:
-            fetched_rset = await gazelle_site.torrentgroup(group_id)
-            # account for differences between search result and group result json
-            fetched_rset["groupName"] = fetched_rset["group"]["name"]
-            fetched_rset["artist"] = ""
-            for a in fetched_rset["group"]["musicInfo"]["artists"]:
-                fetched_rset["artist"] += a["name"] + " "
-            fetched_rset["groupId"] = fetched_rset["group"]["id"]
-            fetched_rset["groupYear"] = fetched_rset["group"]["year"]
-            rset = fetched_rset
+            rset = _group_as_result(await gazelle_site.torrentgroup(group_id))
         except RequestError as err:
             # The tracker's reason, never a claim that the group is gone: Gazelle answers a rate limit as a failure too.
             click.secho(f"Could not fetch group {group_id} from {gazelle_site.site_string}: {err}", fg="red")
@@ -539,7 +563,7 @@ def matching_torrents(group: dict, release: dict) -> list[dict]:
     return matches
 
 
-def _held_in_group(rset: dict, release: dict[str, Any] | None) -> list[dict]:
+def held_in_group(rset: dict, release: dict[str, Any] | None) -> list[dict]:
     """The torrents of a search result or fetched group that already hold our edition, media, format and encoding."""
     if not release:
         return []
@@ -572,7 +596,7 @@ async def _confirm_group_id(
 
     # The match reads the group just printed: it sends no request of its own.
     rset = await print_torrents(gazelle_site, group_id, rset)
-    held = _held_in_group(rset, release)
+    held = held_in_group(rset, release)
     for torrent in held:
         note = _catno_note(torrent, rset, release or {})
         click.secho(
@@ -643,13 +667,11 @@ async def choose_source_flac(group: dict, release: dict) -> dict | None:
         click.secho(f"Enter a number from 1 to {len(flacs)}, or a to abort.", fg="red")
 
 
-def held_downconversions(
-    group: dict, release: dict, source_flac: dict | None, formats: dict[str, tuple[str, str]]
-) -> set[str]:
+def held_formats(group: dict, release: dict, source_flac: dict, formats: dict[str, tuple[str, str]]) -> set[str]:
     """Names in `formats` (name: format, encoding) this release's edition already holds, the source FLAC aside."""
     held = set()
     for name, (fmt, encoding) in formats.items():
         in_edition = matching_torrents(group, {**release, "format": fmt, "encoding": encoding})
-        if any(source_flac is None or t.get("id") != source_flac.get("id") for t in in_edition):
+        if any(t.get("id") != source_flac.get("id") for t in in_edition):
             held.add(name)
     return held

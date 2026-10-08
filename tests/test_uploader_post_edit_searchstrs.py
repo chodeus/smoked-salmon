@@ -100,7 +100,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, rls_data: dict, metadata: dict, re
         "edit_metadata": _returning_async((path, metadata, {}, {})),
         "concat_track_data": _returning({}),
         "resolve_cover_url": _returning_async((True, None)),
-        "print_torrents": _returning_async(None),
+        "print_torrents": _returning_async({}),
         "UploadManager": FakeUploadManager,
         "upload_and_report": fake_upload_and_report,
         "mqa_test": _returning_async(),
@@ -109,6 +109,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, rls_data: dict, metadata: dict, re
         "last_min_dupe_check": fake_last_min_dupe_check,
         "check_requests": fake_check_requests,
         "check_existing_group": fake_check_existing_group,
+        "recheck_edition": _same_group,
     }.items():
         monkeypatch.setattr(salmon.uploader, name, fake)
 
@@ -207,3 +208,7 @@ def test_a_caller_supplied_group_id_still_reaches_the_post_review_checks(
     _, searchstrs, our_title = recorder.last_min_dupe_check_calls[0]
     assert searchstrs == new_searchstrs
     assert our_title == "New Title"
+
+
+async def _same_group(_site, group_id, *_args):
+    return group_id
