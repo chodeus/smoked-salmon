@@ -70,9 +70,10 @@ from salmon.uploader.dupe_checker import (
     choose_source_flac,
     dupe_check_recent_torrents,
     generate_dupe_check_searchstrs,
-    held_downconversions,
+    held_formats,
     print_recent_upload_results,
     print_torrents,
+    recheck_edition,
 )
 from salmon.uploader.preassumptions import (
     confirm_group_upload,
@@ -634,6 +635,9 @@ async def _upload_staged(
         return click.secho(f"\n{refusal}", fg="red", bold=True)
 
     source_flac = None
+    # The release the first tracker's group was picked for, and whether that tracker's search failed.
+    weighed_against: dict[str, Any] | None = None
+    skip_first = False
     try:
         if not skip_mqa:
             click.secho("Checking for MQA release (every file)", fg="cyan", bold=True)
@@ -656,8 +660,28 @@ async def _upload_staged(
         if group_id is None:
             searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
             if len(searchstrs) > 0:
-                # A failed lookup ends the run: this tracker's group drives the deletion offer and the later re-checks.
-                group_id = await check_existing_group(gazelle_site, searchstrs, release=rls_data)
+                try:
+                    group_id = await check_existing_group(gazelle_site, searchstrs, release=rls_data)
+                    # A copy: picking scraped metadata edits rls_data in place (combine_metadatas' base).
+                    weighed_against = dict(rls_data)
+                except RequestError as e:
+                    # Skipped like a later tracker; a request is this tracker's, so with one the run ends.
+                    others = [
+                        site
+                        for site in follow_up_trackers(trackers, gazelle_site.site_code)
+                        if site != gazelle_site.site_code
+                    ]
+                    if request_id or not others or not (trackers or cfg.upload.multi_tracker_upload):
+                        click.secho(
+                            f"\nCould not search {gazelle_site.site_string} for dupes: {e}", fg="red", bold=True
+                        )
+                        raise click.Abort from None
+                    click.secho(
+                        f"\nCould not search {gazelle_site.site_string} for dupes ({e}): skipping it.",
+                        fg="red",
+                        bold=True,
+                    )
+                    skip_first = True
 
         spectral_ids = None
         lossy_master: bool = False
@@ -699,9 +723,11 @@ async def _upload_staged(
             max_path_length=run_path_limit,
         )
 
-        if not group_id:
+        if not group_id and not skip_first:
             group_id = await recheck_dupe(gazelle_site, searchstrs, metadata)
             click.echo()
+        elif group_id and flac_group is None:
+            group_id = await recheck_edition(gazelle_site, group_id, metadata, weighed_against)
         # From here on the review may have changed the artists, title or catno: search with the reviewed metadata.
         searchstrs = generate_dupe_check_searchstrs(metadata["artists"], metadata["title"], metadata["catno"])
         our_title = metadata["title"]
@@ -756,11 +782,14 @@ async def _upload_staged(
 
         spectrals_path = get_spectrals_path(path)
         spectral_urls = await handle_spectrals_upload_and_deletion(spectrals_path, spectral_ids)
-    if cfg.upload.requests.last_minute_dupe_check:
+    if cfg.upload.requests.last_minute_dupe_check and not skip_first:
         await last_min_dupe_check(gazelle_site, searchstrs, our_title)
 
     remaining_gazelle_sites = follow_up_trackers(trackers, gazelle_site.site_code)
-    tracker = gazelle_site.site_code
+    tracker: str | None = gazelle_site.site_code
+    if skip_first:
+        remaining_gazelle_sites.remove(gazelle_site.site_code)
+        tracker = None
     torrent_id = None
     cover_url = None
     stored_cover_urls: dict[str, str] = {}  # cover URL cached per image host (trackers may use different hosts)
@@ -906,7 +935,9 @@ async def _upload_staged(
                             f"\nNo group id came back for {url}: no conversions are offered for it.", fg="yellow"
                         )
                     elif not dryrun.active():
-                        await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
+                        group = await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
+                        options = get_downconversion_options(rls_data, track_data)
+                        held = _held_options(group, metadata, {"id": torrent_id}, options)
 
                 if (
                     group_id
@@ -1201,13 +1232,20 @@ def _existing_flac_result(
     """Stands in for the FLAC upload: the permalink the transcodes link to, and the options already held."""
     url = f"{gazelle_site.base_url}/torrents.php?torrentid={source_flac['id']}"
     click.secho(f"\nNot uploading the FLAC: transcoding from {url}", fg="yellow")
+    return url, _held_options(group, release, source_flac, options)
+
+
+def _held_options(
+    group: dict[str, Any], release: dict[str, Any], source_flac: dict[str, Any], options: list[dict[str, Any]]
+) -> set[str]:
+    """The options the release's edition already holds, the source FLAC aside, each named as a dupe risk."""
     formats = {option["name"]: downconversion_format(option) for option in options}
-    held = held_downconversions(group, release, source_flac, formats)
+    held = held_formats(group, release, source_flac, formats)
     for name in sorted(held):
         click.secho(
             f"\nDUPE RISK: this edition already has {name}; the site removes exact duplicates.", fg="red", bold=True
         )
-    return url, held
+    return held
 
 
 async def prompt_downconversion_choice(rls_data, track_data, held: set[str] | frozenset[str] = frozenset()):

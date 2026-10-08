@@ -116,8 +116,9 @@ def flow(monkeypatch):
         "collect_upload_warnings": _sync([]),
         "check_requests": recording("check_requests"),
         "check_existing_group": recording("check_existing_group", 5),
+        "recheck_edition": recording("recheck_edition", 5),
         "upload_and_report": upload_and_report,
-        "print_torrents": recording("print_torrents"),
+        "print_torrents": recording("print_torrents", {}),
         "post_upload_spectral_check": recording("post_upload_spectral_check", (False, None, None, None)),
         "get_downconversion_options": _sync([]),
         "UploadManager": FakeUploadManager,
@@ -378,6 +379,40 @@ def test_every_trackers_conversions_are_checked_against_the_runs_path_limit(flow
     assert limits == [180, 180]
 
 
+def test_an_albums_own_spectrals_folder_survives_the_real_check(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(spectrals.cfg.directory, "tmp_dir", None)
+    monkeypatch.setattr(spectrals.cfg.directory, "download_directory", str(tmp_path))
+    album = tmp_path / "Album"
+    (album / "Spectrals").mkdir(parents=True)
+    (album / "Spectrals" / "mine.png").write_bytes(b"mine")
+    made: list[str] = []
+
+    async def generate(_path, spectrals_path, _audio_info):
+        made.append(spectrals_path)
+        return {}
+
+    monkeypatch.setattr(spectrals, "generate_spectrals_all", generate)
+    monkeypatch.setattr(spectrals, "print_frequency_guidance", lambda *_a: _done("ok"))
+    monkeypatch.setattr(spectrals, "view_spectrals", lambda *_a: _done(None))
+    monkeypatch.setattr(spectrals, "prompt_lossy_master", lambda *_a, **_k: _done(False))
+    monkeypatch.setattr(spectrals, "prompt_spectrals", lambda *_a, **_k: _done({}))
+    anyio.run(lambda: spectrals.post_upload_spectral_check(FakeSite(), str(album), 1, None, {}, "WEB", None))  # type: ignore[arg-type]
+
+    assert (album / "Spectrals" / "mine.png").read_bytes() == b"mine"
+    assert os.path.dirname(made[0]) == str(tmp_path)
+    assert not os.path.exists(made[0])
+
+
+def test_an_upload_without_spectrals_leaves_the_albums_own_spectrals_folder(monkeypatch, tmp_path) -> None:
+    album = _nothing_picked(monkeypatch, tmp_path)
+    own = os.path.join(album, "Spectrals")
+    os.mkdir(own)
+
+    anyio.run(lambda: spectrals.handle_spectrals_upload_and_deletion(spectrals.get_spectrals_path(album), None))
+
+    assert os.path.isdir(own)
+
+
 def test_an_upload_with_no_group_id_offers_no_conversions(flow, monkeypatch, capsys) -> None:
     calls, executed, _ = flow
     monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
@@ -401,3 +436,150 @@ def test_an_upload_with_no_group_id_offers_no_conversions(flow, monkeypatch, cap
     out = capsys.readouterr().out
     assert "No group id came back" in out
     assert executed == [True]
+
+
+def _upload_unpicked(trackers: list[str] | None, request_id: int | None = None) -> None:
+    """An upload with no group given: the first tracker is searched before the review."""
+    anyio.run(
+        lambda: salmon.uploader.upload(
+            FakeSite("RED"),  # type: ignore[arg-type]
+            "/release",
+            None,
+            "WEB",
+            None,
+            (),
+            None,
+            request_id=request_id,
+            spectrals_after=True,
+            trackers=trackers,
+        )
+    )
+
+
+def _red_search_fails(set_fake) -> None:
+    async def search(site, *_args, **_kwargs):
+        if site.site_code == "RED":
+            raise RequestError("RED is down")
+        return 5
+
+    set_fake("check_existing_group", search)
+
+
+def test_a_first_tracker_whose_search_fails_is_skipped_for_the_next(flow, capsys) -> None:
+    calls, executed, set_fake = flow
+    _red_search_fails(set_fake)
+
+    _upload_unpicked(["RED", "OPS"])
+
+    assert [site for name, site, _kw in calls if name == "check_existing_group"] == ["RED", "OPS"]
+    assert [site for name, site, _kw in calls if name == "upload_and_report"] == ["OPS"]
+    out = capsys.readouterr().out
+    assert "Could not search RED for dupes (RED is down): skipping it." in out
+    assert executed == [True]
+
+
+@pytest.mark.parametrize(
+    ("trackers", "request_id"), [(None, None), (["RED", "OPS"], 7)], ids=["none-to-follow", "request"]
+)
+def test_a_first_tracker_whose_search_fails_ends_the_run_when_none_can_follow(
+    flow, monkeypatch, capsys, trackers, request_id
+) -> None:
+    calls, _executed, set_fake = flow
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+    _red_search_fails(set_fake)
+
+    _upload_unpicked(trackers, request_id)
+
+    assert "upload_and_report" not in [name for name, _site, _kw in calls]
+    out = capsys.readouterr().out
+    assert "Could not search RED for dupes: RED is down" in out
+    assert "Aborting upload" in out
+
+
+@pytest.mark.parametrize("given", [True, False], ids=["given", "picked"])
+def test_the_first_trackers_group_is_weighed_against_the_reviewed_edition(flow, monkeypatch, given: bool) -> None:
+    _calls, _executed, set_fake = flow
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+    seen: list[tuple] = []
+
+    async def recheck(_site, group_id, release, weighed_against):
+        seen.append((group_id, release["title"], weighed_against))
+        return group_id
+
+    async def edit_metadata(*_args, **_kwargs):
+        reviewed = {"artists": [("Artist", "main")], "title": "Album (Reviewed)", "label": "Label", "catno": None}
+        return "/release", {**reviewed, "cover": None}, {}, {}
+
+    set_fake("recheck_edition", recheck)
+    set_fake("edit_metadata", edit_metadata)
+    if given:
+        _upload(None)
+    else:
+        _upload_unpicked(None)
+
+    assert [(group_id, title) for group_id, title, _weighed in seen] == [(5, "Album (Reviewed)")]
+    assert (seen[0][2] is None) is given
+
+
+def test_a_pick_is_weighed_as_the_tags_had_it_though_the_scrape_edits_them(flow, monkeypatch) -> None:
+    _calls, _executed, set_fake = flow
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+    weighed_years: list[int] = []
+
+    async def get_metadata(_path, _tags, rls_data):
+        # As combine_metadatas does with its base: the chosen scrape lands in the tags' release itself.
+        rls_data["year"] = 2005
+        return rls_data, None
+
+    async def recheck(_site, group_id, _release, weighed_against):
+        weighed_years.append(weighed_against["year"])
+        return group_id
+
+    set_fake("get_metadata", get_metadata)
+    set_fake("recheck_edition", recheck)
+    _upload_unpicked(None)
+
+    assert weighed_years == [2020]
+
+
+def test_conversions_the_edition_already_holds_are_left_out_after_the_flac(flow, monkeypatch, capsys) -> None:
+    _calls, _executed, set_fake = flow
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
+    reviewed = {
+        "artists": [("Artist", "main")],
+        "title": "Album",
+        "label": "Label",
+        "catno": None,
+        "cover": None,
+        "source": "WEB",
+        "format": "FLAC",
+        "encoding": "Lossless",
+        "year": 2020,
+    }
+    group = {"group": {"year": 2020}, "torrents": [{"id": 9, "media": "WEB", "format": "MP3", "encoding": "V0 (VBR)"}]}
+    offered: list[set[str]] = []
+
+    async def edit_metadata(*_args, **_kwargs):
+        return "/release", reviewed, {}, {}
+
+    async def printed(*_args, **_kwargs):
+        return group
+
+    async def choose(_rls_data, _track_data, held):
+        offered.append(held)
+        return []
+
+    options = [
+        {"name": "MP3 V0", "action": "transcode", "encoding": "V0"},
+        {"name": "MP3 320", "action": "transcode", "encoding": "320"},
+    ]
+    set_fake("edit_metadata", edit_metadata)
+    set_fake("print_torrents", printed)
+    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args: options)
+    monkeypatch.setattr(salmon.uploader, "prompt_downconversion_choice", choose)
+    _upload(None)
+
+    assert offered == [{"MP3 V0"}]
+    out = capsys.readouterr().out
+    assert "DUPE RISK: this edition already has MP3 V0" in out
