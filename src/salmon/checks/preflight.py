@@ -297,6 +297,14 @@ async def _tracker_rows(tracker: str, identity: dict, source: str | None) -> tup
     """Verdict rows for one tracker, plus the matches behind them for the UI to list."""
     rows: list[Row] = []
     raw: dict[str, dict] = {}
+    if tracker in LISTS:
+        # An unreadable list gives a reason too: it refuses everything, so the row blocks.
+        reason = do_not_upload_reason(tracker, Candidate.from_metadata({**identity, "source": source}))
+        rows.append(do_not_upload_row(tracker, reason))
+        if reason:
+            # As an upload does: a listed release is not searched for there.
+            rows.append(Row(f"dupe:{tracker}", f"Duplicate ({tracker})", SKIP, "Not searched: the list forbids it."))
+            return rows, raw
     searchstrs = generate_dupe_check_searchstrs(identity["artists"], identity["title"], identity["catno"])
     try:
         site = salmon.trackers.get_class(tracker)()
@@ -306,10 +314,6 @@ async def _tracker_rows(tracker: str, identity: dict, source: str | None) -> tup
     else:
         rows.append(dupe_row(tracker, results))
         raw[f"dupe:{tracker}"] = {"searchstrs": searchstrs, "matches": dupe_matches(site.base_url, results)}
-    if tracker in LISTS:
-        # An unreadable list gives a reason too: it refuses everything, so the row blocks.
-        release = Candidate.from_metadata({**identity, "source": source})
-        rows.append(do_not_upload_row(tracker, do_not_upload_reason(tracker, release)))
     return rows, raw
 
 
@@ -355,6 +359,11 @@ async def run_checks(
                 raw.update(tracker_raw)
         else:
             rows.append(Row("dupe", "Duplicate", WARN, "Tags could not be read, so no duplicate search could be run."))
+            rows.extend(
+                Row(f"do-not-upload:{tracker}", f"Do-Not-Upload ({tracker})", SKIP, "Not checked: no album title.")
+                for tracker in trackers
+                if tracker in LISTS
+            )
 
     return {
         "rows": [msgspec.to_builtins(r) for r in rows],

@@ -548,3 +548,16 @@ def test_conversions_the_edition_already_holds_are_left_out_after_the_flac(flow,
     assert offered == [{"MP3 V0"}]
     out = capsys.readouterr().out
     assert "DUPE RISK: this edition already has MP3 V0" in out
+
+
+def test_a_listed_first_tracker_is_not_weighed_or_searched(flow, monkeypatch) -> None:
+    calls, _executed, _set_fake = flow
+    monkeypatch.setattr(
+        salmon.uploader, "do_not_upload_reason", lambda tracker, _release: "listed" if tracker == "RED" else None
+    )
+
+    _upload(["RED", "OPS"])
+
+    names_and_sites = [(name, site) for name, site, _kw in calls]
+    assert ("recheck_edition", "RED") not in names_and_sites
+    assert [site for name, site in names_and_sites if name == "upload_and_report"] == ["OPS"]

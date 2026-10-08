@@ -12,6 +12,7 @@ from torf import Torrent
 
 import salmon.trackers
 from salmon import cfg
+from salmon.checks.do_not_upload import Candidate, do_not_upload_reason
 from salmon.common import commandgroup, is_http_url
 from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
 from salmon.constants import ARTIST_IMPORTANCES
@@ -207,6 +208,8 @@ async def _upload_response(
     path = _release_path(response)
     _verify_release_files(response, path)
     data = _compile_data(response, source_site, target_site)
+    if reason := do_not_upload_reason(target_site.site_code, Candidate.from_form(data)):
+        raise click.ClickException(f"Not uploading to {target_site.site_string}: {reason}")
     if target_group_id:
         if not downconvert and not transcodes:
             raise click.UsageError("--target-group-id requires --all, --downconvert, or --transcode.")

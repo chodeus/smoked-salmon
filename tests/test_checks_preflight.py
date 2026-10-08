@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -506,3 +507,45 @@ def test_a_part_web_album_says_how_many():
 
     assert verdict == WARN
     assert "3 of 17" in detail
+
+
+async def test_a_media_only_entry_blocks_once_the_source_is_known(album_dir, monkeypatch, tmp_path):
+    _tagged_x_y(monkeypatch)
+    _lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nartist = 'X'\nmedia = 'WEB'\nnote = 'WEB fakes.'\n")
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED"])
+    assert "do-not-upload:RED" in result["blocking"]
+
+
+async def test_a_listed_release_is_not_searched_for_on_that_tracker(album_dir, monkeypatch, tmp_path):
+    _tagged_x_y(monkeypatch)
+    searched: list[object] = []
+
+    async def search(site, _searchstrs):
+        searched.append(site.site_code)
+        return []
+
+    monkeypatch.setattr(pf, "get_search_results", search)
+    _lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nartist = 'X'\nnote = 'Fakes only.'\n")
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED", "OPS"])
+    assert searched == ["OPS"]
+    verdicts = {r["id"]: r["verdict"] for r in result["rows"]}
+    assert verdicts["dupe:RED"] == pf.SKIP
+
+
+async def test_without_an_album_title_the_lists_are_said_not_checked(album_dir, monkeypatch):
+    monkeypatch.setattr(
+        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+    )
+    monkeypatch.setattr(pf, "_release_identity", lambda _p: {})
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED", "DIC"])
+    verdicts = {r["id"]: r["verdict"] for r in result["rows"]}
+    assert verdicts["do-not-upload:RED"] == pf.SKIP
+    assert "do-not-upload:DIC" not in verdicts
+
+
+def test_the_identity_keeps_the_edition_title(monkeypatch):
+    tagged = SimpleNamespace(album="Night Songs (Deluxe Edition)", label="Label", catno="CAT1")
+    monkeypatch.setattr(pf, "gather_tags", lambda _path: {"01.flac": tagged})
+    monkeypatch.setattr(pf, "construct_artists_li", lambda _tags: [("Artist", "main")])
+    identity = pf._release_identity("/album")
+    assert (identity["title"], identity["edition_title"]) == ("Night Songs", "Deluxe Edition")

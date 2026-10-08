@@ -742,7 +742,7 @@ async def _upload_staged(
             max_path_length=run_path_limit,
         )
 
-        # Before anything is made or sent for the first tracker: its group, spectrals, cover and upload.
+        # Before the first tracker's group, cover and upload; spectrals go once for the run, so with a follower.
         if _do_not_upload_refusal(gazelle_site.site_code, metadata, said=tags_refusal) is not None:
             # With --skip-flac-upload, the FLAC's group is on this tracker alone.
             if flac_group is not None or not _another_can_follow(trackers, gazelle_site.site_code):
