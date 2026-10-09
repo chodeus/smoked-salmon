@@ -197,6 +197,15 @@ def test_redact_masks_authkey_and_passkey_values():
     assert '"passkey": "[REDACTED]"' in redacted
 
 
+def test_redact_masks_every_secret_name_in_json_and_form_inputs():
+    text = '{"torrent_pass":"tp-0001","keeplogged":"kl-0001"} <input name="session" value="ss-0001">'
+    redacted = _redact(text)
+    for value in ("tp-0001", "kl-0001", "ss-0001"):
+        assert value not in redacted
+    # Only the value goes: the JSON keeps its shape.
+    assert '"torrent_pass":"[REDACTED]"' in redacted
+
+
 def test_redact_masks_api_key_auth_and_authorization_case_insensitive():
     text = '{"API_KEY": "k1", "Auth": "k2", "authorization": "k3"}'
     redacted = _redact(text)

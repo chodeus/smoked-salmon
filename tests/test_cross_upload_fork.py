@@ -22,6 +22,7 @@ from test_cross_upload import (  # pyright: ignore[reportMissingImports]
     _cross_upload,
     _red_answer,
     _source_has,
+    _source_has_unfinished,
     _transcode,
     _within_the_plans_bound,
     dirs,  # noqa: F401
@@ -178,6 +179,21 @@ def test_conversions_only_into_a_group_without_the_editions_flac_upload_nothing(
     assert run.result.exit_code == 1
     assert f"group {TARGET_GROUP_ID} on RED has no FLAC of this edition to convert from" in run.output
     assert run.target.posts() == []
+
+
+def test_conversions_only_of_an_unfinished_download_upload_nothing(monkeypatch, dirs) -> None:  # noqa: F811
+    album = _album(dirs.downloads / FOLDER)
+
+    def prepare(source: FakeTracker, target: FakeTracker) -> None:
+        _source_has_unfinished(album)(source, target)
+        target.groups[TARGET_GROUP_ID] = _target_group(_web_flac())
+
+    args = [str(TORRENT_ID), "-yyy", "--target-group-id", str(TARGET_GROUP_ID), "--transcode", "V0"]
+    run = _cross_upload(monkeypatch, dirs, args, input="\n", prepare=prepare, transcode=_transcode)
+
+    assert run.result.exit_code == 1
+    assert "pieces differ from the OPS torrent" in run.output
+    assert run.target.sent == []
 
 
 def test_conversions_only_leave_out_a_format_the_group_already_has(monkeypatch, dirs) -> None:  # noqa: F811
