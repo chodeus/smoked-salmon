@@ -1,7 +1,4 @@
-"""salmon up and the trackers' Do-Not-Upload lists (#533): a listed release never goes to that tracker.
-
-The runs go against the local fake tracker of test_uploader_dry_run, never a real one.
-"""
+"""salmon up never sends a release on a tracker's Do-Not-Upload list there; runs use test_uploader_dry_run's fake."""
 
 import shutil
 from pathlib import Path

@@ -583,10 +583,7 @@ async def upload(
 
 
 def _do_not_upload_refusal(tracker: str, release: dict[str, Any], said: str | None = None) -> str | None:
-    """Why the tracker's Do-Not-Upload list forbids the release, if it does, saying it unless it was said already.
-
-    Nothing skips it, -yyy included. `said` is the reason a check of the same tracker gave before the review.
-    """
+    """Why the tracker's list forbids the release (nothing skips it), printed unless `said`, the earlier reason."""
     reason = do_not_upload_reason(tracker, Candidate.from_metadata(release))
     if reason is not None and reason != said:
         click.secho(f"\nNot uploading to {tracker}: {reason}", fg="red", bold=True)
