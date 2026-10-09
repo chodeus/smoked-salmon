@@ -43,6 +43,7 @@ _CD_RATE = 44100
 def lossless_depth(info: Any) -> int | None:
     """The bit depth of a FLAC or ALAC file; None for a lossy one, whose depth says nothing about its source."""
     if isinstance(info, FlacStreamInfo) or getattr(info, "codec", None) == "alac":
+        # 0 is mutagen's "not read" (MP4Info's default), never a depth to compare a claim with.
         return getattr(info, "bits_per_sample", None) or None
     return None
 
@@ -66,7 +67,7 @@ def _file_provenance(filename: str, tagfile: Any) -> dict[str, Any]:
         "vendor": getattr(tags, "vendor", None),
         "markers": markers,
         "bitdepth": lossless_depth(info),
-        "samplerate": getattr(info, "sample_rate", None) or None,
+        "samplerate": getattr(info, "sample_rate", None) or None,  # 0: not read, as above
     }
 
 

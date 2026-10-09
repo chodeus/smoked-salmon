@@ -667,6 +667,9 @@ async def _upload_staged(
         source = await _prompt_source(detect_source(path))
     audio_info = gather_audio_info(path)
     hybrid = check_hybrid(audio_info)
+    if conversion is None:
+        # Before any tag is rewritten. A conversion carries its source's tags, which describe the source's audio.
+        _warn_about_provenance(path)
     if not scene:
         standardize_tags(path)
     tags = gather_tags(path)
@@ -705,11 +708,6 @@ async def _upload_staged(
 
         if source == "CD" and not skip_log_check:
             await _check_logs(path)
-
-        if conversion is None:
-            # Before retagging, which can replace comments. A conversion carries its source's tags, which describe
-            # the source's audio, not its own.
-            _warn_about_provenance(path)
 
         # A release the first tracker's list forbids gets no group search there; the review may change the names.
         tags_refusal = _do_not_upload_refusal(gazelle_site.site_code, rls_data)
