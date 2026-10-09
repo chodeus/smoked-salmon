@@ -308,6 +308,30 @@ def test_cross_upload_reconfines_the_path_when_the_job_starts(client, two_tracke
     assert calls == [], "the command must not run once the path fails confinement"
 
 
+def test_a_cross_upload_job_shows_its_link_without_secrets_but_runs_with_it(client, two_trackers, monkeypatch) -> None:
+    source, target = two_trackers
+    calls: list[dict] = []
+
+    async def fake_cross_upload(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("salmon.webui.routers.tools._CROSS_UPLOAD", fake_cross_upload)
+    link = "https://tracker.example/torrents.php?torrentid=7&torrent_pass=test-pass-0001"
+    created = client.post("/api/cross-upload", json={"path": link, "source": source, "target": target})
+    assert created.status_code == 200, created.text
+    job_id = created.json()["id"]
+
+    finished = _wait(client, job_id)
+    listed = client.get("/api/jobs").json()
+
+    shown = "https://tracker.example/torrents.php?torrentid=7&torrent_pass=[REDACTED]"
+    assert finished["status"] == "done", finished
+    assert created.json()["params"]["path"] == shown
+    assert finished["params"]["path"] == shown
+    assert "test-pass-0001" not in str(listed)
+    assert link in repr(calls), "the job runs with the link as it was given"
+
+
 @pytest.mark.parametrize("bad", [0, -1])
 def test_upload_rejects_non_positive_spectral_tracks(client, album, bad) -> None:
     # Negative numbers index from the end of the track list; 0 is a sentinel.

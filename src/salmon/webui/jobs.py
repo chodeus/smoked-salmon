@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 import asyncclick as click
 
 from salmon.common.progress import reset_progress_callback, set_progress_callback
+from salmon.common.redaction import redact_url
 from salmon.errors import AbortAndDeleteFolder
 from salmon.webui.interaction import WebInteraction, set_interaction
 
@@ -88,6 +89,18 @@ def _flatten_exception(e: BaseException) -> list[BaseException]:
     return [e]
 
 
+def _shown(value: Any) -> Any:
+    """A job's params as the API shows them: each http(s) URL among them masked, the rest as they are."""
+    if isinstance(value, str):
+        # By its scheme, not a parse: a URL too malformed to parse is masked whole, never shown.
+        return redact_url(value) if value.strip().lower().startswith(("http://", "https://")) else value
+    if isinstance(value, dict):
+        return {key: _shown(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_shown(item) for item in value]
+    return value
+
+
 class Job:
     def __init__(self, job_type: str, title: str, params: dict[str, Any]):
         self.id = f"job-{next(_id_counter)}"
@@ -117,7 +130,7 @@ class Job:
             "id": self.id,
             "type": self.type,
             "title": self.title,
-            "params": self.params,
+            "params": _shown(self.params),
             "status": self.status,
             "created_at": self.created_at,
             "finished_at": self.finished_at,
