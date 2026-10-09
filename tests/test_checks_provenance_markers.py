@@ -48,9 +48,6 @@ def _album(tmp_path: Path, **flac) -> str:
     return str(tmp_path)
 
 
-# A bit depth the audio does not have
-
-
 def test_a_24bit_claim_on_a_16bit_file_is_reported_with_its_file_field_and_both_depths(tmp_path) -> None:
     contradictions = pv.gather_provenance(_album(tmp_path, bits=16, comment="24bit remaster"))["contradictions"]
 
@@ -60,7 +57,9 @@ def test_a_24bit_claim_on_a_16bit_file_is_reported_with_its_file_field_and_both_
 def test_a_matching_claim_is_not_a_contradiction(tmp_path) -> None:
     album = _album(tmp_path, bits=24, rate=96000, comment="24-bit master")
 
-    assert pv.gather_provenance(album)["contradictions"] == []
+    contradictions = pv.gather_provenance(album)["contradictions"]
+
+    assert contradictions == []
 
 
 @pytest.mark.parametrize(
@@ -85,25 +84,23 @@ def test_a_depth_inside_a_domain_is_a_name_not_a_claim(tmp_path, marker: str) ->
 def test_a_real_claim_beside_a_domain_is_still_caught(tmp_path) -> None:
     for marker in ("24bit master from hd24bit.com", "hd24bit.com, 24bit master", "hd24bit.de 24bit master"):
         _write_flac(tmp_path / "01.flac", bits=16, comment=marker)
-        assert len(pv.gather_provenance(str(tmp_path))["contradictions"]) == 1, marker
+        contradictions = pv.gather_provenance(str(tmp_path))["contradictions"]
+        assert len(contradictions) == 1, marker
 
 
 def test_a_file_with_no_lossless_depth_cannot_contradict_a_depth_claim() -> None:
     """A lossy file's depth (AAC reads as 16) says nothing about the master it was encoded from."""
     for info in (None, SimpleNamespace(codec="mp4a.40.2", bits_per_sample=16, sample_rate=44100)):
         tagfile = SimpleNamespace(mut=SimpleNamespace(tags={"\xa9cmt": ["24bit master"]}, info=info))
-        assert pv._contradictions([pv._file_provenance("01.m4a", tagfile)]) == []
+        contradictions = pv._contradictions([pv._file_provenance("01.m4a", tagfile)])
+        assert contradictions == []
 
 
 def test_an_alac_file_has_a_depth_to_contradict() -> None:
     info = SimpleNamespace(codec="alac", bits_per_sample=16, sample_rate=44100)
     tagfile = SimpleNamespace(mut=SimpleNamespace(tags={"\xa9cmt": ["24bit master"]}, info=info))
-    assert pv._contradictions([pv._file_provenance("01.m4a", tagfile)]) == [
-        "01.m4a: comment claims 24bit, the audio is 16bit"
-    ]
-
-
-# A CD ripper on audio a CD cannot hold
+    contradictions = pv._contradictions([pv._file_provenance("01.m4a", tagfile)])
+    assert contradictions == ["01.m4a: comment claims 24bit, the audio is 16bit"]
 
 
 def test_eac_on_a_24bit_96khz_flac_is_reported(tmp_path) -> None:
@@ -115,7 +112,9 @@ def test_eac_on_a_24bit_96khz_flac_is_reported(tmp_path) -> None:
 def test_eac_on_a_16bit_44khz_flac_is_ordinary(tmp_path) -> None:
     album = _album(tmp_path, **{"encoded-by": "EAC"}, comment="EAC FLAC -8")
 
-    assert pv.gather_provenance(album)["contradictions"] == []
+    contradictions = pv.gather_provenance(album)["contradictions"]
+
+    assert contradictions == []
 
 
 @pytest.mark.parametrize(
@@ -125,7 +124,9 @@ def test_eac_on_a_16bit_44khz_flac_is_ordinary(tmp_path) -> None:
 def test_every_pure_cd_ripper_is_recognised_as_a_word(tmp_path, marker: str) -> None:
     album = _album(tmp_path, bits=16, rate=48000, encoder=marker)
 
-    assert len(pv.gather_provenance(album)["contradictions"]) == 1
+    contradictions = pv.gather_provenance(album)["contradictions"]
+
+    assert len(contradictions) == 1
 
 
 @pytest.mark.parametrize(
@@ -135,17 +136,18 @@ def test_a_ripper_that_also_converts_downloads_is_not_a_cd_claim(tmp_path, marke
     """These also convert hi-res downloads: their marker on a clean 24/96 WEB release must not warn."""
     album = _album(tmp_path, bits=24, rate=96000, **{"encoded-by": marker})
 
-    assert pv.gather_provenance(album)["contradictions"] == []
+    contradictions = pv.gather_provenance(album)["contradictions"]
+
+    assert contradictions == []
 
 
 @pytest.mark.parametrize("marker", ["PEACE", "E-AC-3", "eac3to", "teacher"])
 def test_eac_inside_another_word_is_not_a_ripper(tmp_path, marker: str) -> None:
     album = _album(tmp_path, bits=24, rate=96000, comment=marker)
 
-    assert pv.gather_provenance(album)["contradictions"] == []
+    contradictions = pv.gather_provenance(album)["contradictions"]
 
-
-# MP3 and M4A frames, read by their field names
+    assert contradictions == []
 
 
 def test_mp3_markers_are_read_under_their_field_names(tmp_path) -> None:
@@ -165,9 +167,8 @@ def test_mp3_markers_are_read_under_their_field_names(tmp_path) -> None:
 def test_a_cd_ripper_on_a_48khz_mp3_is_reported(tmp_path) -> None:
     _write_mp3(tmp_path / "01.mp3", COMM(encoding=3, lang="eng", desc="", text=["Ripped with EAC"]), rate=48000)
 
-    assert pv.gather_provenance(str(tmp_path))["contradictions"] == [
-        "01.mp3: comment names EAC, a CD ripper, but the audio is 48kHz"
-    ]
+    contradictions = pv.gather_provenance(str(tmp_path))["contradictions"]
+    assert contradictions == ["01.mp3: comment names EAC, a CD ripper, but the audio is 48kHz"]
 
 
 def test_m4a_markers_are_read_under_their_field_names() -> None:
@@ -181,9 +182,6 @@ def test_a_store_url_under_any_key_is_a_marker(tmp_path) -> None:
     provenance = pv.gather_provenance(_album(tmp_path, qobuz_url=url))
     assert provenance["markers"] == [f"qobuz_url: {url}"]
     assert provenance["urls"] == [url]
-
-
-# What is not a signal
 
 
 def test_a_clean_web_release_has_markers_and_no_contradiction(tmp_path) -> None:

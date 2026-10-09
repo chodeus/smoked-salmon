@@ -298,8 +298,7 @@ def _run_up(
     trackers: tuple[str, ...] = ("RED",),
     **fakes: Any,
 ) -> Run:
-    """`salmon up ALBUM -t RED` (or the `trackers`) on the fake tracker, real staging and forms; `classes` maps site
-    codes to clients."""
+    """`salmon up ALBUM -t RED` (or `trackers`) on the fake tracker with real forms; `classes` maps codes to clients."""
     rls_data = {
         "format": "FLAC",
         "encoding": "Lossless",

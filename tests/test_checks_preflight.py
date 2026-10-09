@@ -2,8 +2,8 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from test_checks_do_not_upload import write_lists  # pyright: ignore[reportMissingImports]
 
-from salmon.checks import do_not_upload
 from salmon.checks import preflight as pf
 
 NO_FILE_CHECKS: list[str] = []
@@ -305,14 +305,6 @@ async def test_unselected_checks_are_skipped_not_dropped(album_dir, monkeypatch)
     assert verdicts["mqa"] != pf.SKIP
 
 
-def _lists(monkeypatch, folder, **lists: str) -> None:
-    """Make salmon read its Do-Not-Upload lists from folder: the text given for each tracker, else an empty list."""
-    folder.mkdir()
-    for tracker, name in do_not_upload.LISTS.items():
-        (folder / name).write_text(lists.get(tracker, ""), encoding="utf-8")
-    monkeypatch.setattr(do_not_upload, "LISTS_DIR", folder)
-
-
 def _tagged_x_y(monkeypatch) -> None:
     monkeypatch.setattr(
         pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
@@ -325,14 +317,14 @@ def _tagged_x_y(monkeypatch) -> None:
 async def test_an_unreadable_list_blocks_rather_than_clears(album_dir, monkeypatch, tmp_path):
     """Fail closed: a list salmon cannot read must never look like 'not listed'."""
     _tagged_x_y(monkeypatch)
-    _lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nnot toml")
+    write_lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nnot toml")
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED"])
     assert "do-not-upload:RED" in result["blocking"]
 
 
 async def test_a_release_on_ops_list_blocks_ops_only(album_dir, monkeypatch, tmp_path):
     _tagged_x_y(monkeypatch)
-    _lists(monkeypatch, tmp_path / "lists", OPS="[[entry]]\nartist = 'X'\nnote = 'Fakes only.'\n")
+    write_lists(monkeypatch, tmp_path / "lists", OPS="[[entry]]\nartist = 'X'\nnote = 'Fakes only.'\n")
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED", "OPS", "DIC"])
     assert result["blocking"] == ["do-not-upload:OPS"]
     assert [r["id"] for r in result["rows"] if r["id"].startswith("do-not-upload")] == [
@@ -395,9 +387,14 @@ def test_rules_row_reports_a_path_that_would_be_trumped():
     assert "180" in row.detail
 
 
-def test_rules_row_is_green_when_nothing_breaks_a_rule():
-    row = pf.rules_row("RED", "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}})
+@pytest.mark.parametrize(
+    ("tracker", "paths"),
+    [("RED", "Paths are within RED's 180-character limit"), ("DIC", "DIC sets no path limit")],
+)
+def test_rules_row_is_green_when_nothing_breaks_a_rule(tracker: str, paths: str):
+    row = pf.rules_row(tracker, "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}})
     assert row.verdict == pf.OK
+    assert row.detail == f"{paths}, and sample rates are standard."
 
 
 def test_rules_row_is_skipped_when_the_audio_could_not_be_read():
@@ -511,7 +508,7 @@ def test_a_part_web_album_says_how_many():
 
 async def test_a_media_only_entry_blocks_once_the_source_is_known(album_dir, monkeypatch, tmp_path):
     _tagged_x_y(monkeypatch)
-    _lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nartist = 'X'\nmedia = 'WEB'\nnote = 'WEB fakes.'\n")
+    write_lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nartist = 'X'\nmedia = 'WEB'\nnote = 'WEB fakes.'\n")
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED"])
     assert "do-not-upload:RED" in result["blocking"]
 
@@ -525,7 +522,7 @@ async def test_a_listed_release_is_not_searched_for_on_that_tracker(album_dir, m
         return []
 
     monkeypatch.setattr(pf, "get_search_results", search)
-    _lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nartist = 'X'\nnote = 'Fakes only.'\n")
+    write_lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nartist = 'X'\nnote = 'Fakes only.'\n")
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED", "OPS"])
     assert searched == ["OPS"]
     verdicts = {r["id"]: r["verdict"] for r in result["rows"]}
@@ -556,5 +553,7 @@ def test_16bit_above_48khz_blocks_for_ops_and_warns_for_red():
     ops, red = pf.sixteen_bit_row("OPS", files), pf.sixteen_bit_row("RED", files)
     assert ops is not None and ops.verdict == pf.BLOCK
     assert red is not None and red.verdict == pf.WARN
-    assert pf.sixteen_bit_row("DIC", files) is None
-    assert pf.sixteen_bit_row("OPS", {"01.flac": {"sample rate": 96000, "precision": 24}}) is None
+    dic = pf.sixteen_bit_row("DIC", files)
+    twenty_four = pf.sixteen_bit_row("OPS", {"01.flac": {"sample rate": 96000, "precision": 24}})
+    assert dic is None
+    assert twenty_four is None
