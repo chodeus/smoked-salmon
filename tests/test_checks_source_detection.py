@@ -115,7 +115,9 @@ def test_a_log_that_is_not_a_rip_log_proves_nothing(tmp_path) -> None:
     album = _album(tmp_path)
     (album / "download.log").write_text("Downloading track 1 of 10\n")
 
-    assert detect_source(str(album)) is None
+    found = detect_source(str(album))
+
+    assert found is None
 
 
 def test_a_verification_log_proves_nothing(tmp_path) -> None:
@@ -128,7 +130,9 @@ def test_a_verification_log_proves_nothing(tmp_path) -> None:
         " 01     [a1b2c3d4|e5f6a7b8] (00+00/00) No match\r\n"
     )
 
-    assert detect_source(str(album)) is None
+    found = detect_source(str(album))
+
+    assert found is None
 
 
 @pytest.mark.parametrize(
@@ -138,69 +142,98 @@ def test_a_verification_log_proves_nothing(tmp_path) -> None:
         ({"COMMENT": "https://listen.tidal.com/album/2468665"}, "Tidal URL in the tags"),
         ({"MY OWN KEY": "https://artist.bandcamp.com/album/y"}, "Bandcamp URL in the tags"),
         ({"SOURCE": "https://itunes.apple.com/us/album/y/123"}, "Apple URL in the tags"),
+        ({"URL": "https://music.apple.com/us/song/y/456"}, "Apple URL in the tags"),
+        ({"URL": "https://www.hdtracks.com/?ref=x#/album/123"}, "HDtracks URL in the tags"),
     ],
-    ids=["qobuz-custom-key", "tidal-comment", "bandcamp-custom-key", "itunes-store"],
+    ids=[
+        "qobuz-custom-key",
+        "tidal-comment",
+        "bandcamp-custom-key",
+        "itunes-store",
+        "apple-song-page",
+        "hdtracks-query",
+    ],
 )
 def test_a_store_url_proves_web_whatever_tag_holds_it(tmp_path, tags, reason) -> None:
     album = _album(tmp_path, tags)
 
-    assert detect_source(str(album)) == DetectedSource("WEB", reason)
+    found = detect_source(str(album))
+
+    assert found == DetectedSource("WEB", reason)
 
 
 def test_a_store_url_in_an_mp3_proves_web(tmp_path) -> None:
     _write_mp3(tmp_path / "01.mp3", WXXX(encoding=3, desc="PAGE", url="https://music.apple.com/au/album/j/1623086473"))
 
-    assert detect_source(str(tmp_path)) == DetectedSource("WEB", "Apple URL in the tags")
+    found = detect_source(str(tmp_path))
+
+    assert found == DetectedSource("WEB", "Apple URL in the tags")
 
 
 def test_a_bandcamp_comment_in_a_flac_proves_web(tmp_path) -> None:
     album = _album(tmp_path, {"COMMENT": "Visit https://artist.bandcamp.com"})
 
-    assert detect_source(str(album)) == DetectedSource("WEB", "Bandcamp comment in the tags")
+    found = detect_source(str(album))
+
+    assert found == DetectedSource("WEB", "Bandcamp comment in the tags")
 
 
 def test_an_amazon_comment_in_an_mp3_proves_web(tmp_path) -> None:
     comment = COMM(encoding=3, lang="eng", desc="", text=["Amazon.com Song ID: 200000707885981"])
     _write_mp3(tmp_path / "01.mp3", comment)
 
-    assert detect_source(str(tmp_path)) == DetectedSource("WEB", "Amazon download comment in the tags")
+    found = detect_source(str(tmp_path))
+
+    assert found == DetectedSource("WEB", "Amazon download comment in the tags")
 
 
 @pytest.mark.parametrize("tags", [{"apID": ["someone@example.com"]}, {"purd": ["2020-01-01 10:00:00"]}])
 def test_itunes_purchase_tags_in_an_m4a_prove_web(tmp_path, monkeypatch, tags) -> None:
     _fake_m4a(tmp_path, monkeypatch, tags)
 
-    assert detect_source(str(tmp_path)) == DetectedSource("WEB", "iTunes purchase tags")
+    found = detect_source(str(tmp_path))
+
+    assert found == DetectedSource("WEB", "iTunes purchase tags")
 
 
 def test_a_media_tag_in_a_flac_is_taken_at_its_word(tmp_path) -> None:
     album = _album(tmp_path, {"MEDIA": "Digital Media"})
 
-    assert detect_source(str(album)) == DetectedSource("WEB", 'media tag says "Digital Media"')
+    found = detect_source(str(album))
+
+    assert found == DetectedSource("WEB", 'media tag says "Digital Media"')
 
 
 def test_a_media_tag_in_an_mp3_is_taken_at_its_word(tmp_path) -> None:
     _write_mp3(tmp_path / "01.mp3", TMED(encoding=3, text=["CD"]))
 
-    assert detect_source(str(tmp_path)) == DetectedSource("CD", 'media tag says "CD"')
+    found = detect_source(str(tmp_path))
+
+    assert found == DetectedSource("CD", 'media tag says "CD"')
 
 
 def test_a_media_tag_in_an_m4a_is_taken_at_its_word(tmp_path, monkeypatch) -> None:
     _fake_m4a(tmp_path, monkeypatch, {"----:com.apple.iTunes:MEDIA": [MP4FreeForm(b'12" Vinyl')]})
 
-    assert detect_source(str(tmp_path)) == DetectedSource("Vinyl", 'media tag says "12" Vinyl"')
+    found = detect_source(str(tmp_path))
+
+    assert found == DetectedSource("Vinyl", 'media tag says "12" Vinyl"')
 
 
 def test_a_media_tag_naming_two_media_proves_nothing(tmp_path) -> None:
     album = _album(tmp_path, {"MEDIA": "CD/Vinyl"})
 
-    assert detect_source(str(album)) is None
+    found = detect_source(str(album))
+
+    assert found is None
 
 
 def test_the_values_of_a_multi_value_media_frame_conflict(tmp_path) -> None:
     _write_mp3(tmp_path / "01.mp3", TMED(encoding=3, text=["CD", "Vinyl"]))
 
-    assert detect_source(str(tmp_path)) is None
+    found = detect_source(str(tmp_path))
+
+    assert found is None
 
 
 def test_every_source_the_detector_names_is_a_valid_answer_to_the_prompt() -> None:
@@ -213,13 +246,17 @@ def test_vinyl_side_numbering_alone_proves_nothing(tmp_path) -> None:
     for number, side in enumerate(["A1", "A2", "B1", "B2"], start=1):
         _write_flac(tmp_path / f"{number:02d}.flac", {"TRACKNUMBER": side}, bits=24, rate=96000)
 
-    assert detect_source(str(tmp_path)) is None
+    found = detect_source(str(tmp_path))
+
+    assert found is None
 
 
 def test_hi_res_alone_proves_nothing(tmp_path) -> None:
     album = _album(tmp_path, bits=24, rate=96000)
 
-    assert detect_source(str(album)) is None
+    found = detect_source(str(album))
+
+    assert found is None
 
 
 def test_plain_cd_quality_with_no_log_is_undecidable(tmp_path) -> None:
@@ -227,7 +264,9 @@ def test_plain_cd_quality_with_no_log_is_undecidable(tmp_path) -> None:
     album = _album(tmp_path, {"ARTIST": "X", "ALBUM": "Y"})
     (album / "album.cue").write_text('FILE "01.flac" WAVE\n')
 
-    assert detect_source(str(album)) is None
+    found = detect_source(str(album))
+
+    assert found is None
 
 
 @pytest.mark.parametrize(
@@ -240,6 +279,10 @@ def test_plain_cd_quality_with_no_log_is_undecidable(tmp_path) -> None:
         {"COMMENT": "Bought on Qobuz, tagged by hand"},
         {"COMMENT": "bought on bandcamp.com"},
         {"WEBSITE": "https://www.apple.com/logic-pro/"},
+        {"WWWARTIST": "https://artist.bandcamp.com"},
+        {"URL": "https://www.qobuz.com/au-en/interpreter/artist/123"},
+        {"WEBSITE": "https://www.qobuz.com/au-en/label/a-label/albums"},
+        {"WWWARTIST": "https://artist.bandcamp.com/?from=/album/y"},
     ],
     ids=[
         "picard-asin",
@@ -249,32 +292,44 @@ def test_plain_cd_quality_with_no_log_is_undecidable(tmp_path) -> None:
         "hand-written-comment",
         "hand-written-bandcamp-comment",
         "apple-but-not-its-store",
+        "bandcamp-artist-page",
+        "store-artist-page",
+        "store-label-listing",
+        "album-path-only-in-the-query",
     ],
 )
 def test_tags_a_user_or_a_tagger_writes_do_not_prove_web(tmp_path, tags) -> None:
     album = _album(tmp_path, tags)
 
-    assert detect_source(str(album)) is None
+    found = detect_source(str(album))
+
+    assert found is None
 
 
 def test_a_custom_m4a_atom_does_not_prove_web(tmp_path, monkeypatch) -> None:
     """Every tagger files custom M4A fields under com.apple.iTunes, so the namespace proves nothing."""
     _fake_m4a(tmp_path, monkeypatch, {"----:com.apple.iTunes:BARCODE": [MP4FreeForm(b"0602448406705")]})
 
-    assert detect_source(str(tmp_path)) is None
+    found = detect_source(str(tmp_path))
+
+    assert found is None
 
 
 def test_an_mp3_txxx_that_looks_like_a_store_field_does_not_prove_web(tmp_path) -> None:
     _write_mp3(tmp_path / "01.mp3", TXXX(encoding=3, desc="STORE", text=["Qobuz"]))
 
-    assert detect_source(str(tmp_path)) is None
+    found = detect_source(str(tmp_path))
+
+    assert found is None
 
 
 def test_a_rip_log_and_a_store_url_conflict(tmp_path) -> None:
     album = _album(tmp_path, {"COMMENT": QOBUZ_URL})
     (album / "EAC.log").write_bytes(EAC_LOG.encode("utf-16"))
 
-    assert detect_source(str(album)) is None
+    found = detect_source(str(album))
+
+    assert found is None
 
 
 @pytest.mark.parametrize(("error", "expected"), [(PermissionError, None), (FileNotFoundError, "WEB")])
@@ -305,20 +360,26 @@ def test_an_unscannable_folder_leaves_a_store_url_unconfirmed(tmp_path, monkeypa
 
     monkeypatch.setattr(os, "walk", walk)
 
-    assert detect_source(str(album)) is None
+    found = detect_source(str(album))
+
+    assert found is None
 
 
 def test_a_media_tag_that_disagrees_with_a_store_url_conflicts(tmp_path) -> None:
     album = _album(tmp_path, {"MEDIA": "CD", "SOURCE": QOBUZ_URL})
 
-    assert detect_source(str(album)) is None
+    found = detect_source(str(album))
+
+    assert found is None
 
 
 def test_files_whose_media_tags_disagree_conflict(tmp_path) -> None:
     _write_flac(tmp_path / "01.flac", {"MEDIA": "CD"})
     _write_flac(tmp_path / "02.flac", {"MEDIA": "Vinyl"})
 
-    assert detect_source(str(tmp_path)) is None
+    found = detect_source(str(tmp_path))
+
+    assert found is None
 
 
 def test_a_rip_log_beside_hi_res_files_conflicts(tmp_path) -> None:
@@ -326,7 +387,9 @@ def test_a_rip_log_beside_hi_res_files_conflicts(tmp_path) -> None:
     album = _album(tmp_path, bits=24, rate=96000)
     (album / "EAC.log").write_bytes(EAC_LOG.encode("utf-16"))
 
-    assert detect_source(str(album)) is None
+    found = detect_source(str(album))
+
+    assert found is None
 
 
 @pytest.mark.parametrize(("codec", "expected"), [("mp4a.40.2", "CD"), ("alac", None)], ids=["aac", "alac"])
@@ -346,7 +409,9 @@ def test_a_rip_log_beside_vinyl_sides_conflicts(tmp_path) -> None:
         _write_flac(tmp_path / f"{number:02d}.flac", {"TRACKNUMBER": side})
     (tmp_path / "EAC.log").write_bytes(EAC_LOG.encode("utf-16"))
 
-    assert detect_source(str(tmp_path)) is None
+    found = detect_source(str(tmp_path))
+
+    assert found is None
 
 
 def test_mp3_vinyl_sides_are_read_from_trck(tmp_path) -> None:
@@ -354,7 +419,9 @@ def test_mp3_vinyl_sides_are_read_from_trck(tmp_path) -> None:
     for number, side in enumerate(["A1/4", "B1/4"], start=1):
         _write_mp3(tmp_path / f"{number:02d}.mp3", TRCK(encoding=3, text=[side]))
 
-    assert detect_source(str(tmp_path)) is None
+    found = detect_source(str(tmp_path))
+
+    assert found is None
 
 
 def test_vinyl_sides_agree_with_a_store_url(tmp_path) -> None:
@@ -362,21 +429,27 @@ def test_vinyl_sides_agree_with_a_store_url(tmp_path) -> None:
     for number, side in enumerate(["A1", "B1"], start=1):
         _write_flac(tmp_path / f"{number:02d}.flac", {"TRACKNUMBER": side, "SOURCE": QOBUZ_URL})
 
-    assert detect_source(str(tmp_path)) == DetectedSource("WEB", "Qobuz URL in the tags")
+    found = detect_source(str(tmp_path))
+
+    assert found == DetectedSource("WEB", "Qobuz URL in the tags")
 
 
 def test_agreeing_proofs_give_every_reason(tmp_path) -> None:
     album = _album(tmp_path, {"MEDIA": "CD"})
     (album / "EAC.log").write_bytes(EAC_LOG.encode("utf-16"))
 
-    assert detect_source(str(album)) == DetectedSource("CD", 'rip log found (EAC.log); media tag says "CD"')
+    found = detect_source(str(album))
+
+    assert found == DetectedSource("CD", 'rip log found (EAC.log); media tag says "CD"')
 
 
 def test_a_corrupt_audio_file_does_not_sink_the_scan(tmp_path) -> None:
     _write_flac(tmp_path / "01.flac", {"COMMENT": QOBUZ_URL})
     (tmp_path / "02.flac").write_bytes(b"fLaC not really")
 
-    assert detect_source(str(tmp_path)) == DetectedSource("WEB", "Qobuz URL in the tags")
+    found = detect_source(str(tmp_path))
+
+    assert found == DetectedSource("WEB", "Qobuz URL in the tags")
 
 
 def _prompt(monkeypatch, answer: str) -> dict:
@@ -493,3 +566,12 @@ def test_a_known_source_skips_the_detection_and_the_prompt(monkeypatch) -> None:
 
     assert detected_paths == []
     assert prompted_with == []
+
+
+@pytest.mark.parametrize("url", ["https://[broken", "https://www.qobuz.com:[broken/album/x"], ids=["any", "store"])
+def test_a_tag_url_python_cannot_parse_is_skipped(tmp_path, url: str) -> None:
+    album = _album(tmp_path, {"URL": url})
+
+    found = detect_source(str(album))
+
+    assert found is None
