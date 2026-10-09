@@ -14,12 +14,13 @@ import msgspec
 import salmon.trackers
 from salmon.checks import album, provenance
 from salmon.checks.do_not_upload import LISTS, Candidate, do_not_upload_reason
+from salmon.checks.high_rate import sixteen_bit_notice
 
 # Not `from salmon.checks import integrity` — the click Command of that name in
 # checks/__init__.py shadows the module.
 from salmon.checks.integrity import md5_unset_summary
 from salmon.checks.source import detect_source
-from salmon.checks.tag_rules import collect_upload_warnings
+from salmon.checks.tag_rules import MAX_PATH_LENGTH, SIXTEEN_BIT_ABOVE_48KHZ, collect_upload_warnings
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.tagger.pre_data import construct_artists_li, parse_title
 from salmon.tagger.tags import gather_tags
@@ -236,6 +237,16 @@ def dupe_matches(base_url: str, results: list[dict]) -> list[dict]:
     ]
 
 
+def sixteen_bit_row(tracker: str, track_data: dict) -> Row | None:
+    """The tracker's rule on 16bit files above 48 kHz, when the files break it: blocks for a refusal."""
+    rule = SIXTEEN_BIT_ABOVE_48KHZ.get(tracker, "")
+    if not (notice := sixteen_bit_notice(tracker, rule, track_data)):
+        return None
+    return Row(
+        f"sixteen-bit:{tracker}", f"16bit above 48 kHz ({tracker})", BLOCK if rule == "refused" else WARN, notice
+    )
+
+
 def rules_row(tracker: str, folder_name: str, track_data: dict) -> Row:
     """Path-length and sample-rate rules, which used to surface mid-upload.
 
@@ -247,7 +258,9 @@ def rules_row(tracker: str, folder_name: str, track_data: dict) -> Row:
         return Row(f"rules:{tracker}", label, SKIP, "The audio could not be read, so these rules were not checked.")
     warnings = collect_upload_warnings(tracker, folder_name, track_data)
     if not warnings:
-        return Row(f"rules:{tracker}", label, OK, "Path lengths and sample rates are within the rules.")
+        limit = MAX_PATH_LENGTH.get(tracker)
+        paths = f"Paths are within {tracker}'s {limit}-character limit" if limit else f"{tracker} sets no path limit"
+        return Row(f"rules:{tracker}", label, OK, f"{paths}, and sample rates are standard.")
     return Row(f"rules:{tracker}", label, WARN, " ".join(warnings[:2]))
 
 
@@ -352,6 +365,8 @@ async def run_checks(
         # so they are checked even when the duplicate search cannot run.
         for tracker in trackers:
             rows.append(rules_row(tracker, folder, track_data))
+            if row := sixteen_bit_row(tracker, track_data):
+                rows.append(row)
         if identity.get("title"):
             for tracker in trackers:
                 tracker_rows, tracker_raw = await _tracker_rows(tracker, identity, ctx["source"])

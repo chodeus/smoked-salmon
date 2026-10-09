@@ -387,9 +387,14 @@ def test_rules_row_reports_a_path_that_would_be_trumped():
     assert "180" in row.detail
 
 
-def test_rules_row_is_green_when_nothing_breaks_a_rule():
-    row = pf.rules_row("RED", "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}})
+@pytest.mark.parametrize(
+    ("tracker", "paths"),
+    [("RED", "Paths are within RED's 180-character limit"), ("DIC", "DIC sets no path limit")],
+)
+def test_rules_row_is_green_when_nothing_breaks_a_rule(tracker: str, paths: str):
+    row = pf.rules_row(tracker, "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}})
     assert row.verdict == pf.OK
+    assert row.detail == f"{paths}, and sample rates are standard."
 
 
 def test_rules_row_is_skipped_when_the_audio_could_not_be_read():
@@ -541,3 +546,14 @@ def test_the_identity_keeps_the_edition_title(monkeypatch):
     monkeypatch.setattr(pf, "construct_artists_li", lambda _tags: [("Artist", "main")])
     identity = pf._release_identity("/album")
     assert (identity["title"], identity["edition_title"]) == ("Night Songs", "Deluxe Edition")
+
+
+def test_16bit_above_48khz_blocks_for_ops_and_warns_for_red():
+    files = {"01.flac": {"sample rate": 96000, "precision": 16}}
+    ops, red = pf.sixteen_bit_row("OPS", files), pf.sixteen_bit_row("RED", files)
+    assert ops is not None and ops.verdict == pf.BLOCK
+    assert red is not None and red.verdict == pf.WARN
+    dic = pf.sixteen_bit_row("DIC", files)
+    twenty_four = pf.sixteen_bit_row("OPS", {"01.flac": {"sample rate": 96000, "precision": 24}})
+    assert dic is None
+    assert twenty_four is None

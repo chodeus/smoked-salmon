@@ -14,10 +14,16 @@ import salmon.trackers
 from salmon import cfg, dryrun
 from salmon.checks import mqa_test
 from salmon.checks.do_not_upload import Candidate, do_not_upload_reason
+from salmon.checks.high_rate import sixteen_bit_notice
 from salmon.checks.integrity import resolve_integrity_for_upload
 from salmon.checks.logs import check_log_cambia
 from salmon.checks.source import detect_source
-from salmon.checks.tag_rules import collect_upload_warnings, path_limit_for, process_tag_issues
+from salmon.checks.tag_rules import (
+    SIXTEEN_BIT_ABOVE_48KHZ,
+    collect_upload_warnings,
+    path_limit_for,
+    process_tag_issues,
+)
 from salmon.checks.upconverts import upload_upconvert_test
 from salmon.common import AlbumPath, commandgroup, copy_to_clipboard, decade_tag, tagify
 from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
@@ -592,6 +598,22 @@ def _do_not_upload_refusal(tracker: str, release: dict[str, Any], said: str | No
     return reason
 
 
+def _sixteen_bit_refusal(tracker: str, audio_info: dict[str, Any]) -> bool:
+    """Say what the tracker's rule on 16bit files above 48 kHz means for the files, and whether it refuses them.
+
+    A tracker that only trumps them gets a warning and the upload goes on. Nothing skips a refusal, -yyy included.
+    """
+    rule = SIXTEEN_BIT_ABOVE_48KHZ.get(tracker, "")
+    notice = sixteen_bit_notice(tracker, rule, audio_info)
+    if notice is None:
+        return False
+    if rule == "refused":
+        click.secho(f"\nNot uploading to {tracker}: {notice}", fg="red", bold=True)
+        return True
+    click.secho(f"\n{notice}", fg="yellow")
+    return False
+
+
 def _another_can_follow(trackers: list[str] | None, site_code: str) -> bool:
     """Whether the run can go on to a tracker other than site_code."""
     others = [site for site in follow_up_trackers(trackers, site_code) if site != site_code]
@@ -676,7 +698,12 @@ async def _upload_staged(
 
         # A release the first tracker's list forbids gets no group search there; the review may change the names.
         tags_refusal = _do_not_upload_refusal(gazelle_site.site_code, rls_data)
-        if group_id is None and tags_refusal:
+        # The review keeps each file's depth and rate. With --skip-flac-upload only transcodes go up: no FLAC to refuse.
+        rate_refused = flac_group is None and _sixteen_bit_refusal(gazelle_site.site_code, audio_info)
+        if rate_refused and not _another_can_follow(trackers, gazelle_site.site_code):
+            # Nothing the review changes could let these files go up.
+            raise click.Abort
+        if group_id is None and (tags_refusal or rate_refused):
             # Left empty: if the review takes the release off the list, recheck_dupe then searches.
             searchstrs = []
         elif group_id is None:
@@ -741,7 +768,7 @@ async def _upload_staged(
         )
 
         # Before the first tracker's group, cover and upload; spectrals go once for the run, so with a follower.
-        if _do_not_upload_refusal(gazelle_site.site_code, metadata, said=tags_refusal) is not None:
+        if rate_refused or _do_not_upload_refusal(gazelle_site.site_code, metadata, said=tags_refusal) is not None:
             # With --skip-flac-upload, the FLAC's group is on this tracker alone.
             if flac_group is not None or not _another_can_follow(trackers, gazelle_site.site_code):
                 raise click.Abort
@@ -834,7 +861,9 @@ async def _upload_staged(
                     break
                 gazelle_site = salmon.trackers.get_class(tracker)()
                 # Before its dupe check, which may ask which group to upload into.
-                if _do_not_upload_refusal(tracker, metadata) is not None:
+                if _do_not_upload_refusal(tracker, metadata) is not None or (
+                    flac_group is None and _sixteen_bit_refusal(tracker, audio_info)
+                ):
                     remaining_gazelle_sites.remove(tracker)
                     tracker = None
                     if not remaining_gazelle_sites or not (trackers or cfg.upload.multi_tracker_upload):
