@@ -13,40 +13,54 @@ import cambia
 import msgspec
 
 from salmon.checks.integrity import check_integrity
+from salmon.checks.logs import log_checksum, log_score, parse_log, verify_log_crcs
 from salmon.checks.mqa import check_mqa
 from salmon.checks.provenance import gather_provenance
 from salmon.checks.upconverts import check_upconvert
 from salmon.common.files import get_audio_files, get_flac_files
 from salmon.common.progress import report_progress
-from salmon.errors import UpconvertCheckNotApplicable
+from salmon.errors import CRCMismatchError, LogCheckSkipped, UpconvertCheckNotApplicable
 
 
-def _parse_logs(path: str) -> dict:
-    logs = []
-    for root, _dirs, files in os.walk(path):
-        for f in sorted(files):
-            if not f.lower().endswith(".log"):
-                continue
-            logpath = os.path.join(root, f)
-            try:
-                output = cambia.parse_log_file(logpath)
-                score = int(output.evaluation_combined[0].combined_score)
-                integrity = output.parsed.parsed_logs[0].checksum.integrity
-                logs.append(
-                    {
-                        "file": os.path.relpath(logpath, path),
-                        "score": score,
-                        "checksum_integrity": getattr(integrity, "name", None)
-                        or str(integrity).rsplit(".", 1)[-1].rstrip(">"),
-                    }
-                )
-            except Exception as e:
-                logs.append({"file": os.path.relpath(logpath, path), "error": str(e)})
-    return {"logs": logs}
+def _log_paths(path: str) -> list[str]:
+    return sorted(
+        os.path.join(root, name)
+        for root, _dirs, files in os.walk(path)
+        for name in files
+        if name.lower().endswith(".log")
+    )
+
+
+def _in_album(text: str, path: str) -> str:
+    """text, naming files from the album folder instead of from its parent."""
+    return text.replace(os.path.dirname(os.path.normpath(path)) + os.sep, "")
+
+
+async def _log(logpath: str, path: str) -> dict:
+    """One rip log's score, checksum and CRCs, read as salmon up checks them."""
+    name = os.path.relpath(logpath, path)
+    try:
+        output = await asyncio.to_thread(parse_log, logpath)
+    except (LogCheckSkipped, OSError) as e:
+        return {"file": name, "error": str(e).replace(logpath, name)}
+    checksum = log_checksum(output)
+    result = {"file": name, "score": log_score(output), "checksum_integrity": checksum.name}
+    if checksum == cambia.Integrity.Mismatch:
+        # salmon up stops at an edited log before reading its CRCs.
+        return result | {"crcs": "skipped", "crcs_detail": "the log was edited"}
+    try:
+        await verify_log_crcs(output, logpath, path)
+    except CRCMismatchError:
+        return result | {"crcs": "mismatch", "crcs_detail": ""}
+    except LogCheckSkipped as e:
+        return result | {"crcs": "skipped", "crcs_detail": _in_album(str(e), path)}
+    except Exception as e:
+        return result | {"crcs": "error", "crcs_detail": _in_album(str(e), path)}
+    return result | {"crcs": "match", "crcs_detail": ""}
 
 
 async def run_log_check(path: str) -> dict:
-    return await asyncio.to_thread(_parse_logs, path)
+    return {"logs": [await _log(logpath, path) for logpath in _log_paths(path)]}
 
 
 async def run_provenance_check(path: str) -> dict:

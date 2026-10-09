@@ -3,7 +3,7 @@
   import FolderPicker from '../lib/FolderPicker.svelte'
   import JobStatus from '../lib/JobStatus.svelte'
   import VerdictRows from '../lib/VerdictRows.svelte'
-  import { checksumChip, logScoreChip } from '../lib/verdicts'
+  import { checksumChip, crcsChip, logScoreChip } from '../lib/verdicts'
   import { jobStore, type Job } from '../lib/jobs.svelte'
 
   const ALL_CHECKS = [
@@ -107,10 +107,11 @@
                     <td><span class="chip err">Error</span> <span class="muted">{log.error}</span></td>
                   {:else}
                     <td>
-                      <span class="chip {logScoreChip(log.score)}">Score {log.score}</span>
+                      <span class="chip {logScoreChip(log.score)}">Score {log.score ?? '?'}</span>
                       <span class="chip {checksumChip(log.checksum_integrity)}">
                         Checksum: {log.checksum_integrity}
                       </span>
+                      <span class="chip {crcsChip(log.crcs)}" title={log.crcs_detail}>CRCs: {log.crcs}</span>
                     </td>
                   {/if}
                 </tr>

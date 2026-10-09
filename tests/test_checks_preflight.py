@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from test_checks_do_not_upload import write_lists  # pyright: ignore[reportMissingImports]
 
+from salmon.checks import album
 from salmon.checks import preflight as pf
 
 NO_FILE_CHECKS: list[str] = []
@@ -70,47 +71,76 @@ def test_upconvert_still_blocks_when_a_deeper_file_is_upconverted():
     assert pf._upconvert_verdict(result, {})[0] == pf.BLOCK
 
 
-@pytest.mark.parametrize("source", ["WEB", "Vinyl", "Cassette"])
-def test_log_check_does_not_apply_to_non_cd(source):
-    assert pf._log_verdict({"logs": []}, {"source": source})[0] == pf.SKIP
+def _log(**fields) -> dict:
+    """A rip log as album.run_log_check reads it: full marks, unless fields say otherwise."""
+    return {"file": "rip.log", "score": 100, "checksum_integrity": "Match", "crcs": "match", "crcs_detail": ""} | fields
 
 
-def test_missing_log_on_cd_warns_but_does_not_block():
-    row = pf._log_verdict({"logs": []}, {"source": "CD"})
-    assert row[0] == pf.WARN
+def test_a_missing_log_warns_but_does_not_block():
+    verdict, _detail = pf._log_verdict({"logs": []}, {})
+    assert verdict == pf.WARN
 
 
-def test_unknown_source_still_checks_the_log():
-    assert pf._log_verdict({"logs": []}, {"source": None})[0] == pf.WARN
+def test_a_full_marks_log_is_green():
+    found = pf._log_verdict({"logs": [_log()]}, {})
+    assert found == (pf.OK, "Score 100/100, checksum and CRCs match in 1 log(s).")
 
 
-def test_perfect_log_is_green():
-    logs = {"logs": [{"file": "r.log", "score": 100, "checksum_integrity": "Match"}]}
-    assert pf._log_verdict(logs, {"source": "CD"})[0] == pf.OK
+@pytest.mark.parametrize(
+    ("fields", "verdict", "said"),
+    [
+        ({"checksum_integrity": "Mismatch"}, pf.BLOCK, "rip.log: its checksum does not match, so the log was edited."),
+        (
+            {"crcs": "error", "crcs_detail": "no decoder"},
+            pf.BLOCK,
+            "could not be checked against its CRCs (no decoder)",
+        ),
+        ({"crcs": "mismatch"}, pf.WARN, "rip.log: the audio does not match its CRCs."),
+        (
+            {"crcs": "skipped", "crcs_detail": "No audio files found!"},
+            pf.WARN,
+            "CRCs not checked: No audio files found!",
+        ),
+        ({"checksum_integrity": "Unknown"}, pf.WARN, "no checksum to verify it"),
+        ({"score": 87}, pf.WARN, "rip.log: score 87/100."),
+        ({"score": None}, pf.WARN, "rip.log: no score."),
+    ],
+    ids=["edited", "crcs-unverifiable", "crc-mismatch", "crcs-skipped", "no-checksum", "low-score", "no-score"],
+)
+def test_each_log_problem_gets_the_verdict_salmon_up_gives_it(fields: dict, verdict: str, said: str):
+    found, detail = pf._log_verdict({"logs": [_log(**fields)]}, {})
+    assert found == verdict
+    assert said in detail
 
 
-def test_imperfect_score_warns():
-    logs = {"logs": [{"file": "r.log", "score": 87, "checksum_integrity": "Match"}]}
-    row = pf._log_verdict(logs, {"source": "CD"})
-    assert row[0] == pf.WARN
-    assert "87" in row[1]
+def test_a_good_log_does_not_vouch_for_one_that_cannot_be_read():
+    logs = {"logs": [_log(file="good.log"), {"file": "broken.log", "error": "not a log"}]}
+    found = pf._log_verdict(logs, {})
+    assert found == (pf.WARN, "broken.log: could not be read (not a log). 1 other log(s) pass.")
 
 
-def test_checksum_mismatch_warns_even_at_full_score():
-    logs = {"logs": [{"file": "r.log", "score": 100, "checksum_integrity": "Mismatch"}]}
-    assert pf._log_verdict(logs, {"source": "CD"})[0] == pf.WARN
+def test_one_edited_log_blocks_whatever_the_others_say():
+    logs = [_log(file="cd1.log", score=90), _log(file="cd2.log", checksum_integrity="Mismatch"), _log(file="cd3.log")]
+    found = pf._log_verdict({"logs": logs}, {})
+    assert found == (
+        pf.BLOCK,
+        "cd1.log: score 90/100. cd2.log: its checksum does not match, so the log was edited. 1 other log(s) pass.",
+    )
 
 
-def test_worst_log_decides_the_verdict():
-    logs = {
-        "logs": [
-            {"file": "a.log", "score": 100, "checksum_integrity": "Match"},
-            {"file": "b.log", "score": 40, "checksum_integrity": "Match"},
-        ]
-    }
-    row = pf._log_verdict(logs, {"source": "CD"})
-    assert row[0] == pf.WARN
-    assert "b.log" in row[1]
+@pytest.mark.parametrize(("source", "read"), [("WEB", False), ("Vinyl", False), ("CD", True), (None, True)])
+async def test_logs_are_read_for_a_cd_or_an_unknown_source_only(album_dir, monkeypatch, source, read: bool):
+    monkeypatch.setattr(
+        pf, "detect_source", lambda _p: {"source": None, "confidence": "unknown", "reasons": ["undecidable"]}
+    )
+    searched: list[str] = []
+    monkeypatch.setattr(album, "_log_paths", lambda path: searched.append(path) or [])
+
+    result = await pf.run_checks(str(album_dir), ["log"], source, [])
+
+    row = next(r for r in result["rows"] if r["id"] == "log")
+    assert bool(searched) is read
+    assert row["verdict"] == (pf.WARN if read else pf.SKIP)
 
 
 def test_source_must_be_chosen_when_undetectable():
@@ -335,38 +365,6 @@ async def test_a_release_on_ops_list_blocks_ops_only(album_dir, monkeypatch, tmp
 
 async def _empty():
     return []
-
-
-def test_one_unparseable_log_warns_even_when_another_scores_full_marks():
-    """A good log does not vouch for a sibling that would not parse."""
-    logs = {
-        "logs": [
-            {"file": "good.log", "score": 100, "checksum_integrity": "Match"},
-            {"file": "broken.log", "error": "not a log"},
-        ]
-    }
-    verdict, detail = pf._log_verdict(logs, {"source": "CD"})
-    assert verdict == pf.WARN
-    assert "1 of 2" in detail
-
-
-def test_a_log_with_no_checksum_is_unverifiable_not_altered():
-    # EAC only began signing logs in 1.0 beta 3; an older log has none at all,
-    # which is a different state from a checksum that fails.
-    logs = {"logs": [{"file": "r.log", "score": 100, "checksum_integrity": "Unknown"}]}
-    verdict, detail = pf._log_verdict(logs, {"source": "CD"})
-    assert verdict == pf.WARN
-    assert "No log checksum" in detail
-    assert "does not match" not in detail
-    assert "trumpable" in detail
-
-
-def test_a_failing_checksum_still_says_the_log_was_altered():
-    logs = {"logs": [{"file": "r.log", "score": 100, "checksum_integrity": "Mismatch"}]}
-    verdict, detail = pf._log_verdict(logs, {"source": "CD"})
-    assert verdict == pf.WARN
-    assert "does not match" in detail
-    assert "altered" in detail
 
 
 def test_integrity_warnings_are_not_reported_as_clean():

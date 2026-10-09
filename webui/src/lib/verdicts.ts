@@ -49,5 +49,8 @@ export const MARK: Record<Verdict, string> = { ok: '✓', warn: '!', block: '✕
 
 // Per-file chip colouring in detail tables. The upload gate's verdict is the
 // backend's (checks/preflight.py); these only tint the per-file breakdown.
-export const logScoreChip = (score: number): string => (score === 100 ? 'ok' : 'warn')
-export const checksumChip = (integrity: string): string => (integrity === 'Match' ? 'ok' : 'warn')
+export const logScoreChip = (score: number | null): string => (score === 100 ? 'ok' : 'warn')
+export const checksumChip = (integrity: string): string =>
+  integrity === 'Match' ? 'ok' : integrity === 'Mismatch' ? 'err' : 'warn'
+export const crcsChip = (crcs: string): string =>
+  crcs === 'match' ? 'ok' : crcs === 'mismatch' || crcs === 'error' ? 'err' : 'warn'
