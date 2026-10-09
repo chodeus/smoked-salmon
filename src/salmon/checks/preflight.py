@@ -13,13 +13,14 @@ import msgspec
 
 import salmon.trackers
 from salmon.checks import album, provenance
-from salmon.checks.blacklist import red_blacklist_reason
+from salmon.checks.do_not_upload import LISTS, Candidate, do_not_upload_reason
+from salmon.checks.high_rate import sixteen_bit_notice
 
 # Not `from salmon.checks import integrity` — the click Command of that name in
 # checks/__init__.py shadows the module.
 from salmon.checks.integrity import md5_unset_summary
 from salmon.checks.source import detect_source
-from salmon.checks.tag_rules import collect_upload_warnings
+from salmon.checks.tag_rules import MAX_PATH_LENGTH, SIXTEEN_BIT_ABOVE_48KHZ, collect_upload_warnings
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.tagger.pre_data import construct_artists_li, parse_title
 from salmon.tagger.tags import gather_tags
@@ -236,6 +237,16 @@ def dupe_matches(base_url: str, results: list[dict]) -> list[dict]:
     ]
 
 
+def sixteen_bit_row(tracker: str, track_data: dict) -> Row | None:
+    """The tracker's rule on 16bit files above 48 kHz, when the files break it: blocks for a refusal."""
+    rule = SIXTEEN_BIT_ABOVE_48KHZ.get(tracker, "")
+    if not (notice := sixteen_bit_notice(tracker, rule, track_data)):
+        return None
+    return Row(
+        f"sixteen-bit:{tracker}", f"16bit above 48 kHz ({tracker})", BLOCK if rule == "refused" else WARN, notice
+    )
+
+
 def rules_row(tracker: str, folder_name: str, track_data: dict) -> Row:
     """Path-length and sample-rate rules, which used to surface mid-upload.
 
@@ -247,15 +258,17 @@ def rules_row(tracker: str, folder_name: str, track_data: dict) -> Row:
         return Row(f"rules:{tracker}", label, SKIP, "The audio could not be read, so these rules were not checked.")
     warnings = collect_upload_warnings(tracker, folder_name, track_data)
     if not warnings:
-        return Row(f"rules:{tracker}", label, OK, "Path lengths and sample rates are within the rules.")
+        limit = MAX_PATH_LENGTH.get(tracker)
+        paths = f"Paths are within {tracker}'s {limit}-character limit" if limit else f"{tracker} sets no path limit"
+        return Row(f"rules:{tracker}", label, OK, f"{paths}, and sample rates are standard.")
     return Row(f"rules:{tracker}", label, WARN, " ".join(warnings[:2]))
 
 
-def blacklist_row(tracker: str, reason: str | None) -> Row:
-    label = f"{tracker} blacklist"
+def do_not_upload_row(tracker: str, reason: str | None) -> Row:
+    label = f"Do-Not-Upload ({tracker})"
     if reason:
-        return Row(f"blacklist:{tracker}", label, BLOCK, reason)
-    return Row(f"blacklist:{tracker}", label, OK, "Not on the Do-Not-Upload list.")
+        return Row(f"do-not-upload:{tracker}", label, BLOCK, reason)
+    return Row(f"do-not-upload:{tracker}", label, OK, f"Not on {tracker}'s Do-Not-Upload list.")
 
 
 def _release_identity(path: str) -> dict:
@@ -269,8 +282,14 @@ def _release_identity(path: str) -> dict:
         if not tags:
             return {}
         first = next(iter(tags.values()))
-        title, _edition = parse_title(first.album) if first.album else (None, None)
-        return {"artists": construct_artists_li(tags), "title": title, "label": first.label, "catno": first.catno}
+        title, edition = parse_title(first.album) if first.album else (None, None)
+        return {
+            "artists": construct_artists_li(tags),
+            "title": title,
+            "edition_title": edition,
+            "label": first.label,
+            "catno": first.catno,
+        }
     except Exception:
         return {}
 
@@ -287,10 +306,18 @@ def _audio_info(path: str) -> dict:
         return {}
 
 
-async def _tracker_rows(tracker: str, identity: dict) -> tuple[list[Row], dict]:
+async def _tracker_rows(tracker: str, identity: dict, source: str | None) -> tuple[list[Row], dict]:
     """Verdict rows for one tracker, plus the matches behind them for the UI to list."""
     rows: list[Row] = []
     raw: dict[str, dict] = {}
+    if tracker in LISTS:
+        # An unreadable list gives a reason too: it refuses everything, so the row blocks.
+        reason = do_not_upload_reason(tracker, Candidate.from_metadata({**identity, "source": source}))
+        rows.append(do_not_upload_row(tracker, reason))
+        if reason:
+            # As an upload does: a listed release is not searched for there.
+            rows.append(Row(f"dupe:{tracker}", f"Duplicate ({tracker})", SKIP, "Not searched: the list forbids it."))
+            return rows, raw
     searchstrs = generate_dupe_check_searchstrs(identity["artists"], identity["title"], identity["catno"])
     try:
         site = salmon.trackers.get_class(tracker)()
@@ -300,14 +327,6 @@ async def _tracker_rows(tracker: str, identity: dict) -> tuple[list[Row], dict]:
     else:
         rows.append(dupe_row(tracker, results))
         raw[f"dupe:{tracker}"] = {"searchstrs": searchstrs, "matches": dupe_matches(site.base_url, results)}
-    if tracker == "RED":
-        try:
-            reason = red_blacklist_reason(identity["artists"], identity["title"], identity["label"])
-        except Exception as e:
-            # Fail closed: an unreadable blacklist must not silently clear a release.
-            rows.append(Row("blacklist:RED", "RED blacklist", BLOCK, f"Could not check the blacklist: {e}"))
-        else:
-            rows.append(blacklist_row(tracker, reason))
     return rows, raw
 
 
@@ -320,7 +339,7 @@ async def run_checks(
     """Run the selected album checks and return verdict rows plus the raw results.
 
     checks defaults to all of them; trackers adds a duplicate search per site and,
-    for RED, a blacklist row. Pass no trackers to check the files alone.
+    for RED and OPS, a Do-Not-Upload row. Pass no trackers to check the files alone.
     """
     selected = CHECK_IDS if checks is None else tuple(checks)
     guess = await asyncio.to_thread(detect_source, path)
@@ -346,13 +365,20 @@ async def run_checks(
         # so they are checked even when the duplicate search cannot run.
         for tracker in trackers:
             rows.append(rules_row(tracker, folder, track_data))
+            if row := sixteen_bit_row(tracker, track_data):
+                rows.append(row)
         if identity.get("title"):
             for tracker in trackers:
-                tracker_rows, tracker_raw = await _tracker_rows(tracker, identity)
+                tracker_rows, tracker_raw = await _tracker_rows(tracker, identity, ctx["source"])
                 rows.extend(tracker_rows)
                 raw.update(tracker_raw)
         else:
             rows.append(Row("dupe", "Duplicate", WARN, "Tags could not be read, so no duplicate search could be run."))
+            rows.extend(
+                Row(f"do-not-upload:{tracker}", f"Do-Not-Upload ({tracker})", SKIP, "Not checked: no album title.")
+                for tracker in trackers
+                if tracker in LISTS
+            )
 
     return {
         "rows": [msgspec.to_builtins(r) for r in rows],

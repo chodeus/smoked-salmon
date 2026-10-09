@@ -112,7 +112,6 @@ def flow(monkeypatch):
         "concat_track_data": _sync({"01.flac": {}}),
         "resolve_cover_url": recording("resolve_cover_url", (True, None)),
         "strip_oversized_pictures": _sync(False),
-        "red_blacklist_reason": _sync(None),
         "collect_upload_warnings": _sync([]),
         "check_requests": recording("check_requests"),
         "check_existing_group": recording("check_existing_group", 5),
@@ -583,3 +582,31 @@ def test_conversions_the_edition_already_holds_are_left_out_after_the_flac(flow,
     assert offered == [{"MP3 V0"}]
     out = capsys.readouterr().out
     assert "DUPE RISK: this edition already has MP3 V0" in out
+
+
+def test_a_listed_first_tracker_is_not_weighed_or_searched(flow, monkeypatch) -> None:
+    calls, _executed, _set_fake = flow
+    monkeypatch.setattr(
+        salmon.uploader, "do_not_upload_reason", lambda tracker, _release: "listed" if tracker == "RED" else None
+    )
+
+    _upload(["RED", "OPS"])
+
+    names_and_sites = [(name, site) for name, site, _kw in calls]
+    assert ("recheck_edition", "RED") not in names_and_sites
+    assert [site for name, site in names_and_sites if name == "upload_and_report"] == ["OPS"]
+
+
+@pytest.mark.parametrize("conversion", [None, {"source": "Album [24-96]"}], ids=["an-album", "salmons-conversion"])
+def test_the_markers_are_weighed_first_except_on_salmons_own_conversions(flow, monkeypatch, conversion) -> None:
+    _calls, _executed, _set_fake = flow
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+    monkeypatch.setattr(salmon.uploader, "conversion_of", lambda _path: conversion)
+    monkeypatch.setattr(salmon.uploader, "converted_from_note", lambda *_args: None)
+    order: list[str] = []
+    monkeypatch.setattr(salmon.uploader, "standardize_tags", lambda _path: order.append("standardize"))
+    monkeypatch.setattr(salmon.uploader, "_warn_about_provenance", lambda path: order.append(f"warn {path}"))
+
+    _upload(None)
+
+    assert order == (["standardize"] if conversion else ["warn /release", "standardize"])
