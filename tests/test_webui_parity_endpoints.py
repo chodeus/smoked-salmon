@@ -349,7 +349,8 @@ def test_cross_upload_runs_the_command_with_the_forms_options(client, two_tracke
 def test_cross_upload_refuses_a_target_group_id_below_one(client, two_trackers, group_id) -> None:
     source, target = two_trackers
     body = {"path": "12345", "source": source, "target": target, "target_group_id": group_id, "all_formats": True}
-    assert client.post("/api/cross-upload", json=body).status_code == 422
+    response = client.post("/api/cross-upload", json=body)
+    assert response.status_code == 422
 
 
 def test_a_cross_upload_that_stops_fails_its_job_saying_so(client, two_trackers, monkeypatch) -> None:

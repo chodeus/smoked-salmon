@@ -297,7 +297,8 @@ def test_a_release_with_mixed_sample_rates_gets_only_the_transcodes(capsys, rate
     assert [option["name"] for option in options] == ["MP3 320", "MP3 V0"]
     listed = ", ".join(f"{rate / 1000:g}" for rate in sorted(rates))
     message = f"No lossless downconversion: the files have different sample rates ({listed} kHz)."
-    assert capsys.readouterr().out.count(message) == 1
+    printed = capsys.readouterr().out
+    assert printed.count(message) == 1
 
 
 @pytest.mark.parametrize(
@@ -309,4 +310,5 @@ def test_a_release_at_one_sample_rate_still_gets_its_downconversions(capsys, rat
 
     assert [o["name"] for o in options if o["action"] == "downconvert"] == names
     assert [o["name"] for o in options if o["action"] == "transcode"] == ["MP3 320", "MP3 V0"]
-    assert "different sample rates" not in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "different sample rates" not in printed

@@ -1,8 +1,4 @@
-"""What this fork's cross-upload adds to upstream's: a folder of .torrent files as INPUT, conversions only into a
-group TARGET has, --all-formats, and the 16-bit rule read from the files whatever the label.
-
-The runs use test_cross_upload.py's fake trackers, image hosts and seedbox.
-"""
+"""What this fork's cross-upload adds to upstream's, run on test_cross_upload.py's fake trackers and seedbox."""
 
 from pathlib import Path
 from typing import Any
@@ -56,7 +52,8 @@ def test_a_folder_gives_each_torrent_file_directly_in_it(tmp_path: Path) -> None
     outside = _torrent_files(tmp_path / "elsewhere", "e.torrent")[0]
     (folder / "e.torrent").symlink_to(outside)
 
-    assert _folder_torrents(str(folder)) == [str(upper), str(lower)]
+    torrents = _folder_torrents(str(folder))
+    assert torrents == [str(upper), str(lower)]
 
 
 def test_a_folder_with_no_torrent_file_is_refused(tmp_path: Path) -> None:
@@ -68,7 +65,8 @@ def test_a_folder_with_no_torrent_file_is_refused(tmp_path: Path) -> None:
 def test_a_torrent_id_is_its_own_input_even_beside_a_folder_of_that_name(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     _torrent_files(tmp_path / "42", "a.torrent")
-    assert _folder_torrents("42") == ["42"]
+    torrents = _folder_torrents("42")
+    assert torrents == ["42"]
 
 
 def _refused_before_any_request(monkeypatch, args: list[str]) -> str:
@@ -80,7 +78,8 @@ def _refused_before_any_request(monkeypatch, args: list[str]) -> str:
 
 def test_a_folder_of_more_releases_than_a_run_takes_is_refused_before_any_request(monkeypatch, tmp_path) -> None:
     _torrent_files(tmp_path, *(f"{number}.torrent" for number in range(6)))
-    assert "At most 5 releases per run, not 6." in _refused_before_any_request(monkeypatch, [str(tmp_path)])
+    refusal = _refused_before_any_request(monkeypatch, [str(tmp_path)])
+    assert "At most 5 releases per run, not 6." in refusal
 
 
 @pytest.mark.parametrize(
@@ -93,7 +92,8 @@ def test_a_folder_of_more_releases_than_a_run_takes_is_refused_before_any_reques
     ids=["no-conversion", "with-group-id", "two-releases"],
 )
 def test_target_group_id_is_checked_before_any_request(monkeypatch, args: list[str], said: str) -> None:
-    assert said in _refused_before_any_request(monkeypatch, args)
+    refusal = _refused_before_any_request(monkeypatch, args)
+    assert said in refusal
 
 
 def test_a_folder_of_two_torrents_is_two_releases_for_target_group_id(monkeypatch, tmp_path) -> None:

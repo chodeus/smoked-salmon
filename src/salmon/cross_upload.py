@@ -269,11 +269,7 @@ def is_torrent_reference(value: str) -> bool:
 
 
 def _folder_torrents(value: str) -> list[str]:
-    """Each .torrent file directly in the folder an INPUT is, or the INPUT itself when it is no folder.
-
-    Raises:
-        click.UsageError: If a folder holds no .torrent file.
-    """
+    """Each .torrent file directly in a folder INPUT, or the INPUT itself; UsageError for a folder with none."""
     if not is_torrent_reference(value) and (folder := Path(value).expanduser()).is_dir():
         real = os.path.realpath(folder)
         # Only what stays in the folder once links are followed: an INPUT never reaches past it.
@@ -1210,11 +1206,7 @@ async def _upload(
 async def _upload_into_group(
     release: Release, target: "BaseGazelleApi", group_id: int, seedbox: UploadManager, uploaded: list[str]
 ) -> None:
-    """Upload only the release's conversions into TARGET's group, made from that group's FLAC of the edition.
-
-    Raises:
-        CrossUploadRefused: If the group holds no FLAC of the edition to name as their source.
-    """
+    """Upload only the conversions into TARGET's group, from its FLAC of the edition; refused if it has none."""
     click.secho(f"\nAdding conversions of {release.data['title']} to {target.site_string}", fg="cyan", bold=True)
     group = await target.torrentgroup(group_id)
     flac = await choose_source_flac(group, _edition(release))

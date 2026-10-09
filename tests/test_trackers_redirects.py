@@ -466,7 +466,8 @@ async def test_a_failed_source_image_fetch_never_carries_the_signed_url(monkeypa
 
     # The web UI prints the whole traceback of a failed job, causes included.
     assert "test-sig-0001" not in "".join(traceback.format_exception(caught.value))
-    assert "test-sig-0001" not in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "test-sig-0001" not in printed
 
 
 @pytest.mark.parametrize(
