@@ -39,6 +39,15 @@ RE_FEAT = re.compile(
     r" [\(\[\{]?(?:f(?:ea)?t(?:uring)?\.?|with\.) ([^\)\]\}]+)[\)\]\}]?",
     flags=re.IGNORECASE,
 )
+# Only a whole trailing (…) or […] is a useless version: a title ending in the same word keeps it.
+RE_USELESS_VERSION = re.compile(
+    r"\s*[(\[]\s*("
+    r"Original(?: Mix)?|Remastered|Clean|"
+    r"(?:Expanded|Deluxe|Anniversary|Limited|Collector'?s|Ultimate|Reissue|Bonus|Special)\s+Edition|"
+    r"Album[^()\[\]]*?(?:Edition|Mix)|feat(?:uring\b|\.|\b)[^()\[\]]+"
+    r")\s*[)\]]\s*$",
+    flags=re.IGNORECASE,
+)
 _RE_SPLIT = re.compile("|".join(re.escape(s) for s in SPLIT_CHARS))
 
 LOSSY_EXTENSIONS = frozenset({".mp3", ".m4a", ".ogg", ".opus"})
