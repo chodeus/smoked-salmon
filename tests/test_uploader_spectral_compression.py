@@ -103,6 +103,23 @@ def test_without_pyoxipng_the_oxipng_program_compresses_each_file(monkeypatch, t
 
 
 @posix_only
+def test_a_leftover_temporary_copy_is_not_compressed_again(monkeypatch, tmp_path) -> None:
+    _hide_pyoxipng(monkeypatch)
+    log = _fake_program(monkeypatch, tmp_path, 'for last; do :; done; echo small > "$last"')
+    path = _spectrals_dir(tmp_path)
+    # A copy an earlier run could not remove; this run makes its own, named after each spectral.
+    leftover = path / ".02 Full.png.tmp.png"
+    leftover.write_bytes(b"left by a failed cleanup")
+
+    anyio.run(partial(spectrals._compress_spectrals, str(path)))
+
+    calls = log.read_text().splitlines()
+    assert len(calls) == 2
+    assert not any("02 Full" in call for call in calls)
+    assert leftover.read_bytes() == b"left by a failed cleanup"
+
+
+@posix_only
 def test_a_failing_oxipng_program_leaves_the_file_and_prints_a_line(monkeypatch, tmp_path, capsys) -> None:
     _hide_pyoxipng(monkeypatch)
     # A program that damages its input before failing must not touch the original.

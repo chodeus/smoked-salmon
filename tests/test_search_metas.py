@@ -37,8 +37,13 @@ def test_metas_prints_every_result_url(monkeypatch, capsys) -> None:
 
     out = capsys.readouterr().out
     lines = [line for line in out.splitlines() if line.startswith("> ")]
-    assert len(lines) == len(RELEASE_IDS)
-    for source in RELEASE_IDS:
-        assert f"> [{source} edition] " in out
-    assert "https://artist.bandcamp.com/album/the-album" in out
-    assert "/release/the-album/654321" in out
+    assert lines == [
+        "> [Bandcamp edition] https://artist.bandcamp.com/album/the-album",
+        "> [MusicBrainz edition] https://musicbrainz.org/release/00000000-0000-0000-0000-000000000001",
+        "> [Apple Music edition] https://music.apple.com/us/album/-/1234567890",
+        "> [Discogs edition] https://www.discogs.com/release/123456",
+        "> [Beatport edition] https://beatport.com/release/the-album/654321",
+        "> [Qobuz edition] https://www.qobuz.com/album/-/abc123",
+        "> [Tidal edition] https://listen.tidal.com/album/987654",
+        "> [Deezer edition] https://www.deezer.com/album/192837",
+    ]

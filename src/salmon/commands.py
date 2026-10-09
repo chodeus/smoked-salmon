@@ -64,6 +64,14 @@ async def specs(path: str, no_delete_specs: bool, format_output: bool) -> None:
         click.secho(f"Spectrals saved to {spath}", fg="green")
 
 
+def _url_host(url: str) -> str:
+    """Only the host of an argument: an unsupported URL may hold a passkey or an authkey."""
+    try:
+        return parse.urlsplit(url).hostname or "not a URL"
+    except ValueError:
+        return "not a URL"
+
+
 @commandgroup.command()
 @click.argument("urls", type=click.STRING, nargs=-1)
 async def descgen(urls: tuple[str, ...]) -> None:
@@ -73,18 +81,24 @@ async def descgen(urls: tuple[str, ...]) -> None:
         return
 
     # Checked before any scrape starts, so a bad argument sends no request and ends without a traceback.
-    unsupported = [url for url in urls if not any(source.Scraper.regex.match(url) for source in METASOURCES.values())]
-    if unsupported:
+    supported = [any(source.Scraper.regex.match(url) for source in METASOURCES.values()) for url in urls]
+    if not all(supported):
         sources = ", ".join(METASOURCES)
-        for url in unsupported:
+        for position, (url, ok) in enumerate(zip(urls, supported, strict=True), 1):
+            if ok:
+                continue
             if os.path.isdir(url):
                 click.secho(
-                    f"{url} is a folder; descgen takes store URLs ({sources}), `salmon up` writes the description "
-                    "itself.",
+                    f"{url} is a folder; descgen takes release URLs from {sources}. `salmon up` writes the "
+                    "description itself.",
                     fg="red",
                 )
             else:
-                click.secho(f"{url} is not a release URL descgen supports. It takes URLs from {sources}.", fg="red")
+                click.secho(
+                    f"Argument {position} ({_url_host(url)}) is not a release URL descgen supports. It takes URLs "
+                    f"from {sources}.",
+                    fg="red",
+                )
         raise click.exceptions.Exit(1)
 
     description = await build_tracklist_description(urls)
