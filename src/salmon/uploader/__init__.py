@@ -17,6 +17,7 @@ from salmon.checks.do_not_upload import Candidate, do_not_upload_reason
 from salmon.checks.high_rate import sixteen_bit_notice
 from salmon.checks.integrity import resolve_integrity_for_upload
 from salmon.checks.logs import check_log_cambia
+from salmon.checks.provenance import gather_provenance
 from salmon.checks.source import detect_source
 from salmon.checks.tag_rules import (
     SIXTEEN_BIT_ABOVE_48KHZ,
@@ -614,6 +615,18 @@ def _sixteen_bit_refusal(tracker: str, audio_info: dict[str, Any]) -> bool:
     return False
 
 
+def _warn_about_provenance(path: str) -> None:
+    """Print each ripper or store marker in the tags that the audio contradicts; only warns."""
+    provenance = gather_provenance(path)
+    if not provenance["files"]:
+        click.secho("\nTag markers not checked: the tags could not be read.", fg="yellow")
+        return
+    if contradictions := provenance["contradictions"]:
+        click.secho("\nTag markers the audio contradicts:", fg="yellow", bold=True)
+        for note in contradictions:
+            click.secho(f"  - {note}", fg="yellow")
+
+
 def _another_can_follow(trackers: list[str] | None, site_code: str) -> bool:
     """Whether the run can go on to a tracker other than site_code."""
     others = [site for site in follow_up_trackers(trackers, site_code) if site != site_code]
@@ -657,6 +670,9 @@ async def _upload_staged(
         source = await _prompt_source(detect_source(path))
     audio_info = gather_audio_info(path)
     hybrid = check_hybrid(audio_info)
+    if conversion is None:
+        # Before any tag is rewritten. A conversion carries its source's tags, which describe the source's audio.
+        _warn_about_provenance(path)
     if not scene:
         standardize_tags(path)
     tags = gather_tags(path)
