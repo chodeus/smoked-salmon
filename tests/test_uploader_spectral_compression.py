@@ -1,4 +1,4 @@
-"""Spectral PNGs are compressed with oxipng where it installs, and left as sox wrote them where it does not (3.14)."""
+"""Spectral PNGs are compressed with pyoxipng, else the oxipng program, and left as sox wrote them without either."""
 
 import sys
 from functools import partial

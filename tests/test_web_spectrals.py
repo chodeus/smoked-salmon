@@ -1,13 +1,4 @@
-"""Regression test for #426: the in-process spectrals web server.
-
-#339 removed the separate ``salmon web`` process and moved the server into
-``_open_specs_in_web_server`` (src/salmon/uploader/spectrals.py), started while
-reviewing spectrals during ``up``. That change shipped with no test. This drives
-the real function end to end: it must serve the review page and the spectral
-image files over HTTP, and it must stop its server when done. It serves the spectrals
-folder in place: nothing is linked or written into the installed package (a directory
-symlink there failed on Windows with WinError 1314).
-"""
+"""The in-process spectrals server serves the page and the images from their folder, then stops."""
 
 import errno
 import os
@@ -40,9 +31,7 @@ def _make_specs_dir(tmp_path: Path, name: str = "specs", full: bytes = _FULL_BYT
 
 
 async def _drive_server(specs_path: Path, ids: dict[int, str], requests_fn) -> int:
-    """Run ``_open_specs_in_web_server`` on an ephemeral port, let ``requests_fn``
-    poke at it in place of the "press enter" prompt, and return the port it used.
-    """
+    """Run ``_open_specs_in_web_server``, with ``requests_fn`` in place of its prompt, and return its port."""
     original_create_app_async = uploader_spectrals.create_app_async
     original_prompt_async = uploader_spectrals.prompt_async
     original_port = web_module.web_cfg.port
@@ -185,9 +174,11 @@ async def _serves_each_folder_its_own_images() -> None:
             async def requests_fn(port: int, full: bytes = full, zoom: bytes = zoom) -> None:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(f"http://127.0.0.1:{port}/static/specs/01%20Full.png") as resp:
-                        assert await resp.read() == full
+                        image = await resp.read()
+                        assert image == full
                     async with session.get(f"http://127.0.0.1:{port}/static/specs/01%20Zoom.png") as resp:
-                        assert await resp.read() == zoom
+                        image = await resp.read()
+                        assert image == zoom
 
             await _drive_server(specs_path, {1: "01 Track.flac"}, requests_fn)
 

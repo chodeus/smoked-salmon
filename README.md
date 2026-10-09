@@ -136,7 +136,7 @@ Installing with pip is not recommended because uv (and pipx) manage python versi
 	uv tool install git+https://github.com/chodeus/smoked-salmon
 	```
 
-If smoked-salmon runs on Python 3.14 (uv may pick it on a fresh install), spectral images are uploaded uncompressed because pyoxipng is not available for it yet; to have them compressed, install with `uv tool install --python 3.13 git+https://github.com/chodeus/smoked-salmon` instead, or install the oxipng program (winget, scoop, brew, apt, or its [GitHub releases](https://github.com/oxipng/oxipng/releases)), which salmon uses when it finds it.
+On Python 3.14 (uv may pick it on a fresh install) pyoxipng is not available yet, so salmon compresses spectral images with the oxipng program when it finds it (winget, scoop, brew, apt, or its [GitHub releases](https://github.com/oxipng/oxipng/releases)), and uploads them uncompressed when it does not. Installing with `uv tool install --python 3.13 git+https://github.com/chodeus/smoked-salmon` brings pyoxipng back.
 
 ### 🔹  Initial Setup
 smoked-salmon is a command-line program: run every `salmon` command in a terminal (PowerShell on Windows).
