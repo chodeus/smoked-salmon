@@ -272,11 +272,13 @@ def _folder_torrents(value: str) -> list[str]:
     """Each .torrent file directly in a folder INPUT, or the INPUT itself; UsageError for a folder with none."""
     if not is_torrent_reference(value) and (folder := Path(value).expanduser()).is_dir():
         real = os.path.realpath(folder)
-        # Only what stays in the folder once links are followed: an INPUT never reaches past it.
+        # Only what stays in the folder once links are followed: an INPUT never reaches past it. Hidden files
+        # are left out: macOS writes an AppleDouble "._name.torrent" beside each file on a share.
         torrents = sorted(
             entry
             for entry in folder.iterdir()
             if entry.suffix.lower() == ".torrent"
+            and not entry.name.startswith(".")
             and entry.is_file()
             and os.path.realpath(entry).startswith(real + os.sep)
         )

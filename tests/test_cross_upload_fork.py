@@ -40,15 +40,13 @@ def _torrent_files(folder: Path, *names: str) -> list[Path]:
     return paths
 
 
-# A folder as INPUT
-
-
 def test_a_folder_gives_each_torrent_file_directly_in_it(tmp_path: Path) -> None:
     folder = tmp_path / "torrents"
     upper, lower = _torrent_files(folder, "A.TORRENT", "b.torrent")
     _torrent_files(folder / "nested", "c.torrent")
     (folder / "d.torrent").mkdir()
     (folder / "notes.txt").write_text("not a torrent")
+    (folder / "._b.torrent").write_bytes(b"AppleDouble")
     outside = _torrent_files(tmp_path / "elsewhere", "e.torrent")[0]
     (folder / "e.torrent").symlink_to(outside)
 
@@ -115,9 +113,6 @@ def test_all_formats_is_another_name_for_all(monkeypatch, dirs) -> None:  # noqa
 
     assert run.result.exit_code == 0, run.output
     assert "   uploads: FLAC Lossless, MP3 320, MP3 V0" in run.output
-
-
-# Conversions only, into a group TARGET has
 
 
 def _target_group(*torrents: dict[str, Any]) -> dict[str, Any]:
@@ -212,9 +207,6 @@ def test_a_release_on_the_targets_list_gets_no_conversions_either(monkeypatch, d
     assert run.result.exit_code == 1
     assert "Fakes only." in run.output
     assert run.target.sent == []
-
-
-# The 16-bit rule, from the files
 
 
 def test_a_16bit_flac_above_48khz_labelled_24bit_is_still_refused_for_ops(monkeypatch, dirs) -> None:  # noqa: F811
