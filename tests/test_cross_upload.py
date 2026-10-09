@@ -5,6 +5,7 @@ from typing import Any, cast
 import anyio
 import asyncclick as click
 import pytest
+from test_checks_do_not_upload import write_lists  # pyright: ignore[reportMissingImports]
 from torf import Torrent
 
 import salmon.cross_upload as cross_upload_module
@@ -653,11 +654,7 @@ def test_a_rehost_without_a_usable_url_is_refused(returned, monkeypatch) -> None
 
 @pytest.mark.parametrize("target_group_id", [None, 9], ids=["new-upload", "conversions-only"])
 def test_a_release_on_the_targets_list_is_never_cross_uploaded(tmp_path: Path, monkeypatch, target_group_id) -> None:
-    lists = tmp_path / "lists"
-    lists.mkdir()
-    (lists / "red.toml").write_text("", encoding="utf-8")
-    (lists / "ops.toml").write_text("[[entry]]\nartist = 'Artist'\nnote = 'Fakes only.'\n", encoding="utf-8")
-    monkeypatch.setattr("salmon.checks.do_not_upload.LISTS_DIR", lists)
+    write_lists(monkeypatch, tmp_path / "lists", OPS="[[entry]]\nartist = 'Artist'\nnote = 'Fakes only.'\n")
 
     class Target:
         site_code = "OPS"
