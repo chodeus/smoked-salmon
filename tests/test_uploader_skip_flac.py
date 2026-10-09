@@ -438,9 +438,9 @@ def test_the_usual_checks_still_run(monkeypatch) -> None:
     assert transcoded
 
 
-def test_the_red_blacklist_still_blocks(monkeypatch) -> None:
+def test_the_do_not_upload_list_still_blocks(monkeypatch) -> None:
     calls, transcoded = _flow(
-        monkeypatch, _group(_torrent(11)), red_blacklist_reason=_returning("Artist is on the do-not-upload list")
+        monkeypatch, _group(_torrent(11)), do_not_upload_reason=_returning("Artist is on the do-not-upload list")
     )
 
     assert transcoded == []

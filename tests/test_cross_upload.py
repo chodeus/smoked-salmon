@@ -5,6 +5,7 @@ from typing import Any, cast
 import anyio
 import asyncclick as click
 import pytest
+from test_checks_do_not_upload import write_lists  # pyright: ignore[reportMissingImports]
 from torf import Torrent
 
 import salmon.cross_upload as cross_upload_module
@@ -212,6 +213,7 @@ def test_conversion_uploads_share_original_group(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(cross_upload_module, "generate_transcode_description", lambda _url, rate: f"{rate} description")
 
     class Target:
+        site_code = "OPS"
         base_url = "https://orpheus.network"
 
         def __init__(self):
@@ -281,6 +283,7 @@ def test_a_cross_upload_sends_the_targets_own_form_fields(tmp_path: Path, monkey
     sent: list[dict] = []
 
     class Target:
+        site_code = "DIC"
         base_url = "https://dicmusic.com"
 
         def upload_form_fields(self, metadata, track_data):
@@ -299,7 +302,7 @@ def test_a_cross_upload_sends_the_targets_own_form_fields(tmp_path: Path, monkey
     monkeypatch.setattr(
         cross_upload_module,
         "_compile_data",
-        lambda *_args: {"bitrate": "24bit Lossless", "artists[]": ["A"], "title": "T"},
+        lambda *_args: {"bitrate": "24bit Lossless", "artists[]": ["A"], "importance[]": [1], "title": "T"},
     )
     monkeypatch.setattr(cross_upload_module, "_rehost_red_images", lambda data, *_args: returning(data))
     monkeypatch.setattr(cross_upload_module, "check_existing_group", lambda *_args, **_kwargs: returning(None))
@@ -323,6 +326,7 @@ def test_a_16_bit_cross_upload_reads_no_audio_files(tmp_path: Path, monkeypatch)
     read: list[str] = []
 
     class Target:
+        site_code = "DIC"
         base_url = "https://dicmusic.com"
 
         def upload_form_fields(self, _metadata, _track_data):
@@ -337,7 +341,9 @@ def test_a_16_bit_cross_upload_reads_no_audio_files(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(cross_upload_module, "_release_path", lambda _response: tmp_path)
     monkeypatch.setattr(cross_upload_module, "_verify_release_files", lambda *_args: None)
     monkeypatch.setattr(
-        cross_upload_module, "_compile_data", lambda *_args: {"bitrate": "Lossless", "artists[]": ["A"], "title": "T"}
+        cross_upload_module,
+        "_compile_data",
+        lambda *_args: {"bitrate": "Lossless", "artists[]": ["A"], "importance[]": [1], "title": "T"},
     )
     monkeypatch.setattr(cross_upload_module, "_rehost_red_images", lambda data, *_args: returning(data))
     monkeypatch.setattr(cross_upload_module, "check_existing_group", lambda *_args, **_kwargs: returning(None))
@@ -361,6 +367,7 @@ def test_a_cross_upload_names_the_files_exactly_as_on_disk(tmp_path: Path, monke
     normalized: list[bool] = []
 
     class Target:
+        site_code = "OPS"
         base_url = "https://orpheus.network"
 
         def upload_form_fields(self, _metadata, _track_data):
@@ -379,12 +386,15 @@ def test_a_cross_upload_names_the_files_exactly_as_on_disk(tmp_path: Path, monke
     monkeypatch.setattr(cross_upload_module, "_release_path", lambda _response: tmp_path)
     monkeypatch.setattr(cross_upload_module, "_verify_release_files", lambda *_args: None)
     monkeypatch.setattr(
-        cross_upload_module, "_compile_data", lambda *_args: {"bitrate": "Lossless", "artists[]": ["A"], "title": "T"}
+        cross_upload_module,
+        "_compile_data",
+        lambda *_args: {"bitrate": "Lossless", "artists[]": ["A"], "importance[]": [1], "title": "T"},
     )
     monkeypatch.setattr(cross_upload_module, "_rehost_red_images", lambda data, *_args: returning(data))
     monkeypatch.setattr(cross_upload_module, "check_existing_group", lambda *_args, **_kwargs: returning(None))
     monkeypatch.setattr(cross_upload_module, "generate_torrent", generate_torrent)
     monkeypatch.setattr(cross_upload_module, "compile_files", lambda *_args: returning({}))
+    monkeypatch.setattr(cross_upload_module, "gather_audio_info", lambda _path: {})
 
     async def run():
         return await cross_upload_module._upload_response(
@@ -405,13 +415,18 @@ def test_existing_group_skips_duplicate_original(tmp_path: Path, monkeypatch) ->
         conversion_calls.append(args)
 
     class Target:
+        site_code = "OPS"
         base_url = "https://orpheus.network"
 
         async def upload(self, _data, _files):
             raise AssertionError("original torrent must not be uploaded")
 
     monkeypatch.setattr(cross_upload_module, "_release_path", lambda _response: tmp_path)
-    monkeypatch.setattr(cross_upload_module, "_compile_data", lambda *_args: {"format": "FLAC"})
+    monkeypatch.setattr(
+        cross_upload_module,
+        "_compile_data",
+        lambda *_args: {"format": "FLAC", "artists[]": ["A"], "importance[]": [1], "title": "T"},
+    )
     monkeypatch.setattr(cross_upload_module, "_upload_conversions", fake_upload_conversions)
 
     async def run():
@@ -635,3 +650,130 @@ def test_a_rehost_without_a_usable_url_is_refused(returned, monkeypatch) -> None
     # It would otherwise be substituted into the description, and None breaks str.replace outright.
     with pytest.raises(click.ClickException):
         _rehost(monkeypatch, returned)
+
+
+@pytest.mark.parametrize("target_group_id", [None, 9], ids=["new-upload", "conversions-only"])
+def test_a_release_on_the_targets_list_is_never_cross_uploaded(tmp_path: Path, monkeypatch, target_group_id) -> None:
+    write_lists(monkeypatch, tmp_path / "lists", OPS="[[entry]]\nartist = 'Artist'\nnote = 'Fakes only.'\n")
+
+    class Target:
+        site_code = "OPS"
+        site_string = "OPS"
+        base_url = "https://orpheus.network"
+
+        async def upload(self, _data, _files):
+            raise AssertionError("a listed release must not be uploaded")
+
+    async def never(*_args, **_kwargs):
+        raise AssertionError("nothing is converted for a listed release")
+
+    monkeypatch.setattr(cross_upload_module, "_release_path", lambda _response: tmp_path)
+    monkeypatch.setattr(cross_upload_module, "_verify_release_files", lambda *_args: None)
+    monkeypatch.setattr(
+        cross_upload_module,
+        "_compile_data",
+        lambda *_args: {"bitrate": "Lossless", "artists[]": ["Artist"], "importance[]": [1], "title": "Album"},
+    )
+    monkeypatch.setattr(cross_upload_module, "_upload_conversions", never)
+    monkeypatch.setattr(cross_upload_module, "check_existing_group", never)
+
+    async def run():
+        return await cross_upload_module._upload_response(
+            {"torrent": {"format": "FLAC", "encoding": "Lossless", "media": "WEB"}},
+            cast("Any", SourceSite()),
+            cast("Any", Target()),
+            target_group_id=target_group_id,
+            transcodes=("320",),
+        )
+
+    with pytest.raises(click.ClickException, match="Not uploading to OPS: Artist \\(the whole discography\\)"):
+        anyio.run(run)
+
+
+def _sixteen_bit_96khz_to(target_code: str, tmp_path: Path, monkeypatch, encoding: str = "Lossless"):
+    """A cross-upload of a FLAC whose files are 16bit 96 kHz to target_code; returns (upload, what reached it)."""
+    sent: list[dict] = []
+
+    class Target:
+        site_code = target_code
+        site_string = target_code
+        base_url = "https://tracker.test"
+
+        def upload_form_fields(self, _metadata, _track_data):
+            return {}
+
+        async def upload(self, data, _files):
+            sent.append(data)
+            return 1, 2
+
+    async def returning(value):
+        return value
+
+    monkeypatch.setattr(cross_upload_module, "_release_path", lambda _response: tmp_path)
+    monkeypatch.setattr(cross_upload_module, "_verify_release_files", lambda *_args: None)
+    monkeypatch.setattr(
+        cross_upload_module,
+        "_compile_data",
+        lambda *_args: {"bitrate": "Lossless", "artists[]": ["A"], "importance[]": [1], "title": "T"},
+    )
+
+    def rehost(data, *_args):
+        sent.append({"rehosted": True})
+        return returning(data)
+
+    def search(*_args, **_kwargs):
+        sent.append({"searched": True})
+        return returning(None)
+
+    monkeypatch.setattr(cross_upload_module, "_rehost_red_images", rehost)
+    monkeypatch.setattr(cross_upload_module, "check_existing_group", search)
+    monkeypatch.setattr(cross_upload_module, "generate_torrent", lambda *_args, **_kwargs: ("/t.torrent", None))
+    monkeypatch.setattr(cross_upload_module, "compile_files", lambda *_args: returning({}))
+    monkeypatch.setattr(
+        cross_upload_module, "gather_audio_info", lambda _path: {"01.flac": {"sample rate": 96000, "precision": 16}}
+    )
+
+    def upload(**options):
+        return anyio.run(
+            lambda: cross_upload_module._upload_response(
+                {"torrent": {"format": "FLAC", "encoding": encoding, "media": "WEB"}},
+                cast("Any", SourceSite()),
+                cast("Any", Target()),
+                **options,
+            )
+        )
+
+    return upload, sent
+
+
+@pytest.mark.parametrize("encoding", ["Lossless", "24bit Lossless"], ids=["16bit", "labelled-24bit"])
+def test_a_16bit_flac_above_48khz_is_refused_for_ops(tmp_path: Path, monkeypatch, encoding: str) -> None:
+    upload, sent = _sixteen_bit_96khz_to("OPS", tmp_path, monkeypatch, encoding)
+
+    with pytest.raises(click.ClickException, match=r"Not uploading to OPS: 1 16bit file\(s\) above 48 kHz"):
+        upload()
+    assert sent == []
+
+
+def test_a_16bit_flac_above_48khz_goes_to_red_with_a_note(tmp_path: Path, monkeypatch, capsys) -> None:
+    upload, sent = _sixteen_bit_96khz_to("RED", tmp_path, monkeypatch)
+
+    upload()
+
+    assert [form for form in sent if "rehosted" not in form and "searched" not in form] != []
+    out = capsys.readouterr().out
+    assert "1 16bit file(s) above 48 kHz: 01.flac (96 kHz). RED can trump them." in out
+
+
+def test_conversions_only_into_an_ops_group_are_not_refused(tmp_path: Path, monkeypatch) -> None:
+    upload, _sent = _sixteen_bit_96khz_to("OPS", tmp_path, monkeypatch)
+    converted: list[int] = []
+
+    async def conversions(*args, **_kwargs):
+        converted.append(args[3])
+
+    monkeypatch.setattr(cross_upload_module, "_upload_conversions", conversions)
+
+    uploaded = upload(target_group_id=9, transcodes=("320",))
+    assert uploaded == (0, 9)
+    assert converted == [9]
