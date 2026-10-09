@@ -17,7 +17,8 @@ class FakeTags(dict):
 
 
 def tagfile(vendor=None, bitdepth: int | None = 16, **fields):
-    info = SimpleNamespace(bits_per_sample=bitdepth)
+    # ALAC: a lossless file, whose bit depth lossless_depth reads.
+    info = SimpleNamespace(codec="alac", bits_per_sample=bitdepth, sample_rate=44100)
     return SimpleNamespace(mut=SimpleNamespace(tags=FakeTags(vendor, **fields), info=info))
 
 

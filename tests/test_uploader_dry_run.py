@@ -295,9 +295,10 @@ def _run_up(
     classes: dict[str, type[BaseGazelleApi]] | None = None,
     multi_tracker_upload: bool = True,
     yes_all: bool = True,
+    trackers: tuple[str, ...] = ("RED",),
     **fakes: Any,
 ) -> Run:
-    """`salmon up ALBUM -t RED` on the fake tracker, real staging and forms; `classes` maps site codes to clients."""
+    """`salmon up ALBUM -t RED` (or `trackers`) on the fake tracker with real forms; `classes` maps codes to clients."""
     rls_data = {
         "format": "FLAC",
         "encoding": "Lossless",
@@ -367,7 +368,8 @@ def _run_up(
         async with tracker.serving():
             return await CliRunner().invoke(
                 salmon.uploader.up,
-                [str(album), "-t", "RED", "-s", "WEB", "-n", *(["-yyy"] if yes_all else [])]
+                [str(album), *(arg for code in trackers for arg in ("-t", code)), "-s", "WEB", "-n"]
+                + (["-yyy"] if yes_all else [])
                 + ["--skip-integrity-check", "--skip-up"]
                 + ["--source-url", SOURCE_URL, *args],
                 input=input,
