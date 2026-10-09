@@ -66,7 +66,8 @@ class CrossUploadRequest(BaseModel):
     source: str
     target: str
     downconvert: bool = False
-    target_group_id: int | None = None
+    # As the CLI's IntRange: a 0 would read as no group and upload the FLAC too.
+    target_group_id: int | None = Field(default=None, ge=1)
     all_formats: bool = False
     transcodes: list[str] = Field(default_factory=list)
     dry_run: bool = False
