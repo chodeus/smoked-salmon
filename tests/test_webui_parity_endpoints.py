@@ -308,6 +308,64 @@ def test_cross_upload_reconfines_the_path_when_the_job_starts(client, two_tracke
     assert calls == [], "the command must not run once the path fails confinement"
 
 
+def _cross_upload_job(client, two_trackers, monkeypatch, body: dict, run=None) -> tuple[dict, list[dict]]:
+    """Post a cross-upload of torrent 12345 with body, run by run (or a stub), and wait for its job."""
+    source, target = two_trackers
+    calls: list[dict] = []
+
+    async def fake_cross_upload(**kwargs):
+        calls.append(kwargs)
+        if run is not None:
+            run()
+
+    monkeypatch.setattr("salmon.webui.routers.tools._CROSS_UPLOAD", fake_cross_upload)
+    r = client.post("/api/cross-upload", json={"path": "12345", "source": source, "target": target, **body})
+    assert r.status_code == 200, r.text
+    return _wait(client, r.json()["id"]), calls
+
+
+def test_cross_upload_runs_the_command_with_the_forms_options(client, two_trackers, monkeypatch) -> None:
+    body = {"target_group_id": 9, "all_formats": True, "transcodes": ["V0"], "dry_run": True}
+    job, calls = _cross_upload_job(client, two_trackers, monkeypatch, body)
+    assert job["status"] == "done", job
+    assert calls == [
+        {
+            "inputs": ("12345",),
+            "source": "RED",
+            "target": "OPS",
+            "path": None,
+            "group_id": None,
+            "target_group_id": 9,
+            "transcodes": ("V0",),
+            "downconvert": False,
+            "all_formats": True,
+            "yyy": False,
+            "dry_run": True,
+        }
+    ]
+
+
+def test_a_cross_upload_that_stops_fails_its_job_saying_so(client, two_trackers, monkeypatch) -> None:
+    import asyncclick as click
+
+    def stop() -> None:
+        raise click.exceptions.Exit(1)
+
+    job, _ = _cross_upload_job(client, two_trackers, monkeypatch, {}, stop)
+    assert job["status"] == "error"
+    assert "the cross-upload stopped: its output above says why" in job["error"]
+
+
+def test_a_cross_upload_that_exits_cleanly_finishes_its_job(client, two_trackers, monkeypatch) -> None:
+    import asyncclick as click
+
+    def done() -> None:
+        raise click.exceptions.Exit(0)
+
+    job, _ = _cross_upload_job(client, two_trackers, monkeypatch, {}, done)
+    assert job["status"] == "done", job
+
+
 @pytest.mark.parametrize("bad", [0, -1])
 def test_upload_rejects_non_positive_spectral_tracks(client, album, bad) -> None:
     # Negative numbers index from the end of the track list; 0 is a sentinel.

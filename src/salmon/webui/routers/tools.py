@@ -8,6 +8,7 @@ browser questions the same way an upload job does.
 import os
 from typing import Any, cast
 
+import asyncclick as click
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -68,6 +69,7 @@ class CrossUploadRequest(BaseModel):
     target_group_id: int | None = None
     all_formats: bool = False
     transcodes: list[str] = Field(default_factory=list)
+    dry_run: bool = False
 
 
 def _queue(kind: str, title: str, run, meta: dict, lock_key: str | None = None) -> dict:
@@ -175,15 +177,25 @@ async def cross_upload(req: CrossUploadRequest) -> dict:
     async def run(job: Job) -> dict:
         # The job runs later: re-confine so a path swapped since the request cannot be read.
         source_input = req.path if is_torrent_reference(req.path) else validate_confined_path(req.path)
-        await _CROSS_UPLOAD(
-            torrent_or_directory=source_input,
-            source=req.source,
-            target=req.target,
-            downconvert=req.downconvert,
-            target_group_id=req.target_group_id,
-            all_formats=req.all_formats,
-            transcodes=tuple(req.transcodes),
-        )
+        try:
+            await _CROSS_UPLOAD(
+                inputs=(source_input,),
+                source=req.source,
+                target=req.target,
+                path=None,
+                group_id=None,
+                target_group_id=req.target_group_id,
+                transcodes=tuple(req.transcodes),
+                downconvert=req.downconvert,
+                all_formats=req.all_formats,
+                # Never -yyy here: it sets yes_all for the rest of the process. The job asks instead.
+                yyy=False,
+                dry_run=req.dry_run,
+            )
+        except click.exceptions.Exit as stopped:
+            if stopped.exit_code:
+                # Its own output says why; "Exit: 1" alone would not.
+                raise click.ClickException("the cross-upload stopped: its output above says why") from None
         return {"source": req.source, "target": req.target}
 
     title = f"Cross-upload {req.source} -> {req.target}"

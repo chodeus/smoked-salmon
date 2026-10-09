@@ -4,12 +4,9 @@ import asyncio
 import threading
 import time
 import traceback
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
-import aiohttp
-import asyncclick as click
 import pytest
 from aiohttp import web
 from tenacity import stop_after_attempt
@@ -209,9 +206,12 @@ async def test_a_raw_site_fetch_takes_a_slot_and_stays_put(serve, api_for):
     assert cast("CountingLimiter", _tracker_limiter("RED")).slots == 1
 
 
-async def _stream_image(request: web.Request, chunks: int, size: int, pause: float) -> web.StreamResponse:
+async def _stream_image(
+    request: web.Request, chunks: int, size: int, pause: float, head: bytes = b""
+) -> web.StreamResponse:
     resp = web.StreamResponse(headers={"Content-Type": "image/jpeg"})
     await resp.prepare(request)
+    await resp.write(head)
     for _ in range(chunks):
         await resp.write(b"x" * size)
         await asyncio.sleep(pause)
@@ -232,21 +232,15 @@ async def test_a_trickled_raw_site_fetch_still_times_out(serve, api_for):
     assert loop.time() - start < 2
 
 
-async def test_a_rehosted_red_image_is_read_to_the_end(serve, api_for, monkeypatch):
+async def test_a_source_image_to_rehost_is_read_to_the_end(serve, api_for):
+    jpeg = b"\xff\xd8\xff\xe0"
+
     async def image(request: web.Request) -> web.StreamResponse:
-        return await _stream_image(request, chunks=3, size=65536, pause=0.05)
+        return await _stream_image(request, chunks=3, size=65536, pause=0.05, head=jpeg)
 
-    uploaded: list[int] = []
-
-    async def upload_file(path: str) -> tuple[str, None]:
-        uploaded.append(len(Path(path).read_bytes()))
-        return "https://files.catbox.moe/abc.jpg", None
-
-    host = SimpleNamespace(ImageUploader=lambda: SimpleNamespace(upload_file=upload_file))
-    monkeypatch.setitem(cross_upload.HOSTS, "catbox", host)
     url = await serve(image=image)
-    await cross_upload._rehost_red_image(f"{url}/image.php", api_for(url), "catbox")
-    assert uploaded == [3 * 65536]
+    content, suffix = await cross_upload._fetch_source_image(f"{url}/image.php", api_for(url))
+    assert (len(content), suffix) == (len(jpeg) + 3 * 65536, ".jpg")
 
 
 async def test_clients_of_one_tracker_share_one_budget(api_for):
@@ -447,38 +441,32 @@ def test_same_origin_ignores_host_case_and_the_default_port(url, same):
     assert _same_origin(url, "https://redacted.sh") is same
 
 
-async def test_a_refused_rehost_fetch_is_a_clean_error(monkeypatch):
+async def test_a_source_image_on_another_site_is_refused():
     site = FakeApi("https://redacted.sh")
     try:
-        with pytest.raises(click.ClickException, match="Could not download RED image"):
-            await cross_upload._rehost_red_image("https://evil.example/i/x.jpg", site, "catbox")
+        with pytest.raises(cross_upload.CrossUploadRefused, match="is not on RED's own site"):
+            await cross_upload._fetch_source_image("https://evil.example/i/x.jpg", site)
     finally:
         await site.close()
 
 
-async def test_a_failed_rehost_fetch_never_carries_the_signed_url(monkeypatch):
+async def test_a_failed_source_image_fetch_never_carries_the_signed_url(monkeypatch, capsys):
     site = FakeApi("https://redacted.sh")
-
-    class CutOff:
-        def __init__(self, url: str, headers: dict[str, str] | None = None) -> None:
-            self.url = url
-
-        async def __aenter__(self) -> None:
-            raise aiohttp.ClientPayloadError(f"Response payload is not completed for {self.url}")
-
-        async def __aexit__(self, *_exc: object) -> None:
-            return None
-
-    monkeypatch.setattr(site, "site_get", CutOff)
     signed = "https://redacted.sh/i/x.jpg?sig=test-sig-0001"
+
+    async def cut_off(*_args: Any, **_kwargs: Any) -> None:
+        raise RetryableError(f"Response payload is not completed for {signed}")
+
+    monkeypatch.setattr(site, "_request", cut_off)
     try:
-        with pytest.raises(click.ClickException) as caught:
-            await cross_upload._rehost_red_image(signed, site, "catbox")
+        with pytest.raises(cross_upload.CrossUploadRefused) as caught:
+            await cross_upload._fetch_source_image(signed, site)
     finally:
         await site.close()
 
     # The web UI prints the whole traceback of a failed job, causes included.
     assert "test-sig-0001" not in "".join(traceback.format_exception(caught.value))
+    assert "test-sig-0001" not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

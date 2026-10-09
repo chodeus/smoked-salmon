@@ -17,7 +17,7 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 > - A full browser interface (`salmon web`) behind a shared-secret token, with inline spectrals and interactive prompts.
 > - Per-tracker image hosts, per-tracker seedbox destinations, and site-aware upload rules (path limits, bit-depth/sample-rate policy).
 > - RED's and OPS's Do-Not-Upload lists, which stop a listed release before anything is made or sent for that tracker.
-> - `--dry-run`, RED↔OPS cross-upload, and a single-mount (`/config` + `/data`) container layout.
+> - `--dry-run`, cross-upload from a folder of `.torrent` files or into a group the target already has, and a single-mount (`/config` + `/data`) container layout.
 > - Fixes for upstream issues #353, #356, #358, #429, #430, #432, #433, plus Apple Music / Tidal repairs and multi-disc log handling.
 >
 > **Defaults that differ from upstream:** the recent-uploads check is **off** (#432 — it could flood `login.php` and get an IP firewalled), and RED's own image host is available for RED covers as an opt-in.
@@ -354,6 +354,26 @@ descriptions link to the group's FLAC in this release's edition (same media, enc
 edition title); if there are several, salmon asks which one (with `--yes-all` it stops). Formats the edition already
 has are flagged as a dupe risk and left out unless you pick them by number. In the web interface this is the
 "Transcodes only" option.
+
+To upload a torrent that is on RED, OPS or DIC to another of them, from the files you already have:
+```bash
+salmon cross-upload 123456 RED OPS
+```
+Give the source torrent's ID, URL or `.torrent` file, or a folder of `.torrent` files, up to 5 releases per run,
+then the source and target trackers. The files must be exactly the torrent's, in
+`download_directory/<the torrent's folder>` (or give the folder with `--path`). salmon first reads each torrent and
+checks its files, its log and its images, and shows the plan; then, for each release, it checks the target for
+duplicates as `up` does and uploads it with the source's group and torrent data. `--transcode 320`, `--transcode V0`,
+`--downconvert` (a 24-bit FLAC's lossless downconversions) and `--all` (or `--all-formats`) add the conversions `up`
+would make. The album folder is never changed: the new torrent seeds from the same files, and a seedbox only gets
+the new torrent, not another copy. `--dry-run` reads from both trackers and sends nothing. A cross-upload to DIC is
+never marked Self-purchased, Self-rip or Exclusive, and a 24-bit one gets its sample rate as `up` sends it; DIC's
+rules and answers have not been checked against DIC itself.
+
+To add only the conversions to a group the target already has, made from the group's FLAC of the same edition:
+```bash
+salmon cross-upload 123456 RED OPS --target-group-id 7890 --transcode V0
+```
 
 To vet an album before deciding whether to upload it at all — every check in one pass, with a single verdict and a non-zero exit when the release is unfit:
 ```bash
