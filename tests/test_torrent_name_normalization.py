@@ -147,9 +147,6 @@ def test_torrent_name_normalization_rejects_invalid_value() -> None:
         Upload(torrent_name_normalization="nfc")
 
 
-# A seedbox whose client cannot find the normalized names
-
-
 @pytest.fixture
 def seedboxes(monkeypatch: pytest.MonkeyPatch):
     """Configure these seedboxes, on Linux, with none warned about yet."""
