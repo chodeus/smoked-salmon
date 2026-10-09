@@ -127,7 +127,7 @@ def _check_path_lengths(path: str, scene: bool, max_path_length: int | None = No
                 # Room to trim is the basename's, not the whole path's: a long folder
                 # with a short filename cannot be fixed by shortening the filename.
                 stem = os.path.splitext(os.path.basename(filepath))[0]
-                # At least one character of the name stays: "..flac" alone has no extension, and the track is lost.
+                # At least one character of the name stays: "...flac" has no extension, and the track is lost.
                 if filepathlen - limit + 2 < len(stem):
                     offending_files.append((filepath, filepathlen))
                 else:
