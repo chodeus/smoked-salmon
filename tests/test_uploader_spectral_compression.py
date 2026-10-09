@@ -13,7 +13,6 @@ from salmon.uploader import spectrals
 def _spectrals_dir(tmp_path: Path) -> Path:
     path = tmp_path / "Spectrals"
     path.mkdir()
-    # One track: this fork compresses every spectral in the folder, upstream only the picked ones.
     for sid in (1,):
         for kind in ("Full", "Zoom"):
             (path / f"{sid:02d} {kind}.png").write_bytes(f"png {sid} {kind}".encode())

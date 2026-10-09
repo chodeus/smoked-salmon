@@ -15,8 +15,8 @@ import anyio
 import anyio.to_thread
 import asyncclick as click
 
-# pyoxipng 9.1.1 has wheels up to CPython 3.13 only, and building it needs Rust (and MSVC on Windows), so
-# pyproject.toml installs it below 3.14 only; there, the oxipng program compresses spectrals if it is installed.
+# pyproject.toml installs pyoxipng below Python 3.14 only (no wheel for 3.14, and a build needs Rust). Where it is
+# not installed, the oxipng program compresses spectrals if it is.
 try:
     import oxipng
 except ImportError:
@@ -334,7 +334,7 @@ OXIPNG_PROGRAM_TIMEOUT = 60
 
 
 async def _compress_with_oxipng_program(program: str, filepath: str) -> bool:
-    """Compress a spectral with the oxipng program on a copy, replacing it on success; False, said once, if not."""
+    """Compress a spectral with the oxipng program on a copy, replacing it on success; False, with a line, if not."""
     # Hidden: a copy a crash leaves behind must not make the folder look like someone else's (made_by_salmon).
     tmp_path = os.path.join(os.path.dirname(filepath), f".{os.path.basename(filepath)}.tmp.png")
     try:
