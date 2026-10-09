@@ -1,6 +1,8 @@
 import json
+from types import SimpleNamespace
 
 import pytest
+from test_checks_do_not_upload import write_lists  # pyright: ignore[reportMissingImports]
 
 from salmon.checks import preflight as pf
 
@@ -193,8 +195,8 @@ def test_no_dupes_is_green():
     assert pf.dupe_row("OPS", []).verdict == pf.OK
 
 
-def test_blacklisted_release_blocks():
-    assert pf.blacklist_row("RED", "on the Do-Not-Upload list").verdict == pf.BLOCK
+def test_a_listed_release_blocks():
+    assert pf.do_not_upload_row("RED", "on the Do-Not-Upload list").verdict == pf.BLOCK
 
 
 async def test_run_checks_blocks_until_a_source_is_chosen(album_dir, monkeypatch):
@@ -303,18 +305,32 @@ async def test_unselected_checks_are_skipped_not_dropped(album_dir, monkeypatch)
     assert verdicts["mqa"] != pf.SKIP
 
 
-async def test_a_failing_blacklist_lookup_blocks_rather_than_clears(album_dir, monkeypatch):
-    """Fail closed: an unreadable blacklist must never look like 'not blacklisted'."""
+def _tagged_x_y(monkeypatch) -> None:
     monkeypatch.setattr(
         pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
     )
-    monkeypatch.setattr(
-        pf, "_release_identity", lambda _p: {"artists": [("X", "main")], "title": "Y", "label": None, "catno": None}
-    )
+    identity = {"artists": [("X", "main")], "title": "Y", "edition_title": None, "label": None, "catno": None}
+    monkeypatch.setattr(pf, "_release_identity", lambda _p: identity)
     monkeypatch.setattr(pf, "get_search_results", lambda *_a: _empty())
-    monkeypatch.setattr(pf, "red_blacklist_reason", lambda *_a: (_ for _ in ()).throw(RuntimeError("bad toml")))
+
+
+async def test_an_unreadable_list_blocks_rather_than_clears(album_dir, monkeypatch, tmp_path):
+    """Fail closed: a list salmon cannot read must never look like 'not listed'."""
+    _tagged_x_y(monkeypatch)
+    write_lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nnot toml")
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED"])
-    assert "blacklist:RED" in result["blocking"]
+    assert "do-not-upload:RED" in result["blocking"]
+
+
+async def test_a_release_on_ops_list_blocks_ops_only(album_dir, monkeypatch, tmp_path):
+    _tagged_x_y(monkeypatch)
+    write_lists(monkeypatch, tmp_path / "lists", OPS="[[entry]]\nartist = 'X'\nnote = 'Fakes only.'\n")
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED", "OPS", "DIC"])
+    assert result["blocking"] == ["do-not-upload:OPS"]
+    assert [r["id"] for r in result["rows"] if r["id"].startswith("do-not-upload")] == [
+        "do-not-upload:RED",
+        "do-not-upload:OPS",
+    ]
 
 
 async def _empty():
@@ -483,3 +499,45 @@ def test_a_part_web_album_says_how_many():
 
     assert verdict == WARN
     assert "3 of 17" in detail
+
+
+async def test_a_media_only_entry_blocks_once_the_source_is_known(album_dir, monkeypatch, tmp_path):
+    _tagged_x_y(monkeypatch)
+    write_lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nartist = 'X'\nmedia = 'WEB'\nnote = 'WEB fakes.'\n")
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED"])
+    assert "do-not-upload:RED" in result["blocking"]
+
+
+async def test_a_listed_release_is_not_searched_for_on_that_tracker(album_dir, monkeypatch, tmp_path):
+    _tagged_x_y(monkeypatch)
+    searched: list[object] = []
+
+    async def search(site, _searchstrs):
+        searched.append(site.site_code)
+        return []
+
+    monkeypatch.setattr(pf, "get_search_results", search)
+    write_lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nartist = 'X'\nnote = 'Fakes only.'\n")
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED", "OPS"])
+    assert searched == ["OPS"]
+    verdicts = {r["id"]: r["verdict"] for r in result["rows"]}
+    assert verdicts["dupe:RED"] == pf.SKIP
+
+
+async def test_without_an_album_title_the_lists_are_said_not_checked(album_dir, monkeypatch):
+    monkeypatch.setattr(
+        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+    )
+    monkeypatch.setattr(pf, "_release_identity", lambda _p: {})
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED", "DIC"])
+    verdicts = {r["id"]: r["verdict"] for r in result["rows"]}
+    assert verdicts["do-not-upload:RED"] == pf.SKIP
+    assert "do-not-upload:DIC" not in verdicts
+
+
+def test_the_identity_keeps_the_edition_title(monkeypatch):
+    tagged = SimpleNamespace(album="Night Songs (Deluxe Edition)", label="Label", catno="CAT1")
+    monkeypatch.setattr(pf, "gather_tags", lambda _path: {"01.flac": tagged})
+    monkeypatch.setattr(pf, "construct_artists_li", lambda _tags: [("Artist", "main")])
+    identity = pf._release_identity("/album")
+    assert (identity["title"], identity["edition_title"]) == ("Night Songs", "Deluxe Edition")

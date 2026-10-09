@@ -13,7 +13,7 @@ from torf import TorfError
 import salmon.trackers
 from salmon import cfg, dryrun
 from salmon.checks import mqa_test
-from salmon.checks.blacklist import red_blacklist_reason
+from salmon.checks.do_not_upload import Candidate, do_not_upload_reason
 from salmon.checks.integrity import resolve_integrity_for_upload
 from salmon.checks.logs import check_log_cambia
 from salmon.checks.source import detect_source
@@ -582,6 +582,22 @@ async def upload(
         )
 
 
+def _do_not_upload_refusal(tracker: str, release: dict[str, Any], said: str | None = None) -> str | None:
+    """Why the tracker's list forbids the release (nothing skips it), printed unless `said`, the earlier reason."""
+    reason = do_not_upload_reason(tracker, Candidate.from_metadata(release))
+    if reason is not None and reason != said:
+        click.secho(f"\nNot uploading to {tracker}: {reason}", fg="red", bold=True)
+    elif reason is None and said is not None:
+        click.secho(f"\nAs reviewed, the release is not on {tracker}'s Do-Not-Upload list.", fg="yellow")
+    return reason
+
+
+def _another_can_follow(trackers: list[str] | None, site_code: str) -> bool:
+    """Whether the run can go on to a tracker other than site_code."""
+    others = [site for site in follow_up_trackers(trackers, site_code) if site != site_code]
+    return bool(others) and bool(trackers or cfg.upload.multi_tracker_upload)
+
+
 async def _upload_staged(
     gazelle_site: "BaseGazelleApi",
     path: str,
@@ -658,7 +674,12 @@ async def _upload_staged(
         if source == "CD" and not skip_log_check:
             await _check_logs(path)
 
-        if group_id is None:
+        # A release the first tracker's list forbids gets no group search there; the review may change the names.
+        tags_refusal = _do_not_upload_refusal(gazelle_site.site_code, rls_data)
+        if group_id is None and tags_refusal:
+            # Left empty: if the review takes the release off the list, recheck_dupe then searches.
+            searchstrs = []
+        elif group_id is None:
             searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
             if len(searchstrs) > 0:
                 try:
@@ -667,12 +688,7 @@ async def _upload_staged(
                     weighed_against = dict(rls_data)
                 except RequestError as e:
                     # Skipped like a later tracker; a request is this tracker's, so with one the run ends.
-                    others = [
-                        site
-                        for site in follow_up_trackers(trackers, gazelle_site.site_code)
-                        if site != gazelle_site.site_code
-                    ]
-                    if request_id or not others or not (trackers or cfg.upload.multi_tracker_upload):
+                    if request_id or not _another_can_follow(trackers, gazelle_site.site_code):
                         click.secho(
                             f"\nCould not search {gazelle_site.site_string} for dupes: {e}", fg="red", bold=True
                         )
@@ -724,10 +740,20 @@ async def _upload_staged(
             max_path_length=run_path_limit,
         )
 
+        # Before the first tracker's group, cover and upload; spectrals go once for the run, so with a follower.
+        if _do_not_upload_refusal(gazelle_site.site_code, metadata, said=tags_refusal) is not None:
+            # With --skip-flac-upload, the FLAC's group is on this tracker alone.
+            if flac_group is not None or not _another_can_follow(trackers, gazelle_site.site_code):
+                raise click.Abort
+            skip_first = True
+            if request_id:
+                # --request names a request of this tracker: another tracker's with that ID is another request.
+                click.secho(f"\nNot filling request {request_id}: it is {gazelle_site.site_string}'s.", fg="yellow")
+                request_id = None
         if not group_id and not skip_first:
             group_id = await recheck_dupe(gazelle_site, searchstrs, metadata)
             click.echo()
-        elif group_id and flac_group is None:
+        elif group_id and flac_group is None and not skip_first:
             group_id = await recheck_edition(gazelle_site, group_id, metadata, weighed_against)
         # From here on the review may have changed the artists, title or catno: search with the reviewed metadata.
         searchstrs = generate_dupe_check_searchstrs(metadata["artists"], metadata["title"], metadata["catno"])
@@ -807,6 +833,13 @@ async def _upload_staged(
                     click.secho("\nDone with this release.", fg="green")
                     break
                 gazelle_site = salmon.trackers.get_class(tracker)()
+                # Before its dupe check, which may ask which group to upload into.
+                if _do_not_upload_refusal(tracker, metadata) is not None:
+                    remaining_gazelle_sites.remove(tracker)
+                    tracker = None
+                    if not remaining_gazelle_sites or not (trackers or cfg.upload.multi_tracker_upload):
+                        break
+                    continue
 
                 click.secho(f"Uploading to {gazelle_site.base_url}", fg="cyan", bold=True)
                 # The reviewed metadata, not the tags: an edit to artist, title or year must move the match with it.
@@ -831,17 +864,6 @@ async def _upload_staged(
                 or not remaining_gazelle_sites
                 or not (trackers or cfg.upload.multi_tracker_upload)
             )
-
-            # RED bans specific releases from being uploaded; block RED here (OPS is unaffected).
-            if gazelle_site.site_code == "RED":
-                block_reason = red_blacklist_reason(metadata["artists"], metadata["title"], metadata.get("label"))
-                if block_reason:
-                    click.secho(f"\n⛔ Blocked — {block_reason}", fg="red", bold=True)
-                    click.secho("Not uploading this release to RED.", fg="red", bold=True)
-                    if last_site:
-                        break  # choose_tracker([]) would raise; nothing left to upload to
-                    tracker = None
-                    continue
 
             proceed, cover_url = await resolve_cover_url(
                 gazelle_site.site_code,
