@@ -95,7 +95,8 @@ async def _serves_the_spectrals_page_and_static_images() -> None:
                     assert "specs/01 Full.png" in body
                 async with session.get(f"http://127.0.0.1:{port}/static/specs/01%20Full.png") as resp:
                     assert resp.status == 200
-                    assert await resp.read() == _FULL_BYTES
+                    image = await resp.read()
+                    assert image == _FULL_BYTES
 
         port = await _drive_server(specs_path, {1: "01 Track.flac"}, requests_fn)
         assert _static_tree() == static_before
@@ -150,10 +151,12 @@ async def _serves_the_images_where_symlinks_are_not_allowed() -> None:
                     assert resp.status == 200
                 async with session.get(f"http://127.0.0.1:{port}/static/specs/01%20Full.png") as resp:
                     assert resp.status == 200
-                    assert await resp.read() == _FULL_BYTES
+                    image = await resp.read()
+                    assert image == _FULL_BYTES
                 async with session.get(f"http://127.0.0.1:{port}/static/specs/01%20Zoom.png") as resp:
                     assert resp.status == 200
-                    assert await resp.read() == _ZOOM_BYTES
+                    image = await resp.read()
+                    assert image == _ZOOM_BYTES
 
         await _drive_server(specs_path, {1: "01 Track.flac"}, requests_fn)
         assert _static_tree() == static_before

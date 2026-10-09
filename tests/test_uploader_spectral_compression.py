@@ -130,7 +130,8 @@ def test_an_oxipng_program_that_hangs_is_given_up_on(monkeypatch, tmp_path, caps
 
     assert (path / "01 Full.png").read_bytes() == b"png 1 Full"
     assert sorted(p.name for p in path.iterdir()) == sorted(f"{s:02d} {k}.png" for s in (1,) for k in ("Full", "Zoom"))
-    assert "Could not compress 01 Full.png" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "Could not compress 01 Full.png" in printed
 
 
 def test_without_pyoxipng_and_program_the_notice_names_the_program_option(monkeypatch, tmp_path, capsys) -> None:
@@ -182,4 +183,5 @@ def test_a_temporary_copy_that_cannot_be_removed_does_not_stop_the_spectrals(mon
     anyio.run(partial(spectrals._compress_spectrals, str(path)))
 
     assert (path / "01 Full.png").read_bytes() == b"png 1 Full"
-    assert "Could not compress 01 Full.png" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "Could not compress 01 Full.png" in printed

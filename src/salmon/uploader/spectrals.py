@@ -371,11 +371,7 @@ async def _compress_single_spectral(filepath: str, _idx: int, program: str | Non
 
 
 async def _compress_spectrals(spectrals_path: str) -> None:
-    """Compress all spectral PNG images in a directory, with pyoxipng or else the oxipng program.
-
-    Args:
-        spectrals_path: Path to the directory containing spectral PNG files.
-    """
+    """Compress every spectral PNG in `spectrals_path`, with pyoxipng or else the oxipng program."""
     files = [f for f in os.listdir(spectrals_path) if f.endswith(".png")]
     if not files:
         return
