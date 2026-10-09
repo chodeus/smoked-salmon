@@ -441,7 +441,8 @@ async def resolve_cover_url(
 
     host = _cover_host_for_new_group(site_code, stored_cover_urls)
     click.secho(
-        f"\nNo cover image for this new group on {site_code}: none was found, or the upload to {host} failed.",
+        f"\nNo cover image for this new group on {site_code}: none was found, its download failed, or the upload to "
+        f"{host} failed.",
         fg="yellow",
         bold=True,
     )
@@ -589,10 +590,7 @@ async def upload(
 
 
 def _do_not_upload_refusal(tracker: str, release: dict[str, Any], said: str | None = None) -> str | None:
-    """Why the tracker's Do-Not-Upload list forbids the release, if it does, saying it unless it was said already.
-
-    Nothing skips it, -yyy included. `said` is the reason a check of the same tracker gave before the review.
-    """
+    """Why the tracker's list forbids the release (nothing skips it), printed unless `said`, the earlier reason."""
     reason = do_not_upload_reason(tracker, Candidate.from_metadata(release))
     if reason is not None and reason != said:
         click.secho(f"\nNot uploading to {tracker}: {reason}", fg="red", bold=True)
@@ -718,7 +716,7 @@ async def _upload_staged(
 
         # A release the first tracker's list forbids gets no group search there; the review may change the names.
         tags_refusal = _do_not_upload_refusal(gazelle_site.site_code, rls_data)
-        # The files never change in the review. With --skip-flac-upload only transcodes go up: no FLAC to refuse.
+        # The review keeps each file's depth and rate. With --skip-flac-upload only transcodes go up: no FLAC to refuse.
         rate_refused = flac_group is None and _sixteen_bit_refusal(gazelle_site.site_code, audio_info)
         if rate_refused and not _another_can_follow(trackers, gazelle_site.site_code):
             # Nothing the review changes could let these files go up.

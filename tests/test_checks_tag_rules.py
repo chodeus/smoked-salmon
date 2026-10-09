@@ -45,7 +45,8 @@ def test_16bit_above_48k_is_each_trackers_own_rule(tracker, ending):
 
 def test_the_upload_warnings_leave_16bit_to_its_refusal():
     """Said once, by the refusal or the trump warning, not again among the rule warnings."""
-    assert collect_upload_warnings("OPS", "F", {"a.flac": _track(sample_rate=96000, precision=16)}) == []
+    warnings = collect_upload_warnings("OPS", "F", {"a.flac": _track(sample_rate=96000, precision=16)})
+    assert warnings == []
 
 
 def test_24bit_96k_is_fine():

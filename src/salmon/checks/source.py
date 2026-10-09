@@ -3,6 +3,7 @@
 import os
 import re
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from mutagen import File as MutagenFile
 from mutagen.id3 import TextFrame
@@ -100,6 +101,8 @@ _STORE_URL = re.compile(
     r"\.com(?:[/:?#]|$)",
     re.IGNORECASE,
 )
+# A release or track page (Apple's are /song/): an artist's or label's store page also links a CD rip's artist.
+_STORE_RELEASE_PAGE = re.compile(r"/(?:album|release|track|song)(?:[/#]|$)", re.IGNORECASE)
 _STORE_NAMES = {
     "qobuz": "Qobuz",
     "deezer": "Deezer",
@@ -252,7 +255,15 @@ def _tag_proofs(mut) -> dict[str, str]:
             elif field == "comment" and _BANDCAMP_COMMENT.match(lowered):
                 proofs["Bandcamp comment in the tags"] = "WEB"
     for _field, url in tag_url_fields(mut):
-        if match := _STORE_URL.match(url):
+        if not (match := _STORE_URL.match(url)):
+            continue
+        try:
+            page = urlsplit(url)
+        except ValueError:
+            # Only URL-shaped ("https://[broken"): a tag is whatever its writer put there.
+            continue
+        # The path and fragment only (HDtracks pages are #/album/...): a query can quote any path.
+        if _STORE_RELEASE_PAGE.search(f"{page.path}#{page.fragment}"):
             store = (match.group(1) or match.group(2)).lower()
             proofs[f"{_STORE_NAMES[store]} URL in the tags"] = "WEB"
     return proofs

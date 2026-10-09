@@ -291,3 +291,14 @@ def test_a_deezer_album_under_another_key_still_fills_the_upc(tmp_path, monkeypa
     anyio.run(metadata_mod.fill_upc_from_deezer, metadata, str(tmp_path))
 
     assert metadata["upc"] == "0656465465801"
+
+
+def test_an_error_answered_with_http_200_leaves_the_barcode_blank_and_says_so(monkeypatch) -> None:
+    _deezer_answers(monkeypatch, {"error": {"type": "Exception", "message": "Quota limit exceeded", "code": 4}})
+    said: list[str] = []
+    monkeypatch.setattr(deezer.click, "secho", lambda message, **_kwargs: said.append(message))
+
+    upc = anyio.run(deezer.album_upc, DEEZER_URL)
+
+    assert upc is None
+    assert said == ["Could not read the barcode from Deezer (Quota limit exceeded); leaving it blank."]
