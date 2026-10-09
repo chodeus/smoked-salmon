@@ -48,9 +48,6 @@ def _album(tmp_path: Path, **flac) -> str:
     return str(tmp_path)
 
 
-# A bit depth the audio does not have
-
-
 def test_a_24bit_claim_on_a_16bit_file_is_reported_with_its_file_field_and_both_depths(tmp_path) -> None:
     contradictions = pv.gather_provenance(_album(tmp_path, bits=16, comment="24bit remaster"))["contradictions"]
 
@@ -106,9 +103,6 @@ def test_an_alac_file_has_a_depth_to_contradict() -> None:
     assert contradictions == ["01.m4a: comment claims 24bit, the audio is 16bit"]
 
 
-# A CD ripper on audio a CD cannot hold
-
-
 def test_eac_on_a_24bit_96khz_flac_is_reported(tmp_path) -> None:
     provenance = pv.gather_provenance(_album(tmp_path, bits=24, rate=96000, **{"encoded-by": "EAC"}))
 
@@ -156,9 +150,6 @@ def test_eac_inside_another_word_is_not_a_ripper(tmp_path, marker: str) -> None:
     assert contradictions == []
 
 
-# MP3 and M4A frames, read by their field names
-
-
 def test_mp3_markers_are_read_under_their_field_names(tmp_path) -> None:
     _write_mp3(
         tmp_path / "01.mp3",
@@ -191,9 +182,6 @@ def test_a_store_url_under_any_key_is_a_marker(tmp_path) -> None:
     provenance = pv.gather_provenance(_album(tmp_path, qobuz_url=url))
     assert provenance["markers"] == [f"qobuz_url: {url}"]
     assert provenance["urls"] == [url]
-
-
-# What is not a signal
 
 
 def test_a_clean_web_release_has_markers_and_no_contradiction(tmp_path) -> None:

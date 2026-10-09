@@ -617,8 +617,11 @@ def _sixteen_bit_refusal(tracker: str, audio_info: dict[str, Any]) -> bool:
 
 def _warn_about_provenance(path: str) -> None:
     """Print each ripper or store marker in the tags that the audio contradicts; only warns."""
-    contradictions = gather_provenance(path)["contradictions"]
-    if contradictions:
+    provenance = gather_provenance(path)
+    if not provenance["files"]:
+        click.secho("\nTag markers not checked: the tags could not be read.", fg="yellow")
+        return
+    if contradictions := provenance["contradictions"]:
         click.secho("\nTag markers the audio contradicts:", fg="yellow", bold=True)
         for note in contradictions:
             click.secho(f"  - {note}", fg="yellow")

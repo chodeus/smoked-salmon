@@ -10,6 +10,7 @@ from test_uploader_dry_run import (  # pyright: ignore[reportMissingImports]
     image_uploads,  # noqa: F401 (a fixture: see pytestmark)
 )
 
+import salmon.checks.provenance
 import salmon.trackers
 from salmon import cfg
 
@@ -18,6 +19,7 @@ from salmon import cfg
 pytestmark = pytest.mark.usefixtures("image_uploads", "_loose_rate_limit")
 
 HEADING = "Tag markers the audio contradicts:"
+NOT_CHECKED = "Tag markers not checked: the tags could not be read."
 # A new group, keep the folder name, upload, no lossy report comment, no downconversion.
 ANSWERS = "\ny\ny\n\nn\n"
 
@@ -56,5 +58,21 @@ def test_up_prints_nothing_for_markers_the_audio_agrees_with(monkeypatch, tmp_pa
     run = _run_up(monkeypatch, album, torrents, input=ANSWERS, yes_all=False)
 
     assert run.result.exit_code == 0, run.result.output
+    assert HEADING not in run.result.output
+    assert NOT_CHECKED not in run.result.output
+    assert "Successfully uploaded" in run.result.output
+
+
+def test_up_says_when_the_markers_could_not_be_read_and_uploads(monkeypatch, tmp_path, torrents) -> None:
+    def unreadable(_path: str) -> None:
+        raise OSError("test: unreadable tags")
+
+    # Only the marker check's read fails; the upload's own tag reads go on as before.
+    monkeypatch.setattr(salmon.checks.provenance, "gather_tags", unreadable)
+
+    run = _run_up(monkeypatch, _album(tmp_path / "Album", comment="24bit"), torrents, input=ANSWERS, yes_all=False)
+
+    assert run.result.exit_code == 0, run.result.output
+    assert NOT_CHECKED in run.result.output
     assert HEADING not in run.result.output
     assert "Successfully uploaded" in run.result.output
