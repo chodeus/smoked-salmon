@@ -330,10 +330,7 @@ OXIPNG_PROGRAM_TIMEOUT = 60
 
 
 async def _compress_with_oxipng_program(program: str, filepath: str) -> bool:
-    """Compress a spectral with the oxipng program on a copy, replacing the original only on success.
-
-    Returns False, after printing one line, when the file was left as it was.
-    """
+    """Compress a spectral with the oxipng program on a copy, replacing it on success; False, said once, if not."""
     # Hidden: a copy a crash leaves behind must not make the folder look like someone else's (made_by_salmon).
     tmp_path = os.path.join(os.path.dirname(filepath), f".{os.path.basename(filepath)}.tmp.png")
     try:
@@ -356,13 +353,7 @@ async def _compress_with_oxipng_program(program: str, filepath: str) -> bool:
 
 
 async def _compress_single_spectral(filepath: str, _idx: int, program: str | None = None) -> bool | None:
-    """Compress a single spectral PNG image with pyoxipng in a thread, or with the oxipng program.
-
-    Args:
-        filepath: Path to the PNG file to compress.
-        _idx: Unused index parameter for process_files compatibility.
-        program: Path to the oxipng program, used when pyoxipng is not installed.
-    """
+    """Compress one spectral with pyoxipng in a thread, or else with the oxipng `program`; False if left as it was."""
     if oxipng is None:
         assert program is not None
         return await _compress_with_oxipng_program(program, filepath)

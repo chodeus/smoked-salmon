@@ -42,8 +42,7 @@ def add_routes(app: web.Application, specs_path: str | None = None) -> None:
         app: The aiohttp web application.
         specs_path: The folder of spectral images to serve under the static URL's ``/specs``.
     """
-    # Served from their own folder at the URL the templates use: linking them into the package's static folder
-    # needed a privilege Windows does not give by default, wrote into the installed package, and was shared by runs.
+    # Served from their own folder at the URL the templates use; never link them into the installed package.
     if specs_path is not None:
         app.router.add_static("/static/specs", specs_path)
     # The package's own files: an install that links them (UV_LINK_MODE=symlink) still serves them.
