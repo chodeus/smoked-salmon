@@ -313,13 +313,13 @@ _not_compressed_notice_shown = False
 
 
 def _notify_spectrals_not_compressed() -> None:
-    """Say, once per run, that spectrals go up uncompressed because oxipng is not installed."""
+    """Say once per run that spectrals go up uncompressed: neither pyoxipng nor the oxipng program is installed."""
     global _not_compressed_notice_shown
     if _not_compressed_notice_shown:
         return
     _not_compressed_notice_shown = True
     click.secho(
-        "Spectrals are not compressed: oxipng is not available for this Python version. Installing salmon with "
+        "Spectrals are not compressed: neither pyoxipng nor the oxipng program is installed. Installing salmon with "
         '"uv tool install --python 3.13 git+https://github.com/chodeus/smoked-salmon" compresses them, '
         "and so does installing the oxipng program (winget, scoop, brew, apt, or its GitHub releases).",
         fg="yellow",
