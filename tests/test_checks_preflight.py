@@ -387,9 +387,14 @@ def test_rules_row_reports_a_path_that_would_be_trumped():
     assert "180" in row.detail
 
 
-def test_rules_row_is_green_when_nothing_breaks_a_rule():
-    row = pf.rules_row("RED", "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}})
+@pytest.mark.parametrize(
+    ("tracker", "paths"),
+    [("RED", "Paths are within RED's 180-character limit"), ("DIC", "DIC sets no path limit")],
+)
+def test_rules_row_is_green_when_nothing_breaks_a_rule(tracker: str, paths: str):
+    row = pf.rules_row(tracker, "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}})
     assert row.verdict == pf.OK
+    assert row.detail == f"{paths}, and sample rates are standard."
 
 
 def test_rules_row_is_skipped_when_the_audio_could_not_be_read():

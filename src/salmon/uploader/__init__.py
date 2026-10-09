@@ -698,7 +698,7 @@ async def _upload_staged(
 
         # A release the first tracker's list forbids gets no group search there; the review may change the names.
         tags_refusal = _do_not_upload_refusal(gazelle_site.site_code, rls_data)
-        # The files never change in the review. With --skip-flac-upload only transcodes go up: no FLAC to refuse.
+        # The review keeps each file's depth and rate. With --skip-flac-upload only transcodes go up: no FLAC to refuse.
         rate_refused = flac_group is None and _sixteen_bit_refusal(gazelle_site.site_code, audio_info)
         if rate_refused and not _another_can_follow(trackers, gazelle_site.site_code):
             # Nothing the review changes could let these files go up.
