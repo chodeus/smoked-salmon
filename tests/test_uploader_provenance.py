@@ -1,7 +1,4 @@
-"""`salmon up` warns about tag markers the audio contradicts, and goes on as before (#538).
-
-The runs go against the local fake tracker of test_uploader_dry_run and a fake image host, never a real one.
-"""
+"""`salmon up` warns about tag markers the audio contradicts and goes on; on test_uploader_dry_run's fakes."""
 
 from pathlib import Path
 

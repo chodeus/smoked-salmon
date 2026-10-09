@@ -616,11 +616,7 @@ def _sixteen_bit_refusal(tracker: str, audio_info: dict[str, Any]) -> bool:
 
 
 def _warn_about_provenance(path: str) -> None:
-    """Print each ripper or store marker in the tags that the audio contradicts.
-
-    Read before the files are retagged, which can blank or replace their comments. Only warns: it never
-    stops the upload or changes an answer, and prints nothing when no marker contradicts the audio.
-    """
+    """Print each ripper or store marker in the tags that the audio contradicts; only warns."""
     contradictions = gather_provenance(path)["contradictions"]
     if contradictions:
         click.secho("\nTag markers the audio contradicts:", fg="yellow", bold=True)
@@ -711,7 +707,8 @@ async def _upload_staged(
             await _check_logs(path)
 
         if conversion is None:
-            # A conversion keeps its source's tags (sox copies them), so its source's claims are no news.
+            # Before retagging, which can replace comments. A conversion carries its source's tags, which describe
+            # the source's audio, not its own.
             _warn_about_provenance(path)
 
         # A release the first tracker's list forbids gets no group search there; the review may change the names.

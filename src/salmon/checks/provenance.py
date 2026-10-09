@@ -1,9 +1,4 @@
-"""Who made these files, and does what they claim match what they are.
-
-Rippers, stores and resellers stamp their own markers into the tags: 'EAC FLAC -8', 'QOBUZ',
-'hd24bit.com'. A marker alone is ordinary and says nothing; one the audio contradicts (a 24bit claim
-on a 16bit file, a CD ripper on a 96 kHz file) is worth a look before uploading. This only warns.
-"""
+"""Who made these files, and which of their tag markers ('EAC FLAC -8', 'QOBUZ') the audio contradicts."""
 
 import os
 import re
@@ -27,10 +22,8 @@ MARKER_FIELDS = (
     "url",
 )
 
-# A bare domain has to swallow its port and path too, or "hd24bit.com/24bit"
-# leaves "/24bit" behind and the leftover reads as a claim about the audio.
-# Any all-letter suffix counts as a domain ("hd24bit.de"), but not a claim before the dot ("24bit.Hi-Res")
-# nor a file extension after it ("24bit.flac", "EAC.log"): those are what the markers say.
+# A domain swallows its port and path ("hd24bit.com/24bit"); any all-letter suffix is one ("hd24bit.de"),
+# but not after a claim ("24bit.Hi-Res") or as a file extension ("24bit.flac", "EAC.log").
 _URL_RE = re.compile(
     r"(?:https?://|www\.)\S+"
     r"|(?<![\w-])(?!\d{2}\s*-?\s*bit\.)[\w-]+\."
@@ -40,9 +33,8 @@ _URL_RE = re.compile(
 )
 _DEPTH_CLAIM_RE = re.compile(r"(\d{2})\s*-?\s*bit", re.IGNORECASE)
 
-# Programs that only rip CDs, so their marker means the audio was 16 bit / 44.1 kHz when it was made.
-# XLD, dBpoweramp, CUETools, fre:ac and EZ CD Audio Converter are left out on purpose: they also convert
-# downloaded files, and their marker on a clean hi-res WEB release would be a false alarm.
+# Programs that only rip CDs (16 bit / 44.1 kHz). XLD, dBpoweramp, CUETools, fre:ac and EZ CD Audio Converter
+# also convert downloads, so their marker on a hi-res WEB release is no contradiction.
 _CD_RIPPER_RE = re.compile(r"\b(?:exact\s+audio\s+copy|eac|whipper|morituri|rubyripper|cueripper)\b", re.IGNORECASE)
 _CD_DEPTH = 16
 _CD_RATE = 44100
@@ -88,9 +80,7 @@ def _contradictions(files: list[dict[str, Any]]) -> list[str]:
     for entry in files:
         depth, rate = entry["bitdepth"], entry["samplerate"]
         for field, text in entry["markers"].items():
-            # A depth inside a domain is part of the name of whoever ripped it
-            # ("hd24bit.com"), not an assertion about this file. The URL still
-            # shows up as a marker, so nothing is hidden: it just isn't a claim.
+            # A depth inside a domain names whoever ripped it ("hd24bit.com"), not this file; it stays a marker.
             text = _URL_RE.sub(" ", text)
             if depth:
                 for claim in _DEPTH_CLAIM_RE.findall(text):
