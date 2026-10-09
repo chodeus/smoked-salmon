@@ -155,7 +155,8 @@ def test_a_rejected_key_fails_every_waiting_request_with_one_error(capsys: pytes
         assert tracker.requests == ["index"]
 
     _run(body)
-    assert capsys.readouterr().out.count("Authentication to RED failed") == 1
+    printed = capsys.readouterr().out
+    assert printed.count("Authentication to RED failed") == 1
 
 
 def test_a_request_after_a_failed_attempt_tries_again() -> None:

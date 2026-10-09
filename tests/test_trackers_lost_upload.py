@@ -94,7 +94,8 @@ async def _lost_upload_found_by_infohash(tmp_path: Path) -> None:
     runner, url = await _serve(ajax=ajax)
     api = FakeApi(url, api_key="an-api-key")
     try:
-        assert await api.upload({"type": 0}, files) == (9, 5)
+        uploaded = await api.upload({"type": 0}, files)
+        assert uploaded == (9, 5)
         assert posts == ["upload"]
         assert lookups == [infohash]
     finally:
@@ -136,10 +137,7 @@ WAIT = 0.4
 
 
 async def _upload_whose_torrent_appears_later(tmp_path: Path, appears_after: float) -> tuple[list[str], list[float]]:
-    """Upload to a tracker that loses the answer, and has the torrent `appears_after` seconds after it.
-
-    Returns the uploads the tracker got and when each lookup came, in seconds after the upload.
-    """
+    """Upload to a tracker that loses the answer; return its uploads and each lookup's seconds after the upload."""
     files, infohash = _upload_files(tmp_path)
     posts: list[str] = []
     lookups: list[float] = []
@@ -160,7 +158,8 @@ async def _upload_whose_torrent_appears_later(tmp_path: Path, appears_after: flo
     runner, url = await _serve(ajax=ajax)
     api = FakeApi(url, api_key="an-api-key")
     try:
-        assert await api.upload({"type": 0}, files) == (9, 5)
+        uploaded = await api.upload({"type": 0}, files)
+        assert uploaded == (9, 5)
         return posts, lookups
     finally:
         await api.close()
