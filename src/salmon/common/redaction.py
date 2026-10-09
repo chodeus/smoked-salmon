@@ -1,6 +1,7 @@
 import re
 import shlex
 from collections.abc import Iterable
+from urllib.parse import parse_qsl, urlsplit
 
 _URL_USERINFO = re.compile(r"(://)[^/\s@]+@")
 _USERINFO_PASSWORD = re.compile(r"://[^/\s@:]*:([^/\s@']+)@")
@@ -100,6 +101,31 @@ def secret_values(args: Iterable[str], connection: str = "") -> list[str]:
     # rclone takes some values as comma-separated lists (--http-headers Name,Value), echoed one part at a time.
     found += [part.strip(" '\"") for value in found if "," in value for part in value.split(",")]
     return found
+
+
+# A URL shows these query values when they are short; every other value is masked (an authkey, a store's token).
+_SHOWN_QUERY = frozenset({"id", "torrentid", "groupid", "action", "page"})
+_SHOWN_VALUE = re.compile(r"[\w.-]{1,19}")
+# A path segment this long could be a passkey: an announce URL carries it in the path.
+_TOKEN_SEGMENT = re.compile(r"[A-Za-z0-9]{20,}")
+
+
+def redact_url(url: str) -> str:
+    """An http(s) URL to show: no userinfo, and its fragment, token-like path segments and query values masked."""
+    try:
+        parts = urlsplit(url)
+        host, port = parts.hostname or "", parts.port
+    except ValueError:
+        return "[REDACTED]"
+    netloc = (f"[{host}]" if ":" in host else host) + (f":{port}" if port else "")
+    path = "/".join("[REDACTED]" if _TOKEN_SEGMENT.fullmatch(part) else part for part in parts.path.split("/"))
+    query = "&".join(
+        f"{name}={value if name.lower() in _SHOWN_QUERY and _SHOWN_VALUE.fullmatch(value) else '[REDACTED]'}"
+        for name, value in parse_qsl(parts.query, keep_blank_values=True)
+    )
+    return (
+        f"{parts.scheme}://{netloc}{path}" + (f"?{query}" if query else "") + ("#[REDACTED]" if parts.fragment else "")
+    )
 
 
 def redact_command(args: list[str], known: Iterable[str | None] = ()) -> str:
