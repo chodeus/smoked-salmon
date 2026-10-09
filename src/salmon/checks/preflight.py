@@ -20,7 +20,7 @@ from salmon.checks.high_rate import sixteen_bit_notice
 # checks/__init__.py shadows the module.
 from salmon.checks.integrity import md5_unset_summary
 from salmon.checks.source import detect_source
-from salmon.checks.tag_rules import SIXTEEN_BIT_ABOVE_48KHZ, collect_upload_warnings
+from salmon.checks.tag_rules import MAX_PATH_LENGTH, SIXTEEN_BIT_ABOVE_48KHZ, collect_upload_warnings
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.tagger.pre_data import construct_artists_li, parse_title
 from salmon.tagger.tags import gather_tags
@@ -258,7 +258,9 @@ def rules_row(tracker: str, folder_name: str, track_data: dict) -> Row:
         return Row(f"rules:{tracker}", label, SKIP, "The audio could not be read, so these rules were not checked.")
     warnings = collect_upload_warnings(tracker, folder_name, track_data)
     if not warnings:
-        return Row(f"rules:{tracker}", label, OK, "Path lengths are within the limit, and sample rates are standard.")
+        limit = MAX_PATH_LENGTH.get(tracker)
+        paths = f"Paths are within {tracker}'s {limit}-character limit" if limit else f"{tracker} sets no path limit"
+        return Row(f"rules:{tracker}", label, OK, f"{paths}, and sample rates are standard.")
     return Row(f"rules:{tracker}", label, WARN, " ".join(warnings[:2]))
 
 

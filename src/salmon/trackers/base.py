@@ -578,10 +578,7 @@ class BaseGazelleApi:
         binary: bool = False,
         rate_limit_waits: list[int] | None = None,
     ) -> HttpResponse:
-        """One request as _request describes it, retried while it may be sent again; authentication is done.
-
-        rate_limit_waits holds the rate limit waits of the attempts before this one, and gets this one's.
-        """
+        """Send one authenticated request with the retry policy; rate_limit_waits gains each attempt's wait."""
         if rate_limit_waits is None:
             rate_limit_waits = []
         if idempotent is None:

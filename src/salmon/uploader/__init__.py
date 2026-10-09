@@ -441,7 +441,8 @@ async def resolve_cover_url(
 
     host = _cover_host_for_new_group(site_code, stored_cover_urls)
     click.secho(
-        f"\nNo cover image for this new group on {site_code}: none was found, or the upload to {host} failed.",
+        f"\nNo cover image for this new group on {site_code}: none was found, its download failed, or the upload to "
+        f"{host} failed.",
         fg="yellow",
         bold=True,
     )
@@ -589,10 +590,7 @@ async def upload(
 
 
 def _do_not_upload_refusal(tracker: str, release: dict[str, Any], said: str | None = None) -> str | None:
-    """Why the tracker's Do-Not-Upload list forbids the release, if it does, saying it unless it was said already.
-
-    Nothing skips it, -yyy included. `said` is the reason a check of the same tracker gave before the review.
-    """
+    """Why the tracker's list forbids the release (nothing skips it), printed unless `said`, the earlier reason."""
     reason = do_not_upload_reason(tracker, Candidate.from_metadata(release))
     if reason is not None and reason != said:
         click.secho(f"\nNot uploading to {tracker}: {reason}", fg="red", bold=True)
@@ -618,13 +616,12 @@ def _sixteen_bit_refusal(tracker: str, audio_info: dict[str, Any]) -> bool:
 
 
 def _warn_about_provenance(path: str) -> None:
-    """Print each ripper or store marker in the tags that the audio contradicts.
-
-    Read before the files are retagged, which can blank or replace their comments. Only warns: it never
-    stops the upload or changes an answer, and prints nothing when no marker contradicts the audio.
-    """
-    contradictions = gather_provenance(path)["contradictions"]
-    if contradictions:
+    """Print each ripper or store marker in the tags that the audio contradicts; only warns."""
+    provenance = gather_provenance(path)
+    if not provenance["files"]:
+        click.secho("\nTag markers not checked: the tags could not be read.", fg="yellow")
+        return
+    if contradictions := provenance["contradictions"]:
         click.secho("\nTag markers the audio contradicts:", fg="yellow", bold=True)
         for note in contradictions:
             click.secho(f"  - {note}", fg="yellow")
@@ -673,6 +670,9 @@ async def _upload_staged(
         source = await _prompt_source(detect_source(path))
     audio_info = gather_audio_info(path)
     hybrid = check_hybrid(audio_info)
+    if conversion is None:
+        # Before any tag is rewritten. A conversion carries its source's tags, which describe the source's audio.
+        _warn_about_provenance(path)
     if not scene:
         standardize_tags(path)
     tags = gather_tags(path)
@@ -712,13 +712,9 @@ async def _upload_staged(
         if source == "CD" and not skip_log_check:
             await _check_logs(path)
 
-        if conversion is None:
-            # A conversion keeps its source's tags (sox copies them), so its source's claims are no news.
-            _warn_about_provenance(path)
-
         # A release the first tracker's list forbids gets no group search there; the review may change the names.
         tags_refusal = _do_not_upload_refusal(gazelle_site.site_code, rls_data)
-        # The files never change in the review. With --skip-flac-upload only transcodes go up: no FLAC to refuse.
+        # The review keeps each file's depth and rate. With --skip-flac-upload only transcodes go up: no FLAC to refuse.
         rate_refused = flac_group is None and _sixteen_bit_refusal(gazelle_site.site_code, audio_info)
         if rate_refused and not _another_can_follow(trackers, gazelle_site.site_code):
             # Nothing the review changes could let these files go up.

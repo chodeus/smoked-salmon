@@ -173,7 +173,8 @@ def test_long_retry_after_stops_without_waiting(
     # Not an answer about what was asked for: a caller must not read it as "no such torrent".
     assert not isinstance(err, RequestFailedError)
     assert str(err).startswith("RED asks to wait ")
-    assert "try again later" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "try again later" in printed
 
 
 def test_waits_of_one_request_add_up_to_60_seconds_at_most(
@@ -183,7 +184,8 @@ def test_waits_of_one_request_add_up_to_60_seconds_at_most(
     assert waits == [30, 30]
     assert len(hits) == 3
     assert isinstance(err, RateLimitedError)
-    assert "RED asks to wait 30 s more (after 60 s already)" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "RED asks to wait 30 s more (after 60 s already)" in printed
 
 
 @pytest.mark.parametrize("usegmt", [True, False], ids=["gmt", "naive"])

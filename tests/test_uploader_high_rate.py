@@ -1,8 +1,6 @@
-"""salmon up and 16bit files above 48 kHz (#618): OPS refuses them, RED warns, other files are untouched.
+"""salmon up and 16bit files above 48 kHz: OPS refuses them, RED warns; on test_uploader_dry_run's fake tracker."""
 
-The runs go against the local fake tracker of test_uploader_dry_run, never a real one.
-"""
-
+import re
 import shutil
 from pathlib import Path
 
@@ -203,11 +201,18 @@ def test_16bit_96khz_with_skip_flac_upload_is_not_refused_for_ops_as_only_transc
     assert run.result.exit_code == 0, run.result.output
     assert "16bit file(s) above 48 kHz" not in run.result.output
     assert "Not uploading to OPS" not in run.result.output
-    assert "320" in run.result.output
+    # One line per upload that reaches the dry-run boundary: the torrent's name ends in its format.
+    uploads = re.findall(r"^  The torrent: .* \[([^\]]+)\], \d+ file\(s\), .*, source (\w+)$", run.result.output, re.M)
+    assert uploads == [("320", "OPS"), ("V0", "OPS")]
 
 
 def test_an_ops_only_run_stops_before_the_review(monkeypatch, dirs) -> None:
     downloads, torrents = dirs
+    reviewed: list[str] = []
+
+    async def review(path: str, *_args, **_kwargs):
+        reviewed.append(path)
+        raise AssertionError("the review ran")
 
     run = _run_up(
         monkeypatch,
@@ -216,9 +221,11 @@ def test_an_ops_only_run_stops_before_the_review(monkeypatch, dirs) -> None:
         multi_tracker_upload=False,
         trackers=("OPS",),
         gather_audio_info=_returning(_files(96000)),
+        edit_metadata=review,
     )
 
     assert REFUSED in run.result.output
-    # The files never change in the review, so it is not run: no retag, rename or move.
+    # The review keeps the files' depth and rate, so it is not run: no retag, rename or move.
+    assert reviewed == []
     assert "Renaming folder" not in run.result.output
     assert run.tracker.not_gets() == []

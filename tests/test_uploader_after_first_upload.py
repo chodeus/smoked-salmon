@@ -598,14 +598,15 @@ def test_a_listed_first_tracker_is_not_weighed_or_searched(flow, monkeypatch) ->
 
 
 @pytest.mark.parametrize("conversion", [None, {"source": "Album [24-96]"}], ids=["an-album", "salmons-conversion"])
-def test_the_markers_are_weighed_except_on_salmons_own_conversions(flow, monkeypatch, conversion) -> None:
+def test_the_markers_are_weighed_first_except_on_salmons_own_conversions(flow, monkeypatch, conversion) -> None:
     _calls, _executed, _set_fake = flow
     monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
     monkeypatch.setattr(salmon.uploader, "conversion_of", lambda _path: conversion)
     monkeypatch.setattr(salmon.uploader, "converted_from_note", lambda *_args: None)
-    warned: list[str] = []
-    monkeypatch.setattr(salmon.uploader, "_warn_about_provenance", warned.append)
+    order: list[str] = []
+    monkeypatch.setattr(salmon.uploader, "standardize_tags", lambda _path: order.append("standardize"))
+    monkeypatch.setattr(salmon.uploader, "_warn_about_provenance", lambda path: order.append(f"warn {path}"))
 
     _upload(None)
 
-    assert warned == ([] if conversion else ["/release"])
+    assert order == (["standardize"] if conversion else ["warn /release", "standardize"])
