@@ -1,11 +1,14 @@
 """Embedded artwork becomes the folder's cover before anything else has to fetch or strip it."""
 
+import asyncio
 import importlib
 import io
 from pathlib import Path
 from types import SimpleNamespace
 
 import anyio
+import pytest
+from aiohttp import web
 from mutagen.id3 import PictureType
 from PIL import Image
 
@@ -178,3 +181,125 @@ def test_sanitizing_a_single_flac_saves_the_embedded_cover_first(tmp_path, monke
 
     assert result is True
     assert order == [f"extract:{album}", "sanitize:01.flac"]
+
+
+def _jpeg() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buffer, "jpeg")
+    return buffer.getvalue()
+
+
+@pytest.fixture
+async def cover_server():
+    runners: list[web.AppRunner] = []
+
+    async def _serve(handler) -> str:
+        app = web.Application()
+        app.router.add_get("/cover.jpg", handler)
+        runner = web.AppRunner(app, access_log=None)
+        await runner.setup()
+        await web.TCPSite(runner, "127.0.0.1", 0).start()
+        runners.append(runner)
+        return f"http://127.0.0.1:{runner.addresses[0][1]}/cover.jpg"
+
+    yield _serve
+    for runner in runners:
+        await runner.cleanup()
+
+
+async def test_a_cover_download_cut_off_partway_leaves_no_file(tmp_path, monkeypatch, cover_server) -> None:
+    monkeypatch.setattr(cfg.upload.formatting, "lowercase_cover", False)
+    body = _jpeg()
+
+    async def cut_off(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Length": str(len(body) * 10), "Content-Type": "image/jpeg"})
+        await response.prepare(request)
+        await response.write(body[:40])
+        assert request.transport is not None
+        request.transport.close()
+        return response
+
+    result = await cover._download_cover(str(tmp_path), await cover_server(cut_off))
+
+    assert result is None
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_a_downloaded_cover_is_written_whole(tmp_path, monkeypatch, cover_server) -> None:
+    monkeypatch.setattr(cfg.upload.formatting, "lowercase_cover", False)
+    body = _jpeg()
+
+    async def whole(_request: web.Request) -> web.Response:
+        return web.Response(body=body, content_type="image/jpeg")
+
+    result = await cover._download_cover(str(tmp_path), await cover_server(whole))
+
+    assert result == str(tmp_path / "Cover.jpg")
+    assert [entry.name for entry in tmp_path.iterdir()] == ["Cover.jpg"]
+    assert (tmp_path / "Cover.jpg").read_bytes() == body
+
+
+async def test_a_cover_download_that_times_out_says_so(tmp_path, monkeypatch, capsys, cover_server) -> None:
+    real_timeout = cover.aiohttp.ClientTimeout
+    monkeypatch.setattr(cover.aiohttp, "ClientTimeout", lambda **_kwargs: real_timeout(total=0.2))
+
+    async def stalled(_request: web.Request) -> web.Response:
+        await asyncio.sleep(2)
+        return web.Response(body=_jpeg(), content_type="image/jpeg")
+
+    result = await cover._download_cover(str(tmp_path), await cover_server(stalled))
+
+    assert result is None
+    out = capsys.readouterr().out
+    assert "Failed to download cover image (ERROR TimeoutError)" in out
+
+
+def _noisy_jpeg() -> bytes:
+    """A JPEG big enough that a cut-off copy still has a whole header."""
+    buffer = io.BytesIO()
+    Image.frombytes("RGB", (64, 64), bytes(range(256)) * 48).save(buffer, "jpeg", quality=95)
+    return buffer.getvalue()
+
+
+async def test_a_cover_cut_off_with_no_content_length_is_not_kept(tmp_path, monkeypatch, cover_server) -> None:
+    monkeypatch.setattr(cfg.upload.formatting, "lowercase_cover", False)
+    body = _noisy_jpeg()
+
+    async def ends_early(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "image/jpeg"})
+        response.enable_chunked_encoding()
+        await response.prepare(request)
+        await response.write(body[: len(body) // 2])
+        await response.write_eof()
+        return response
+
+    result = await cover._download_cover(str(tmp_path), await cover_server(ends_early))
+
+    assert result is None
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_a_failed_cover_download_never_prints_its_url(tmp_path, monkeypatch, capsys, cover_server) -> None:
+    async def loops(_request: web.Request) -> web.Response:
+        raise web.HTTPFound("/cover.jpg?sig=test-sig-0001")
+
+    result = await cover._download_cover(str(tmp_path), await cover_server(loops))
+
+    assert result is None
+    out = capsys.readouterr().out
+    assert "test-sig-0001" not in out
+    assert "Failed to download cover image (ERROR TooManyRedirects)" in out
+
+
+def test_a_cover_whose_size_would_take_gigabytes_to_load_is_refused() -> None:
+    """A small file can claim a huge image: 9000x9000 is under Pillow's own limit, far over any cover."""
+    huge = io.BytesIO()
+    Image.new("1", (9000, 9000)).save(huge, "png")
+    usual = io.BytesIO(_jpeg())
+
+    huge_is_valid = cover._is_valid_cover(io.BytesIO(huge.getvalue()))
+    usual_is_valid = cover._is_valid_cover(usual)
+
+    assert len(huge.getvalue()) < 1_000_000
+    assert huge_is_valid is False
+    assert usual_is_valid is True

@@ -434,7 +434,8 @@ async def resolve_cover_url(
 
     host = _cover_host_for_new_group(site_code, stored_cover_urls)
     click.secho(
-        f"\nNo cover image for this new group on {site_code}: none was found, or the upload to {host} failed.",
+        f"\nNo cover image for this new group on {site_code}: none was found, its download failed, or the upload to "
+        f"{host} failed.",
         fg="yellow",
         bold=True,
     )
