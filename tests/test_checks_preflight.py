@@ -548,5 +548,7 @@ def test_16bit_above_48khz_blocks_for_ops_and_warns_for_red():
     ops, red = pf.sixteen_bit_row("OPS", files), pf.sixteen_bit_row("RED", files)
     assert ops is not None and ops.verdict == pf.BLOCK
     assert red is not None and red.verdict == pf.WARN
-    assert pf.sixteen_bit_row("DIC", files) is None
-    assert pf.sixteen_bit_row("OPS", {"01.flac": {"sample rate": 96000, "precision": 24}}) is None
+    dic = pf.sixteen_bit_row("DIC", files)
+    twenty_four = pf.sixteen_bit_row("OPS", {"01.flac": {"sample rate": 96000, "precision": 24}})
+    assert dic is None
+    assert twenty_four is None

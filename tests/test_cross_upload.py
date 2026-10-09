@@ -774,5 +774,6 @@ def test_conversions_only_into_an_ops_group_are_not_refused(tmp_path: Path, monk
 
     monkeypatch.setattr(cross_upload_module, "_upload_conversions", conversions)
 
-    assert upload(target_group_id=9, transcodes=("320",)) == (0, 9)
+    uploaded = upload(target_group_id=9, transcodes=("320",))
+    assert uploaded == (0, 9)
     assert converted == [9]
