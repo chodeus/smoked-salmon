@@ -1983,7 +1983,7 @@ requires-dist = [
     { name = "av", specifier = ">=19.0.1" },
     { name = "beautifulsoup4", extras = ["lxml"], specifier = ">=4.15.0" },
     { name = "deluge-client", specifier = ">=1.10.2" },
-    { name = "fastapi", specifier = ">=0.142.4" },
+    { name = "fastapi", specifier = ">=0.143.0" },
     { name = "humanfriendly", specifier = ">=10.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "msgspec", extras = ["toml"], specifier = ">=0.22.0" },
