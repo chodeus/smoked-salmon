@@ -6,15 +6,15 @@ license = "Apache-2.0"
 readme = "README.md"
 requires-python = ">=3.13.16"
 dependencies = [
-    "aiohttp>=3.14.3; sys_platform == 'win32'",
+    "aiohttp>=3.14.4; sys_platform == 'win32'",
     "aiohttp-jinja2>=1.6",
-    "aiohttp[speedups]>=3.14.3; sys_platform != 'win32'",
+    "aiohttp[speedups]>=3.14.4; sys_platform != 'win32'",
     "anyio>=4.15.1",
     "asyncclick>=8.4.2.1",
-    "av>=18.1.0",
+    "av>=19.0.1",
     "beautifulsoup4[lxml]>=4.15.0",
     "deluge-client>=1.10.2",
-    "fastapi>=0.142.2",
+    "fastapi>=0.142.4",
     "humanfriendly>=10.0",
     "jinja2>=3.1.6",
     "msgspec[toml]>=0.22.0",
@@ -23,7 +23,7 @@ dependencies = [
     "numpy>=2.5.3",
     "openai>=3.24.0",
     "pillow>=12.3.0",
-    "platformdirs>=4.12.3",
+    "platformdirs>=4.12.4",
     "pycambia>=0.2.0",
     "pyimgbox>=1.0.7",
     "pyoxipng>=9.1.1 ; python_version < '3.14'",
@@ -44,7 +44,7 @@ dependencies = [
 salmon = "salmon.run:main"
 
 [build-system]
-requires = ["uv_build>=0.12.23,<0.12.24"]
+requires = ["uv_build>=0.12.24,<0.12.25"]
 build-backend = "uv_build"
 
 [dependency-groups]
