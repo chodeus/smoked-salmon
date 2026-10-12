@@ -162,6 +162,8 @@ async def all_checks(path: str, source: str | None, trackers: tuple[str, ...]) -
         click.secho(f"  {marks[verdict]}  ", fg=colours[verdict], bold=verdict == BLOCK, nl=False)
         click.secho(f"{row['label']:<18}", bold=True, nl=False)
         click.echo(row["detail"])
+        for note in row["notes"]:
+            click.echo(f"{'':26}- {note}")
 
     # Not picking a source blocks the upload button, but this command is a
     # diagnostic — nothing is being claimed, so only real defects fail it.

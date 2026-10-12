@@ -711,3 +711,91 @@ def test_16bit_above_48khz_blocks_for_ops_and_warns_for_red():
     twenty_four = pf.sixteen_bit_row("OPS", {"01.flac": {"sample rate": 96000, "precision": 24}})
     assert dic is None
     assert twenty_four is None
+
+
+def test_notes_name_eight_and_count_the_rest():
+    notes = pf._notes(f"line {n}" for n in range(10))
+
+    assert notes == (*(f"line {n}" for n in range(8)), "... and 2 more.")
+
+
+def _spec_notes(check: str, result: dict) -> list[str]:
+    spec = next(spec for spec in pf.CHECKS if spec.id == check)
+    assert spec.notes is not None
+    return list(spec.notes(result))
+
+
+@pytest.mark.parametrize(
+    ("check", "result", "notes"),
+    [
+        ("provenance", {"contradictions": ["01.flac: claims 24bit"]}, ["01.flac: claims 24bit"]),
+        (
+            "integrity",
+            {"decode_failures": ["01.flac"], "md5_unset": ["02.flac"], "concerns": ["03.mp3: junk"]},
+            ["01.flac: does not decode", "02.flac: no MD5 stored", "03.mp3: junk"],
+        ),
+        (
+            "upconvert",
+            {"files": [{"file": "01.flac", "is_upconverted": True, "wasted_bits": 8, "bitdepth": 24}, {"file": "02"}]},
+            ["01.flac: 8 of 24 bits wasted"],
+        ),
+        (
+            "mqa",
+            {"files": [{"file": "01.flac", "detected": True}, {"file": "02.flac", "detected": False}]},
+            ["01.flac"],
+        ),
+        ("tags", {"dual_id3": ["01.mp3"], "errors": [{"file": "02.mp3", "error": "e"}]}, ["01.mp3", "02.mp3: e"]),
+        (
+            "log",
+            {"logs": [_log(), _log(file="cd2.log", score=90)]},
+            [
+                "rip.log: score 100/100, checksum and CRCs match.",
+                "cd2.log: score 90/100.",
+            ],
+        ),
+    ],
+    ids=["provenance", "integrity", "upconvert", "mqa", "tags", "log"],
+)
+def test_each_check_lists_the_items_behind_its_detail(check: str, result: dict, notes: list[str]):
+    found = _spec_notes(check, result)
+
+    assert found == notes
+
+
+def test_the_rules_row_lists_every_warning_it_names_two_of():
+    tracks = {f"{'x' * 180}{n}.flac": {"sample rate": 44100, "precision": 16} for n in range(3)}
+
+    row = pf.rules_row("RED", "Folder", tracks)
+
+    assert len(row.notes) == 3
+    assert row.detail == " ".join(row.notes[:2])
+
+
+def test_the_dupe_row_lists_every_group_it_found():
+    groups = [{"groupId": n, "groupName": f"Group {n}", "torrents": []} for n in range(3)]
+
+    row = pf.dupe_row("RED", groups)
+
+    assert row.notes == ("Group 0", "Group 1", "Group 2")
+
+
+async def test_run_checks_puts_a_checks_notes_on_its_row(album_dir, monkeypatch):
+    import cambia
+
+    monkeypatch.setattr(pf, "detect_source", lambda _p: {"source": "CD", "confidence": "confirmed", "reasons": ["log"]})
+    (album_dir / "rip.log").write_text("test log", encoding="utf-8")
+    rip = SimpleNamespace(checksum=SimpleNamespace(integrity=cambia.Integrity.Match))
+    output = SimpleNamespace(
+        evaluation_combined=[SimpleNamespace(combined_score="90")], parsed=SimpleNamespace(parsed_logs=[rip])
+    )
+
+    async def verified(*_args) -> None:
+        return None
+
+    monkeypatch.setattr(album, "parse_log", lambda _path: output)
+    monkeypatch.setattr(album, "verify_log_crcs", verified)
+
+    result = await pf.run_checks(str(album_dir), ["log"], "CD", [])
+
+    row = next(r for r in result["rows"] if r["id"] == "log")
+    assert tuple(row["notes"]) == ("rip.log: score 90/100.",)
