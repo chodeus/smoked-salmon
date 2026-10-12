@@ -112,9 +112,19 @@ _SHOWN_NAME = re.compile(r"[A-Za-z_][\w.\[\]-]{0,31}")
 _TOKEN_RUN = re.compile(r"[A-Za-z0-9_]{20,}")
 
 
+# A path segment shows only as a plain one once decoded: digits alone (an id) or no digit at all (a word or slug).
+# One mixing letters and digits, as every random passkey and token does, is masked whatever its length.
+_PLAIN_SEGMENT = re.compile(r"\d{1,19}|\D{0,64}")
+
+
 def _part(text: str) -> str:
-    """A host label or path segment to show: masked when, decoded, it holds a token-like run."""
+    """A host label to show: masked when, decoded, it holds a token-like run."""
     return "[REDACTED]" if _TOKEN_RUN.search(unquote(text)) else text
+
+
+def _segment(text: str) -> str:
+    decoded = unquote(text)
+    return text if _PLAIN_SEGMENT.fullmatch(decoded) and not _TOKEN_RUN.search(decoded) else "[REDACTED]"
 
 
 def _query_name(name: str) -> str:
@@ -139,7 +149,7 @@ def redact_url(url: str) -> str:
         for step in (-1, 1)
     }
     path = "/".join(
-        "[REDACTED]" if index in beside_announce and segment else _part(segment)
+        "[REDACTED]" if index in beside_announce and segment else _segment(segment)
         for index, segment in enumerate(segments)
     )
     query = "&".join(

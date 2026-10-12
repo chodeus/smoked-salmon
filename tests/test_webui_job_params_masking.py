@@ -39,6 +39,9 @@ ENCODED_PASSKEY = "".join(f"%{ord(char):02X}" for char in PASSKEY)
         (f"https://{PASSKEY}.tracker.example/x", "https://[REDACTED].tracker.example/x"),
         ("https://tracker.example/test-passkey-0001/announce", "https://tracker.example/[REDACTED]/announce"),
         ("https://tracker.example/announce.php/test-passkey-0001", "https://tracker.example/announce.php/[REDACTED]"),
+        ("https://tracker.example/download/test-passkey-0001", "https://tracker.example/download/[REDACTED]"),
+        ("https://tracker.example/download/abcdefgh", "https://tracker.example/download/abcdefgh"),
+        ("https://store.example/release/the-album/654321", "https://store.example/release/the-album/654321"),
     ],
     ids=[
         "query-secrets",
@@ -56,6 +59,9 @@ ENCODED_PASSKEY = "".join(f"%{ord(char):02X}" for char in PASSKEY)
         "token-host",
         "short-passkey-before-announce",
         "short-passkey-after-announce",
+        "letters-and-digits-anywhere",
+        "a-word",
+        "a-slug-and-an-id",
     ],
 )
 def test_a_url_is_shown_without_its_secrets(url: str, shown: str) -> None:
