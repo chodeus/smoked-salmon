@@ -306,7 +306,7 @@ def sixteen_bit_row(tracker: str, track_data: dict) -> Row | None:
 
 
 def rules_row(tracker: str, folder_name: str, track_data: dict, other_files: Sequence[str] = ()) -> Row:
-    """Path-length and sample-rate rules, for the audio and, by path, every other file the torrent holds."""
+    """The tracker's file rules for the audio, and its path limit for every other file the torrent holds."""
     label = f"{tracker} rules"
     long_paths = [
         warning for name in other_files if (warning := path_limit_warning(tracker, in_torrent_path(folder_name, name)))
