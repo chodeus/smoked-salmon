@@ -130,7 +130,18 @@ def redact_url(url: str) -> str:
         return "[REDACTED]"
     shown_host = ".".join(_part(label) for label in host.split("."))
     netloc = (f"[{shown_host}]" if ":" in host else shown_host) + (f":{port}" if port else "")
-    path = "/".join(_part(segment) for segment in parts.path.split("/"))
+    segments = parts.path.split("/")
+    # An announce URL's passkey sits next to "announce" (/<passkey>/announce), however short it is.
+    beside_announce = {
+        index + step
+        for index, segment in enumerate(segments)
+        if unquote(segment).lower().startswith("announce")
+        for step in (-1, 1)
+    }
+    path = "/".join(
+        "[REDACTED]" if index in beside_announce and segment else _part(segment)
+        for index, segment in enumerate(segments)
+    )
     query = "&".join(
         f"{_query_name(name)}="
         + (value if name.lower() in _SHOWN_QUERY and _SHOWN_VALUE.fullmatch(value) else "[REDACTED]")

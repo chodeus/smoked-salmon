@@ -328,6 +328,7 @@ def test_a_cross_upload_job_shows_its_link_without_secrets_but_runs_with_it(clie
     assert finished["status"] == "done", finished
     assert created.json()["params"]["path"] == shown
     assert finished["params"]["path"] == shown
+    assert [job["params"]["path"] for job in listed if job["id"] == job_id] == [shown]
     assert "test-pass-0001" not in str(listed)
     assert link in repr(calls), "the job runs with the link as it was given"
 
