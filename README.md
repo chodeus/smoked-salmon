@@ -391,7 +391,7 @@ Every CLI command has a web equivalent, so nothing is terminal-only:
 | Page | Covers |
 | --- | --- |
 | Upload | `up`, with every flag the CLI takes including `--dry-run`, behind pre-flight verification |
-| Checks | `check all` (provenance, log, integrity, MQA, upconvert) and the individual `log`, `integrity`, `mqa`, `upconv` subcommands |
+| Checks | `check all` (provenance, log, integrity, MQA, upconvert, MP3 tags) and the individual `log`, `integrity`, `mqa`, `upconv` subcommands |
 | Spectrals | `specs`, `checkspecs` |
 | Convert | `transcode`, `downconv`, `compress` |
 | Search | `metas`, `meta` |
@@ -400,7 +400,7 @@ Every CLI command has a web equivalent, so nothing is terminal-only:
 
 #### Pre-flight verification
 
-The Upload page verifies an album before anything is staged. It runs the same checks the upload itself runs — provenance, rip log, file integrity, MQA, upconversion — plus a duplicate search on every tracker you select and, for RED and OPS, their Do-Not-Upload lists. The duplicate search and the Do-Not-Upload lists need a readable album title: without one, the search is a warning and the lists are reported as not checked, never as passed. A tracker whose list forbids the release is not searched. Each comes back as a row you can read at a glance, and a duplicate row expands to every match it found rather than naming the first two.
+The Upload page verifies an album before anything is staged. It runs the same checks the upload itself runs — provenance, rip log, file integrity, MQA, upconversion, MP3 tags — plus a duplicate search on every tracker you select and, for RED and OPS, their Do-Not-Upload lists. The duplicate search and the Do-Not-Upload lists need a readable album title: without one, the search is a warning and the lists are reported as not checked, never as passed. A tracker whose list forbids the release is not searched. Each comes back as a row you can read at a glance, and a duplicate row expands to every match it found rather than naming the first two.
 
 A failed integrity check, MQA, upconversion, an edited rip log (its checksum fails, in any appended rip), a failure while checking the audio against a log's CRCs, 16bit files above 48 kHz for OPS, or a release on a Do-Not-Upload list **blocks** the upload and cannot be overridden, as `up` stops at each of them. Softer signals — an imperfect or unsigned rip log, a log whose CRCs the audio does not match or that salmon cannot check (no audio beside it, a range rip it cannot rebuild), a missing log, a possible duplicate, a tag whose claim the audio contradicts — need an explicit acknowledgement instead. Ordinary tag markers such as an `EAC` or `QOBUZ` comment are reported without warning: warning on every one of them would teach you to tick the box without reading it. Changing the path, source, trackers or any skip box invalidates the verdict, so a stale green cannot let something through. Dry runs post nothing and skip the gate.
 

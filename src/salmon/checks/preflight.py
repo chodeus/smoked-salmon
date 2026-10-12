@@ -167,11 +167,30 @@ def _log_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
     return verdict, " ".join(flagged) + (f" {passing} other log(s) pass." if passing else "")
 
 
+def _tags_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
+    if result["dual_id3"]:
+        names = ", ".join(result["dual_id3"][:3])
+        return WARN, (
+            f"{len(result['dual_id3'])} MP3(s) with a filled-in ID3v1 tag beside a blank ID3v2 tag, which RED and OPS "
+            f"can trump: {names}."
+        )
+    if result["errors"]:
+        first = result["errors"][0]
+        return (
+            WARN,
+            f"Could not read the ID3v2 tag of {len(result['errors'])} MP3(s): {first['file']} ({first['error']}).",
+        )
+    if not result["mp3s"]:
+        return SKIP, "No MP3 file."
+    return OK, f"No filled-in ID3v1 tag beside a blank ID3v2 one in {result['mp3s']} MP3(s)."
+
+
 CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec("provenance", "Provenance", album.run_provenance_check, _provenance_verdict),
     CheckSpec("integrity", "File integrity", album.run_integrity_check, _integrity_verdict),
     CheckSpec("upconvert", "Upconvert", album.run_upconvert_check, _upconvert_verdict),
     CheckSpec("mqa", "MQA", album.run_mqa_check, _mqa_verdict),
+    CheckSpec("tags", "MP3 tags", album.run_tag_check, _tags_verdict),
     # salmon up checks logs for a CD only; an unknown source is checked too.
     CheckSpec("log", "Rip log", album.run_log_check, _log_verdict, sources=("CD",)),
 )

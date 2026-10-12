@@ -96,6 +96,7 @@
   // Verify exactly what the upload will check, so the two cannot disagree.
   const checks = $derived([
     'provenance',
+    'tags',
     ...(skipIntegrityCheck ? [] : ['integrity']),
     ...(skipUp ? [] : ['upconvert']),
     ...(skipMqa ? [] : ['mqa']),
