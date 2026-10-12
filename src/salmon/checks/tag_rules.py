@@ -47,17 +47,20 @@ def is_uncompressed(track: dict) -> bool:
     return bit_rate >= UNCOMPRESSED_RATIO * rate * bits * channels
 
 
+def path_limit_warning(site_code: str, full_path: str) -> str | None:
+    """The trump warning for an in-torrent path past the tracker's limit, or None."""
+    limit = MAX_PATH_LENGTH.get(site_code)
+    if not limit or len(full_path) <= limit:
+        return None
+    return f"{len(full_path)}-char path exceeds {site_code}'s {limit} limit (2.3.12, a trump reason): {full_path}"
+
+
 def collect_upload_warnings(site_code: str, folder_name: str, track_data: dict) -> list[str]:
     """Return human-readable rule warnings for this upload; empty when clean."""
     warnings = []
-    path_limit = MAX_PATH_LENGTH.get(site_code)
     for filename, track in track_data.items():
-        full_path = in_torrent_path(folder_name, filename)
-        if path_limit and len(full_path) > path_limit:
-            warnings.append(
-                f"{len(full_path)}-char path exceeds {site_code}'s {path_limit} limit "
-                f"(2.3.12, a trump reason): {full_path}"
-            )
+        if too_long := path_limit_warning(site_code, in_torrent_path(folder_name, filename)):
+            warnings.append(too_long)
         tag_size = track.get("tag size")
         if tag_size is not None and tag_size > TAG_TRUMP_SIZE:
             warnings.append(

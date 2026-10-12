@@ -511,6 +511,46 @@ def test_rules_row_is_green_when_nothing_breaks_a_rule(tracker: str, paths: str)
     assert row.detail == f"{paths}, and sample rates are standard."
 
 
+LONG_LOG = "x" * 180 + ".log"
+
+
+def test_a_long_log_name_breaks_the_path_rule_as_a_track_does():
+    row = pf.rules_row("RED", "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}}, [LONG_LOG, "cover.jpg"])
+
+    assert row.verdict == pf.WARN
+    assert row.detail == f"191-char path exceeds RED's 180 limit (2.3.12, a trump reason): Folder/{LONG_LOG}"
+
+
+def test_a_long_path_is_reported_even_when_the_audio_cannot_be_read():
+    row = pf.rules_row("RED", "Folder", {}, [LONG_LOG])
+
+    assert row.verdict == pf.WARN
+
+
+def test_the_other_files_are_every_file_but_the_audio(tmp_path):
+    (tmp_path / "CD1").mkdir()
+    for name in ("CD1/01.flac", "CD1/rip.log", "cover.jpg"):
+        (tmp_path / name).write_bytes(b"")
+
+    others = pf._other_files(str(tmp_path), {"CD1/01.flac": {}})
+
+    assert others == ["CD1/rip.log", "cover.jpg"]
+
+
+async def test_run_checks_measures_the_path_of_a_log_beside_the_audio(album_dir, monkeypatch):
+    monkeypatch.setattr(
+        pf, "detect_source", lambda _p: {"source": "CD", "confidence": "confirmed", "reasons": ["rip log"]}
+    )
+    monkeypatch.setattr(pf, "_release_identity", lambda _p: {})
+    (album_dir / LONG_LOG).write_text("log", encoding="utf-8")
+
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "CD", ["RED"])
+
+    row = next(r for r in result["rows"] if r["id"] == "rules:RED")
+    assert row["verdict"] == pf.WARN
+    assert LONG_LOG in row["detail"]
+
+
 def test_rules_row_is_skipped_when_the_audio_could_not_be_read():
     # One unreadable file used to raise out of run_checks and cost every other row.
     row = pf.rules_row("RED", "Folder", {})

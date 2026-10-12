@@ -7,7 +7,7 @@ exists so an album can be seen green before anything is staged or uploaded.
 import asyncio
 import os
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from typing import Literal
 
 import msgspec
@@ -21,7 +21,13 @@ from salmon.checks.high_rate import sixteen_bit_notice
 # checks/__init__.py shadows the module.
 from salmon.checks.integrity import md5_unset_summary
 from salmon.checks.source import detect_source
-from salmon.checks.tag_rules import MAX_PATH_LENGTH, SIXTEEN_BIT_ABOVE_48KHZ, collect_upload_warnings
+from salmon.checks.tag_rules import (
+    MAX_PATH_LENGTH,
+    SIXTEEN_BIT_ABOVE_48KHZ,
+    collect_upload_warnings,
+    in_torrent_path,
+    path_limit_warning,
+)
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.tagger.pre_data import construct_artists_li, parse_format, parse_title
 from salmon.tagger.tags import gather_tags
@@ -278,16 +284,17 @@ def sixteen_bit_row(tracker: str, track_data: dict) -> Row | None:
     )
 
 
-def rules_row(tracker: str, folder_name: str, track_data: dict) -> Row:
-    """Path-length and sample-rate rules, which used to surface mid-upload.
-
-    A 180-char path is a trump reason on RED and worth knowing before an album
-    is staged, not after.
-    """
+def rules_row(tracker: str, folder_name: str, track_data: dict, other_files: Sequence[str] = ()) -> Row:
+    """Path-length and sample-rate rules, for the audio and, by path, every other file the torrent holds."""
     label = f"{tracker} rules"
+    long_paths = [
+        warning for name in other_files if (warning := path_limit_warning(tracker, in_torrent_path(folder_name, name)))
+    ]
     if not track_data:
+        if long_paths:
+            return Row(f"rules:{tracker}", label, WARN, " ".join(long_paths[:2]))
         return Row(f"rules:{tracker}", label, SKIP, "The audio could not be read, so these rules were not checked.")
-    warnings = collect_upload_warnings(tracker, folder_name, track_data)
+    warnings = [*collect_upload_warnings(tracker, folder_name, track_data), *long_paths]
     if not warnings:
         limit = MAX_PATH_LENGTH.get(tracker)
         paths = f"Paths are within {tracker}'s {limit}-character limit" if limit else f"{tracker} sets no path limit"
@@ -325,6 +332,16 @@ def _release_identity(path: str) -> dict:
         }
     except Exception:
         return {}
+
+
+def _other_files(path: str, audio: Collection[str]) -> list[str]:
+    """Every file of the album but its audio, relative to it: a log or a cover counts against the path limit too."""
+    return sorted(
+        relative
+        for root, _dirs, files in os.walk(path)
+        for name in files
+        if (relative := os.path.relpath(os.path.join(root, name), path)) not in audio
+    )
 
 
 def _audio_info(path: str) -> dict:
@@ -423,10 +440,11 @@ async def run_checks(
         # normpath first: basename("/album/") is "", which would drop the folder
         # out of the path-length sum and under-report it.
         folder = os.path.basename(os.path.normpath(path))
+        other_files = await asyncio.to_thread(_other_files, path, track_data)
         # Path length and sample rate depend on the files, not on readable tags,
         # so they are checked even when the duplicate search cannot run.
         for tracker in trackers:
-            rows.append(rules_row(tracker, folder, track_data))
+            rows.append(rules_row(tracker, folder, track_data, other_files))
             if row := sixteen_bit_row(tracker, track_data):
                 rows.append(row)
         if identity.get("title"):

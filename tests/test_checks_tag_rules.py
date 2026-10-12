@@ -1,7 +1,7 @@
 import pytest
 
 from salmon.checks.high_rate import sixteen_bit_notice
-from salmon.checks.tag_rules import SIXTEEN_BIT_ABOVE_48KHZ, collect_upload_warnings
+from salmon.checks.tag_rules import SIXTEEN_BIT_ABOVE_48KHZ, collect_upload_warnings, path_limit_warning
 
 
 def _track(sample_rate=44100, precision=16):
@@ -51,3 +51,10 @@ def test_the_upload_warnings_leave_16bit_to_its_refusal():
 
 def test_24bit_96k_is_fine():
     assert collect_upload_warnings("RED", "F", {"a.flac": _track(sample_rate=96000, precision=24)}) == []
+
+
+@pytest.mark.parametrize(("length", "warned"), [(180, False), (181, True)])
+def test_a_path_of_the_limits_length_is_within_it(length: int, warned: bool) -> None:
+    warning = path_limit_warning("RED", "F/" + "x" * (length - 2))
+
+    assert (warning is not None) is warned
