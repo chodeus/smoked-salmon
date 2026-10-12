@@ -129,7 +129,7 @@ def _provenance_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
 
 
 def _log_line(log: dict) -> tuple[Verdict, str]:
-    """One rip log's verdict as salmon up treats it: an edited log, or audio it cannot check, stops the upload."""
+    """One rip log's verdict as salmon up treats it: an edited log, or a failed CRC check, stops the upload."""
     name = log["file"]
     if "error" in log:
         return WARN, f"{name}: could not be read ({log['error']})."
@@ -191,7 +191,7 @@ CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec("upconvert", "Upconvert", album.run_upconvert_check, _upconvert_verdict),
     CheckSpec("mqa", "MQA", album.run_mqa_check, _mqa_verdict),
     CheckSpec("tags", "MP3 tags", album.run_tag_check, _tags_verdict),
-    # salmon up checks logs for a CD only; an unknown source is checked too.
+    # Logs are checked for a CD, as salmon up does, and for a source the files leave unknown.
     CheckSpec("log", "Rip log", album.run_log_check, _log_verdict, sources=("CD",)),
 )
 CHECK_IDS: tuple[str, ...] = tuple(spec.id for spec in CHECKS)
