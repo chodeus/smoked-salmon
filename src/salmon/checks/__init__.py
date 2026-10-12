@@ -137,7 +137,12 @@ async def mqa_test(path: str) -> None:
     multiple=True,
     help="Apply this tracker's rules and search it for duplicates; without -t, RED's and OPS's rules, no search",
 )
-async def all_checks(path: str, source: str | None, trackers: tuple[str, ...]) -> None:
+@click.option(
+    "--report",
+    is_flag=True,
+    help="Also print a plain-text report for a tracker help thread, with each FLAC's frequency analysis",
+)
+async def all_checks(path: str, source: str | None, trackers: tuple[str, ...], report: bool) -> None:
     """Run every check over an album and print a single verdict.
 
     Exits non-zero when a release is unfit to upload.
@@ -170,8 +175,13 @@ async def all_checks(path: str, source: str | None, trackers: tuple[str, ...]) -
     blocking = [b for b in result["blocking"] if source or b != "source"]
     if blocking:
         click.secho(f"\nNot suitable for upload: {len(blocking)} blocking issue(s).", fg="red", bold=True)
-        raise SystemExit(1)
-    if result["warnings"]:
+    elif result["warnings"]:
         click.secho(f"\nUploadable, with {len(result['warnings'])} thing(s) to check first.", fg="yellow")
-        return
-    click.secho("\nAll checks passed.", fg="green", bold=True)
+    else:
+        click.secho("\nAll checks passed.", fg="green", bold=True)
+    if report:
+        from salmon.checks.report import album_report
+
+        click.echo(f"\n{await album_report(path, result['rows'], result['raw'].get('provenance'))}")
+    if blocking:
+        raise SystemExit(1)

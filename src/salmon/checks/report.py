@@ -5,9 +5,14 @@ was encoded, its real numbers, the plots, and anything about the music that
 changes how a spectrogram should be read — so it can be pasted straight in.
 """
 
+import asyncio
 import os
+import tempfile
 
-from salmon.uploader.frequency import SpectrumResult, describe, summarize
+from salmon.checks.album import in_album
+from salmon.checks.provenance import gather_provenance
+from salmon.tagger.audio_info import gather_audio_info
+from salmon.uploader.frequency import SpectrumResult, describe, generate_frequency_plots, summarize
 
 
 def _format_line(info: dict) -> str:
@@ -33,8 +38,9 @@ def build_report(
     provenance: dict,
     spectra: list[SpectrumResult] | None = None,
     image_urls: list[str] | None = None,
+    rows: list[dict] | None = None,
 ) -> str:
-    """Assemble the report from data the checks already gathered."""
+    """Assemble the report from data the checks already gathered; rows adds check all's verdicts."""
     spectra = spectra or []
     lines: list[str] = [f"{os.path.basename(album_path)}", ""]
 
@@ -71,5 +77,25 @@ def build_report(
     else:
         lines.append("   Full-track spectrogram, a 2-second zoom, and an averaged frequency plot per track.")
 
-    lines += ["", "5. About the release", "   "]
+    if rows is not None:
+        lines += ["", "5. Checks (salmon check all)"]
+        for row in rows:
+            lines.append(f"   {row['verdict'].upper():<5} {row['label']}: {row['detail']}")
+            lines += [f"         {note}" for note in row.get("notes") or ()]
+    lines += ["", f"{6 if rows is not None else 5}. About the release", "   "]
     return "\n".join(lines)
+
+
+async def album_report(path: str, rows: list[dict], provenance: dict | None = None) -> str:
+    """check all's report: the album's numbers, each FLAC's frequency analysis, and the rows; no parent path."""
+    try:
+        audio_info = await asyncio.to_thread(gather_audio_info, path, True)
+    except Exception:
+        audio_info = {}
+    if provenance is None:
+        provenance = await asyncio.to_thread(gather_provenance, path)
+    flacs = [name for name in audio_info if name.lower().endswith(".flac")]
+    # The plots go to a folder of their own, removed after: nothing is written into the album.
+    with tempfile.TemporaryDirectory() as plots:
+        spectra = await generate_frequency_plots(path, flacs, plots) if flacs else []
+    return in_album(build_report(path, audio_info, provenance, spectra, rows=rows), path)
