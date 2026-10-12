@@ -117,12 +117,8 @@ _TOKEN_RUN = re.compile(r"[A-Za-z0-9_]{20,}")
 _PLAIN_SEGMENT = re.compile(r"\d{1,19}|\D{0,64}")
 
 
-def _part(text: str) -> str:
-    """A host label to show: masked when, decoded, it holds a token-like run."""
-    return "[REDACTED]" if _TOKEN_RUN.search(unquote(text)) else text
-
-
 def _segment(text: str) -> str:
+    """A host label or path segment to show: masked unless, decoded, it is a plain id or word."""
     decoded = unquote(text)
     return text if _PLAIN_SEGMENT.fullmatch(decoded) and not _TOKEN_RUN.search(decoded) else "[REDACTED]"
 
@@ -138,7 +134,8 @@ def redact_url(url: str) -> str:
         host, port = parts.hostname or "", parts.port
     except ValueError:
         return "[REDACTED]"
-    shown_host = ".".join(_part(label) for label in host.split("."))
+    # An IPv6 literal is an address, never a secret; every DNS label is held to the path rule.
+    shown_host = host if ":" in host else ".".join(_segment(label) for label in host.split("."))
     netloc = (f"[{shown_host}]" if ":" in host else shown_host) + (f":{port}" if port else "")
     segments = parts.path.split("/")
     # An announce URL's passkey sits next to "announce" (/<passkey>/announce), however short it is.
