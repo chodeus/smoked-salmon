@@ -1,7 +1,7 @@
 import re
 import shlex
 from collections.abc import Iterable
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 _URL_USERINFO = re.compile(r"(://)[^/\s@]+@")
 _USERINFO_PASSWORD = re.compile(r"://[^/\s@:]*:([^/\s@']+)@")
@@ -106,21 +106,34 @@ def secret_values(args: Iterable[str], connection: str = "") -> list[str]:
 # A URL shows these query values when they are short; every other value is masked (an authkey, a store's token).
 _SHOWN_QUERY = frozenset({"id", "torrentid", "groupid", "action", "page"})
 _SHOWN_VALUE = re.compile(r"[\w.-]{1,19}")
-# A path segment this long could be a passkey: an announce URL carries it in the path.
-_TOKEN_SEGMENT = re.compile(r"[A-Za-z0-9]{20,}")
+# A query name shows only as a plain short name: one holding "=" or a token once decoded is masked.
+_SHOWN_NAME = re.compile(r"[A-Za-z_][\w.\[\]-]{0,31}")
+# A run this long could be a passkey or a token, wherever it sits in a URL and however it is encoded.
+_TOKEN_RUN = re.compile(r"[A-Za-z0-9_]{20,}")
+
+
+def _part(text: str) -> str:
+    """A host label or path segment to show: masked when, decoded, it holds a token-like run."""
+    return "[REDACTED]" if _TOKEN_RUN.search(unquote(text)) else text
+
+
+def _query_name(name: str) -> str:
+    return name if _SHOWN_NAME.fullmatch(name) and not _TOKEN_RUN.search(name) else "[REDACTED]"
 
 
 def redact_url(url: str) -> str:
-    """An http(s) URL to show: no userinfo, and its fragment, token-like path segments and query values masked."""
+    """An http(s) URL to show: no userinfo, and its fragment and any token-like host, path or query part masked."""
     try:
         parts = urlsplit(url)
         host, port = parts.hostname or "", parts.port
     except ValueError:
         return "[REDACTED]"
-    netloc = (f"[{host}]" if ":" in host else host) + (f":{port}" if port else "")
-    path = "/".join("[REDACTED]" if _TOKEN_SEGMENT.fullmatch(part) else part for part in parts.path.split("/"))
+    shown_host = ".".join(_part(label) for label in host.split("."))
+    netloc = (f"[{shown_host}]" if ":" in host else shown_host) + (f":{port}" if port else "")
+    path = "/".join(_part(segment) for segment in parts.path.split("/"))
     query = "&".join(
-        f"{name}={value if name.lower() in _SHOWN_QUERY and _SHOWN_VALUE.fullmatch(value) else '[REDACTED]'}"
+        f"{_query_name(name)}="
+        + (value if name.lower() in _SHOWN_QUERY and _SHOWN_VALUE.fullmatch(value) else "[REDACTED]")
         for name, value in parse_qsl(parts.query, keep_blank_values=True)
     )
     return (

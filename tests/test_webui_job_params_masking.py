@@ -6,6 +6,7 @@ from salmon.common.redaction import redact_url
 from salmon.webui.jobs import Job
 
 PASSKEY = "abcdef0123456789abcdef0123456789"
+ENCODED_PASSKEY = "".join(f"%{ord(char):02X}" for char in PASSKEY)
 
 
 @pytest.mark.parametrize(
@@ -28,8 +29,30 @@ PASSKEY = "abcdef0123456789abcdef0123456789"
         (f"https://tracker.example/torrents.php?id={PASSKEY}", "https://tracker.example/torrents.php?id=[REDACTED]"),
         ("https://[::1]:8080/a?sig=s3", "https://[::1]:8080/a?sig=[REDACTED]"),
         ("https://tracker.example:bad/x", "[REDACTED]"),
+        (
+            "https://tracker.example/abcDEF0123_456789abc_def0123456/announce",
+            "https://tracker.example/[REDACTED]/announce",
+        ),
+        (f"https://tracker.example/{ENCODED_PASSKEY}/announce", "https://tracker.example/[REDACTED]/announce"),
+        (f"https://tracker.example/x?api_key%3D{PASSKEY}=ignored", "https://tracker.example/x?[REDACTED]=[REDACTED]"),
+        (f"https://tracker.example/x?{PASSKEY}", "https://tracker.example/x?[REDACTED]=[REDACTED]"),
+        (f"https://{PASSKEY}.tracker.example/x", "https://[REDACTED].tracker.example/x"),
     ],
-    ids=["query-secrets", "ids-kept", "passkey-path", "userinfo", "fragment", "long-id", "ipv6", "unparseable"],
+    ids=[
+        "query-secrets",
+        "ids-kept",
+        "passkey-path",
+        "userinfo",
+        "fragment",
+        "long-id",
+        "ipv6",
+        "unparseable",
+        "underscore-path",
+        "encoded-path",
+        "secret-in-a-name",
+        "token-as-a-name",
+        "token-host",
+    ],
 )
 def test_a_url_is_shown_without_its_secrets(url: str, shown: str) -> None:
     masked = redact_url(url)
