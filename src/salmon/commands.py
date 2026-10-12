@@ -24,6 +24,7 @@ from salmon.config import find_config_path, get_default_config_path, get_user_cf
 from salmon.errors import UploadError
 from salmon.sources.tidal import credentials_configured as tidal_credentials_configured
 from salmon.tagger.audio_info import gather_audio_info, recompress_path
+from salmon.tagger.sources import METASOURCES
 from salmon.uploader.description import build_tracklist_description
 from salmon.uploader.seedbox import seedbox_secrets
 from salmon.uploader.spectrals import (
@@ -63,6 +64,14 @@ async def specs(path: str, no_delete_specs: bool, format_output: bool) -> None:
         click.secho(f"Spectrals saved to {spath}", fg="green")
 
 
+def _url_host(url: str) -> str:
+    """Only the host of an argument: an unsupported URL may hold a passkey or an authkey."""
+    try:
+        return parse.urlsplit(url).hostname or "not a URL"
+    except ValueError:
+        return "not a URL"
+
+
 @commandgroup.command()
 @click.argument("urls", type=click.STRING, nargs=-1)
 async def descgen(urls: tuple[str, ...]) -> None:
@@ -70,6 +79,27 @@ async def descgen(urls: tuple[str, ...]) -> None:
     if not urls:
         click.secho("You must specify at least one URL", fg="red")
         return
+
+    # Checked before any scrape starts, so a bad argument sends no request and ends without a traceback.
+    supported = [any(source.Scraper.regex.match(url) for source in METASOURCES.values()) for url in urls]
+    if not all(supported):
+        sources = ", ".join(METASOURCES)
+        for position, (url, ok) in enumerate(zip(urls, supported, strict=True), 1):
+            if ok:
+                continue
+            if os.path.isdir(url):
+                click.secho(
+                    f"{url} is a folder; descgen takes release URLs from {sources}. `salmon up` writes the "
+                    "description itself.",
+                    fg="red",
+                )
+            else:
+                click.secho(
+                    f"Argument {position} ({_url_host(url)}) is not a release URL descgen supports. It takes URLs "
+                    f"from {sources}.",
+                    fg="red",
+                )
+        raise click.exceptions.Exit(1)
 
     description = await build_tracklist_description(urls)
     click.secho("\nDescription:\n", fg="yellow", bold=True)
