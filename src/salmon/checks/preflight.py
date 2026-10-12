@@ -195,6 +195,8 @@ CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec("log", "Rip log", album.run_log_check, _log_verdict, sources=("CD",)),
 )
 CHECK_IDS: tuple[str, ...] = tuple(spec.id for spec in CHECKS)
+# The trackers whose rules a check with none named applies; their Do-Not-Upload lists ship with salmon.
+RULE_TRACKERS: tuple[str, ...] = ("RED", "OPS")
 
 
 def source_row(guess: dict, chosen: str | None) -> Row:
@@ -388,8 +390,8 @@ def _release(identity: dict, track_data: dict, source: str | None) -> dict:
     return {**identity, "source": source, "format": release_format, "encoding": encoding}
 
 
-async def _tracker_rows(tracker: str, release: dict) -> tuple[list[Row], dict]:
-    """Verdict rows for one tracker, plus the matches behind them for the UI to list."""
+async def _tracker_rows(tracker: str, release: dict, search: bool = True) -> tuple[list[Row], dict]:
+    """Verdict rows for one tracker, plus the matches behind them for the UI to list; without search, no request."""
     rows: list[Row] = []
     raw: dict[str, dict] = {}
     if tracker in LISTS:
@@ -400,6 +402,8 @@ async def _tracker_rows(tracker: str, release: dict) -> tuple[list[Row], dict]:
             # As an upload does: a listed release is not searched for there.
             rows.append(Row(f"dupe:{tracker}", f"Duplicate ({tracker})", SKIP, "Not searched: the list forbids it."))
             return rows, raw
+    if not search:
+        return rows, raw
     searchstrs = generate_dupe_check_searchstrs(release["artists"], release["title"], release["catno"])
     try:
         site = salmon.trackers.get_class(tracker)()
@@ -430,11 +434,12 @@ async def run_checks(
     checks: list[str] | None = None,
     source: str | None = None,
     trackers: list[str] | None = None,
+    search: bool = True,
 ) -> dict:
     """Run the selected album checks and return verdict rows plus the raw results.
 
-    checks defaults to all of them; trackers adds a duplicate search per site and,
-    for RED and OPS, a Do-Not-Upload row. Pass no trackers to check the files alone.
+    checks defaults to all of them; trackers adds their rules and, for RED and OPS, a Do-Not-Upload row, and with
+    search a duplicate search on each. Pass no trackers to check the files alone.
     """
     selected = CHECK_IDS if checks is None else tuple(checks)
     guess = await asyncio.to_thread(detect_source, path)
@@ -469,11 +474,14 @@ async def run_checks(
         if identity.get("title"):
             release = _release(identity, track_data, ctx["source"])
             for tracker in trackers:
-                tracker_rows, tracker_raw = await _tracker_rows(tracker, release)
+                tracker_rows, tracker_raw = await _tracker_rows(tracker, release, search)
                 rows.extend(tracker_rows)
                 raw.update(tracker_raw)
         else:
-            rows.append(Row("dupe", "Duplicate", WARN, "Tags could not be read, so no duplicate search could be run."))
+            if search:
+                rows.append(
+                    Row("dupe", "Duplicate", WARN, "Tags could not be read, so no duplicate search could be run.")
+                )
             rows.extend(
                 Row(f"do-not-upload:{tracker}", f"Do-Not-Upload ({tracker})", SKIP, "Not checked: no album title.")
                 for tracker in trackers

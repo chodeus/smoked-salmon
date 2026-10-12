@@ -364,8 +364,8 @@ has are flagged as a dupe risk and left out unless you pick them by number. In t
 
 To vet an album before deciding whether to upload it at all — every check in one pass, with a single verdict and a non-zero exit when the release is unfit:
 ```bash
-salmon check all /data/path/to/album
-salmon check all /data/path/to/album -s CD -t RED    # also search RED for duplicates
+salmon check all /data/path/to/album                 # RED's and OPS's rules; no tracker is contacted
+salmon check all /data/path/to/album -s CD -t RED    # RED's rules, and a search of RED for duplicates
 ```
 
 `up` already runs all of these as part of an upload. `check all` is for triage: sorting through a library without starting one.
