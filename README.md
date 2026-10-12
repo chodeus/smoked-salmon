@@ -110,6 +110,9 @@ Installing with pip is not recommended because uv (and pipx) manage python versi
 	uv tool install git+https://github.com/chodeus/smoked-salmon
 	```
 
+    smoked-salmon has no window or Start menu entry: you type `salmon` in PowerShell (see Initial Setup below).
+    If PowerShell says `salmon` is not recognized, run `uv tool update-shell`, then open a new PowerShell window.
+
 #### macOS
 1. Install Homebrew (if you haven't already):
     ```bash
@@ -133,7 +136,11 @@ Installing with pip is not recommended because uv (and pipx) manage python versi
 	uv tool install git+https://github.com/chodeus/smoked-salmon
 	```
 
+On Python 3.14 (uv may pick it on a fresh install) pyoxipng is not available yet, so salmon compresses spectral images with the oxipng program when it finds it (winget, scoop, brew, apt, or its [GitHub releases](https://github.com/oxipng/oxipng/releases)), and uploads them uncompressed when it does not. Installing with `uv tool install --python 3.13 git+https://github.com/chodeus/smoked-salmon` brings pyoxipng back.
+
 ### 🔹  Initial Setup
+smoked-salmon is a command-line program: run every `salmon` command in a terminal (PowerShell on Windows).
+
 1. Run salmon for the first time and follow the instructions to create a default configuration:
 	```
 	salmon-user@salmon:~$ salmon
