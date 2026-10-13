@@ -455,7 +455,7 @@ During an upload the same measurements are printed, and the plots shown, before 
 
 Every page says what it is for under its heading. The Upload page's options carry hover tooltips and an **Explain these options** toggle that shows the same text inline, so the help does not need a mouse. The Dashboard opens with tiles for trackers connected, required tools present and jobs in flight, and shows free space per configured directory — the disk filling up is what stops an upload mid-job.
 
-Because the interface holds your tracker session cookies and can trigger real uploads, protect it with a shared secret whenever it is reachable beyond loopback. Set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`); leaving it unset disables the gate entirely.
+Because the interface holds your tracker session cookies and can trigger real uploads, every request needs a token. Set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`); without one, `salmon web` on loopback makes a token for that run and prints a login link carrying it after the `#`, which the browser never sends, and any other bind refuses to start. A request that changes something must come as JSON from the interface's own host, so a page on another site cannot send one.
 
 > The older standalone spectral viewer still exists for `salmon up`, but it binds loopback inside the process, so publishing port 55110 from a container has no effect — the web interface above supersedes it.
 

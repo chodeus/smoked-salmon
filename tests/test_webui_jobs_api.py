@@ -17,13 +17,13 @@ import asyncclick as click
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from webui_client import web_client  # pyright: ignore[reportMissingImports]
 
 from salmon import cfg
 from salmon.checks.integrity import IntegrityResult
 from salmon.common.progress import report_progress
 from salmon.uploader.frequency import SpectrumResult
 from salmon.uploader.spectrals import get_spectrals_path
-from salmon.webui.app import create_app
 from salmon.webui.jobs import (
     MAX_FINISHED_JOBS,
     SUBSCRIBER_QUEUE_SIZE,
@@ -61,7 +61,7 @@ def client():
     # base_url localhost passes TrustedHostMiddleware; the context manager
     # keeps one portal event loop alive so background job tasks survive
     # across requests.
-    with TestClient(create_app(), base_url="http://localhost") as c:
+    with web_client() as c:
         yield c
 
 
@@ -418,7 +418,7 @@ async def test_prune_finished_evicts_oldest_beyond_max_finished_jobs():
 
 
 def test_default_loopback_bind_rejects_testserver_host_header():
-    c = TestClient(create_app())  # base_url http://testserver
+    c = web_client(base_url="http://testserver")
     resp = c.get("/api/jobs")
     assert resp.status_code == 400
     assert resp.text == "Invalid host header"
@@ -431,7 +431,7 @@ def test_loopback_bind_rejects_evil_host_header(client):
 
 
 def test_non_loopback_bind_skips_trusted_host_check():
-    c = TestClient(create_app(host="0.0.0.0"))
+    c = web_client(base_url="http://testserver", host="0.0.0.0")
     resp = c.get("/api/jobs")
     assert resp.status_code == 200
 
