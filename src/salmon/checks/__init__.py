@@ -130,13 +130,19 @@ async def mqa_test(path: str) -> None:
 @click.option(
     "--source", "-s", default=None, help=f"Media source ({'/'.join(SOURCES.values())}); inferred when omitted"
 )
-@click.option("--tracker", "-t", "trackers", multiple=True, help="Also search this tracker for duplicates")
+@click.option(
+    "--tracker",
+    "-t",
+    "trackers",
+    multiple=True,
+    help="Apply this tracker's rules and search it for duplicates; without -t, RED's and OPS's rules, no search",
+)
 async def all_checks(path: str, source: str | None, trackers: tuple[str, ...]) -> None:
     """Run every check over an album and print a single verdict.
 
     Exits non-zero when a release is unfit to upload.
     """
-    from salmon.checks.preflight import BLOCK, OK, SKIP, WARN, run_checks
+    from salmon.checks.preflight import BLOCK, OK, RULE_TRACKERS, SKIP, WARN, run_checks
 
     for code in trackers:
         if code.upper() not in salmon.trackers.tracker_list:
@@ -145,7 +151,9 @@ async def all_checks(path: str, source: str | None, trackers: tuple[str, ...]) -
     if source and source not in SOURCES.values():
         raise click.UsageError(f"Unknown source {source}. Valid sources: {', '.join(SOURCES.values())}")
 
-    result = await run_checks(path, None, source, [c.upper() for c in trackers])
+    named = [c.upper() for c in trackers]
+    # No tracker named: their rules still apply, and no request is sent.
+    result = await run_checks(path, None, source, named or list(RULE_TRACKERS), search=bool(named))
     colours = {OK: "green", WARN: "yellow", BLOCK: "red", SKIP: None}
     marks = {OK: "OK  ", WARN: "WARN", BLOCK: "FAIL", SKIP: "--  "}
     click.secho(f"\n{os.path.basename(path)}", bold=True)

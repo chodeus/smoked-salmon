@@ -12,10 +12,11 @@
     { key: 'integrity', label: 'File integrity' },
     { key: 'mqa', label: 'MQA detection' },
     { key: 'upconvert', label: 'Upconvert detection' },
+    { key: 'tags', label: 'MP3 tags (blank ID3v2 beside ID3v1)' },
   ]
 
   let path = $state('')
-  let selected = $state<string[]>(['provenance', 'log', 'integrity', 'mqa', 'upconvert'])
+  let selected = $state<string[]>(['provenance', 'log', 'integrity', 'mqa', 'upconvert', 'tags'])
   let jobId = $state<string | null>(null)
   let error = $state('')
 

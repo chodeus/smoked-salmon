@@ -6,7 +6,8 @@ exists so an album can be seen green before anything is staged or uploaded.
 
 import asyncio
 import os
-from collections.abc import Awaitable, Callable
+import re
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from typing import Literal
 
 import msgspec
@@ -20,11 +21,22 @@ from salmon.checks.high_rate import sixteen_bit_notice
 # checks/__init__.py shadows the module.
 from salmon.checks.integrity import md5_unset_summary
 from salmon.checks.source import detect_source
-from salmon.checks.tag_rules import MAX_PATH_LENGTH, SIXTEEN_BIT_ABOVE_48KHZ, collect_upload_warnings
+from salmon.checks.tag_rules import (
+    MAX_PATH_LENGTH,
+    SIXTEEN_BIT_ABOVE_48KHZ,
+    collect_upload_warnings,
+    in_torrent_path,
+    path_limit_warning,
+)
 from salmon.tagger.audio_info import gather_audio_info
-from salmon.tagger.pre_data import construct_artists_li, parse_title
+from salmon.tagger.pre_data import construct_artists_li, parse_format, parse_title
 from salmon.tagger.tags import gather_tags
-from salmon.uploader.dupe_checker import generate_dupe_check_searchstrs, get_search_results
+from salmon.uploader.dupe_checker import (
+    describe_torrent,
+    generate_dupe_check_searchstrs,
+    get_search_results,
+    held_in_group,
+)
 
 Verdict = Literal["ok", "warn", "block", "skip"]
 # "block" cannot be overridden in the UI; "warn" needs an explicit acknowledgement.
@@ -155,15 +167,36 @@ def _log_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
     return verdict, " ".join(flagged) + (f" {passing} other log(s) pass." if passing else "")
 
 
+def _tags_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
+    if result["dual_id3"]:
+        names = ", ".join(result["dual_id3"][:3])
+        return WARN, (
+            f"{len(result['dual_id3'])} MP3(s) with a filled-in ID3v1 tag beside a blank ID3v2 tag, which RED and OPS "
+            f"can trump: {names}."
+        )
+    if result["errors"]:
+        first = result["errors"][0]
+        return (
+            WARN,
+            f"Could not read the ID3v2 tag of {len(result['errors'])} MP3(s): {first['file']} ({first['error']}).",
+        )
+    if not result["mp3s"]:
+        return SKIP, "No MP3 file."
+    return OK, f"No filled-in ID3v1 tag beside a blank ID3v2 one in {result['mp3s']} MP3(s)."
+
+
 CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec("provenance", "Provenance", album.run_provenance_check, _provenance_verdict),
     CheckSpec("integrity", "File integrity", album.run_integrity_check, _integrity_verdict),
     CheckSpec("upconvert", "Upconvert", album.run_upconvert_check, _upconvert_verdict),
     CheckSpec("mqa", "MQA", album.run_mqa_check, _mqa_verdict),
+    CheckSpec("tags", "MP3 tags", album.run_tag_check, _tags_verdict),
     # Logs are checked for a CD, as salmon up does, and for a source the files leave unknown.
     CheckSpec("log", "Rip log", album.run_log_check, _log_verdict, sources=("CD",)),
 )
 CHECK_IDS: tuple[str, ...] = tuple(spec.id for spec in CHECKS)
+# The trackers whose rules a check with none named applies; their Do-Not-Upload lists ship with salmon.
+RULE_TRACKERS: tuple[str, ...] = ("RED", "OPS")
 
 
 def source_row(guess: dict, chosen: str | None) -> Row:
@@ -197,7 +230,8 @@ def _editions(group: dict) -> str:
     return "; ".join(f"{key}: {', '.join(fmts)}" for key, fmts in editions.items())
 
 
-def dupe_row(tracker: str, results: list[dict]) -> Row:
+def dupe_row(tracker: str, results: list[dict], release: dict | None = None) -> Row:
+    """A tracker's matches weighed as salmon up weighs them: a group already holding this edition's format warns."""
     label = f"Duplicate ({tracker})"
     if not results:
         return Row(f"dupe:{tracker}", label, OK, "No existing release found.")
@@ -206,11 +240,24 @@ def dupe_row(tracker: str, results: list[dict]) -> Row:
         name = str(r.get("groupName") or r.get("groupId"))
         editions = _editions(r)
         names.append(f"{name} ({editions})" if editions else name)
-    detail = (
-        f"{len(results)} possible match(es): {', '.join(names)}. "
-        "A different tracklist is a different release; a catalogue number is not. Confirm it is not a duplicate."
-    )
-    return Row(f"dupe:{tracker}", label, WARN, detail)
+    found = f"{len(results)} possible match(es): {', '.join(names)}."
+    wanted = [str((release or {}).get(key) or "") for key in ("source", "format", "encoding")]
+    if not all(wanted):
+        return Row(
+            f"dupe:{tracker}",
+            label,
+            WARN,
+            f"{found} This release's source or encoding is not known from the files, so check them by hand.",
+        )
+    held = [describe_torrent(torrent, group) for group in results for torrent in held_in_group(group, release)]
+    if held:
+        return Row(
+            f"dupe:{tracker}",
+            label,
+            WARN,
+            f"{tracker} already has this edition's {' '.join(wanted)}: {'; '.join(held[:2])}.",
+        )
+    return Row(f"dupe:{tracker}", label, OK, f"{found} None holds this edition's {' '.join(wanted)}.")
 
 
 def dupe_matches(base_url: str, results: list[dict]) -> list[dict]:
@@ -258,16 +305,17 @@ def sixteen_bit_row(tracker: str, track_data: dict) -> Row | None:
     )
 
 
-def rules_row(tracker: str, folder_name: str, track_data: dict) -> Row:
-    """Path-length and sample-rate rules, which used to surface mid-upload.
-
-    A 180-char path is a trump reason on RED and worth knowing before an album
-    is staged, not after.
-    """
+def rules_row(tracker: str, folder_name: str, track_data: dict, other_files: Sequence[str] = ()) -> Row:
+    """The tracker's file rules for the audio, and its path limit for every other file the torrent holds."""
     label = f"{tracker} rules"
+    long_paths = [
+        warning for name in other_files if (warning := path_limit_warning(tracker, in_torrent_path(folder_name, name)))
+    ]
     if not track_data:
+        if long_paths:
+            return Row(f"rules:{tracker}", label, WARN, " ".join(long_paths[:2]))
         return Row(f"rules:{tracker}", label, SKIP, "The audio could not be read, so these rules were not checked.")
-    warnings = collect_upload_warnings(tracker, folder_name, track_data)
+    warnings = [*collect_upload_warnings(tracker, folder_name, track_data), *long_paths]
     if not warnings:
         limit = MAX_PATH_LENGTH.get(tracker)
         paths = f"Paths are within {tracker}'s {limit}-character limit" if limit else f"{tracker} sets no path limit"
@@ -294,15 +342,27 @@ def _release_identity(path: str) -> dict:
             return {}
         first = next(iter(tags.values()))
         title, edition = parse_title(first.album) if first.album else (None, None)
+        year = re.search(r"\d{4}", str(first.date or ""))
         return {
             "artists": construct_artists_li(tags),
             "title": title,
             "edition_title": edition,
+            "year": year[0] if year else None,
             "label": first.label,
             "catno": first.catno,
         }
     except Exception:
         return {}
+
+
+def _other_files(path: str, audio: Collection[str]) -> list[str]:
+    """Every file of the album but its audio, relative to it: a log or a cover counts against the path limit too."""
+    return sorted(
+        relative
+        for root, _dirs, files in os.walk(path)
+        for name in files
+        if (relative := os.path.relpath(os.path.join(root, name), path)) not in audio
+    )
 
 
 def _audio_info(path: str) -> dict:
@@ -317,27 +377,55 @@ def _audio_info(path: str) -> dict:
         return {}
 
 
-async def _tracker_rows(tracker: str, identity: dict, source: str | None) -> tuple[list[Row], dict]:
-    """Verdict rows for one tracker, plus the matches behind them for the UI to list."""
+def _release(identity: dict, track_data: dict, source: str | None) -> dict:
+    """The release as salmon up's rls_data names its edition: source, format and encoding beside the tags."""
+    try:
+        release_format = parse_format(next(iter(track_data))) if track_data else None
+    except KeyError:
+        release_format = None
+    precisions = {info.get("precision") for info in track_data.values()}
+    encoding = None
+    if release_format == "FLAC":
+        encoding = "24bit Lossless" if 24 in precisions else "Lossless" if 16 in precisions else None
+    return {**identity, "source": source, "format": release_format, "encoding": encoding}
+
+
+async def _tracker_rows(tracker: str, release: dict, search: bool = True) -> tuple[list[Row], dict]:
+    """Verdict rows for one tracker, plus the matches behind them for the UI to list; without search, no request."""
     rows: list[Row] = []
     raw: dict[str, dict] = {}
     if tracker in LISTS:
         # An unreadable list gives a reason too: it refuses everything, so the row blocks.
-        reason = do_not_upload_reason(tracker, Candidate.from_metadata({**identity, "source": source}))
+        reason = do_not_upload_reason(tracker, Candidate.from_metadata(release))
         rows.append(do_not_upload_row(tracker, reason))
         if reason:
             # As an upload does: a listed release is not searched for there.
             rows.append(Row(f"dupe:{tracker}", f"Duplicate ({tracker})", SKIP, "Not searched: the list forbids it."))
             return rows, raw
-    searchstrs = generate_dupe_check_searchstrs(identity["artists"], identity["title"], identity["catno"])
+    if not search:
+        return rows, raw
+    searchstrs = generate_dupe_check_searchstrs(release["artists"], release["title"], release["catno"])
     try:
         site = salmon.trackers.get_class(tracker)()
+    except Exception as e:
+        rows.append(Row(f"dupe:{tracker}", f"Duplicate ({tracker})", WARN, f"Could not search {tracker}: {e}"))
+        return rows, raw
+    try:
         results = await get_search_results(site, searchstrs) if searchstrs else []
+        row = dupe_row(tracker, results, release)
+        matches = dupe_matches(site.base_url, results)
+    except (KeyError, TypeError, AttributeError) as e:
+        # An answer without the fields a search gives, such as a null group: say so rather than stop the checks.
+        rows.append(
+            Row(f"dupe:{tracker}", f"Duplicate ({tracker})", WARN, f"{tracker} gave an unexpected answer ({e!r}).")
+        )
     except Exception as e:
         rows.append(Row(f"dupe:{tracker}", f"Duplicate ({tracker})", WARN, f"Could not search {tracker}: {e}"))
     else:
-        rows.append(dupe_row(tracker, results))
-        raw[f"dupe:{tracker}"] = {"searchstrs": searchstrs, "matches": dupe_matches(site.base_url, results)}
+        rows.append(row)
+        raw[f"dupe:{tracker}"] = {"searchstrs": searchstrs, "matches": matches}
+    finally:
+        await site.close()
     return rows, raw
 
 
@@ -346,11 +434,12 @@ async def run_checks(
     checks: list[str] | None = None,
     source: str | None = None,
     trackers: list[str] | None = None,
+    search: bool = True,
 ) -> dict:
     """Run the selected album checks and return verdict rows plus the raw results.
 
-    checks defaults to all of them; trackers adds a duplicate search per site and,
-    for RED and OPS, a Do-Not-Upload row. Pass no trackers to check the files alone.
+    checks defaults to all of them; trackers adds their rules and, for RED and OPS, a Do-Not-Upload row, and with
+    search a duplicate search on each. Pass no trackers to check the files alone.
     """
     selected = CHECK_IDS if checks is None else tuple(checks)
     guess = await asyncio.to_thread(detect_source, path)
@@ -375,19 +464,24 @@ async def run_checks(
         # normpath first: basename("/album/") is "", which would drop the folder
         # out of the path-length sum and under-report it.
         folder = os.path.basename(os.path.normpath(path))
+        other_files = await asyncio.to_thread(_other_files, path, track_data)
         # Path length and sample rate depend on the files, not on readable tags,
         # so they are checked even when the duplicate search cannot run.
         for tracker in trackers:
-            rows.append(rules_row(tracker, folder, track_data))
+            rows.append(rules_row(tracker, folder, track_data, other_files))
             if row := sixteen_bit_row(tracker, track_data):
                 rows.append(row)
         if identity.get("title"):
+            release = _release(identity, track_data, ctx["source"])
             for tracker in trackers:
-                tracker_rows, tracker_raw = await _tracker_rows(tracker, identity, ctx["source"])
+                tracker_rows, tracker_raw = await _tracker_rows(tracker, release, search)
                 rows.extend(tracker_rows)
                 raw.update(tracker_raw)
         else:
-            rows.append(Row("dupe", "Duplicate", WARN, "Tags could not be read, so no duplicate search could be run."))
+            if search:
+                rows.append(
+                    Row("dupe", "Duplicate", WARN, "Tags could not be read, so no duplicate search could be run.")
+                )
             rows.extend(
                 Row(f"do-not-upload:{tracker}", f"Do-Not-Upload ({tracker})", SKIP, "Not checked: no album title.")
                 for tracker in trackers

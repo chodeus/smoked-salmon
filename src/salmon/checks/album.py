@@ -11,11 +11,13 @@ import os
 import asyncclick as click
 import cambia
 import msgspec
+from mutagen import MutagenError
 
 from salmon.checks.integrity import check_integrity
 from salmon.checks.logs import log_checksum, log_score, parse_log, verify_log_crcs
 from salmon.checks.mqa import check_mqa
 from salmon.checks.provenance import gather_provenance
+from salmon.checks.tag_rules import has_blank_id3v2_alongside_id3v1
 from salmon.checks.upconverts import check_upconvert
 from salmon.common.files import get_audio_files, get_flac_files
 from salmon.common.progress import report_progress
@@ -61,6 +63,23 @@ async def _log(logpath: str, path: str) -> dict:
 
 async def run_log_check(path: str) -> dict:
     return {"logs": [await _log(logpath, path) for logpath in _log_paths(path)]}
+
+
+def _mp3_tags(path: str) -> dict:
+    mp3s = [name for name in get_audio_files(path) if name.lower().endswith(".mp3")]
+    dual, errors = [], []
+    for name in mp3s:
+        try:
+            if has_blank_id3v2_alongside_id3v1(os.path.join(path, name)):
+                dual.append(name)
+        except (MutagenError, OSError) as e:
+            errors.append({"file": name, "error": str(e)})
+    return {"mp3s": len(mp3s), "dual_id3": dual, "errors": errors}
+
+
+async def run_tag_check(path: str) -> dict:
+    """The MP3s whose filled-in ID3v1 tag sits beside a blank ID3v2 one, as salmon up notes them."""
+    return await asyncio.to_thread(_mp3_tags, path)
 
 
 async def run_provenance_check(path: str) -> dict:

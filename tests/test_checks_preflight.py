@@ -206,6 +206,116 @@ def test_dupe_row_names_each_matched_edition():
     assert "2026 / 1200214726676: WEB FLAC Lossless, WEB MP3 320" in row.detail
 
 
+def _oracle_release(**fields) -> dict:
+    """The release ORACLE_GROUP's FLAC is, unless fields say otherwise."""
+    return {"source": "WEB", "format": "FLAC", "encoding": "Lossless", "year": "2026", "edition_title": None} | fields
+
+
+@pytest.mark.parametrize(
+    ("fields", "verdict", "said"),
+    [
+        (
+            {},
+            pf.WARN,
+            "RED already has this edition's WEB FLAC Lossless: 2026 / 1200214726676 / WEB / FLAC / Lossless.",
+        ),
+        ({"source": "CD"}, pf.OK, "None holds this edition's CD FLAC Lossless."),
+        ({"encoding": "24bit Lossless"}, pf.OK, "None holds this edition's WEB FLAC 24bit Lossless."),
+        ({"year": "2020"}, pf.OK, "None holds this edition's WEB FLAC Lossless."),
+        ({"edition_title": "Deluxe Edition"}, pf.WARN, "RED already has this edition's WEB FLAC Lossless"),
+        ({"encoding": None}, pf.WARN, "not known from the files, so check them by hand"),
+    ],
+    ids=["same-edition", "other-media", "other-encoding", "other-year", "untitled-held-edition", "unknown-encoding"],
+)
+def test_a_match_warns_only_when_it_holds_this_editions_format(fields: dict, verdict: str, said: str):
+    row = pf.dupe_row("RED", [ORACLE_GROUP], _oracle_release(**fields))
+
+    assert row.verdict == verdict
+    assert said in row.detail
+
+
+@pytest.mark.parametrize(
+    ("track_data", "release_format", "encoding"),
+    [
+        ({"01.flac": {"precision": 24}, "02.flac": {"precision": 16}}, "FLAC", "24bit Lossless"),
+        ({"01.flac": {"precision": 16}}, "FLAC", "Lossless"),
+        ({"01.mp3": {"precision": 16}}, "MP3", None),
+        ({"01.xyz": {}}, None, None),
+        ({}, None, None),
+    ],
+    ids=["24bit", "16bit", "mp3", "unknown-extension", "unread"],
+)
+def test_the_release_takes_its_format_and_encoding_from_the_files(track_data, release_format, encoding):
+    release = pf._release({"title": "Y"}, track_data, "WEB")
+
+    assert (release["format"], release["encoding"], release["source"]) == (release_format, encoding, "WEB")
+
+
+async def _offline(_site, _searchstrs):
+    raise RuntimeError("offline")
+
+
+async def _null_group(_site, _searchstrs):
+    return [None]
+
+
+async def _no_results_field(_site, _searchstrs):
+    raise KeyError("results")
+
+
+@pytest.mark.parametrize(
+    ("search", "said"),
+    [
+        (_offline, "Could not search DIC: offline"),
+        (_null_group, "DIC gave an unexpected answer"),
+        (_no_results_field, "DIC gave an unexpected answer"),
+    ],
+    ids=["offline", "null-group", "no-results-field"],
+)
+async def test_a_failed_or_malformed_search_warns_and_closes_the_client(monkeypatch, search, said: str):
+    closed: list[bool] = []
+
+    class Site:
+        base_url = "https://tracker.example"
+
+        async def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(pf.salmon.trackers, "get_class", lambda _code: Site)
+    monkeypatch.setattr(pf, "get_search_results", search)
+    release = _oracle_release(artists=[("X", "main")], title="Y", catno=None)
+
+    rows, raw = await pf._tracker_rows("DIC", release)
+
+    assert [(row.verdict, said in row.detail) for row in rows] == [(pf.WARN, True)]
+    assert raw == {}
+    assert closed == [True]
+
+
+@pytest.mark.parametrize(("source", "verdict"), [("WEB", pf.WARN), ("CD", pf.OK)])
+async def test_run_checks_weighs_the_matches_against_the_chosen_source(album_dir, monkeypatch, source, verdict):
+    class Site:
+        base_url = "https://tracker.example"
+
+        async def close(self) -> None:
+            pass
+
+    async def oracle(_site, _searchstrs):
+        return [ORACLE_GROUP]
+
+    monkeypatch.setattr(pf, "detect_source", lambda _p: {"source": None, "confidence": "unknown", "reasons": ["none"]})
+    identity = {"artists": [("X", "main")], "title": "Oracle", "edition_title": None, "year": "2026", "catno": None}
+    monkeypatch.setattr(pf, "_release_identity", lambda _p: identity | {"label": None})
+    monkeypatch.setattr(pf, "_audio_info", lambda _p: {"01.flac": {"precision": 16, "sample rate": 44100}})
+    monkeypatch.setattr(pf.salmon.trackers, "get_class", lambda _code: Site)
+    monkeypatch.setattr(pf, "get_search_results", oracle)
+
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, source, ["DIC"])
+
+    row = next(r for r in result["rows"] if r["id"] == "dupe:DIC")
+    assert row["verdict"] == verdict
+
+
 def test_dupe_matches_keep_the_catalogue_number():
     [group] = pf.dupe_matches("https://redacted.sh", [ORACLE_GROUP])
 
@@ -235,7 +345,7 @@ async def test_run_checks_blocks_until_a_source_is_chosen(album_dir, monkeypatch
     )
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, None, [])
     assert result["blocking"] == ["source"]
-    assert [r["verdict"] for r in result["rows"] if r["id"] != "source"] == [pf.SKIP] * 5
+    assert [r["verdict"] for r in result["rows"] if r["id"] != "source"] == [pf.SKIP] * len(pf.CHECKS)
 
 
 async def test_run_checks_clears_when_everything_passes(album_dir, monkeypatch):
@@ -265,8 +375,13 @@ async def test_run_checks_reports_a_tracker_search_failure_as_a_warning(album_di
 
 
 async def test_run_checks_exposes_every_dupe_match_not_just_the_two_it_names(album_dir, monkeypatch):
+    closed: list[bool] = []
+
     class FakeSite:
         base_url = "https://redacted.sh"
+
+        async def close(self) -> None:
+            closed.append(True)
 
     async def three_matches(_site, _searchstrs):
         return [
@@ -305,6 +420,7 @@ async def test_run_checks_exposes_every_dupe_match_not_just_the_two_it_names(alb
     assert first["torrents"][1]["seeders"] == 0
     # An allowlist, so a download URL carrying the torrent pass cannot ride along.
     assert "SECRET" not in json.dumps(detail)
+    assert closed == [True]
 
 
 def test_every_check_is_declared_once_in_the_table():
@@ -393,6 +509,46 @@ def test_rules_row_is_green_when_nothing_breaks_a_rule(tracker: str, paths: str)
     row = pf.rules_row(tracker, "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}})
     assert row.verdict == pf.OK
     assert row.detail == f"{paths}, and sample rates are standard."
+
+
+LONG_LOG = "x" * 180 + ".log"
+
+
+def test_a_long_log_name_breaks_the_path_rule_as_a_track_does():
+    row = pf.rules_row("RED", "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}}, [LONG_LOG, "cover.jpg"])
+
+    assert row.verdict == pf.WARN
+    assert row.detail == f"191-char path exceeds RED's 180 limit (2.3.12, a trump reason): Folder/{LONG_LOG}"
+
+
+def test_a_long_path_is_reported_even_when_the_audio_cannot_be_read():
+    row = pf.rules_row("RED", "Folder", {}, [LONG_LOG])
+
+    assert row.verdict == pf.WARN
+
+
+def test_the_other_files_are_every_file_but_the_audio(tmp_path):
+    (tmp_path / "CD1").mkdir()
+    for name in ("CD1/01.flac", "CD1/rip.log", "cover.jpg"):
+        (tmp_path / name).write_bytes(b"")
+
+    others = pf._other_files(str(tmp_path), {"CD1/01.flac": {}})
+
+    assert others == ["CD1/rip.log", "cover.jpg"]
+
+
+async def test_run_checks_measures_the_path_of_a_log_beside_the_audio(album_dir, monkeypatch):
+    monkeypatch.setattr(
+        pf, "detect_source", lambda _p: {"source": "CD", "confidence": "confirmed", "reasons": ["rip log"]}
+    )
+    monkeypatch.setattr(pf, "_release_identity", lambda _p: {})
+    (album_dir / LONG_LOG).write_text("log", encoding="utf-8")
+
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "CD", ["RED"])
+
+    row = next(r for r in result["rows"] if r["id"] == "rules:RED")
+    assert row["verdict"] == pf.WARN
+    assert LONG_LOG in row["detail"]
 
 
 def test_rules_row_is_skipped_when_the_audio_could_not_be_read():
@@ -539,11 +695,11 @@ async def test_without_an_album_title_the_lists_are_said_not_checked(album_dir, 
 
 
 def test_the_identity_keeps_the_edition_title(monkeypatch):
-    tagged = SimpleNamespace(album="Night Songs (Deluxe Edition)", label="Label", catno="CAT1")
+    tagged = SimpleNamespace(album="Night Songs (Deluxe Edition)", label="Label", catno="CAT1", date="2020-05-01")
     monkeypatch.setattr(pf, "gather_tags", lambda _path: {"01.flac": tagged})
     monkeypatch.setattr(pf, "construct_artists_li", lambda _tags: [("Artist", "main")])
     identity = pf._release_identity("/album")
-    assert (identity["title"], identity["edition_title"]) == ("Night Songs", "Deluxe Edition")
+    assert (identity["title"], identity["edition_title"], identity["year"]) == ("Night Songs", "Deluxe Edition", "2020")
 
 
 def test_16bit_above_48khz_blocks_for_ops_and_warns_for_red():
