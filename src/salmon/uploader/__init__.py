@@ -949,7 +949,7 @@ async def _upload_staged(
                         flac_group or {},
                         source_flac,
                         metadata,
-                        get_downconversion_options(rls_data, track_data),
+                        get_downconversion_options(rls_data, track_data, quiet=True),
                     )
                 else:
                     torrent_id, group_id, torrent_path, torrent_content, url = await upload_and_report(
@@ -1004,12 +1004,12 @@ async def _upload_staged(
                         )
                     elif not dryrun.active():
                         group = await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
-                        options = get_downconversion_options(rls_data, track_data)
+                        options = get_downconversion_options(rls_data, track_data, quiet=True)
                         held = _held_options(group, metadata, {"id": torrent_id}, options)
 
                 if (
                     group_id
-                    and get_downconversion_options(rls_data, track_data)
+                    and get_downconversion_options(rls_data, track_data, quiet=True)
                     and (
                         source_flac is not None
                         or cfg.upload.yes_all
@@ -1223,7 +1223,7 @@ def metadata_validator(metadata):
     return metadata
 
 
-def get_downconversion_options(rls_data, track_data):
+def get_downconversion_options(rls_data, track_data, quiet: bool = False):
     """
     Determine available downconversion options based on current format.
     Returns a list of downconversion tasks
@@ -1234,18 +1234,26 @@ def get_downconversion_options(rls_data, track_data):
     3. 16bit 44.1 ~ 48 kHz
     4. mp3 320
     5. mp3 v0
+
+    A release whose files differ in sample rate gets only the MP3 transcodes: a lossless
+    downconversion has one target rate, and would upsample the files below it.
+    `quiet` leaves out the message saying so, for a caller that only asks whether there are options.
     """
     if not track_data:
         return []
 
-    # Get sample rate from first track
-    sample_rate = next(iter(track_data.values()))["sample rate"]
+    rates = sorted({track["sample rate"] for track in track_data.values()})
+    sample_rate = rates[0]
     encoding = rls_data["encoding"]
+    mixed = len(rates) > 1
+    if mixed and not quiet and encoding == "24bit Lossless":
+        listed = ", ".join(f"{rate / 1000:g}" for rate in rates)
+        click.secho(f"No lossless downconversion: the files have different sample rates ({listed} kHz).", fg="yellow")
 
     options = []
 
     # Tier 1: 24bit 176.4~192 kHz
-    if encoding == "24bit Lossless" and sample_rate >= 176400:
+    if encoding == "24bit Lossless" and not mixed and sample_rate >= 176400:
         # Can downconvert to 24bit lower sample rate
         target_rate = 96000 if sample_rate % 48000 == 0 else 88200
         options.append(
@@ -1258,7 +1266,7 @@ def get_downconversion_options(rls_data, track_data):
         )
 
     # Tier 2: 24bit 44.1~96 kHz
-    if encoding == "24bit Lossless" and sample_rate >= 44100:
+    if encoding == "24bit Lossless" and not mixed and sample_rate >= 44100:
         # Can downconvert to 16bit
         target_rate = 48000 if sample_rate % 48000 == 0 else 44100
         options.append(
@@ -1675,6 +1683,8 @@ def finish_upload(
     torrent_content: Any,
     format: str,
     seedbox_uploader: UploadManager,
+    *,
+    copy_folder: bool = True,
 ) -> str:
     """Write the uploaded torrent with its URL and queue it for seeding; it is up, so nothing here may raise."""
     url = f"{gazelle_site.base_url}/torrents.php?torrentid={torrent_id}"
@@ -1711,7 +1721,9 @@ def finish_upload(
         click.secho("Add uploading task.", fg="green")
         is_flac = format.upper() == "FLAC"
         site_code = gazelle_site.site_code
-        seedbox_uploader.add_upload_task(path, task_type="folder", is_flac=is_flac, site_code=site_code)
+        # Not for a cross-upload: the seedbox has the folder already, seeding the other tracker's torrent.
+        if copy_folder:
+            seedbox_uploader.add_upload_task(path, task_type="folder", is_flac=is_flac, site_code=site_code)
         seedbox_uploader.add_upload_task(
             torrent_path, task_type="seed", is_flac=is_flac, folder=path, site_code=site_code
         )

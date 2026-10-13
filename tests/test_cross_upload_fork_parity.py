@@ -1,0 +1,133 @@
+"""The cross-upload form is the one this fork sent before adopting upstream's, but for the differences listed here.
+
+tests/fixtures/cross_upload/fork-compiled.json holds what the fork's _compile_data gave for each torrent fixture: the
+OPS ones OPS to RED, the RED ones RED to OPS, and the made-up DIC one and some others to and from DIC as their key says.
+Our form must equal it field for field, once each difference listed in DIFFERENCES is applied: a field the fork sends
+that we drop, one we add, or a value we change without listing it here fails.
+"""
+
+import html
+import json
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from salmon.cross_upload import ESCAPED_DESCRIPTIONS, compile_data, without_tracker_links
+from salmon.release_notification import get_version, upload_footer
+from salmon.trackers.base import BaseGazelleApi
+from salmon.trackers.dic import DICApi
+from salmon.trackers.ops import OpsApi
+from salmon.trackers.red import RedApi
+
+FIXTURES = Path(__file__).parent / "fixtures" / "cross_upload"
+FORK = json.loads((FIXTURES / "fork-compiled.json").read_text(encoding="utf-8"))
+SAMPLES = sorted(FORK["compiled"])
+
+# The fork's credit line in its header, and its footer, after the source description.
+FORK_CREDIT = (
+    "Cross-uploaded with [url=https://github.com/chodeus/smoked-salmon]smoked-salmon[/url] "
+    f"v{FORK['fork_version']} (chodeus fork)"
+)
+FORK_FOOTER = (
+    f"\n\n[hr]Uploaded with [url=https://github.com/chodeus/smoked-salmon][b]smoked-salmon[/b] "
+    f"v{FORK['fork_version']} (chodeus fork)[/url] of [url=https://github.com/smokin-salmon/smoked-salmon]"
+    "smokin-salmon[/url]"
+)
+SITES = (OpsApi(), RedApi(), DICApi())
+CLASSES: dict[str, type[BaseGazelleApi]] = {"OPS": OpsApi, "RED": RedApi, "DIC": DICApi}
+
+
+def _direction(sample: str) -> tuple[str, str, str]:
+    """The fixture a sample of fork-compiled.json is from, and its SOURCE and TARGET."""
+    name, *direction = sample.split(" ")
+    if direction:
+        source, target = direction
+        return name, source, target
+    return (name, "OPS", "RED") if name.startswith("ops-") else (name, "RED", "OPS")
+
+
+def _this_version_no_tracker_links_and_our_footer(value: str, _sample: str) -> str:
+    header, _, description = value.partition("[/align]\n\n")
+    credit = FORK_CREDIT.replace(f"v{FORK['fork_version']}", f"v{get_version()}")
+    footer = ""
+    if description.endswith(FORK_FOOTER):
+        description, footer = description.removesuffix(FORK_FOOTER), upload_footer()
+    parts = (
+        f"{header.replace(FORK_CREDIT, credit)}[/align]",
+        without_tracker_links(description, SITES).strip(),
+        footer,
+    )
+    return "\n\n".join(part for part in parts if part)
+
+
+def _escaped_ones_unescaped_no_tracker_links_and_size_closed(value: str, sample: str) -> str:
+    escaped = _direction(sample)[1] in ESCAPED_DESCRIPTIONS
+    value = without_tracker_links(html.unescape(value) if escaped else value, SITES)
+    return value.replace("[b][size=4]Tracklist[/b]", "[b][size=4]Tracklist[/size][/b]")
+
+
+# field: (why ours differs from the fork's, what turns the fork's value for a sample into ours)
+DIFFERENCES: dict[str, tuple[str, Callable[[Any, str], Any]]] = {
+    "release_desc": (
+        "The fork's header and credit line, with this version. Links to either "
+        "tracker's site, and Gazelle's tags that open the site's own pages ([torrent], [pl], [collage], [forum], "
+        "[thread]; [user] and [rule] keep their text), are taken out of the source description, their text kept: "
+        "on the target they would name the source tracker's pages. The footer is this version's. The "
+        "header, the description (trimmed of white space at its ends) and the footer are one blank line apart, "
+        "and an empty description (or one emptied by the link removal) leaves no blank lines in their place. The "
+        "fork decodes HTML entities in every source description; only RED's comes escaped (and DIC's, it is "
+        "assumed), so OPS's, the text as written, is not decoded (no OPS sample holds an entity: test_cross_upload.py "
+        "shows it).",
+        _this_version_no_tracker_links_and_our_footer,
+    ),
+    "album_desc": (
+        "RED's comes HTML-escaped (bbBody): its HTML entities are decoded, as in release_desc, and so are DIC's "
+        "(assumed escaped as RED's). OPS's (wikiBBcode) is the text as written and is not decoded. Links to either "
+        "tracker's site and Gazelle's site tags are taken out, as in release_desc. The one broken shape the old "
+        "description generator left, [b][size=4]Tracklist[/b] with no [/size], is repaired (design section 10, #597). "
+        "Nothing else in it is rewritten.",
+        _escaped_ones_unescaped_no_tracker_links_and_size_closed,
+    ),
+}
+
+
+def _response(sample: str) -> dict[str, Any]:
+    return json.loads((FIXTURES / _direction(sample)[0]).read_text(encoding="utf-8"))["response"]
+
+
+def _ours(sample: str) -> dict[str, Any]:
+    _, source, target = _direction(sample)
+    return compile_data(_response(sample), CLASSES[source](), CLASSES[target]())
+
+
+@pytest.mark.parametrize("name", SAMPLES)
+def test_the_form_is_the_forks_but_for_the_differences_listed(name: str) -> None:
+    fork = FORK["compiled"][name]
+    ours = _ours(name)
+
+    assert list(ours) == list(fork)
+    expected = {key: DIFFERENCES[key][1](value, name) if key in DIFFERENCES else value for key, value in fork.items()}
+    assert ours == expected
+
+
+@pytest.mark.parametrize("key", sorted(DIFFERENCES))
+def test_each_listed_difference_shows_in_some_sample(key: str) -> None:
+    # A listed difference no sample shows any more is out of date: take it off the list.
+    differing = [name for name in SAMPLES if _ours(name)[key] != FORK["compiled"][name][key]]
+    assert differing
+
+
+def test_the_samples_cover_every_direction_with_a_cd_with_a_log_and_web_editions() -> None:
+    media = sorted((*_direction(sample)[1:], _response(sample)["torrent"]["media"]) for sample in SAMPLES)
+    assert media == [
+        ("DIC", "OPS", "WEB"),
+        ("OPS", "DIC", "WEB"),
+        ("OPS", "RED", "CD"),
+        ("OPS", "RED", "WEB"),
+        ("OPS", "RED", "WEB"),
+        ("RED", "DIC", "CD"),
+        ("RED", "OPS", "CD"),
+        ("RED", "OPS", "WEB"),
+    ]

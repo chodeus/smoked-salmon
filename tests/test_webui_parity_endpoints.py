@@ -308,6 +308,97 @@ def test_cross_upload_reconfines_the_path_when_the_job_starts(client, two_tracke
     assert calls == [], "the command must not run once the path fails confinement"
 
 
+def _cross_upload_job(client, two_trackers, monkeypatch, body: dict, run=None) -> tuple[dict, list[dict]]:
+    """Post a cross-upload of torrent 12345 with body, run by run (or a stub), and wait for its job."""
+    source, target = two_trackers
+    calls: list[dict] = []
+
+    async def fake_cross_upload(**kwargs):
+        calls.append(kwargs)
+        if run is not None:
+            run()
+
+    monkeypatch.setattr("salmon.webui.routers.tools._CROSS_UPLOAD", fake_cross_upload)
+    r = client.post("/api/cross-upload", json={"path": "12345", "source": source, "target": target, **body})
+    assert r.status_code == 200, r.text
+    return _wait(client, r.json()["id"]), calls
+
+
+def test_cross_upload_runs_the_command_with_the_forms_options(client, two_trackers, monkeypatch) -> None:
+    body = {"target_group_id": 9, "all_formats": True, "transcodes": ["V0"], "dry_run": True}
+    job, calls = _cross_upload_job(client, two_trackers, monkeypatch, body)
+    assert job["status"] == "done", job
+    assert calls == [
+        {
+            "inputs": ("12345",),
+            "source": "RED",
+            "target": "OPS",
+            "path": None,
+            "group_id": None,
+            "target_group_id": 9,
+            "transcodes": ("V0",),
+            "downconvert": False,
+            "all_formats": True,
+            "yyy": False,
+            "dry_run": True,
+        }
+    ]
+
+
+@pytest.mark.parametrize("group_id", [0, -1])
+def test_cross_upload_refuses_a_target_group_id_below_one(client, two_trackers, group_id) -> None:
+    source, target = two_trackers
+    body = {"path": "12345", "source": source, "target": target, "target_group_id": group_id, "all_formats": True}
+    response = client.post("/api/cross-upload", json=body)
+    assert response.status_code == 422
+
+
+def test_a_cross_upload_that_stops_fails_its_job_saying_so(client, two_trackers, monkeypatch) -> None:
+    import asyncclick as click
+
+    def stop() -> None:
+        raise click.exceptions.Exit(1)
+
+    job, _ = _cross_upload_job(client, two_trackers, monkeypatch, {}, stop)
+    assert job["status"] == "error"
+    assert "the cross-upload stopped: its output above says why" in job["error"]
+
+
+def test_a_cross_upload_that_exits_cleanly_finishes_its_job(client, two_trackers, monkeypatch) -> None:
+    import asyncclick as click
+
+    def done() -> None:
+        raise click.exceptions.Exit(0)
+
+    job, _ = _cross_upload_job(client, two_trackers, monkeypatch, {}, done)
+    assert job["status"] == "done", job
+
+
+def test_a_cross_upload_job_shows_its_link_without_secrets_but_runs_with_it(client, two_trackers, monkeypatch) -> None:
+    source, target = two_trackers
+    calls: list[dict] = []
+
+    async def fake_cross_upload(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("salmon.webui.routers.tools._CROSS_UPLOAD", fake_cross_upload)
+    link = "https://tracker.example/torrents.php?torrentid=7&torrent_pass=test-pass-0001"
+    created = client.post("/api/cross-upload", json={"path": link, "source": source, "target": target})
+    assert created.status_code == 200, created.text
+    job_id = created.json()["id"]
+
+    finished = _wait(client, job_id)
+    listed = client.get("/api/jobs").json()
+
+    shown = "https://tracker.example/torrents.php?torrentid=7&torrent_pass=[REDACTED]"
+    assert finished["status"] == "done", finished
+    assert created.json()["params"]["path"] == shown
+    assert finished["params"]["path"] == shown
+    assert [job["params"]["path"] for job in listed if job["id"] == job_id] == [shown]
+    assert "test-pass-0001" not in str(listed)
+    assert link in repr(calls), "the job runs with the link as it was given"
+
+
 @pytest.mark.parametrize("bad", [0, -1])
 def test_upload_rejects_non_positive_spectral_tracks(client, album, bad) -> None:
     # Negative numbers index from the end of the track list; 0 is a sentinel.
