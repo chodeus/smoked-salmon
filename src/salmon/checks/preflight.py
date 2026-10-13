@@ -42,12 +42,13 @@ class Row(msgspec.Struct, frozen=True):
 
 
 class CheckSpec(msgspec.Struct, frozen=True):
-    """One album check: how to run it, and how to read its result."""
+    """One album check: how to run it, how to read its result, and the sources it is for (None: every one)."""
 
     id: str
     label: str
     run: Callable[[str], Awaitable[dict]]
     verdict: Callable[[dict, dict], tuple[Verdict, str]]
+    sources: tuple[str, ...] | None = None
 
 
 def _integrity_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
@@ -115,34 +116,43 @@ def _provenance_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
     return OK, provenance.describe(result)
 
 
-def _log_verdict(result: dict, ctx: dict) -> tuple[Verdict, str]:
-    """Only CD rips are expected to carry a log."""
-    source = ctx.get("source")
+def _log_line(log: dict) -> tuple[Verdict, str]:
+    """One rip log's verdict as salmon up treats it: an edited log, or a failed CRC check, stops the upload."""
+    name = log["file"]
+    if "error" in log:
+        return WARN, f"{name}: could not be read ({log['error']})."
+    if log["checksum_integrity"] == "Mismatch":
+        return BLOCK, f"{name}: its checksum does not match, so the log was edited."
+    if log["crcs"] == "error":
+        return BLOCK, f"{name}: the audio could not be checked against its CRCs ({log['crcs_detail']})."
+    issues = []
+    if log["checksum_integrity"] != "Match":
+        issues.append("no checksum to verify it (EAC signs its logs from 1.0 beta 3), so RED marks it trumpable")
+    if log["score"] is None:
+        issues.append("no score")
+    elif log["score"] < 100:
+        issues.append(f"score {log['score']}/100")
+    if log["crcs"] == "mismatch":
+        issues.append("the audio does not match its CRCs")
+    elif log["crcs"] != "match":
+        issues.append(f"CRCs not checked: {log['crcs_detail']}")
+    if issues:
+        return WARN, f"{name}: {'; '.join(issues)}."
+    return OK, f"{name}: score 100/100, checksum and CRCs match."
+
+
+def _log_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
+    """Each rip log's verdict; the worst decides, and one good log does not vouch for another."""
     logs = result["logs"]
-    if source and source != "CD":
-        return SKIP, f"Not applicable to a {source} release."
     if not logs:
         return WARN, "No rip log, so the rip cannot be verified. Allowed, but it scores 0 on RED."
-    broken = [x for x in logs if "error" in x]
-    scored = [x for x in logs if "score" in x]
-    # One good log does not vouch for a sibling that would not parse.
-    if broken:
-        return WARN, f"Could not parse {len(broken)} of {len(logs)} log(s)."
-    worst = min(scored, key=lambda x: x["score"])
-    # A log with no checksum and a log whose checksum fails are different states:
-    # one cannot be verified, the other has been altered. Enumerate rather than negate.
-    altered = [x for x in scored if x["checksum_integrity"] == "Mismatch"]
-    if altered:
-        return WARN, f"Log checksum does not match the audio ({altered[0]['file']}) — the log has been altered."
-    unverifiable = [x for x in scored if x["checksum_integrity"] != "Match"]
-    if unverifiable:
-        return WARN, (
-            f"No log checksum ({unverifiable[0]['file']}), so the rip cannot be verified — "
-            f"EAC only began signing logs in 1.0 beta 3. RED marks such uploads trumpable."
-        )
-    if worst["score"] < 100:
-        return WARN, f"Score {worst['score']}/100 ({worst['file']})."
-    return OK, f"Score 100/100 across {len(scored)} log(s)."
+    lines = [_log_line(log) for log in logs]
+    flagged = [detail for verdict, detail in lines if verdict != OK]
+    if not flagged:
+        return OK, f"Score 100/100, checksum and CRCs match in {len(logs)} log(s)."
+    passing = len(logs) - len(flagged)
+    verdict = BLOCK if any(line_verdict == BLOCK for line_verdict, _ in lines) else WARN
+    return verdict, " ".join(flagged) + (f" {passing} other log(s) pass." if passing else "")
 
 
 CHECKS: tuple[CheckSpec, ...] = (
@@ -150,7 +160,8 @@ CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec("integrity", "File integrity", album.run_integrity_check, _integrity_verdict),
     CheckSpec("upconvert", "Upconvert", album.run_upconvert_check, _upconvert_verdict),
     CheckSpec("mqa", "MQA", album.run_mqa_check, _mqa_verdict),
-    CheckSpec("log", "Rip log", album.run_log_check, _log_verdict),
+    # Logs are checked for a CD, as salmon up does, and for a source the files leave unknown.
+    CheckSpec("log", "Rip log", album.run_log_check, _log_verdict, sources=("CD",)),
 )
 CHECK_IDS: tuple[str, ...] = tuple(spec.id for spec in CHECKS)
 
@@ -350,6 +361,9 @@ async def run_checks(
     for spec in CHECKS:
         if spec.id not in selected:
             rows.append(Row(spec.id, spec.label, SKIP, "Not selected."))
+            continue
+        if spec.sources and ctx["source"] and ctx["source"] not in spec.sources:
+            rows.append(Row(spec.id, spec.label, SKIP, f"Not applicable to a {ctx['source']} release."))
             continue
         raw[spec.id] = await spec.run(path)
         verdict, detail = spec.verdict(raw[spec.id], ctx)
