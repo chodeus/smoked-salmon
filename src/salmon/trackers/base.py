@@ -54,18 +54,12 @@ INVERTED_RELEASE_TYPES = {
     1021: "Produced By",
 }
 
-_SENSITIVE_KEYS = re.compile(
-    r'"(authkey|passkey|auth|api_key|Authorization|session|keeplogged)"\s*:\s*"[^"]*"',
-    re.IGNORECASE,
-)
-# Same secrets as they appear in HTML/URLs/cookie headers (download links carry
-# authkey/torrent_pass; Cookie/Set-Cookie carry session/keeplogged).
-_SENSITIVE_URL_PARAMS = re.compile(
-    r"\b(authkey|passkey|torrent_pass|auth|api_key|session|keeplogged)=[^&\"'\s<>]+",
-    re.IGNORECASE,
-)
+# The names a secret goes by, in a JSON field, a URL query, a cookie header or a form input: one list for all three.
+_SECRET_NAMES = "authkey|passkey|torrent_pass|auth|api_key|session|keeplogged"
+_SENSITIVE_KEYS = re.compile(rf'("(?:{_SECRET_NAMES}|Authorization)"\s*:\s*")(?:[^"\\]|\\.)*(")', re.IGNORECASE)
+_SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=[^&\"'\s<>]+", re.IGNORECASE)
 
-_SECRET_INPUT_NAME = r"""\bname=["'](?:authkey|passkey|torrent_pass|auth|api_key)["']"""
+_SECRET_INPUT_NAME = rf"""\bname=["'](?:{_SECRET_NAMES})["']"""
 # A form's hidden inputs, value before or after the name: <input name="auth" value="...">.
 _SENSITIVE_INPUTS = re.compile(
     rf"""(<input\b[^>]*{_SECRET_INPUT_NAME}[^>]*\bvalue=["'])[^"']*"""
@@ -76,7 +70,7 @@ _SENSITIVE_INPUTS = re.compile(
 
 def _redact(text: str) -> str:
     """Redact sensitive values (JSON fields, URL query params, form inputs) from a string."""
-    text = _SENSITIVE_KEYS.sub(lambda m: f'"{m.group(1)}": "[REDACTED]"', text)
+    text = _SENSITIVE_KEYS.sub(lambda m: f"{m.group(1)}[REDACTED]{m.group(2)}", text)
     text = _SENSITIVE_INPUTS.sub(lambda m: f"{m.group(1) or m.group(2)}[REDACTED]", text)
     return _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
 

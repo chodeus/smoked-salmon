@@ -197,6 +197,21 @@ def test_redact_masks_authkey_and_passkey_values():
     assert '"passkey": "[REDACTED]"' in redacted
 
 
+def test_redact_masks_every_secret_name_in_json_and_form_inputs():
+    text = '{"torrent_pass":"tp-0001","keeplogged":"kl-0001"} <input name="session" value="ss-0001">'
+    redacted = _redact(text)
+    for value in ("tp-0001", "kl-0001", "ss-0001"):
+        assert value not in redacted
+    # Only the value goes: the JSON keeps its shape.
+    assert '"torrent_pass":"[REDACTED]"' in redacted
+
+
+@pytest.mark.parametrize("value", [r"tp-01\"tp-02", "tp-01\\\\"], ids=["escaped-quote", "escaped-backslash"])
+def test_redact_masks_a_json_secret_with_an_escape_in_it(value: str) -> None:
+    redacted = _redact(f'{{"torrent_pass":"{value}","artist":"Testartist"}}')
+    assert redacted == '{"torrent_pass":"[REDACTED]","artist":"Testartist"}'
+
+
 def test_redact_masks_api_key_auth_and_authorization_case_insensitive():
     text = '{"API_KEY": "k1", "Auth": "k2", "authorization": "k3"}'
     redacted = _redact(text)
