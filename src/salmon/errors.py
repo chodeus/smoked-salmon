@@ -82,6 +82,10 @@ class UnknownOutcomeError(RequestError):
     pass
 
 
+class RateLimitedError(RequestError):
+    """The tracker rate limited a request and asks for a longer wait than salmon gives one request."""
+
+
 class EditedLogError(Exception):
     """Raised when a log file has been edited."""
 

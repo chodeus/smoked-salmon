@@ -370,7 +370,7 @@ def test_every_trackers_conversions_are_checked_against_the_runs_path_limit(flow
         limits.append(max_path_length)
 
     monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
-    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args: [task])
+    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args, **_kwargs: [task])
     monkeypatch.setattr(salmon.uploader, "prompt_downconversion_choice", choose)
     monkeypatch.setattr(salmon.uploader, "execute_downconversion_tasks", execute)
     _upload(["RED", "OPS"])
@@ -426,7 +426,7 @@ def test_an_upload_with_no_group_id_offers_no_conversions(flow, monkeypatch, cap
         return []
 
     monkeypatch.setattr(salmon.uploader, "upload_and_report", request_fill)
-    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args: [{"name": "MP3 320"}])
+    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args, **_kwargs: [{"name": "MP3 320"}])
     monkeypatch.setattr(salmon.uploader, "prompt_downconversion_choice", choose)
     _upload(None)
 
@@ -575,7 +575,7 @@ def test_conversions_the_edition_already_holds_are_left_out_after_the_flac(flow,
     ]
     set_fake("edit_metadata", edit_metadata)
     set_fake("print_torrents", printed)
-    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args: options)
+    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args, **_kwargs: options)
     monkeypatch.setattr(salmon.uploader, "prompt_downconversion_choice", choose)
     _upload(None)
 
