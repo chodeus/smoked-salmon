@@ -173,7 +173,16 @@ def test_conversions_only_into_a_group_without_the_editions_flac_upload_nothing(
     run = _conversions_only(monkeypatch, dirs, group)
 
     assert run.result.exit_code == 1
-    assert f"group {TARGET_GROUP_ID} on RED has no FLAC of this edition to convert from" in run.output
+    assert f"no FLAC of this edition in group {TARGET_GROUP_ID} on RED was picked to convert from" in run.output
+    assert run.target.posts() == []
+
+
+def test_conversions_only_with_yyy_and_several_edition_flacs_upload_nothing(monkeypatch, dirs) -> None:  # noqa: F811
+    run = _conversions_only(monkeypatch, dirs, _target_group(_web_flac(), _web_flac(id=TARGET_FLAC_ID + 1)))
+
+    assert run.result.exit_code == 1
+    assert "Not picking the FLAC to transcode from" in run.output
+    assert f"no FLAC of this edition in group {TARGET_GROUP_ID} on RED was picked to convert from" in run.output
     assert run.target.posts() == []
 
 

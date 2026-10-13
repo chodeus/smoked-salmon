@@ -1216,7 +1216,7 @@ async def _upload_into_group(
     flac = await choose_source_flac(group, _edition(release))
     if flac is None:
         raise CrossUploadRefused(
-            f"group {group_id} on {target.site_string} has no FLAC of this edition to convert from"
+            f"no FLAC of this edition in group {group_id} on {target.site_string} was picked to convert from"
         )
     url = f"{target.base_url}/torrents.php?torrentid={flac['id']}"
     await _upload_conversions(release, target, group_id, int(flac["id"]), url, True, seedbox, uploaded)
