@@ -1675,6 +1675,8 @@ def finish_upload(
     torrent_content: Any,
     format: str,
     seedbox_uploader: UploadManager,
+    *,
+    copy_folder: bool = True,
 ) -> str:
     """Write the uploaded torrent with its URL and queue it for seeding; it is up, so nothing here may raise."""
     url = f"{gazelle_site.base_url}/torrents.php?torrentid={torrent_id}"
@@ -1711,7 +1713,9 @@ def finish_upload(
         click.secho("Add uploading task.", fg="green")
         is_flac = format.upper() == "FLAC"
         site_code = gazelle_site.site_code
-        seedbox_uploader.add_upload_task(path, task_type="folder", is_flac=is_flac, site_code=site_code)
+        # Not for a cross-upload: the seedbox has the folder already, seeding the other tracker's torrent.
+        if copy_folder:
+            seedbox_uploader.add_upload_task(path, task_type="folder", is_flac=is_flac, site_code=site_code)
         seedbox_uploader.add_upload_task(
             torrent_path, task_type="seed", is_flac=is_flac, folder=path, site_code=site_code
         )

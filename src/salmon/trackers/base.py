@@ -1,5 +1,6 @@
 import asyncio
 import html
+import math
 import re
 import threading
 import time
@@ -27,6 +28,7 @@ from salmon.common.urls import parse_retry_after
 from salmon.constants import RELEASE_TYPES
 from salmon.errors import (
     LoginError,
+    RateLimitedError,
     RequestError,
     RequestFailedError,
     UnknownOutcomeError,
@@ -280,6 +282,14 @@ def _tracker_limiter(site_code: str) -> SharedLimiter:
 
 # An upload that fills a request takes two hops; one spare.
 _MAX_REDIRECTS = 3
+# The most a binary answer (an image on the tracker's own host) may hold. Reading stops there.
+_MAX_BINARY_BODY = 25 * 1024 * 1024
+_BINARY_READ_CHUNK = 64 * 1024
+# The site log pages a recent-uploads check reads; cross-upload's request budget counts them.
+SITE_LOG_PAGES = 10
+# Seconds before the first and the last lookup of an upload whose answer was lost: the tracker may still be on it.
+_LOST_UPLOAD_FIRST_WAIT = 10
+_LOST_UPLOAD_SECOND_WAIT = 30
 _REDIRECT_STATUSES = frozenset(
     {
         HTTPStatus.MOVED_PERMANENTLY,
@@ -289,8 +299,12 @@ _REDIRECT_STATUSES = frozenset(
         HTTPStatus.PERMANENT_REDIRECT,
     }
 )
-# A 429 without a usable Retry-After waits this long; no server wait is taken past the cap.
-_RATE_LIMIT_WAIT = 20.0
+# A rate limit without a usable Retry-After waits this long, and none waits less than the limiter's spacing.
+_RATE_LIMIT_WAIT = 20
+_MIN_RATE_LIMIT_WAIT = 2
+# One request's rate-limit waits add up to this at most; a tracker asking for more fails it with RateLimitedError.
+_MAX_RATE_LIMIT_WAITS = 60
+# No 5xx Retry-After is waited past this.
 _MAX_SERVER_WAIT = 120.0
 # The request never left, so re-sending it is safe whatever it does.
 _NOT_SENT_ERRORS = (aiohttp.ClientConnectorError, aiohttp.ConnectionTimeoutError)
@@ -337,19 +351,29 @@ class RetryableError(RequestError):
     pass
 
 
+def _rate_limit_wait(retry_after: str | None) -> int:
+    """How long to wait, in whole seconds, before sending a rate limited request again."""
+    wait = parse_retry_after(retry_after)
+    if wait is None:
+        return _RATE_LIMIT_WAIT
+    return max(math.ceil(wait), _MIN_RATE_LIMIT_WAIT)
+
+
 class HttpResponse(msgspec.Struct, frozen=True):
     """HTTP response data extracted from aiohttp.ClientResponse."""
 
     text: str
     url: str
     status: int
+    # The body as bytes, for a request made with binary=True (its text is then empty).
+    content: bytes = b""
 
 
 class BaseGazelleApi:
     """Base API client for Gazelle-based trackers."""
 
-    # Subclasses must set these attributes before calling __init__
-    cookie: str
+    # Subclasses must set these attributes before calling __init__; a tracker with no session configured has none.
+    cookie: str = ""
     base_url: str
     tracker_url: str
     site_code: str
@@ -376,6 +400,8 @@ class BaseGazelleApi:
         self.authkey: str | None = None
         self.passkey: str | None = None
         self._authenticated = False
+        self._authentication: asyncio.Task[None] | None = None
+        self._authentication_waiters = 0
         self._session: aiohttp.ClientSession | None = None
         self._pool_owner: set[aiohttp.ClientSession] | None = None
 
@@ -471,17 +497,27 @@ class BaseGazelleApi:
         self._authenticated = True
 
     async def ensure_authenticated(self) -> None:
-        """Ensure we are authenticated before making requests."""
-        if not self._authenticated:
-            await self.authenticate()
+        """Ensure we are authenticated before making requests.
 
-    @retry(
-        retry=retry_if_exception_type(RetryableError),
-        stop=stop_after_attempt(5),
-        # Jitter keeps a batch that failed together from retrying in one salvo.
-        wait=wait_exponential(multiplier=1, min=1, max=30) + wait_random(0, 2),
-        reraise=True,
-    )
+        Requests that go out together on a fresh client share one authentication attempt, so one index call
+        instead of one each. If it fails, each of them gets its error; a call made once it is over tries again.
+        The attempt runs on its own, and is cancelled only when no request waits for it any more.
+        """
+        if self._authenticated:
+            return
+        if self._authentication is None or self._authentication.done():
+            self._authentication = asyncio.create_task(self.authenticate())
+        attempt = self._authentication
+        self._authentication_waiters += 1
+        try:
+            await asyncio.shield(attempt)
+        finally:
+            self._authentication_waiters -= 1
+            if not self._authentication_waiters and not attempt.done():
+                attempt.cancel()
+                # A request arriving meanwhile must not wait on an attempt being cancelled.
+                self._authentication = None
+
     async def _request(
         self,
         method: str,
@@ -492,6 +528,7 @@ class BaseGazelleApi:
         prefer_api_key: bool = False,
         idempotent: bool | None = None,
         needs_authkey: bool = True,
+        binary: bool = False,
     ) -> HttpResponse:
         """Authenticated HTTP request, returns response data.
 
@@ -506,6 +543,8 @@ class BaseGazelleApi:
                 (no Authorization header).
             idempotent: Whether sending the request twice does no more than sending it
                 once. Defaults to True for everything but POST.
+            binary: Read a successful answer as bytes, into the response's content, streamed and
+                capped at 25 MiB; its text is then empty.
 
         Returns:
             HttpResponse with text, url, status, and headers.
@@ -513,7 +552,41 @@ class BaseGazelleApi:
         Raises:
             UnknownOutcomeError: A request that is not idempotent failed after it may have
                 reached the tracker, so it is not sent again.
+            RateLimitedError: The tracker rate limits it and asks for more than 60 s of waits in all.
+            RequestFailedError: With binary, if the answer holds more than 25 MiB. Not retried.
         """
+        # A dry run only reads from the tracker; each sending step skips itself, and this stops any that was missed.
+        if method != "GET" and dryrun.active():
+            dryrun.refuse(f"send {method} {self._scrub(url)} to {self.site_string}")
+        # An api key request that sends no auth field needs no index call for the authkey.
+        # Outside _send's retries: the attempt makes its own tries, which a retried request would repeat.
+        if needs_authkey and not (params and params.get("action") == "index"):
+            await self.ensure_authenticated()
+        # One list for every attempt, so the rate limit waits add up across the retries.
+        return await self._send(method, url, params, data, timeout_secs, prefer_api_key, idempotent, binary, [])
+
+    @retry(
+        retry=retry_if_exception_type(RetryableError),
+        stop=stop_after_attempt(5),
+        # Jitter keeps a batch that failed together from retrying in one salvo.
+        wait=wait_exponential(multiplier=1, min=1, max=30) + wait_random(0, 2),
+        reraise=True,
+    )
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        params: dict[str, Any] | None = None,
+        data: Any = None,
+        timeout_secs: int = 10,
+        prefer_api_key: bool = False,
+        idempotent: bool | None = None,
+        binary: bool = False,
+        rate_limit_waits: list[int] | None = None,
+    ) -> HttpResponse:
+        """Send one authenticated request with the retry policy; rate_limit_waits gains each attempt's wait."""
+        if rate_limit_waits is None:
+            rate_limit_waits = []
         if idempotent is None:
             idempotent = method.upper() != "POST"
         # Once the tracker redirects, it has acted on the request, whatever happens next.
@@ -524,13 +597,6 @@ class BaseGazelleApi:
             if idempotent or (not_acted_on and not redirected):
                 return RetryableError(message)
             return UnknownOutcomeError(message)
-
-        # A dry run only reads from the tracker; each sending step skips itself, and this stops any that was missed.
-        if method != "GET" and dryrun.active():
-            dryrun.refuse(f"send {method} {self._scrub(url)} to {self.site_string}")
-        # An api key request that sends no auth field needs no index call for the authkey.
-        if needs_authkey and not (params and params.get("action") == "index"):
-            await self.ensure_authenticated()
 
         use_api_key = prefer_api_key and bool(self.api_key)
         headers = {**self.headers, **({"Authorization": f"{self.api_key_prefix}{self.api_key}"} if use_api_key else {})}
@@ -561,15 +627,20 @@ class BaseGazelleApi:
                         ) as resp,
                     ):
                         # sock_read resets on every chunk, so a trickled body needs its own bound.
+                        content = b""
                         async with asyncio.timeout(timeout_secs):
-                            text = await resp.text()
+                            if binary and resp.ok and resp.status not in _REDIRECT_STATUSES:
+                                content = await self._read_capped(resp)
+                                text = ""
+                            else:
+                                text = await resp.text()
                         if cfg.upload.debug_tracker_connection:
-                            self._debug_response(resp, text)
+                            self._debug_response(resp, text if text or not binary else f"<{len(content)} bytes>")
                         if not resp.ok:
-                            await self._raise_for_status(resp, self._scrub(text), failure, idempotent)
+                            await self._raise_for_status(resp, self._scrub(text), failure, idempotent, rate_limit_waits)
                         location = resp.headers.get(aiohttp.hdrs.LOCATION)
                         if resp.status not in _REDIRECT_STATUSES or not location:
-                            return HttpResponse(text=text, url=str(resp.url), status=resp.status)
+                            return HttpResponse(text=text, url=str(resp.url), status=resp.status, content=content)
                         try:
                             method, data, url = self._next_hop(
                                 str(resp.url), resp.status, method, data, location, idempotent
@@ -595,12 +666,38 @@ class BaseGazelleApi:
             # By type only: a RequestFailedError's message holds response text.
             raise UnknownOutcomeError(f"{self.site_string} failed on a later hop ({type(err).__name__})") from err
 
+    @property
+    def has_session_cookie(self) -> bool:
+        """Whether a session cookie is configured. Site pages outside the API need one."""
+        return bool(self.cookie.strip())
+
+    def _secrets(self) -> set[str | None]:
+        """This client's own credentials, as configured and as sent, which a tracker answer may repeat."""
+        return {self.api_key, self.authkey, self.passkey, self.cookie, *self._get_cookies().values()}
+
+    async def _read_capped(self, resp: aiohttp.ClientResponse) -> bytes:
+        """Read an answer's body as bytes, as it comes, and stop once it holds more than _MAX_BINARY_BODY.
+
+        Raises:
+            RequestFailedError: If the body is larger: the tracker would send the same answer again.
+        """
+        too_large = RequestFailedError(
+            f"{self.site_string} sent more than {_MAX_BINARY_BODY // (1024 * 1024)} MiB: not reading the rest"
+        )
+        if resp.content_length is not None and resp.content_length > _MAX_BINARY_BODY:
+            raise too_large
+        body = bytearray()
+        async for chunk in resp.content.iter_chunked(_BINARY_READ_CHUNK):
+            body += chunk
+            if len(body) > _MAX_BINARY_BODY:
+                raise too_large
+        return bytes(body)
+
     def _scrub(self, text: str) -> str:
         """_redact, plus this client's own credentials wherever a tracker answer repeats them."""
         text = _redact(text)
-        secrets = {self.api_key, self.authkey, self.passkey, self.cookie, *self._get_cookies().values()}
         # Longest first, so a secret containing another is masked whole.
-        for secret in sorted((s for s in secrets if s and len(s) >= 8), key=len, reverse=True):
+        for secret in sorted((s for s in self._secrets() if s and len(s) >= 8), key=len, reverse=True):
             text = text.replace(secret, "[REDACTED]")
         return text
 
@@ -613,7 +710,12 @@ class BaseGazelleApi:
         click.secho(f"[DEBUG] response body: {self._scrub(text)}", fg="green")
 
     async def _raise_for_status(
-        self, resp: aiohttp.ClientResponse, text: str, failure: Callable[..., RequestError], idempotent: bool
+        self,
+        resp: aiohttp.ClientResponse,
+        text: str,
+        failure: Callable[..., RequestError],
+        idempotent: bool,
+        rate_limit_waits: list[int],
     ) -> NoReturn:
         """Raise the error a failed tracker answer calls for."""
         error_msg = text
@@ -624,15 +726,25 @@ class BaseGazelleApi:
 
         server_wait = parse_retry_after(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
         if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
-            retry_after = min(_RATE_LIMIT_WAIT if server_wait is None else server_wait, _MAX_SERVER_WAIT)
-            click.secho(f"Rate limit exceeded, waiting {retry_after:g} seconds...", fg="yellow")
-            # Every request to this tracker waits, not just this one; its retry waits in the limiter.
-            self._rate_limiter.pause(retry_after)
             # Only a 429 says the tracker did not act: another error status naming
             # the rate limit may come after it did, so the outcome is unknown.
-            raise failure(
+            error = failure(
                 f"Rate limit exceeded ({resp.status})", not_acted_on=resp.status == HTTPStatus.TOO_MANY_REQUESTS
             )
+            if not isinstance(error, RetryableError):
+                raise error
+            wait = _rate_limit_wait(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
+            waited = sum(rate_limit_waits)
+            if waited + wait > _MAX_RATE_LIMIT_WAITS:
+                already = f" more (after {waited} s already)" if waited else ""
+                message = f"{self.site_string} asks to wait {wait} s{already} before the next request; try again later"
+                click.secho(message, fg="red")
+                raise RateLimitedError(message)
+            rate_limit_waits.append(wait)
+            click.secho(f"Rate limit exceeded, waiting {wait} seconds...", fg="yellow")
+            # Every request to this tracker waits, not just this one; its retry waits in the limiter.
+            self._rate_limiter.pause(wait)
+            raise error
 
         if resp.status == HTTPStatus.UNAUTHORIZED:
             click.secho(
@@ -858,7 +970,7 @@ class BaseGazelleApi:
         resp = await self._request("GET", url, params={"action": "loglist", "torrentid": torrentid})
         return re.sub(r" ?\([^)]+\)", "", resp.text)
 
-    async def get_uploads_from_log(self, max_pages: int = 10) -> list:
+    async def get_uploads_from_log(self, max_pages: int = SITE_LOG_PAGES) -> list:
         """Crawl log pages and return uploads.
 
         Args:
@@ -868,7 +980,7 @@ class BaseGazelleApi:
             List of (torrent_id, artist, title) tuples.
         """
         # log.php is a site page: an API key doesn't open it, and without a cookie it bounces to login.
-        if not self.cookie.strip():
+        if not self.has_session_cookie:
             click.secho(
                 f"Skipping the recent-uploads check: the {self.site_string} site log needs a session cookie "
                 f"(tracker.{self.site_code.lower()}.session), and none is set.",
@@ -1047,12 +1159,28 @@ class BaseGazelleApi:
         return _safe_response_excerpt(self._scrub(resp_text))
 
     async def _find_lost_upload(self, files: UploadFiles, err: UnknownOutcomeError) -> tuple[int, int]:
-        """Look an upload whose answer was lost up once, by its infohash, and return its ids."""
-        click.secho(f"Could not tell whether {self.site_string} took the upload ({err}), looking it up...", fg="yellow")
+        """Look an upload whose answer was lost up by its infohash, after a wait and once more if not found yet."""
         try:
             # Gazelle's API documentation asks for the hash in uppercase.
             infohash = Torrent.read_stream(files.torrent_data).infohash.upper()
-            found = await self.api_call("torrent", params={"hash": infohash})
+            click.secho(
+                f"Could not tell whether {self.site_string} took the upload ({err}). "
+                f"Waiting {_LOST_UPLOAD_FIRST_WAIT} s for {self.site_string} to finish processing it, "
+                "then looking it up...",
+                fg="yellow",
+            )
+            await asyncio.sleep(_LOST_UPLOAD_FIRST_WAIT)
+            try:
+                found = await self.api_call("torrent", params={"hash": infohash})
+            except RequestFailedError as unconfirmed:
+                # Not-found answers differ by tracker, so only a login or network failure skips the second lookup.
+                click.secho(
+                    f"{self.site_string} did not find it ({_safe_response_excerpt(self._scrub(str(unconfirmed)))}). "
+                    f"Waiting {_LOST_UPLOAD_SECOND_WAIT} s more, then looking it up one last time...",
+                    fg="yellow",
+                )
+                await asyncio.sleep(_LOST_UPLOAD_SECOND_WAIT)
+                found = await self.api_call("torrent", params={"hash": infohash})
             torrent_id, group_id = int(found["torrent"]["id"]), int(found["group"]["id"])
         except (RequestError, TorfError, KeyError, TypeError, ValueError) as lookup_err:
             # A non-JSON answer arrives here whole, and a logged-in page's links carry secrets.
@@ -1062,6 +1190,14 @@ class BaseGazelleApi:
                 f"its infohash did not confirm it ({reason}). The upload may still have gone through: "
                 f"check your uploads on {self.site_string} before uploading it again."
             ) from lookup_err
+        except asyncio.CancelledError:
+            # Ctrl-C while waiting: still warn before the user uploads it again.
+            click.secho(
+                f"Stopped before finding out. The upload may still have gone through: check your uploads on "
+                f"{self.site_string} before uploading it again.",
+                fg="yellow",
+            )
+            raise
         click.secho(f"Found the upload on {self.site_string}: torrent {torrent_id}.", fg="green")
         return torrent_id, group_id
 
@@ -1101,6 +1237,12 @@ class BaseGazelleApi:
             click.echo(f"    {'/'.join(file.parts[1:]) or file}  ({format_size(file.size, binary=True)})")
         group_id = data.get("groupid")
         return dryrun.NEW_TORRENT_ID, group_id if group_id else dryrun.NEW_GROUP_ID
+
+    def skip_upload_marks(self) -> None:
+        """Ask for none of the marks this tracker's upload form has for the uploader's own work, and send none.
+
+        For a re-post, such as a cross-upload. A tracker whose form has no such marks has nothing to skip.
+        """
 
     async def report_lossy_master(self, torrent_id: int, comment: str, source: str) -> bool:
         """Report torrent for lossy master/web approval.

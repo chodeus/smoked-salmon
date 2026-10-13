@@ -481,9 +481,11 @@ async def test_a_failed_rehost_fetch_never_carries_the_signed_url(monkeypatch):
     assert "test-sig-0001" not in "".join(traceback.format_exception(caught.value))
 
 
-@pytest.mark.parametrize(("status", "error", "sends"), [(500, UnknownOutcomeError, 1), (429, RetryableError, 2)])
+@pytest.mark.parametrize(
+    ("status", "error", "sends", "waits"), [(500, UnknownOutcomeError, 1, []), (429, RetryableError, 2, [2, 2])]
+)
 async def test_only_a_429_lets_a_post_naming_the_rate_limit_be_sent_again(
-    serve, api_for, monkeypatch, status, error, sends
+    serve, api_for, monkeypatch, status, error, sends, waits
 ):
     posts: list[int] = []
     pauses: list[float] = []
@@ -494,13 +496,13 @@ async def test_only_a_429_lets_a_post_naming_the_rate_limit_be_sent_again(
         return web.Response(text="Upstream rate limit check failed", status=status, headers={"Retry-After": "0"})
 
     url = await serve(upload=upload)
-    twice = cast("Any", BaseGazelleApi._request).retry_with(stop=stop_after_attempt(2))
+    twice = cast("Any", BaseGazelleApi._send).retry_with(stop=stop_after_attempt(2))
 
     with pytest.raises(error, match=f"Rate limit exceeded \\({status}\\)"):
         await twice(api_for(url), "POST", f"{url}/upload.php", data={"a": "b"})
     assert len(posts) == sends
-    # Either way the tracker named its rate limit, so every request to it waits.
-    assert pauses == [0.0] * sends
+    # Only a POST that may be sent again waits, and never less than the limiter's spacing.
+    assert pauses == waits
 
 
 def test_a_paused_budget_holds_every_request_until_the_pause_ends():
@@ -527,7 +529,7 @@ async def test_a_429_pauses_the_tracker_for_every_client(serve, api_for, monkeyp
 
     url = await serve(ajax=ajax)
     first, second = api_for(url), api_for(url)
-    once = cast("Any", BaseGazelleApi._request).retry_with(stop=stop_after_attempt(1))
+    once = cast("Any", BaseGazelleApi._send).retry_with(stop=stop_after_attempt(1))
     rate_limited = asyncio.create_task(once(first, "GET", f"{url}/ajax.php", params={"action": "a"}))
     while not hits:
         await asyncio.sleep(0.01)
