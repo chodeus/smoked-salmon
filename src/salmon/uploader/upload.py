@@ -15,6 +15,7 @@ from salmon.release_notification import upload_footer
 from salmon.sources import SOURCE_ICONS
 from salmon.tagger.pre_data import parse_artists
 from salmon.tagger.sources import METASOURCES
+from salmon.uploader.seedbox import warn_unmatched_normalization
 from salmon.uploader.spectrals import (
     make_spectral_bbcode,
 )
@@ -390,6 +391,7 @@ def generate_torrent(gazelle_site: "BaseGazelleApi", path: str, normalize: bool 
     if normalization not in ("", "none"):
         form: Literal["NFC", "NFD"] = "NFC" if normalization == "NFC" else "NFD"
         _normalize_torrent_names(t, form)
+        warn_unmatched_normalization(form, gazelle_site.site_code)
         # Reloaded in memory, so dumps no longer validate against disk; never from tpath, a watch folder may take it.
         t = Torrent.read_stream(t.dump(validate=False))
     t.write(tpath, overwrite=True)

@@ -34,6 +34,16 @@ def staged_source(path: str, scratch: bool) -> Iterator[tuple[str, str | None]]:
         _remove_scratch_dir(scratch_dir, path)
 
 
+@contextmanager
+def run_directory(source: str) -> Iterator[str]:
+    """A directory of this run's own in download_directory/.salmon-staging, removed after; `source` is never touched."""
+    scratch_dir = _new_scratch_dir()
+    try:
+        yield scratch_dir
+    finally:
+        _remove_scratch_dir(scratch_dir, source)
+
+
 def _new_scratch_dir() -> str:
     """Make a directory of this run's own under download_directory/.salmon-staging; other runs' stay put."""
     root = os.path.join(cfg.directory.download_directory, STAGING_DIR)
