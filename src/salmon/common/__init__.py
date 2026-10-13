@@ -12,7 +12,7 @@ import msgspec
 import pyperclip
 
 from salmon.common.aliases import AliasedCommands
-from salmon.common.constants import RE_FEAT
+from salmon.common.constants import RE_FEAT, RE_USELESS_VERSION
 from salmon.common.files import (
     AlbumPath,
     compress,
@@ -43,6 +43,7 @@ __all__ = [
     "AlbumPath",
     "AliasedCommands",
     "RE_FEAT",
+    "RE_USELESS_VERSION",
     "UploadFiles",
     "compress",
     "create_relative_path",
