@@ -231,3 +231,13 @@ def test_converted_folder_with_other_files_is_not_uploaded(monkeypatch, capsys, 
     assert uploads == []
     out = capsys.readouterr().out
     assert "does not hold the same audio files as the source: not uploading it" in out
+
+
+def test_skipping_the_upload_marks_sends_none_and_asks_for_none() -> None:
+    api = DICApi()
+    api.specific_params = {"self_rip": "1"}
+
+    api.skip_upload_marks()
+
+    assert api.specific_params == {}
+    assert api._marks_prompted is True

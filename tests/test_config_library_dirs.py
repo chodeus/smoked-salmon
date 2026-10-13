@@ -271,3 +271,23 @@ def test_staging_an_album_with_a_dangling_symlink_says_why(tmp_path, monkeypatch
 
     with pytest.raises(UploadError, match="Could not measure"), staged_source(str(album), scratch=False):
         pass
+
+
+def test_a_run_directory_is_made_under_staging_and_removed_when_the_run_ends(tmp_path, monkeypatch) -> None:
+    import os
+
+    from salmon.uploader.staging import STAGING_DIR, run_directory
+
+    album = tmp_path / "Album"
+    album.mkdir()
+    (album / "01.flac").write_bytes(b"audio")
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
+
+    with run_directory(str(album)) as run:
+        assert os.path.dirname(run) == str(downloads / STAGING_DIR)
+        (tmp_path / "downloads" / STAGING_DIR / os.path.basename(run) / "made.torrent").write_bytes(b"t")
+
+    assert os.listdir(downloads / STAGING_DIR) == []
+    assert (album / "01.flac").read_bytes() == b"audio"

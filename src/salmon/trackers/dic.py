@@ -17,6 +17,20 @@ SAMPLE_RATES = {
 }
 
 
+API_KEY_IGNORED = "tracker.dic.api_key is ignored: DIC does not take API keys, salmon uses its session cookie."
+
+# Whether this run has said so already: salmon builds a DICApi per upload, per cross-upload side and per check.
+_api_key_warned = False
+
+
+def warn_api_key_ignored() -> None:
+    """Say once per run that the configured DIC API key is not used."""
+    global _api_key_warned
+    if cfg.tracker.dic and cfg.tracker.dic.api_key and not _api_key_warned:
+        _api_key_warned = True
+        click.secho(API_KEY_IGNORED, fg="yellow")
+
+
 def _khz(rate: int) -> str:
     return f"{rate / 1000:g} kHz"
 
@@ -43,10 +57,15 @@ class DICApi(BaseGazelleApi):
 
             self.cookie = dic_cfg.session
             self.keeplogged = dic_cfg.keeplogged
-            if dic_cfg.api_key:
-                self.api_key = dic_cfg.api_key
+            # DIC takes no API key: without one, every request goes by the session cookie.
+            warn_api_key_ignored()
 
         super().__init__()
+
+    def skip_upload_marks(self) -> None:
+        """Send none of the Self-purchased, Self-rip and Exclusive marks, and do not ask for them."""
+        self.specific_params = {}
+        self._marks_prompted = True
 
     async def upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Attempt to upload a torrent to the site using the upload.php.
