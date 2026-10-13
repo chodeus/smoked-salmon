@@ -1,3 +1,4 @@
+import ipaddress
 import re
 import shlex
 from collections.abc import Iterable
@@ -107,8 +108,8 @@ _ID = re.compile(r"\d{1,19}")
 _WORD = re.compile(r"[A-Za-z_]{1,32}")
 # A query value shows only under these names, and only in the shape each takes; every other value is masked.
 _SHOWN_QUERY = {"id": _ID, "torrentid": _ID, "groupid": _ID, "page": _ID, "action": _WORD}
-# A query name shows only as a plain short name: one holding "=" or a token once decoded is masked.
-_SHOWN_NAME = re.compile(r"[A-Za-z_][\w.\[\]-]{0,31}")
+# A query name shows only as a plain short name with no digit: one holding "=", a digit or a token is masked.
+_SHOWN_NAME = re.compile(r"[A-Za-z_][A-Za-z_.\[\]-]{0,31}")
 # A run this long could be a passkey or a token, wherever it sits in a URL and however it is encoded.
 _TOKEN_RUN = re.compile(r"[A-Za-z0-9_]{20,}")
 
@@ -116,6 +117,15 @@ _TOKEN_RUN = re.compile(r"[A-Za-z0-9_]{20,}")
 # A path segment shows only as a plain one once decoded: digits alone (an id) or no digit at all (a word or slug).
 # One mixing letters and digits, as every random passkey and token does, is masked whatever its length.
 _PLAIN_SEGMENT = re.compile(r"\d{1,19}|\D{0,64}")
+
+
+def _ip_literal(host: str) -> str:
+    """An IPv6 host: shown when it is an address, masked when it holds a zone (fe80::1%eth0) or is none."""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return "[REDACTED]"
+    return host if not getattr(address, "scope_id", None) else "[REDACTED]"
 
 
 def _segment(text: str) -> str:
@@ -135,9 +145,8 @@ def redact_url(url: str) -> str:
         host, port = parts.hostname or "", parts.port
     except ValueError:
         return "[REDACTED]"
-    # An IPv6 literal is an address, never a secret; every DNS label is held to the path rule.
-    shown_host = host if ":" in host else ".".join(_segment(label) for label in host.split("."))
-    netloc = (f"[{shown_host}]" if ":" in host else shown_host) + (f":{port}" if port else "")
+    shown_host = _ip_literal(host) if ":" in host else ".".join(_segment(label) for label in host.split("."))
+    netloc = (f"[{shown_host}]" if ":" in shown_host else shown_host) + (f":{port}" if port else "")
     segments = parts.path.split("/")
     # An announce URL's passkey sits next to "announce" (/<passkey>/announce), however short it is.
     beside_announce = {
