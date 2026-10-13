@@ -51,7 +51,7 @@ class Row(msgspec.Struct, frozen=True):
     label: str
     verdict: Verdict
     detail: str
-    # Every item behind the detail, which names only the first few.
+    # The items behind the detail, up to _NOTES of them and then a count of the rest.
     notes: tuple[str, ...] = ()
 
 
