@@ -208,7 +208,6 @@ def test_lost_upload_that_appears_during_the_first_wait_is_found_on_the_first_lo
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _wait_before_lookups(monkeypatch, WAIT, WAIT)
-    # Looked up at once, as it used to be, the tracker does not have it yet.
     posts, lookups = anyio.run(_upload_whose_torrent_appears_later, tmp_path, WAIT / 2)
     assert posts == ["upload"]
     assert len(lookups) == 1

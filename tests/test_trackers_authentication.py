@@ -1,9 +1,4 @@
-"""A client authenticates once, however many of its requests are waiting for it (#468).
-
-A fresh client's first request fetches the authkey with ajax.php?action=index. Requests that went out together
-each used to send their own index. They now share one attempt: when it fails, it fails for all of them with one
-error, instead of each of them trying again. Tests talk only to a local fake tracker.
-"""
+"""A client's requests share one authentication attempt, against a local fake tracker."""
 
 import asyncio
 import gc
