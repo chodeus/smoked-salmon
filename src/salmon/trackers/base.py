@@ -1166,10 +1166,10 @@ class BaseGazelleApi:
             await asyncio.sleep(_LOST_UPLOAD_FIRST_WAIT)
             try:
                 found = await self.api_call("torrent", params={"hash": infohash})
-            except RequestFailedError as not_found:
-                # The tracker answered, without the torrent. Any other failure is not worth another request.
+            except RequestFailedError as unconfirmed:
+                # Not-found answers differ by tracker, so only a login or network failure skips the second lookup.
                 click.secho(
-                    f"{self.site_string} does not have it yet ({_safe_response_excerpt(self._scrub(str(not_found)))}). "
+                    f"{self.site_string} did not find it ({_safe_response_excerpt(self._scrub(str(unconfirmed)))}). "
                     f"Waiting {_LOST_UPLOAD_SECOND_WAIT} s more, then looking it up one last time...",
                     fg="yellow",
                 )
