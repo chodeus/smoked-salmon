@@ -43,6 +43,8 @@ ENCODED_PASSKEY = "".join(f"%{ord(char):02X}" for char in PASSKEY)
         ("https://test-passkey-0001.tracker.example/x", "https://[REDACTED].tracker.example/x"),
         ("https://192.0.2.10/x", "https://192.0.2.10/x"),
         ("https://tracker.example/download/abcdefgh", "https://tracker.example/download/abcdefgh"),
+        ("https://tracker.example/x?id=test-pass-0001", "https://tracker.example/x?id=[REDACTED]"),
+        ("https://tracker.example/x?action=dl2x&page=3", "https://tracker.example/x?action=[REDACTED]&page=3"),
         ("https://store.example/release/the-album/654321", "https://store.example/release/the-album/654321"),
     ],
     ids=[
@@ -65,6 +67,8 @@ ENCODED_PASSKEY = "".join(f"%{ord(char):02X}" for char in PASSKEY)
         "short-token-host",
         "ipv4-host",
         "a-word",
+        "short-secret-as-an-id",
+        "action-holding-a-digit",
         "a-slug-and-an-id",
     ],
 )

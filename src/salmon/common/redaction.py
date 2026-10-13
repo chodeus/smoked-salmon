@@ -103,9 +103,10 @@ def secret_values(args: Iterable[str], connection: str = "") -> list[str]:
     return found
 
 
-# A URL shows these query values when they are short; every other value is masked (an authkey, a store's token).
-_SHOWN_QUERY = frozenset({"id", "torrentid", "groupid", "action", "page"})
-_SHOWN_VALUE = re.compile(r"[\w.-]{1,19}")
+_ID = re.compile(r"\d{1,19}")
+_WORD = re.compile(r"[A-Za-z_]{1,32}")
+# A query value shows only under these names, and only in the shape each takes; every other value is masked.
+_SHOWN_QUERY = {"id": _ID, "torrentid": _ID, "groupid": _ID, "page": _ID, "action": _WORD}
 # A query name shows only as a plain short name: one holding "=" or a token once decoded is masked.
 _SHOWN_NAME = re.compile(r"[A-Za-z_][\w.\[\]-]{0,31}")
 # A run this long could be a passkey or a token, wherever it sits in a URL and however it is encoded.
@@ -151,7 +152,7 @@ def redact_url(url: str) -> str:
     )
     query = "&".join(
         f"{_query_name(name)}="
-        + (value if name.lower() in _SHOWN_QUERY and _SHOWN_VALUE.fullmatch(value) else "[REDACTED]")
+        + (value if (shape := _SHOWN_QUERY.get(name.lower())) and shape.fullmatch(value) else "[REDACTED]")
         for name, value in parse_qsl(parts.query, keep_blank_values=True)
     )
     return (
