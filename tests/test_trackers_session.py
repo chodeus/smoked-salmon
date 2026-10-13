@@ -103,7 +103,7 @@ async def test_queued_requests_do_not_time_out_while_waiting(serve):
 
 
 async def test_a_trickled_answer_still_times_out(serve, monkeypatch):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
 
     async def handler(request: web.Request) -> web.StreamResponse:
         await request.read()

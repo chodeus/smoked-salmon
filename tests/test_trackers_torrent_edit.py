@@ -103,7 +103,7 @@ class _LooseLimiter(SharedLimiter):
 def _fast(monkeypatch) -> None:
     monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
     monkeypatch.setattr("salmon.trackers.base.SharedLimiter", _LooseLimiter)
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
 
 
 class FakeTracker:
