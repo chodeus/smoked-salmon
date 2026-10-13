@@ -5,6 +5,7 @@ export interface Row {
   label: string
   verdict: Verdict
   detail: string
+  notes?: string[]
 }
 
 export interface ChecksResult {

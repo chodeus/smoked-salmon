@@ -74,3 +74,20 @@ async def test_without_a_tracker_red_and_ops_rules_apply_and_none_is_contacted(a
         assert label in result.output
     assert "Duplicate" not in result.output
     assert contacted == []
+
+
+async def test_each_row_prints_its_notes_under_it(album_dir, monkeypatch):
+    from salmon.checks import preflight as pf
+
+    monkeypatch.setattr(
+        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+    )
+    monkeypatch.setattr(pf, "CHECKS", ())
+    monkeypatch.setattr(pf, "_release_identity", lambda _p: {})
+    long_log = "x" * 180 + ".log"
+    (album_dir / long_log).write_text("log", encoding="utf-8")
+
+    result = await _run(album_dir, "--source", "WEB")
+
+    note_lines = [line for line in result.output.splitlines() if line.lstrip().startswith("- ")]
+    assert any(long_log in line for line in note_lines)
