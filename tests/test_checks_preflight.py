@@ -736,8 +736,19 @@ def _spec_notes(check: str, result: dict) -> list[str]:
         ),
         (
             "upconvert",
-            {"files": [{"file": "01.flac", "is_upconverted": True, "wasted_bits": 8, "bitdepth": 24}, {"file": "02"}]},
-            ["01.flac: 8 of 24 bits wasted"],
+            {
+                "files": [
+                    {"file": "01.flac", "is_upconverted": True, "wasted_bits": 8, "bitdepth": 24},
+                    {"file": "02.flac"},
+                    {"file": "03.flac", "error": "bad header"},
+                    {"file": "04.flac", "error": "truncated"},
+                ]
+            },
+            [
+                "01.flac: 8 of 24 bits wasted",
+                "03.flac: could not test: bad header",
+                "04.flac: could not test: truncated",
+            ],
         ),
         (
             "mqa",

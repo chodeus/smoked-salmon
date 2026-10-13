@@ -11,7 +11,8 @@ import tempfile
 
 from salmon.checks.album import in_album
 from salmon.checks.provenance import gather_provenance
-from salmon.tagger.audio_info import gather_audio_info
+from salmon.common import get_audio_files
+from salmon.tagger.audio_info import audio_file_info
 from salmon.uploader.frequency import SpectrumResult, describe, generate_frequency_plots, summarize
 
 
@@ -74,7 +75,8 @@ def build_report(
     lines += [f"   {note}" for note in summarize(spectra)[1]]
     if image_urls:
         lines += [f"   {url}" for url in image_urls]
-    else:
+    elif rows is None:
+        # check all keeps no plots: only the spectrals page has images to name.
         lines.append("   Full-track spectrogram, a 2-second zoom, and an averaged frequency plot per track.")
 
     if rows is not None:
@@ -86,12 +88,20 @@ def build_report(
     return "\n".join(lines)
 
 
+def _readable_audio_info(path: str) -> dict[str, dict]:
+    """Each audio file's numbers; a file that cannot be read is left out, not the whole album."""
+    info = {}
+    for name in get_audio_files(path, True):
+        try:
+            info[name] = audio_file_info(path, name)
+        except Exception:
+            continue
+    return info
+
+
 async def album_report(path: str, rows: list[dict], provenance: dict | None = None) -> str:
     """check all's report: the album's numbers, each FLAC's frequency analysis, and the rows; no parent path."""
-    try:
-        audio_info = await asyncio.to_thread(gather_audio_info, path, True)
-    except Exception:
-        audio_info = {}
+    audio_info = await asyncio.to_thread(_readable_audio_info, path)
     if provenance is None:
         provenance = await asyncio.to_thread(gather_provenance, path)
     flacs = [name for name in audio_info if name.lower().endswith(".flac")]

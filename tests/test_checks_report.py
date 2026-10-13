@@ -9,8 +9,11 @@ from asyncclick.testing import CliRunner
 from salmon.checks import all_checks
 from salmon.checks import report as report_module
 from salmon.checks.report import album_report, build_report
+from salmon.errors import UploadError
 
 PROVENANCE = {"vendors": [], "markers": [], "contradictions": []}
+INFO = {"sample rate": 44100, "precision": 16, "channels": 2, "bit rate": 900000}
+PLOTS_LINE = "Full-track spectrogram, a 2-second zoom, and an averaged frequency plot per track."
 ROWS = [
     {"id": "log", "label": "Rip log", "verdict": "warn", "detail": "rip.log: score 90/100.", "notes": ["rip.log: x"]},
     {"id": "mqa", "label": "MQA", "verdict": "ok", "detail": "No MQA encoding detected.", "notes": []},
@@ -22,6 +25,7 @@ def test_without_rows_the_report_keeps_its_sections() -> None:
 
     assert "5. About the release" in text
     assert "Checks (salmon check all)" not in text
+    assert PLOTS_LINE in text
 
 
 def test_rows_add_a_checks_section_with_their_notes() -> None:
@@ -35,11 +39,15 @@ def test_rows_add_a_checks_section_with_their_notes() -> None:
         "   OK    MQA: No MQA encoding detected.",
     ]
     assert "6. About the release" in lines
+    # check all removes its plots, so it names none.
+    assert PLOTS_LINE not in text
 
 
 def test_the_report_analyses_the_flacs_outside_the_album_and_names_no_parent(tmp_path, monkeypatch) -> None:
     album = tmp_path / "Album"
     album.mkdir()
+    for name in ("01.flac", "02.mp3"):
+        (album / name).write_bytes(b"audio")
     before = sorted(os.listdir(album))
     analysed: list[tuple[str, list[str], str]] = []
 
@@ -48,8 +56,7 @@ def test_the_report_analyses_the_flacs_outside_the_album_and_names_no_parent(tmp
         Path(out_dir, "01 Frequency.png").write_bytes(b"png")
         return []
 
-    info = {"sample rate": 44100, "precision": 16, "channels": 2, "bit rate": 900000}
-    monkeypatch.setattr(report_module, "gather_audio_info", lambda _path, _sort: {"01.flac": info, "02.mp3": info})
+    monkeypatch.setattr(report_module, "audio_file_info", lambda _path, _name: INFO)
     monkeypatch.setattr(report_module, "generate_frequency_plots", frequency)
     rows = [{"id": "integrity", "label": "File integrity", "verdict": "block", "detail": f"{album}/01.flac: bad"}]
 
@@ -62,6 +69,31 @@ def test_the_report_analyses_the_flacs_outside_the_album_and_names_no_parent(tmp
     assert sorted(os.listdir(album)) == before
     assert str(tmp_path) not in text
     assert "BLOCK File integrity: Album/01.flac: bad" in text
+
+
+def test_a_file_that_cannot_be_read_leaves_the_others_in_the_report(tmp_path, monkeypatch) -> None:
+    album = tmp_path / "Album"
+    album.mkdir()
+    for name in ("01.flac", "02.flac"):
+        (album / name).write_bytes(b"audio")
+    analysed: list[list[str]] = []
+
+    async def frequency(_path: str, files: list[str], _out_dir: str) -> list:
+        analysed.append(files)
+        return []
+
+    def read(_path: str, name: str) -> dict:
+        if name == "02.flac":
+            raise UploadError(f"Could not read audio file: {name}")
+        return INFO
+
+    monkeypatch.setattr(report_module, "audio_file_info", read)
+    monkeypatch.setattr(report_module, "generate_frequency_plots", frequency)
+
+    text = anyio.run(album_report, str(album), [], PROVENANCE)
+
+    assert analysed == [["01.flac"]]
+    assert "   01.flac: 16-bit / 44.1 kHz stereo, 900 kbps" in text
 
 
 async def test_a_blocked_release_still_gets_its_report(album_dir, monkeypatch) -> None:

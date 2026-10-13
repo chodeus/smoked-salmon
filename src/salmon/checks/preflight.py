@@ -225,9 +225,12 @@ CHECKS: tuple[CheckSpec, ...] = (
         album.run_upconvert_check,
         _upconvert_verdict,
         notes=lambda result: [
-            f"{f['file']}: {f['wasted_bits']} of {f['bitdepth']} bits wasted"
-            for f in result["files"]
-            if f.get("is_upconverted")
+            *(
+                f"{f['file']}: {f['wasted_bits']} of {f['bitdepth']} bits wasted"
+                for f in result["files"]
+                if f.get("is_upconverted")
+            ),
+            *(f"{f['file']}: could not test: {f['error']}" for f in result["files"] if f.get("error")),
         ],
     ),
     CheckSpec(
