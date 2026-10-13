@@ -84,7 +84,7 @@ def parse_title(title):
     if cfg.upload.formatting.strip_useless_versions:
         match = RE_USELESS_VERSION.search(base)
         if match:
-            edition = match.group(1).strip()
+            edition = match.group("version").strip()
             base = base[: match.start()].strip()
 
     return base, edition

@@ -15,6 +15,14 @@ KEPT = [
     "Album of the Mix Edition",
     "Night Songs (2011 Remastered)",
     "Night Songs (Feature Film)",
+    "Night Songs (Remastered]",
+    "Night Songs [Remastered)",
+    "Night Songs\n(Remastered)",
+    "Night Songs (\nClean)",
+    "Night Songs (Deluxe\nEdition)",
+    "Night Songs (Album\nMix)",
+    "Night Songs (feat. Someone\nElse)",
+    "(Remastered)",
 ]
 
 

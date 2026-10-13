@@ -39,13 +39,13 @@ RE_FEAT = re.compile(
     r" [\(\[\{]?(?:f(?:ea)?t(?:uring)?\.?|with\.) ([^\)\]\}]+)[\)\]\}]?",
     flags=re.IGNORECASE,
 )
-# Only a whole trailing (…) or […] is a useless version: a title ending in the same word keeps it.
+# Only a whole (…) or […] ending the title's line, after its text, is a useless version: a word of the title stays.
 RE_USELESS_VERSION = re.compile(
-    r"\s*[(\[]\s*("
+    r"(?<=\S)[ \t]*(?:(?P<paren>\()|\[)[ \t]*(?P<version>"
     r"Original(?: Mix)?|Remastered|Clean|"
-    r"(?:Expanded|Deluxe|Anniversary|Limited|Collector'?s|Ultimate|Reissue|Bonus|Special)\s+Edition|"
-    r"Album[^()\[\]]*?(?:Edition|Mix)|feat(?:uring\b|\.|\b)[^()\[\]]+"
-    r")\s*[)\]]\s*$",
+    r"(?:Expanded|Deluxe|Anniversary|Limited|Collector'?s|Ultimate|Reissue|Bonus|Special)[ \t]+Edition|"
+    r"Album[^()\[\]\n]*?(?:Edition|Mix)|feat(?:uring\b|\.|\b)[^()\[\]\n]+"
+    r")[ \t]*(?(paren)\)|\])[ \t]*$",
     flags=re.IGNORECASE,
 )
 _RE_SPLIT = re.compile("|".join(re.escape(s) for s in SPLIT_CHARS))
