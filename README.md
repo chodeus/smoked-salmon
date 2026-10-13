@@ -30,7 +30,7 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 - **Upconvert Detection** – Checks 24-bit flac files for potential upconverts. 16-bit files are reported as out of scope rather than as a failed test, since wasted-bit analysis only says anything above 16-bit.
 - **MQA Detection** – Checks files for common MQA markers.
 - **Duplicate Upload Detection** – Prevents redundant uploads. Every match is listed with each existing torrent's format, encoding, media, edition and log score, so you can see what a group already holds without leaving the page.  
-- **Do-Not-Upload Lists** – salmon ships a copy of RED's and OPS's Do-Not-Upload lists (fakes, unreleased albums, bootlegs, some whole discographies and labels; some entries only for one media, such as WEB), and never uploads a listed release to that tracker, with or without `--yes-all`: it says which entry matched and why, and the run goes on to the other trackers. A legitimate copy needs that tracker's staff approval first. The maintainers update the lists with salmon's releases; `cross-upload` checks the target's list too.  
+- **Do-Not-Upload Lists** – salmon ships a copy of RED's and OPS's Do-Not-Upload lists (fakes, unreleased albums, bootlegs, some whole discographies and labels; some entries only for one media, such as WEB), and never uploads a listed release to that tracker, with or without `-yyy`: it says which entry matched and why, and the run goes on to the other trackers. A legitimate copy needs that tracker's staff approval first. The maintainers update the lists with salmon's releases; `cross-upload` checks the target's list too.  
 - **Dry Run** – `--dry-run` builds and validates a complete upload without posting it.  
 - **Spectral Analysis** – Generates, compresses, and verifies spectrals, shown inline in the web interface, alongside an averaged frequency plot per track.  
 - **Frequency Analysis** – One averaged-spectrum curve per track, plus the two measurements that tell a lossy encoder from a master: a brick-wall lowpass in the band where MP3 and AAC encoders cut (12.8–20.6 kHz), and highs that flip between content and the bit-depth floor while the music plays, which is an encoder running short of bits. The cutoff alone raises nothing — honest masters roll off early, and many 44.1 kHz masters have a wall near 21 kHz from sample-rate conversion or an anti-alias filter — so a track is flagged only on the marks, and a compilation whose tracks stop at different frequencies is left alone.  
@@ -358,7 +358,7 @@ tracker. The usual checks still run, on a scratch copy in `download_directory/.s
 the run ends: the source folder is never modified, since it is likely seeding the FLAC. The transcodes land in
 `download_directory` as for any upload. The transcode
 descriptions link to the group's FLAC in this release's edition (same media, encoding, year, catalogue number and
-edition title); if there are several, salmon asks which one (with `--yes-all` it stops). Formats the edition already
+edition title); if there are several, salmon asks which one (with `-yyy` it stops). Formats the edition already
 has are flagged as a dupe risk and left out unless you pick them by number. In the web interface this is the
 "Transcodes only" option.
 
@@ -373,7 +373,7 @@ checks its files, its log and its images, and shows the plan. The files are chec
 pieces, so an album still downloading (its files already at full size) is not uploaded: for an ID or URL, salmon
 downloads the source `.torrent` once (through the tracker's API with its API key, otherwise with its session cookie;
 never with a freeleech token). When pieces differ, salmon says how many and asks whether to go on (default no;
-`--yes-all` stops). From DIC, only a `.torrent` file INPUT gets this check; by ID or URL its files are checked by size
+`-yyy` stops). From DIC, only a `.torrent` file INPUT gets this check; by ID or URL its files are checked by size
 only, and the plan says so. Then, for each release, it checks the target for duplicates as `up` does and uploads it
 with the source's group and torrent data. `--transcode 320`, `--transcode V0`, `--downconvert` (a 24-bit FLAC's
 lossless downconversions) and `--all` (or `--all-formats`) add the conversions `up` would make. The album folder is

@@ -19,6 +19,7 @@ from test_cross_upload import (  # pyright: ignore[reportMissingImports]
     _red_answer,
     _source_has,
     _source_has_unfinished,
+    _success,
     _transcode,
     _within_the_plans_bound,
     dirs,  # noqa: F401
@@ -249,3 +250,19 @@ def test_conversions_of_a_16bit_flac_above_48khz_go_into_an_ops_group(monkeypatc
     # The rule is about the FLAC, which OPS has already: an MP3 made from it is not refused.
     assert "16bit file(s) above 48 kHz" not in run.output
     assert len(run.target.posts()) == 1
+
+
+def test_an_upload_whose_group_id_does_not_come_back_gets_no_conversions(monkeypatch, dirs) -> None:  # noqa: F811
+    album = _album(dirs.downloads / FOLDER)
+
+    def prepare(source: FakeTracker, target: FakeTracker) -> None:
+        _source_has(album)(source, target)
+        target.answers["POST ajax.php?action=upload"] = lambda: _success({"torrentid": 700001, "groupid": 0})
+
+    run = _cross_upload(
+        monkeypatch, dirs, [str(TORRENT_ID), "-yyy", "--all"], input="\n", prepare=prepare, transcode=_transcode
+    )
+
+    assert run.result.exit_code == 0, run.output
+    assert len(run.target.posts()) == 1
+    assert "No group id came back for" in run.output

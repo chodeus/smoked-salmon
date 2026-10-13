@@ -5,9 +5,7 @@ Do-Not-Upload list, the files on disk, the log, the images), shows the plan, and
 per release, the dupe check as `up` makes it, the upload of the source format, and the conversions asked for. The
 first failure there stops the run, and says what is already up.
 
-An INPUT may also be a folder of .torrent files, and --target-group-id adds only the conversions to a group TARGET
-already has. What DIC's rules and API answers are is not checked against DIC itself: where it matters, the code
-says what is assumed.
+An INPUT may also be a folder of .torrent files; --target-group-id adds only conversions, to a group TARGET has.
 """
 
 import html
@@ -411,8 +409,7 @@ async def _prepare(
     Args:
         seen: The IDs of the torrents already in the run: one given again (as an ID and as its .torrent file)
             is dropped. This one's is added.
-        conversions_only: Only its conversions go up, into a group TARGET has: the source format's own form,
-            rule, log and images are not needed.
+        conversions_only: Only its conversions go up, into a group TARGET has: the FLAC's own checks are skipped.
 
     Raises:
         CrossUploadRefused: If the release cannot go, saying why.
@@ -1201,8 +1198,13 @@ async def _upload(
             fg="yellow",
         )
 
-    if release.tasks:
-        await _upload_conversions(release, target, group_id, torrent_id, url, existing_group, seedbox, uploaded)
+    if not release.tasks:
+        return
+    if not group_id:
+        # Conversions with no group id would each start a new group beside this one, as in up.
+        click.secho(f"\nNo group id came back for {url}: its conversions are not uploaded.", fg="yellow")
+        return
+    await _upload_conversions(release, target, group_id, torrent_id, url, existing_group, seedbox, uploaded)
 
 
 async def _upload_into_group(

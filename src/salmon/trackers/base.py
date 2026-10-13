@@ -56,7 +56,7 @@ INVERTED_RELEASE_TYPES = {
 
 # The names a secret goes by, in a JSON field, a URL query, a cookie header or a form input: one list for all three.
 _SECRET_NAMES = "authkey|passkey|torrent_pass|auth|api_key|session|keeplogged"
-_SENSITIVE_KEYS = re.compile(rf'("(?:{_SECRET_NAMES}|Authorization)"\s*:\s*")[^"]*(")', re.IGNORECASE)
+_SENSITIVE_KEYS = re.compile(rf'("(?:{_SECRET_NAMES}|Authorization)"\s*:\s*")(?:[^"\\]|\\.)*(")', re.IGNORECASE)
 _SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=[^&\"'\s<>]+", re.IGNORECASE)
 
 _SECRET_INPUT_NAME = rf"""\bname=["'](?:{_SECRET_NAMES})["']"""
