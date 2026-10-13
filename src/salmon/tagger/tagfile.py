@@ -77,7 +77,8 @@ class TagFile:
             if isinstance(mut, flac.FLAC):
                 if attr in {"artist", "genre"}:
                     return list(mut[TAG_FIELDS["FLAC"][attr]]) or []
-                return "; ".join(mut[TAG_FIELDS["FLAC"][attr]]) or None
+                # A Vorbis comment can repeat a field with the same value (TRACKNUMBER=1 twice); read it once.
+                return "; ".join(dict.fromkeys(mut[TAG_FIELDS["FLAC"][attr]])) or None
             elif isinstance(mut, mp3.MP3):
                 return self.parse_tag(attr, "MP3")
             elif isinstance(mut, mp4.MP4):
@@ -159,8 +160,9 @@ class TagFile:
             if isinstance(mut, flac.FLAC):
                 raw_tags = mut.tags
                 if raw_tags is not None and isinstance(raw_tags, VCommentDict):
-                    # FLAC tags use VCommentDict which supports dynamic keys
-                    raw_tags[TAG_FIELDS["FLAC"][key]] = value
+                    # Vorbis comment names are case-insensitive; the spec recommends uppercase.
+                    # Mutagen keeps the case it is given, so a lowercase map name would replace ARTIST with artist.
+                    raw_tags[TAG_FIELDS["FLAC"][key].upper()] = value
             elif isinstance(mut, mp3.MP3):
                 self.set_mp3_tag(key, value)
             elif isinstance(mut, mp4.MP4):

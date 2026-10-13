@@ -714,7 +714,10 @@ class BaseGazelleApi:
         """Raise the error a failed tracker answer calls for."""
         error_msg = text
         with suppress(msgspec.DecodeError, ValueError):
-            error_msg = msgspec.json.encode(msgspec.json.decode(text)["error"]).decode()
+            decoded = msgspec.json.decode(text)
+            # A JSON answer need not be an object with an error key: anything else keeps its body as the message.
+            if isinstance(decoded, dict) and "error" in decoded:
+                error_msg = msgspec.json.encode(decoded["error"]).decode()
         # An error page can repeat the authkey or passkey, and callers print what they catch.
         shown = _safe_response_excerpt(self._scrub(error_msg))
 
