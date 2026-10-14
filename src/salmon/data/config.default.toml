@@ -246,6 +246,7 @@ session = 'get-from-site-cookie'
 
 # REQUIRED to serve on any non-loopback host: a shared password/token. Every
 # request and the websocket must present it (a login screen sets a cookie).
+# Without one, salmon web on loopback makes one per run and prints a login link.
 # Prefer the SALMON_WEB_TOKEN env var (e.g. in Docker) over storing it here.
 # auth_token = "change-me-to-a-long-random-string"
 

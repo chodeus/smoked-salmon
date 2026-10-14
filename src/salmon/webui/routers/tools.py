@@ -5,6 +5,7 @@
 browser questions the same way an upload job does.
 """
 
+import asyncio
 import os
 from typing import Any, cast
 
@@ -20,6 +21,7 @@ from salmon.constants import TAG_ENCODINGS
 from salmon.cross_upload import cross_upload as cross_upload_command
 from salmon.cross_upload import is_torrent_reference
 from salmon.images import HOSTS, upload_images
+from salmon.images.files import NotAnImage, check_image
 from salmon.tagger import tag as tag_command
 from salmon.uploader.description import build_tracklist_description
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
@@ -125,6 +127,13 @@ async def images_upload(req: ImageUploadRequest) -> dict:
         path = validate_confined_path(raw)
         if not os.path.isfile(path):
             raise HTTPException(status_code=404, detail=f"Not a file: {raw}")
+        # Image hosts are public: a .torrent carries the passkey, and any file can be named cover.jpg.
+        try:
+            await asyncio.to_thread(check_image, path)
+        except NotAnImage as e:
+            raise HTTPException(status_code=422, detail=f"Not uploading {raw}: {e}.") from None
+        except OSError:
+            raise HTTPException(status_code=422, detail=f"Not uploading {raw}: it cannot be read.") from None
         resolved.append(path)
 
     try:
