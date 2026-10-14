@@ -391,19 +391,26 @@ To vet an album before deciding whether to upload it at all — every check in o
 ```bash
 salmon check all /data/path/to/album                 # RED's and OPS's rules; no tracker is contacted
 salmon check all /data/path/to/album -s CD -t RED    # RED's rules, and a search of RED for duplicates
+salmon check all /data/path/to/album --report        # also a report to paste into a tracker help thread
 ```
 
-`up` already runs all of these as part of an upload. `check all` is for triage: sorting through a library without starting one.
+`up` already runs all of these as part of an upload. `check all` is for triage: sorting through a library without starting one. `--report` adds what a tracker help thread asks for: the formats, encoder and tag markers, each FLAC's frequency analysis (slow, so only with the report) and every verdict with its notes, naming the album folder and no other path.
 
-To start the web interface:
+To start the web interface on this machine only (it prints a login link):
 ```bash
-salmon web --host 0.0.0.0
+salmon web
 ```
 
 You can get help directly from the CLI by appending --help to any command. This is especially useful for the up command which has a lot of possible options.
 
 ### 🌐 Web Interface
-`salmon web` serves the whole workflow in a browser on port **55155** by default:
+`salmon web` serves the whole workflow in a browser on port **55155** by default. On loopback, with no token set, it prints a login link for that run:
+
+```bash
+salmon web
+```
+
+To reach it from another machine, first set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`) to a long random string you keep, which the login page asks for:
 
 ```bash
 salmon web --host 0.0.0.0

@@ -7,7 +7,7 @@ exists so an album can be seen green before anything is staged or uploaded.
 import asyncio
 import os
 import re
-from collections.abc import Awaitable, Callable, Collection, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Sequence
 from typing import Literal
 
 import msgspec
@@ -51,6 +51,19 @@ class Row(msgspec.Struct, frozen=True):
     label: str
     verdict: Verdict
     detail: str
+    # The items behind the detail, up to _NOTES of them and then a count of the rest.
+    notes: tuple[str, ...] = ()
+
+
+# How many notes a row lists before saying how many more there are.
+_NOTES = 8
+
+
+def _notes(lines: Iterable[str]) -> tuple[str, ...]:
+    lines = [line for line in lines if line]
+    if len(lines) > _NOTES:
+        return (*lines[:_NOTES], f"... and {len(lines) - _NOTES} more.")
+    return tuple(lines)
 
 
 class CheckSpec(msgspec.Struct, frozen=True):
@@ -61,6 +74,8 @@ class CheckSpec(msgspec.Struct, frozen=True):
     run: Callable[[str], Awaitable[dict]]
     verdict: Callable[[dict, dict], tuple[Verdict, str]]
     sources: tuple[str, ...] | None = None
+    # The lines behind the verdict's detail, from the same result.
+    notes: Callable[[dict], Iterable[str]] | None = None
 
 
 def _integrity_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
@@ -186,13 +201,64 @@ def _tags_verdict(result: dict, _ctx: dict) -> tuple[Verdict, str]:
 
 
 CHECKS: tuple[CheckSpec, ...] = (
-    CheckSpec("provenance", "Provenance", album.run_provenance_check, _provenance_verdict),
-    CheckSpec("integrity", "File integrity", album.run_integrity_check, _integrity_verdict),
-    CheckSpec("upconvert", "Upconvert", album.run_upconvert_check, _upconvert_verdict),
-    CheckSpec("mqa", "MQA", album.run_mqa_check, _mqa_verdict),
-    CheckSpec("tags", "MP3 tags", album.run_tag_check, _tags_verdict),
+    CheckSpec(
+        "provenance",
+        "Provenance",
+        album.run_provenance_check,
+        _provenance_verdict,
+        notes=lambda result: result["contradictions"],
+    ),
+    CheckSpec(
+        "integrity",
+        "File integrity",
+        album.run_integrity_check,
+        _integrity_verdict,
+        notes=lambda result: [
+            *(f"{name}: does not decode" for name in result.get("decode_failures") or []),
+            *(f"{name}: no MD5 stored" for name in result.get("md5_unset") or []),
+            *(result.get("concerns") or []),
+        ],
+    ),
+    CheckSpec(
+        "upconvert",
+        "Upconvert",
+        album.run_upconvert_check,
+        _upconvert_verdict,
+        notes=lambda result: [
+            *(
+                f"{f['file']}: {f['wasted_bits']} of {f['bitdepth']} bits wasted"
+                for f in result["files"]
+                if f.get("is_upconverted")
+            ),
+            *(f"{f['file']}: could not test: {f['error']}" for f in result["files"] if f.get("error")),
+        ],
+    ),
+    CheckSpec(
+        "mqa",
+        "MQA",
+        album.run_mqa_check,
+        _mqa_verdict,
+        notes=lambda result: [f["file"] for f in result["files"] if f["detected"]],
+    ),
+    CheckSpec(
+        "tags",
+        "MP3 tags",
+        album.run_tag_check,
+        _tags_verdict,
+        notes=lambda result: [
+            *result["dual_id3"],
+            *(f"{error['file']}: {error['error']}" for error in result["errors"]),
+        ],
+    ),
     # Logs are checked for a CD, as salmon up does, and for a source the files leave unknown.
-    CheckSpec("log", "Rip log", album.run_log_check, _log_verdict, sources=("CD",)),
+    CheckSpec(
+        "log",
+        "Rip log",
+        album.run_log_check,
+        _log_verdict,
+        sources=("CD",),
+        notes=lambda result: [_log_line(log)[1] for log in result["logs"]],
+    ),
 )
 CHECK_IDS: tuple[str, ...] = tuple(spec.id for spec in CHECKS)
 # The trackers whose rules a check with none named applies; their Do-Not-Upload lists ship with salmon.
@@ -236,11 +302,11 @@ def dupe_row(tracker: str, results: list[dict], release: dict | None = None) -> 
     if not results:
         return Row(f"dupe:{tracker}", label, OK, "No existing release found.")
     names = []
-    for r in results[:2]:
+    for r in results:
         name = str(r.get("groupName") or r.get("groupId"))
         editions = _editions(r)
         names.append(f"{name} ({editions})" if editions else name)
-    found = f"{len(results)} possible match(es): {', '.join(names)}."
+    found = f"{len(results)} possible match(es): {', '.join(names[:2])}."
     wanted = [str((release or {}).get(key) or "") for key in ("source", "format", "encoding")]
     if not all(wanted):
         return Row(
@@ -248,6 +314,7 @@ def dupe_row(tracker: str, results: list[dict], release: dict | None = None) -> 
             label,
             WARN,
             f"{found} This release's source or encoding is not known from the files, so check them by hand.",
+            _notes(names),
         )
     held = [describe_torrent(torrent, group) for group in results for torrent in held_in_group(group, release)]
     if held:
@@ -256,8 +323,9 @@ def dupe_row(tracker: str, results: list[dict], release: dict | None = None) -> 
             label,
             WARN,
             f"{tracker} already has this edition's {' '.join(wanted)}: {'; '.join(held[:2])}.",
+            _notes(held),
         )
-    return Row(f"dupe:{tracker}", label, OK, f"{found} None holds this edition's {' '.join(wanted)}.")
+    return Row(f"dupe:{tracker}", label, OK, f"{found} None holds this edition's {' '.join(wanted)}.", _notes(names))
 
 
 def dupe_matches(base_url: str, results: list[dict]) -> list[dict]:
@@ -313,14 +381,14 @@ def rules_row(tracker: str, folder_name: str, track_data: dict, other_files: Seq
     ]
     if not track_data:
         if long_paths:
-            return Row(f"rules:{tracker}", label, WARN, " ".join(long_paths[:2]))
+            return Row(f"rules:{tracker}", label, WARN, " ".join(long_paths[:2]), _notes(long_paths))
         return Row(f"rules:{tracker}", label, SKIP, "The audio could not be read, so these rules were not checked.")
     warnings = [*collect_upload_warnings(tracker, folder_name, track_data), *long_paths]
     if not warnings:
         limit = MAX_PATH_LENGTH.get(tracker)
         paths = f"Paths are within {tracker}'s {limit}-character limit" if limit else f"{tracker} sets no path limit"
         return Row(f"rules:{tracker}", label, OK, f"{paths}, and sample rates are standard.")
-    return Row(f"rules:{tracker}", label, WARN, " ".join(warnings[:2]))
+    return Row(f"rules:{tracker}", label, WARN, " ".join(warnings[:2]), _notes(warnings))
 
 
 def do_not_upload_row(tracker: str, reason: str | None) -> Row:
@@ -456,7 +524,8 @@ async def run_checks(
             continue
         raw[spec.id] = await spec.run(path)
         verdict, detail = spec.verdict(raw[spec.id], ctx)
-        rows.append(Row(spec.id, spec.label, verdict, detail))
+        notes = _notes(spec.notes(raw[spec.id])) if spec.notes else ()
+        rows.append(Row(spec.id, spec.label, verdict, detail, notes))
 
     if trackers:
         identity = await asyncio.to_thread(_release_identity, path)
