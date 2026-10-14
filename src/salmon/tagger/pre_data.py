@@ -194,11 +194,7 @@ def parse_artists(artist_list):
 
 
 def _extract_feat(artist):
-    """Split a `feat.` credit off an artist string, returning (guests, rest).
-
-    The guests run to the closing bracket that matches the one opening the credit, or to the end of
-    the string for a bare `feat.`. Brackets inside the guests, such as a Discogs `(27)`, stay balanced.
-    """
+    """Split a `feat.` credit off an artist string as (guests, rest); guests end at the bracket closing the credit's."""
     feat = _RE_FEAT_START.search(artist)
     if not feat:
         return "", artist

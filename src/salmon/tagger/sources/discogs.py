@@ -150,11 +150,7 @@ def parse_artists(artist_soup, track):
 
 
 def parse_credits(artist_soup, track):
-    """
-    Generate the artists list of a track and, beside it, the name each artist is
-    credited under on this release when that differs from the main Discogs name
-    (the ANV): `[{"name": ..., "role": ..., "anv": ...}]`, plain data that survives JSON.
-    """
+    """A track's artists, and the name (ANV) each is credited under here when not its main one, as plain dicts."""
     credits = track["artists"] if "artists" in track else [art for art in artist_soup if art["name"] != "Various"]
     artists, variations = _credited_artists(credits)
     if "extraartists" in track:

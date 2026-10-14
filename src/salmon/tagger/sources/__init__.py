@@ -27,9 +27,7 @@ METASOURCES = {
 
 
 def _without_artist_variations(metadata: dict[str, Any]) -> dict[str, Any]:
-    """Drop what a scraper keeps beside each track for the merge with file tags (Discogs ANVs).
-
-    Whoever shows or uses a scrape on its own has no tags to match, so it should not see it either."""
+    """Drop the Discogs ANVs a scraper keeps for the merge with file tags; a scrape used alone has no tags to match."""
     for disc in metadata["tracks"].values():
         for track in disc.values():
             track.pop("artist_variations", None)
