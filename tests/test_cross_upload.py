@@ -1059,8 +1059,11 @@ def test_red_images_for_dic_are_fetched_with_reds_image_cookies_and_the_signatur
     assert "2 image GET and 1 index GET to RED" in run.output
     assert IMGAUTH["imgauth_h"] not in run.output
     # Only the images get them: no request to DIC, and no other request to RED.
-    assert not any("imgauth" in sent.cookie_header for sent in run.target.sent)
-    assert not any("imgauth" in sent.cookie_header for sent in run.source.sent if not sent.path.startswith("/i/"))
+    to_dic = run.target.sent
+    other_red = [sent for sent in run.source.sent if not sent.path.startswith("/i/")]
+    assert "/upload.php" in {sent.path for sent in to_dic}
+    assert "/ajax.php" in {sent.path for sent in other_red}
+    assert not any("imgauth" in sent.cookie_header for sent in to_dic + other_red)
 
 
 def test_red_images_for_dic_without_reds_session_cookie_are_refused_before_any_target_request(
