@@ -1,9 +1,4 @@
-"""Every prompt a web job can reach goes through the bridge salmon web installs, and none is bound where it misses.
-
-install_interaction_patches replaces asyncclick's prompt functions and a few of salmon's own on their modules. A
-name bound by value anywhere else keeps the original, and a web job asking through it would wait on the server's
-stdin for good.
-"""
+"""Every prompt a web job can reach goes through the bridge salmon web installs, and none is bound where it misses."""
 
 import ast
 from collections.abc import Iterator
