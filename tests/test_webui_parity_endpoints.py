@@ -8,11 +8,10 @@ import os
 import time
 
 import pytest
-from fastapi.testclient import TestClient
+from webui_client import web_client  # pyright: ignore[reportMissingImports]
 
 import salmon.trackers
 from salmon import cfg
-from salmon.webui.app import create_app
 from salmon.webui.jobs import manager
 
 
@@ -25,7 +24,7 @@ def _clean():
 
 @pytest.fixture
 def client():
-    with TestClient(create_app(), base_url="http://localhost") as c:
+    with web_client() as c:
         yield c
 
 
@@ -147,7 +146,7 @@ def test_every_cli_command_has_a_web_equivalent() -> None:
     Reads the OpenAPI schema rather than probing HTTP: the SPA catch-all serves
     index.html for unknown /api paths, so a 404 probe cannot detect a missing route.
     """
-    with TestClient(create_app(dev=True), base_url="http://localhost") as dev:
+    with web_client(dev=True) as dev:
         paths = set(dev.get("/api/openapi.json").json()["paths"])
 
     for path in (

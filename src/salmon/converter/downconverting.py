@@ -12,7 +12,7 @@ import msgspec
 from salmon import cfg
 from salmon.common.constants import IMAGE_EXTENSIONS, LOSSY_EXTENSIONS
 from salmon.common.files import process_files
-from salmon.converter.conversions import record_conversion
+from salmon.converter.conversions import conversion_of, record_conversion
 from salmon.errors import InvalidSampleRate, UploadError
 from salmon.release_notification import upload_footer
 from salmon.tagger.audio_info import gather_audio_info
@@ -262,6 +262,24 @@ async def _convert_audio_files(
 # ---------------------------------------------------------------------------
 
 
+def _recorded_rate(items: list[ConvertItem]) -> int | list[int]:
+    """The target sample rate as a conversion record holds it: the one rate, or each rate in order."""
+    rates = sorted({item.target_rate for item in items})
+    return rates[0] if len(rates) == 1 else rates
+
+
+def _is_finished_conversion(path: str, new_path: str, items: list[ConvertItem], bit_depth: BitDepth) -> bool:
+    """Whether new_path holds every converted file and a record, written after the last, of this conversion of path."""
+    if not all(os.path.isfile(item.dst) for item in items):
+        return False
+    record = conversion_of(new_path)
+    if record is None or os.path.realpath(record["source"]) != os.path.realpath(path):
+        return False
+    # The name alone can match: a 16-bit conversion at 44.1 kHz and at 48 kHz can share one.
+    wanted = {"kind": "downconvert", "bit_depth": bit_depth, "sample_rate": _recorded_rate(items)}
+    return all(record.get(key) == value for key, value in wanted.items())
+
+
 async def convert_folder(
     path: str,
     bit_depth: BitDepth = 16,
@@ -288,24 +306,25 @@ async def convert_folder(
     if cfg.directory.protects(new_path):
         raise UploadError(f"Not converting into {new_path}: it is in library_dirs, or holds one.")
 
+    items = _collect_convert_items(path, new_path, sample_rate)
     if os.path.isdir(new_path):
+        # Never removed: unlike a transcode's, this name can belong to a folder the user made.
+        if items and not _is_finished_conversion(path, new_path, items, bit_depth):
+            raise UploadError(
+                f"{new_path} is incomplete or not salmon's conversion of this album at these settings: "
+                "remove it and run again."
+            )
         click.secho(f"{new_path} already exists.", fg="yellow")
         return sample_rate, new_path
 
-    items = _collect_convert_items(path, new_path, sample_rate)
     convert_srcs = frozenset(item.src for item in items)
     _copy_extra_files(path, new_path, convert_srcs, essential_only=essential_only)
     await _convert_audio_files(items, bit_depth)
 
     final_rate = items[-1].target_rate if items else None
-    target_rates = sorted({item.target_rate for item in items})
     if items:
         record_conversion(
-            new_path,
-            source=path,
-            kind="downconvert",
-            bit_depth=bit_depth,
-            sample_rate=target_rates[0] if len(target_rates) == 1 else target_rates,
+            new_path, source=path, kind="downconvert", bit_depth=bit_depth, sample_rate=_recorded_rate(items)
         )
     return final_rate or sample_rate, new_path
 

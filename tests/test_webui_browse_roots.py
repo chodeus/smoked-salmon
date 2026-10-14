@@ -3,15 +3,14 @@
 import os
 
 import pytest
-from fastapi.testclient import TestClient
+from webui_client import web_client  # pyright: ignore[reportMissingImports]
 
 from salmon import cfg
-from salmon.webui.app import create_app
 
 
 @pytest.fixture
 def client():
-    with TestClient(create_app(), base_url="http://localhost") as c:
+    with web_client() as c:
         yield c
 
 

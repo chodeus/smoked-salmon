@@ -405,15 +405,21 @@ salmon check all /data/path/to/album --report        # also a report to paste in
 
 `up` already runs all of these as part of an upload. `check all` is for triage: sorting through a library without starting one. `--report` adds what a tracker help thread asks for: the formats, encoder and tag markers, each FLAC's frequency analysis (slow, so only with the report) and every verdict with its notes, naming the album folder and no other path.
 
-To start the web interface:
+To start the web interface on this machine only (it prints a login link):
 ```bash
-salmon web --host 0.0.0.0
+salmon web
 ```
 
 You can get help directly from the CLI by appending --help to any command. This is especially useful for the up command which has a lot of possible options.
 
 ### 🌐 Web Interface
-`salmon web` serves the whole workflow in a browser on port **55155** by default:
+`salmon web` serves the whole workflow in a browser on port **55155** by default. On loopback, with no token set, it prints a login link for that run:
+
+```bash
+salmon web
+```
+
+To reach it from another machine, first set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`) to a long random string you keep, which the login page asks for:
 
 ```bash
 salmon web --host 0.0.0.0
@@ -465,7 +471,7 @@ During an upload the same measurements are printed, and the plots shown, before 
 
 Every page says what it is for under its heading. The Upload page's options carry hover tooltips and an **Explain these options** toggle that shows the same text inline, so the help does not need a mouse. The Dashboard opens with tiles for trackers connected, required tools present and jobs in flight, and shows free space per configured directory — the disk filling up is what stops an upload mid-job.
 
-Because the interface holds your tracker session cookies and can trigger real uploads, protect it with a shared secret whenever it is reachable beyond loopback. Set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`); leaving it unset disables the gate entirely.
+Because the interface holds your tracker session cookies and can trigger real uploads, every request needs a token. Set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`); without one, `salmon web` on loopback makes a token for that run and prints a login link carrying it after the `#`, which the browser never sends, and any other bind refuses to start. A request that changes something must come as JSON from the interface's own host, so a page on another site cannot send one. Everything the interface sends the browser passes one filter that masks every secret the config holds and every authkey and passkey a tracker has sent, and an image upload sends a host only a JPEG, PNG, GIF or WebP image whose first frame decodes, whatever it is named.
 
 > The older standalone spectral viewer still exists for `salmon up`, but it binds loopback inside the process, so publishing port 55110 from a container has no effect — the web interface above supersedes it.
 

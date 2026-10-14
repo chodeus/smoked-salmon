@@ -1536,13 +1536,17 @@ async def execute_downconversion_tasks(
         click.secho(f"\nProcessing: {task['name']}", fg="cyan", bold=True)
 
         if task["action"] == "downconvert":
-            # Execute downconversion
-            sample_rate, new_path = await convert_folder(
-                base_path,
-                bit_depth=task["target_bitdepth"],
-                sample_rate=task["target_sample_rate"],
-                output_dir=output_dir,
-            )
+            try:
+                sample_rate, new_path = await convert_folder(
+                    base_path,
+                    bit_depth=task["target_bitdepth"],
+                    sample_rate=task["target_sample_rate"],
+                    output_dir=output_dir,
+                )
+            except UploadError as e:
+                # This conversion only: the others asked for still go up.
+                click.secho(f"  {e}", fg="red", bold=True)
+                continue
             await anyio.sleep(0.1)
 
             # The upload describes the converted files (their sample rate, for one), not the source's.

@@ -9,6 +9,19 @@ from salmon.errors import GenreNotInWhitelist
 # No-break, en/em/thin/hair, narrow no-break, medium mathematical and ideographic spaces.
 _ODD_SPACES = re.compile("[\u00a0\u1680\u2000-\u200b\u202f\u205f\u3000]")
 
+_RE_NUMBERED_SUFFIX = re.compile(r" \(\d+\)$")
+_RE_NUMBERED_SUFFIXES = re.compile(r" \(\d+\)(?= |$)")
+
+
+def strip_numbered_suffix(name: str) -> str:
+    """Drop the trailing ` (N)` Discogs adds to tell artists of the same name apart."""
+    return _RE_NUMBERED_SUFFIX.sub("", name)
+
+
+def strip_numbered_suffixes(text: str) -> str:
+    """Drop every ` (N)` that ends a word, for tag text that holds several credited names (`A (5) vs. B`)."""
+    return _RE_NUMBERED_SUFFIXES.sub("", text)
+
 
 def plain_spaces(text: str) -> str:
     """Replace unicode space variants, which scraped titles carry into file names, with a plain space."""
@@ -20,6 +33,47 @@ def comparable(text: object) -> str:
     # Trackers send HTML-escaped text ("Collector&#39;s"): unescaped first, or the entity's letters would count.
     plain = unicodedata.normalize("NFKD", html.unescape("" if text is None else str(text))).casefold()
     return "".join(char for char in plain if char.isalnum())
+
+
+# Unicode spaces other than U+0020 and the line and paragraph separators become a space; format and control
+# characters (zero-width ones, the soft hyphen, byte order mark, direction marks, tab, newline) go.
+_REPLACED_CATEGORIES = frozenset({"Zs", "Zl", "Zp"})
+_REMOVED_CATEGORIES = frozenset({"Cf", "Cc"})
+
+
+def invisible_chars(name: str) -> list[str]:
+    """The characters of a name that clean_name changes, each once, as "U+00A0 NO-BREAK SPACE"."""
+    found: dict[str, str] = {}
+    for char in name:
+        category = unicodedata.category(char)
+        if char != " " and (category in _REPLACED_CATEGORIES or category in _REMOVED_CATEGORIES):
+            found.setdefault(char, f"U+{ord(char):04X} {unicodedata.name(char, 'CONTROL CHARACTER')}")
+    return list(found.values())
+
+
+def show_invisible(name: str) -> str:
+    """A name with each character clean_name changes spelled out as <U+00A0>, so it can be seen."""
+    return "".join(f"<U+{ord(c):04X}>" if invisible_chars(c) else c for c in name)
+
+
+def has_visible_chars(name: str) -> bool:
+    """Whether a name keeps a character once the spaces, format and control characters clean_name handles are gone."""
+    return any(
+        unicodedata.category(char) not in _REPLACED_CATEGORIES and unicodedata.category(char) not in _REMOVED_CATEGORIES
+        for char in name
+    )
+
+
+def clean_name(name: str) -> str:
+    """A file or folder name without invisible or odd Unicode characters; as it was if nothing would be left."""
+    chars = []
+    for char in name:
+        category = unicodedata.category(char)
+        if category in _REMOVED_CATEGORIES:
+            continue
+        chars.append(" " if category in _REPLACED_CATEGORIES else char)
+    cleaned = re.sub(r" {2,}", " ", "".join(chars)).strip(" ")
+    return cleaned or name
 
 
 def artist_keys(artists) -> set[str]:

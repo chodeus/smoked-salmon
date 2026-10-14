@@ -8,7 +8,7 @@ from string import Formatter
 import asyncclick as click
 
 from salmon import cfg, dryrun
-from salmon.common import strip_template_keys
+from salmon.common import clean_name, has_visible_chars, strip_template_keys
 from salmon.common.files import rewrite_refusal
 from salmon.common.strings import plain_spaces
 from salmon.constants import (
@@ -53,7 +53,8 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None, original
 
     # A name with a path separator or . / .. would escape the download dir and, via the
     # rmtree below, delete something outside it — reject before building new_path.
-    if os.sep in new_base or (os.altsep and os.altsep in new_base) or new_base in {"", ".", ".."}:
+    invalid = new_base in {"", ".", ".."} or not has_visible_chars(new_base)
+    if os.sep in new_base or (os.altsep and os.altsep in new_base) or invalid:
         raise UploadError(f"Invalid folder name: {new_base!r}")
 
     new_path = os.path.join(parent or cfg.directory.download_directory, new_base)
@@ -234,7 +235,7 @@ def generate_folder_name(metadata):
             template = _strip_blank_resolution(template) if k == "resolution" else strip_template_keys(template, k)
             keys.remove(k)
     sub_metadata = _fix_format(metadata, keys)
-    return template.format(**{k: _sub_illegal_characters(sub_metadata[k]) for k in keys})
+    return clean_name(template.format(**{k: _sub_illegal_characters(sub_metadata[k]) for k in keys}))
 
 
 def _strip_blank_resolution(template):
@@ -322,6 +323,6 @@ def _edit_folder_interactive(foldername, auto_rename):
                 ):
                     sys.exit(1)
             else:
-                return newname.strip().replace("\n", "")
+                return clean_name(newname.replace("\n", ""))
             newname = click.edit(foldername, editor=cfg.upload.default_editor)
     return foldername
