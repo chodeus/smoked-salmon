@@ -9,6 +9,19 @@ from salmon.errors import GenreNotInWhitelist
 # No-break, en/em/thin/hair, narrow no-break, medium mathematical and ideographic spaces.
 _ODD_SPACES = re.compile("[\u00a0\u1680\u2000-\u200b\u202f\u205f\u3000]")
 
+_RE_NUMBERED_SUFFIX = re.compile(r" \(\d+\)$")
+_RE_NUMBERED_SUFFIXES = re.compile(r" \(\d+\)(?= |$)")
+
+
+def strip_numbered_suffix(name: str) -> str:
+    """Drop the trailing ` (N)` Discogs adds to tell artists of the same name apart."""
+    return _RE_NUMBERED_SUFFIX.sub("", name)
+
+
+def strip_numbered_suffixes(text: str) -> str:
+    """Drop every ` (N)` that ends a word, for tag text that holds several credited names (`A (5) vs. B`)."""
+    return _RE_NUMBERED_SUFFIXES.sub("", text)
+
 
 def plain_spaces(text: str) -> str:
     """Replace unicode space variants, which scraped titles carry into file names, with a plain space."""
