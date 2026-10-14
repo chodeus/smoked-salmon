@@ -1,8 +1,4 @@
-"""Whether a file is an image, judged by what is in it and never by its name.
-
-Image hosts are public. What salmon web sends them must be an image and nothing else: a ``.torrent`` carries the
-passkey in its announce URL, a log or a cue sheet names the user's files, and any of them can be called ``cover.jpg``.
-"""
+"""Whether a file is an image, judged by its content and never by its name."""
 
 import os
 from typing import Final
@@ -22,19 +18,7 @@ class NotAnImage(ValueError):
 
 
 def check_image(path: str) -> str:
-    """Check that the file at `path` is a whole JPEG, PNG, GIF or WebP image, whatever its name says.
-
-    The file is opened, its type read from its content and decoded to the end, so a truncated or corrupt image is
-    refused as well as a file of another kind.
-
-    Returns:
-        The image's format as Pillow names it: "JPEG" (or "MPO"), "PNG", "GIF" or "WEBP".
-
-    Raises:
-        NotAnImage: The file is empty or too big, is not an image of one of those formats, is too large to decode, or
-            is cut short or corrupt.
-        OSError: The file cannot be read.
-    """
+    """Return the Pillow format; raise NotAnImage unless it is a JPEG, PNG, GIF or WebP whose first frame decodes."""
     size = os.stat(path).st_size
     if size == 0:
         raise NotAnImage("it is empty")
