@@ -120,7 +120,7 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None, original
         # folder, as a case-only rename still renames salmon's folder outside it.
         _move_specs_folder(specs_path, get_spectrals_path(new_path))
 
-    if not same_folder and cfg.upload.formatting.remove_source_dir:
+    if (not same_folder or original is not None) and cfg.upload.formatting.remove_source_dir:
         if original is not None:
             # path is the run's copy, removed with its run directory.
             click.secho(f"remove_source_dir is on, but {original} is kept: {_kept_reason(original)}.", fg="yellow")

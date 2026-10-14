@@ -40,9 +40,14 @@ def _album(folder: Path) -> Path:
     return folder
 
 
-def _rename(path: Path, original: Path | None = None) -> str:
+def _rename(path: Path, original: Path | None = None, parent: Path | None = None) -> str:
     return foldername.rename_folder(
-        str(path), METADATA, auto_rename=True, check=False, original=str(original) if original else None
+        str(path),
+        METADATA,
+        auto_rename=True,
+        check=False,
+        parent=str(parent) if parent else None,
+        original=str(original) if original else None,
     )
 
 
@@ -84,6 +89,22 @@ def test_a_dry_run_copy_keeps_its_source_and_says_why(dirs, capsys) -> None:
     out = capsys.readouterr().out
     assert f"remove_source_dir is on, but {original} is kept: a dry run works on a copy and changes nothing." in out
     assert (original / "01 - one.flac").exists()
+
+
+def test_a_copy_already_under_its_new_name_still_says_its_source_is_kept(dirs, tmp_path, capsys) -> None:
+    _downloads, seeding = dirs
+    original = _album(seeding / "Album")
+    run_dir = tmp_path / "run"
+    staged = _album(run_dir / NEW_NAME)
+
+    with dryrun.mode():
+        new_path = _rename(staged, original, parent=run_dir)
+
+    out = capsys.readouterr().out
+    assert new_path == str(staged)
+    assert f"remove_source_dir is on, but {original} is kept: a dry run works on a copy and changes nothing." in out
+    assert (original / "01 - one.flac").exists()
+    assert (staged / "01 - one.flac").exists()
 
 
 def test_a_skip_flac_copy_keeps_its_source_and_says_why(dirs, capsys) -> None:

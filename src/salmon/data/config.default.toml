@@ -66,10 +66,8 @@ ra_key = 'api_key'
 # the front cover as a file. Set to true to also embed that cover into FLACs carrying none, resized to fit.
 # auto_compress_cover = false
 
-# Per-tracker overrides (optional), kept last: an [image.<tracker>] header takes every setting below it.
-# Unset keys fall back to [image].
-# A tracker's image_uploader is also the default host of `salmon images up -t <tracker>`.
-# RED→OPS cross-uploads keep RED-hosted images as they are (OPS proxies and caches them).
+# Per-tracker overrides, kept last: an [image.<tracker>] header takes every setting below it; unset keys use [image].
+# A tracker's image_uploader is the default of `salmon images up -t <tracker>`; RED→OPS cross-uploads keep RED's images.
 # [image.red]
 # cover_uploader = "red"      # send RED covers to RED's own host
 # [image.ops]
@@ -212,9 +210,8 @@ session = 'get-from-site-cookie'
 # # {resolution}: "24-96" / "16-48" for lossless that is not 16/44.1 (blank otherwise); pair it with
 # # {source}, e.g. "[{source} FLAC {resolution}]", not {format}, which already says "24bit FLAC"
 # file_template = "{tracknumber}. {artist} - {title}"
-# # true removes the source folder once it has been copied or hardlinked to its new name in download_directory.
-# # It never applies to a folder salmon will not change (in library_dirs, holding one, or sharing its files
-# # through a link) or to a run that works on a copy (--skip-flac-upload, --dry-run); salmon says when it keeps one.
+# # true removes the source folder once it is copied or hardlinked under its new name. salmon says when it keeps
+# # one: in library_dirs, holding one, sharing files by link, or the source of a --dry-run or --skip-flac-upload.
 # remove_source_dir = false
 # split_multi_disc_into_folders = true
 
