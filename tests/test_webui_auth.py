@@ -8,9 +8,16 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 from webui_client import WEB_TOKEN, web_client  # pyright: ignore[reportMissingImports]
 
+from salmon import cfg
 from salmon.webui import web
 from salmon.webui.app import create_app
 from salmon.webui.jobs import manager
+
+
+def _no_configured_token(monkeypatch) -> None:
+    """Neither token source set, whatever the machine running the tests has configured."""
+    monkeypatch.delenv("SALMON_WEB_TOKEN", raising=False)
+    monkeypatch.setattr(cfg.upload.web_interface, "auth_token", None)
 
 
 def _clean():
@@ -19,8 +26,9 @@ def _clean():
     manager._active_lock_keys.clear()
 
 
-def test_an_app_without_a_token_refuses_every_api_request():
+def test_an_app_without_a_token_refuses_every_api_request(monkeypatch):
     _clean()
+    _no_configured_token(monkeypatch)
     with TestClient(create_app(auth_token=None), base_url="http://localhost") as c:
         answer = c.get("/api/jobs")
         assert answer.status_code == 503
@@ -162,7 +170,7 @@ def serve_nothing(monkeypatch: pytest.MonkeyPatch) -> list:
         apps.append(self.config.app)
 
     monkeypatch.setattr(uvicorn.Server, "serve", serve)
-    monkeypatch.delenv("SALMON_WEB_TOKEN", raising=False)
+    _no_configured_token(monkeypatch)
     return apps
 
 
@@ -204,3 +212,17 @@ def test_a_preflight_from_another_site_is_refused():
         )
     assert refused.status_code == 403
     assert dev_server.status_code == 200
+
+
+def test_a_dev_preflight_from_another_host_is_refused_before_cors_answers_it():
+    _clean()
+    with web_client(dev=True) as c:
+        preflight = c.options(
+            "/api/jobs",
+            headers={
+                "Host": "127.0.0.1:55155",
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+    assert preflight.status_code == 403
