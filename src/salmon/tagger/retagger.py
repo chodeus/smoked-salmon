@@ -12,7 +12,7 @@ import asyncclick as click
 import msgspec
 
 from salmon import cfg
-from salmon.common.strings import plain_spaces
+from salmon.common.strings import clean_name
 from salmon.constants import (
     ARROWS,
     BLACKLISTED_CHARS,
@@ -576,11 +576,13 @@ def generate_file_name(tags, ext, multiple_artists, trackno_or=None, track_digit
             template_keys["artist"] = cfg.upload.formatting.various_artist_word
     if "tracknumber" in keys and trackno_or is not None:
         template_keys["tracknumber"] = trackno_or
-    new_base = template.format(**template_keys) + ext
+    new_base = template.format(**template_keys)
     if cfg.upload.description.fullwidth_replacements:
         for char, sub in BLACKLISTED_FULLWIDTH_REPLACEMENTS.items():
             new_base = new_base.replace(char, sub)
-    return re.sub(BLACKLISTED_CHARS, cfg.upload.formatting.blacklisted_substitution, plain_spaces(new_base))
+    new_base = re.sub(BLACKLISTED_CHARS, cfg.upload.formatting.blacklisted_substitution, new_base)
+    # Cleaned before the extension is added, so a space left at the end of the name does not sit before the dot.
+    return clean_name(new_base) + ext
 
 
 def _parse_integer(value, width=2):

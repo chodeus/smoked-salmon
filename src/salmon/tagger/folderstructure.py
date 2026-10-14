@@ -4,6 +4,7 @@ from pathlib import Path
 
 import asyncclick as click
 
+from salmon.common import clean_name, invisible_chars, show_invisible
 from salmon.constants import ALLOWED_EXTENSIONS, ESSENTIAL_EXTENSIONS
 from salmon.errors import NoncompliantFolderStructure
 from salmon.tagger.mutation import rename_all_or_none
@@ -34,6 +35,7 @@ async def check_folder_structure(
         click.secho("\nChecking folder structure...", fg="cyan", bold=True)
         try:
             await _check_illegal_folders(path)
+            _check_invisible_characters(path, scene)
             _check_path_lengths(path, scene, max_path_length)
             _check_zero_len_folder(path)
             await _check_extensions(path, scene, essential_only=essential_only)
@@ -89,6 +91,57 @@ async def _check_illegal_folders(path: str) -> None:
                         raise click.Abort
                     elif resp[0] == "c":
                         break
+
+
+def _check_invisible_characters(path: str, scene: bool) -> None:
+    """Rename, once the user agrees, the sub-folders and files whose names hold characters a tracker refuses.
+
+    A scene release is only reported (NoncompliantFolderStructure); the release folder's own name is left to
+    rename_folder, which cleans the names it builds, and a run that kept it aborts.
+    """
+    folder_name = os.path.basename(os.path.normpath(path))
+    offending: list[tuple[str, str, list[str]]] = []
+    # Deepest first, so a file is renamed before the folder that holds it.
+    for root, dirs, files in os.walk(path, topdown=False):
+        for name in [*files, *dirs]:
+            if chars := invisible_chars(name):
+                shown = os.path.normpath(os.path.join(folder_name, os.path.relpath(root, path), name))
+                offending.append((os.path.join(root, name), shown, chars))
+    root_chars = invisible_chars(folder_name)
+    if not offending and not root_chars:
+        return
+
+    click.secho("The following names hold invisible or unusual Unicode characters:", fg="red", bold=True)
+    listing = [(shown, chars) for _, shown, chars in offending]
+    if root_chars:
+        listing.append((folder_name, root_chars))
+    for shown, chars in listing:
+        click.echo(f" >> {show_invisible(shown)}")
+        for char in chars:
+            click.echo(f"      {char}")
+    if scene:
+        raise NoncompliantFolderStructure
+    if root_chars:
+        click.secho(
+            "The release folder's own name cannot be renamed here. Run again and accept the proposed folder name.",
+            fg="red",
+            bold=True,
+        )
+        raise click.Abort
+
+    renames = [(old, os.path.join(os.path.dirname(old), clean_name(os.path.basename(old)))) for old, _, _ in offending]
+    taken: set[str] = set()
+    for old, new in renames:
+        if new == old:
+            click.secho(f"Cannot rename {old}: nothing would be left of its name.", fg="red", bold=True)
+            raise NoncompliantFolderStructure
+        if os.path.lexists(new) or new in taken:
+            click.secho(f"Cannot rename {old}: {new} already exists.", fg="red", bold=True)
+            raise NoncompliantFolderStructure
+        taken.add(new)
+    if not click.confirm(click.style("Rename them to the names without those characters?", fg="magenta"), default=True):
+        raise NoncompliantFolderStructure
+    rename_all_or_none(renames)
 
 
 def _check_path_lengths(path: str, scene: bool, max_path_length: int | None = None) -> None:

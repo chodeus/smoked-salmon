@@ -8,7 +8,7 @@ from string import Formatter
 import asyncclick as click
 
 from salmon import cfg
-from salmon.common import strip_template_keys
+from salmon.common import clean_name, strip_template_keys
 from salmon.common.files import rewrite_refusal
 from salmon.common.strings import plain_spaces
 from salmon.constants import (
@@ -220,7 +220,7 @@ def generate_folder_name(metadata):
             template = _strip_blank_resolution(template) if k == "resolution" else strip_template_keys(template, k)
             keys.remove(k)
     sub_metadata = _fix_format(metadata, keys)
-    return template.format(**{k: _sub_illegal_characters(sub_metadata[k]) for k in keys})
+    return clean_name(template.format(**{k: _sub_illegal_characters(sub_metadata[k]) for k in keys}))
 
 
 def _strip_blank_resolution(template):
@@ -308,6 +308,6 @@ def _edit_folder_interactive(foldername, auto_rename):
                 ):
                     sys.exit(1)
             else:
-                return newname.strip().replace("\n", "")
+                return clean_name(newname.replace("\n", ""))
             newname = click.edit(foldername, editor=cfg.upload.default_editor)
     return foldername
