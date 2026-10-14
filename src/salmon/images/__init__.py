@@ -23,6 +23,9 @@ HOSTS = {
 # How many uploads to one image host a batch runs at once; a host with a shared session reuses its connections.
 UPLOAD_CONNECTIONS = 8
 
+# The answer to the retry question that goes on without the spectrals that failed.
+SKIP = "skip"
+
 
 class ImageHostRefused(ValueError):
     """An image host may not be used for a tracker's images; the message says why."""
@@ -244,20 +247,24 @@ async def _handle_failed_spectrals(spectrals, successful) -> dict:
         successful: Set of already successful spec_ids.
 
     Returns:
-        Dictionary of uploaded URLs.
+        Dictionary of the URLs of the spectrals uploaded from here on: none on "skip".
     """
     spec_hosts = {k: v for k, v in HOSTS.items() if spectrals_refusal(k) is None}
     while True:
         host_input: str = await click.prompt(
             click.style(
                 "Some spectrals failed to upload. Which image host would you like to retry "
-                f"with? (Options: {', '.join(spec_hosts)})",
+                f"with, or {SKIP} to go on without them? (Options: {', '.join(spec_hosts)}, {SKIP})",
                 fg="magenta",
                 bold=True,
             ),
             default="catbox",
         )
         host = host_input.lower()
+        if host == SKIP:
+            left_out = [filename for sid, filename, _ in spectrals if sid not in successful]
+            click.secho(f"Going on without the spectrals of: {', '.join(left_out)}.", fg="yellow")
+            return {}
         if (reason := spectrals_refusal(host)) is not None:
             click.secho(f"{host} can't be used for spectrals: {reason}.", fg="red")
         elif host not in spec_hosts:
