@@ -39,20 +39,12 @@ dottorrents_dir = '.torrents'
 # Image hosters: ptscreens, oeimg, imgbb, catbox, imgbox, ra, red
 # catbox and imgbox need no API key.
 # ra (thesungod.xyz) is invite-only but images it hosts are public; it cannot be used as specs_uploader.
-# red = RED's own host (uses tracker.red.api_key, else the session), for album artwork only: opt in under
+# red is RED's own host (uses tracker.red.api_key, else the session), for album artwork only: opt in under
 # [image.red]; anywhere else ("red" for description images, spectrals, OPS/DIC) is refused.
 [image]
 image_uploader = "catbox"
 cover_uploader = "catbox"
 specs_uploader = "catbox"
-
-# Per-tracker overrides (optional); unset keys fall back to [image].
-# A tracker's image_uploader is also the default host of `salmon images up -t <tracker>`.
-# RED→OPS cross-uploads keep RED-hosted images as they are (OPS proxies and caches them).
-# [image.red]
-# cover_uploader = "red"      # send RED covers to RED's own host
-# [image.ops]
-# cover_uploader = "imgbox"
 
 # Default selection for "What spectral IDs would you like to upload?" prompt.
 # "*" = all, "+" = randomized selection, "0" = none. Leave unset to use context-based default.
@@ -73,6 +65,15 @@ ra_key = 'api_key'
 # Before a non-scene upload, FLACs whose pictures plus padding exceed 1 MiB (a trump reason) lose them, keeping
 # the front cover as a file. Set to true to also embed that cover into FLACs carrying none, resized to fit.
 # auto_compress_cover = false
+
+# Per-tracker overrides (optional), kept last: an [image.<tracker>] header takes every setting below it.
+# Unset keys fall back to [image].
+# A tracker's image_uploader is also the default host of `salmon images up -t <tracker>`.
+# RED→OPS cross-uploads keep RED-hosted images as they are (OPS proxies and caches them).
+# [image.red]
+# cover_uploader = "red"      # send RED covers to RED's own host
+# [image.ops]
+# cover_uploader = "imgbox"
 
 # ===============================
 # METADATA SERVICES
@@ -100,7 +101,7 @@ discogs_token = 'discogs-token'
 app_id = 'app-id'
 user_auth_token = 'user_auth_token'
 # if you are using salmon from a non-english country, set this to true to avoid retrieving non-english genres
-# no_genres_from_qobuz = False
+# no_genres_from_qobuz = false
 
 # remove if not using beatport
 [metadata.beatport]
@@ -207,6 +208,9 @@ session = 'get-from-site-cookie'
 # # {resolution}: "24-96" / "16-48" for lossless that is not 16/44.1 (blank otherwise); pair it with
 # # {source}, e.g. "[{source} FLAC {resolution}]", not {format}, which already says "24bit FLAC"
 # file_template = "{tracknumber}. {artist} - {title}"
+# # true removes the source folder once it has been copied or hardlinked to its new name in download_directory.
+# # It never applies to an album in library_dirs, or to a run that works on a copy (--skip-flac-upload,
+# # --dry-run), and salmon says so when it keeps the folder.
 # remove_source_dir = false
 # split_multi_disc_into_folders = true
 

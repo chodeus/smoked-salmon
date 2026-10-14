@@ -7,7 +7,7 @@ from string import Formatter
 
 import asyncclick as click
 
-from salmon import cfg
+from salmon import cfg, dryrun
 from salmon.common import strip_template_keys
 from salmon.common.files import rewrite_refusal
 from salmon.common.strings import plain_spaces
@@ -20,7 +20,7 @@ from salmon.errors import UploadError
 from salmon.tagger.audio_info import gather_audio_info
 
 
-def rename_folder(path, metadata, auto_rename, check=True, parent=None):
+def rename_folder(path, metadata, auto_rename, check=True, parent=None, original=None):
     """
     Create a revised folder name from the new metadata and present it to the
     user. Have them decide whether or not to accept the folder name.
@@ -29,6 +29,7 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
     For scene releases, the name of the original folder is kept untouched, and
     the folder is copied to the download folder.
     `parent` replaces the download folder as the directory the renamed folder goes into.
+    `original` is the folder the user gave, when `path` is the run's copy of it: that one is kept, and the run says why.
     """
     old_base = os.path.basename(path)
     template_fields = {name for _, name, _, _ in Formatter().parse(cfg.upload.formatting.folder_template) if name}
@@ -119,12 +120,25 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
         _move_specs_folder(specs_path, get_spectrals_path(new_path))
 
     if not same_folder and cfg.upload.formatting.remove_source_dir:
-        if in_library:
+        if original is not None:
+            # path is the run's copy, removed with its run directory.
+            click.secho(f"remove_source_dir is on, but {original} is kept: {_kept_reason(original)}.", fg="yellow")
+        elif in_library:
             click.secho(f"Not removing {path}: it is in library_dirs, or holds one.", fg="yellow")
         else:
             shutil.rmtree(path)
+            click.secho(f"Removed the source folder {path} (remove_source_dir).", fg="yellow")
     carry_conversion(path, new_path)
     return new_path
+
+
+def _kept_reason(original: str) -> str:
+    """Why a run that worked on a copy of `original` leaves it where it is."""
+    if (reason := rewrite_refusal(original)) is not None:
+        return f"{reason}, and salmon never changes such a folder"
+    if dryrun.active():
+        return "a dry run works on a copy and changes nothing"
+    return "--skip-flac-upload works on a copy"
 
 
 def _is_direct_child(child: str, parent: str) -> bool:

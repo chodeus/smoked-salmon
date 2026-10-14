@@ -781,6 +781,7 @@ async def _upload_staged(
             ),
             rename_into=rename_into,
             max_path_length=run_path_limit,
+            original=kept_source,
         )
 
         # Before the first tracker's group, cover and upload; spectrals go once for the run, so with a follower.
@@ -1084,6 +1085,7 @@ async def edit_metadata(
     rls_type_hint: str | None = None,
     rename_into: str | None = None,
     max_path_length: int | None = None,
+    original: str | None = None,
 ) -> tuple[str, dict[str, Any], dict[str, "TagFile"], dict[str, dict[str, Any]]]:
     """Edit release metadata in an interactive loop until the user confirms.
 
@@ -1105,6 +1107,7 @@ async def edit_metadata(
         apply_ai_suggestions: Automatically apply AI review suggestions when present.
         rename_into: Directory the renamed folder goes into instead of download_directory.
         max_path_length: The run's path limit, which the folder is checked against.
+        original: The folder the user gave, when path is the run's copy of it: the rename says why it is kept.
 
     Returns:
         A tuple of (path, metadata, tags, audio_info) after editing is complete.
@@ -1136,7 +1139,10 @@ async def edit_metadata(
                 await recompress_path(path)
             except UploadError as e:
                 raise UploadError(f"{e} Rerun without -c.") from e
-        path = rename_folder(path, metadata, auto_rename, parent=rename_into)
+        renamed = rename_folder(path, metadata, auto_rename, parent=rename_into, original=original)
+        if renamed != path:
+            original = None  # A second pass renames the folder this one made, which is no copy.
+        path = renamed
         if not metadata["scene"]:
             rename_files(path, tags, metadata, auto_rename, spectral_ids, source)
         await check_folder_structure(
