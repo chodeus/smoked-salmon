@@ -33,7 +33,7 @@ def _log_paths(path: str) -> list[str]:
     )
 
 
-def _in_album(text: str, path: str) -> str:
+def in_album(text: str, path: str) -> str:
     """text, naming files from the album folder instead of from its parent."""
     return text.replace(os.path.dirname(os.path.normpath(path)) + os.sep, "")
 
@@ -55,9 +55,9 @@ async def _log(logpath: str, path: str) -> dict:
     except CRCMismatchError:
         return result | {"crcs": "mismatch", "crcs_detail": ""}
     except LogCheckSkipped as e:
-        return result | {"crcs": "skipped", "crcs_detail": _in_album(str(e), path)}
+        return result | {"crcs": "skipped", "crcs_detail": in_album(str(e), path)}
     except Exception as e:
-        return result | {"crcs": "error", "crcs_detail": _in_album(str(e), path)}
+        return result | {"crcs": "error", "crcs_detail": in_album(str(e), path)}
     return result | {"crcs": "match", "crcs_detail": ""}
 
 

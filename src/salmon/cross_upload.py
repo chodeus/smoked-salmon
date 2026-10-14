@@ -12,6 +12,7 @@ import html
 import os
 import re
 import unicodedata
+from collections.abc import Iterable
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,7 +31,7 @@ from salmon import cfg, dryrun
 from salmon.checks.do_not_upload import Candidate, do_not_upload_reason
 from salmon.checks.high_rate import sixteen_bit_notice
 from salmon.checks.tag_rules import SIXTEEN_BIT_ABOVE_48KHZ, path_limit_for
-from salmon.common import commandgroup
+from salmon.common import commandgroup, invisible_chars, show_invisible
 from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
 from salmon.constants import ARTIST_IMPORTANCES, ENCODINGS, FORMATS, SOURCES
 from salmon.errors import (
@@ -428,6 +429,7 @@ async def _prepare(
         raise CrossUploadRefused(reason)
     release.path = _release_path(response, path)
     _verify_release_files(response, release.path, target)
+    _check_invisible_names(release.path, _file_list(response["torrent"]), source)
     # Before anything reads the audio: a file still downloading may not even read as audio.
     await _check_pieces(release, given, source)
     release.tasks = _conversion_tasks(release, transcodes, downconvert, all_formats)
@@ -728,10 +730,37 @@ def _file_list(torrent: dict[str, Any]) -> dict[str, int]:
     """The torrent's files from its fileList, by path in the torrent's folder (NFC), with their size."""
     files: dict[str, int] = {}
     for entry in (torrent.get("fileList") or "").split("|||"):
-        match = _FILE_ENTRY.match(entry.strip())
+        match = _FILE_ENTRY.match(entry)
         if match:
             files[unicodedata.normalize("NFC", html.unescape(match[1]))] = int(match[2])
     return files
+
+
+def _check_invisible_names(folder: Path, files: Iterable[str], source: "BaseGazelleApi") -> None:
+    """Refuse a release whose names hold a character clean_name would change: the source's torrent must be fixed."""
+    offending: list[tuple[str, list[str]]] = []
+    if chars := invisible_chars(folder.name):
+        offending.append((folder.name, chars))
+    seen: set[str] = set()
+    for file in files:
+        parts = file.split("/")
+        for depth in range(1, len(parts) + 1):
+            relative = "/".join(parts[:depth])
+            if relative in seen:
+                continue
+            seen.add(relative)
+            if chars := invisible_chars(parts[depth - 1]):
+                offending.append((f"{folder.name}/{relative}", chars))
+    if not offending:
+        return
+    click.secho("These names hold invisible or unusual Unicode characters:", fg="red", bold=True)
+    for name, chars in offending:
+        click.echo(f" >> {show_invisible(name)}")
+        for char in chars:
+            click.echo(f"      {char}")
+    raise CrossUploadRefused(
+        f"{len(offending)} name(s) hold invisible Unicode characters: fix the torrent on {source.site_string} first"
+    )
 
 
 def _verify_release_files(response: dict[str, Any], folder: Path, target: "BaseGazelleApi") -> None:

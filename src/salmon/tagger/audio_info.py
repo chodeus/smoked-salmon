@@ -18,18 +18,16 @@ def gather_audio_info(path, sort_by_tracknumber=False):
     if not files:
         raise UploadError("No audio files found.")
 
-    audio_info = {}
-    for filename in files:
-        mut = MutagenFile(os.path.join(path, filename))
-        if mut is None:
-            raise UploadError(f"Could not read audio file: {filename}")
-        filepath = os.path.join(path, filename)
-        audio_info[filename] = {
-            **_parse_audio_info(mut.info),
-            "tag size": metadata_size(mut),
-            "id3": has_id3_tag(filepath),
-        }
-    return audio_info
+    return {filename: audio_file_info(path, filename) for filename in files}
+
+
+def audio_file_info(path: str, filename: str) -> dict:
+    """One audio file's technical information; UploadError if mutagen cannot read it."""
+    filepath = os.path.join(path, filename)
+    mut = MutagenFile(filepath)
+    if mut is None:
+        raise UploadError(f"Could not read audio file: {filename}")
+    return {**_parse_audio_info(mut.info), "tag size": metadata_size(mut), "id3": has_id3_tag(filepath)}
 
 
 def has_id3_tag(filepath: str) -> bool:

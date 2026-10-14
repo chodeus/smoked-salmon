@@ -45,9 +45,6 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
         # A LAN bind can be locked to its own hostname(s)/IP via config.
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=configured_hosts)
 
-    # The token gate is the primary protection for a non-loopback bind.
-    app.add_middleware(AuthMiddleware, token=token)
-
     if dev:
         app.add_middleware(
             CORSMiddleware,
@@ -56,6 +53,9 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    # Added last, so outermost: CORS answers a preflight itself, which must not come before the Origin check.
+    app.add_middleware(AuthMiddleware, token=token)
 
     for router in (system, search, browse, spectrals, convert, checks, jobs, upload, tools):
         app.include_router(router.router, prefix="/api")
