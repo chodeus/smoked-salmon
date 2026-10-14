@@ -156,7 +156,8 @@ def test_a_key_is_warned_about_once_per_process(tmp_path: Path, capsys: pytest.C
     capsys.readouterr()
     _parse_config(path)
     _parse_config(path)
-    assert capsys.readouterr().err.count("qwertyuiop") == 1
+    err = capsys.readouterr().err
+    assert err.count("qwertyuiop") == 1
 
 
 def test_shipped_template_has_no_unknown_keys(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

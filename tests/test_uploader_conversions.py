@@ -106,8 +106,11 @@ def test_yyy_makes_only_the_conversions_the_config_names(monkeypatch) -> None:
 def test_yyy_makes_none_when_the_config_is_empty(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cfg.upload, "conversions", [])
 
-    assert _prompt_yyy() == []
-    assert "Selected formats" not in capsys.readouterr().out
+    selected = _prompt_yyy()
+    out = capsys.readouterr().out
+
+    assert selected == []
+    assert "Selected formats" not in out
 
 
 def test_the_option_overrides_the_config(monkeypatch) -> None:
@@ -190,7 +193,8 @@ def test_nothing_is_said_when_nothing_listed_is_excluded(monkeypatch, capsys) ->
     # 24bit is not offered for this release: naming only the kinds that are offered excludes nothing.
     _interactive_choice(monkeypatch, conversions=("16bit", "320", "V0"))
 
-    assert "Not selected by default" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Not selected by default" not in out
 
 
 def test_an_excluded_format_can_still_be_picked_by_number(monkeypatch) -> None:

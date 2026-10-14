@@ -59,7 +59,8 @@ def test_a_removed_source_folder_is_said(dirs, capsys) -> None:
 
     assert not album.exists()
     assert (Path(new_path) / "01 - one.flac").read_bytes() == b"one"
-    assert f"Removed the source folder {album} (remove_source_dir)." in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert f"Removed the source folder {album} (remove_source_dir)." in out
 
 
 def test_a_library_album_kept_is_said(monkeypatch, dirs, tmp_path, capsys) -> None:
