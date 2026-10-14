@@ -1,5 +1,5 @@
 import os
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Annotated, Literal
 
 import msgspec
@@ -377,6 +377,25 @@ class UploadAiReview(BaseStruct):
             raise ValueError("upload.ai_review.api_key must be set when AI review is enabled")
 
 
+# The conversions salmon up offers after a FLAC, by a name that holds whatever the release's rates are.
+CONVERSION_KINDS = ("24bit", "16bit", "320", "V0")
+
+
+def canonical_conversions(values: Iterable[str]) -> tuple[str, ...]:
+    """The conversion kinds named, in canonical case and the order given; ValueError for another, or one twice."""
+    by_lower = {kind.lower(): kind for kind in CONVERSION_KINDS}
+    allowed = ", ".join(f'"{kind}"' for kind in CONVERSION_KINDS)
+    kinds: list[str] = []
+    for value in values:
+        kind = by_lower.get(value.strip().lower()) if isinstance(value, str) else None
+        if kind is None:
+            raise ValueError(f"{value!r} is not a conversion; the choices are {allowed}")
+        if kind in kinds:
+            raise ValueError(f"{kind!r} is named twice")
+        kinds.append(kind)
+    return tuple(kinds)
+
+
 class Upload(BaseStruct):
     simultaneous_threads: int = 3
     user_agent: str = "salmon uploading tools"
@@ -401,6 +420,10 @@ class Upload(BaseStruct):
 
     yes_all: bool = False
 
+    # The conversions salmon up selects by default after a FLAC (and makes under -yyy): "24bit", "16bit", "320",
+    # "V0". [] makes none. Every possible one is still offered at the prompt. Stored in canonical case.
+    conversions: list[str] = msgspec.field(default_factory=lambda: list(CONVERSION_KINDS))
+
     upload_to_seedbox: bool = True
 
     # Normalize file names in generated .torrent files: "" or "none" (default) keeps them as on disk.
@@ -423,6 +446,10 @@ class Upload(BaseStruct):
                 "upload.torrent_name_normalization must be one of "
                 f"{valid_normalizations}, got {self.torrent_name_normalization!r}"
             )
+        try:
+            self.conversions = list(canonical_conversions(self.conversions))
+        except ValueError as e:
+            raise ValueError(f"upload.conversions: {e}") from None
 
 
 class Cfg(BaseStruct):

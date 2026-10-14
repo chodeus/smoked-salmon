@@ -766,3 +766,18 @@ def test_each_upload_writes_into_its_own_scratch_directory_for_as_long_as_it_run
     anyio.run(run)
 
     assert seen == {"/scratch/run-a": "/scratch/run-a", "/scratch/run-b": "/scratch/run-b"}
+
+
+def test_a_dry_run_says_it_keeps_the_source_folder_with_remove_source_dir_on(monkeypatch, dirs) -> None:
+    _library, downloads, torrents = dirs
+    album = _album(downloads.parent / "seeding" / "Album")
+    before = _snapshot(album)
+    monkeypatch.setattr(cfg.upload.formatting, "remove_source_dir", True)
+
+    run = _run_up(monkeypatch, album, torrents, args=("--dry-run",))
+
+    assert run.result.exit_code == 0, run.result.output
+    kept = f"remove_source_dir is on, but {album} is kept: a dry run works on a copy and changes nothing."
+    assert kept in run.result.output
+    assert "Removed the source folder" not in run.result.output
+    assert _snapshot(album) == before

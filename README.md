@@ -362,6 +362,15 @@ edition title); if there are several, salmon asks which one (with `-yyy` it stop
 has are flagged as a dupe risk and left out unless you pick them by number. In the web interface this is the
 "Transcodes only" option.
 
+After a FLAC upload, salmon offers its conversions: a 24-bit or 16-bit downconversion, MP3 320 and MP3 V0. To
+choose which are selected by default, and made with `-yyy`, name them in the config (`conversions` under
+`[upload]`) or for one run:
+```bash
+salmon up /data/path/to/album -s WEB -yyy --conversions 16bit
+```
+Give `24bit`, `16bit`, `320` or `V0`, comma-separated, or `none` or `all`. Every conversion that is possible is
+still listed and can be picked by number; the setting only changes the default answer.
+
 To upload a torrent that is on RED, OPS or DIC to another of them, from the files you already have:
 ```bash
 salmon cross-upload 123456 RED OPS
