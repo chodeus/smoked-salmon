@@ -730,17 +730,7 @@ def _file_list(torrent: dict[str, Any]) -> dict[str, int]:
 
 
 def _check_invisible_names(folder: Path, files: Iterable[str], source: "BaseGazelleApi") -> None:
-    """Refuse a release whose folder, sub-folder or file names hold a character `clean_name` would change.
-
-    The files are the ones the client seeds, so nothing is renamed: the torrent has to be fixed on SOURCE.
-
-    Args:
-        folder: The album folder, named as the torrent's folder.
-        files: The torrent's file paths, relative to the album folder.
-
-    Raises:
-        CrossUploadRefused: Listing the names and their characters first.
-    """
+    """Refuse a release whose names hold a character clean_name would change: the source's torrent must be fixed."""
     offending: list[tuple[str, list[str]]] = []
     if chars := invisible_chars(folder.name):
         offending.append((folder.name, chars))

@@ -94,11 +94,7 @@ async def _check_illegal_folders(path: str) -> None:
 
 
 def _check_invisible_characters(path: str, scene: bool) -> None:
-    """Rename, once the user agrees, the sub-folders and files whose names hold characters a tracker refuses.
-
-    A scene release is only reported (NoncompliantFolderStructure); the release folder's own name is left to
-    rename_folder, which cleans the names it builds, and a run that kept it aborts.
-    """
+    """Rename, once the user agrees, the sub-folders and files whose names hold characters a tracker refuses."""
     folder_name = os.path.basename(os.path.normpath(path))
     offending: list[tuple[str, str, list[str]]] = []
     # Deepest first, so a file is renamed before the folder that holds it.
@@ -121,6 +117,7 @@ def _check_invisible_characters(path: str, scene: bool) -> None:
             click.echo(f"      {char}")
     if scene:
         raise NoncompliantFolderStructure
+    # The release folder's own name is rename_folder's: it cleans the names it builds.
     if root_chars:
         click.secho(
             "The release folder's own name cannot be renamed here. Run again and accept the proposed folder name.",
