@@ -106,6 +106,10 @@ def _parse_upload_form(data: dict, soup: BeautifulSoup) -> None:
 
 
 class RedApi(BaseGazelleApi):
+    # RED's image host (/i/) answers only a request with these signed cookies (user id, signature, expiry) beside
+    # the session cookie: neither the API key nor the session cookie alone gets an image.
+    IMAGE_COOKIES = ("imgauth_u", "imgauth_h", "imgauth_e")
+
     def __init__(self):
         self.site_code = "RED"
         self.base_url = "https://redacted.sh"

@@ -115,6 +115,7 @@ class FakeAiohttpResponse:
         self.url = url
         self.headers = headers or {}
         self.history = tuple(history)
+        self.cookies: dict[str, Any] = {}
 
     @property
     def ok(self):
