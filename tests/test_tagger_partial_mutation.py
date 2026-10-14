@@ -142,3 +142,32 @@ def test_a_filesystem_without_hardlinks_aborts_rather_than_racing(tmp_path, monk
 
     assert src.read_text() == "original", "the source must be left alone"
     assert not (tmp_path / "new-a.flac").exists()
+
+
+def test_rename_all_or_none_renames_a_folder_with_what_it_holds(tmp_path):
+    (tmp_path / "Disc 1").mkdir()
+    (tmp_path / "Disc 1" / "01.flac").write_bytes(b"audio")
+
+    rename_all_or_none([(str(tmp_path / "Disc 1"), str(tmp_path / "CD1"))])
+
+    assert (tmp_path / "CD1" / "01.flac").read_bytes() == b"audio"
+    assert not (tmp_path / "Disc 1").exists()
+
+
+@pytest.mark.parametrize("taken", ["empty folder", "folder", "file"])
+def test_a_folder_is_never_renamed_onto_a_name_in_use(tmp_path, capsys, taken: str):
+    (tmp_path / "Disc 1").mkdir()
+    (tmp_path / "Disc 1" / "01.flac").write_bytes(b"audio")
+    if taken == "file":
+        (tmp_path / "CD1").write_bytes(b"theirs")
+    else:
+        (tmp_path / "CD1").mkdir()
+    if taken == "folder":
+        (tmp_path / "CD1" / "notes.txt").write_bytes(b"theirs")
+
+    with pytest.raises(asyncclick.Abort):
+        rename_all_or_none([(str(tmp_path / "Disc 1"), str(tmp_path / "CD1"))])
+
+    assert (tmp_path / "Disc 1" / "01.flac").read_bytes() == b"audio"
+    assert (tmp_path / "CD1").is_dir() == (taken != "file")
+    assert not (tmp_path / "CD1" / "01.flac").exists()
