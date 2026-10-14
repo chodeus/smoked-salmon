@@ -6,6 +6,7 @@ from itertools import chain
 from unidecode import unidecode
 
 from salmon.common import re_strip
+from salmon.common.strings import comparable
 from salmon.errors import TrackCombineError
 from salmon.tagger.sources import METASOURCES
 from salmon.tagger.sources.base import determine_label_type, generate_artists, standardize_genres
@@ -137,6 +138,10 @@ def combine_metadatas(*metadatas, base=None, source_url=None):
     if "url" in base:
         del base["url"]
 
+    for disc in base["tracks"].values():
+        for track in disc.values():
+            track.pop("artist_variations", None)
+
     base["artists"], base["tracks"] = generate_artists(base["tracks"])
     base["genres"] = standardize_genres(base["genres"])
     base["label"] = determine_label_type(base["label"], base["artists"])
@@ -233,18 +238,24 @@ def combine_tracks(base, meta, update_track_numbers):
             ) == re_strip(unidecode(btrack["title"])):
                 btrack["title"] = track["title"]
 
-            base_artists = {(re_strip(a[0]), a[1]) for a in btrack["artists"]}
+            base_artists = {(comparable(a[0]), a[1]) for a in btrack["artists"]}
             btrack["artists"] = list(btrack["artists"])
+            variations = {(v["name"], v["role"]): v["anv"] for v in track.get("artist_variations", [])}
             for a in track["artists"]:
-                if (re_strip(a[0]), a[1]) not in base_artists:
-                    btrack["artists"].append(a)
+                if (comparable(a[0]), a[1]) in base_artists:
+                    continue
+                # The tags may spell the artist the way the release credits them (Discogs ANV)
+                anv = variations.get(a)
+                if anv and (comparable(anv), a[1]) in base_artists:
+                    continue
+                btrack["artists"].append(a)
 
             # Skip title-based remixer inference if remixers are already credited
             # (e.g. from Discogs), to avoid adding spurious artists from mix names
             if not meta_has_remixer:
                 remixers = _extract_remixers_from_title(track["title"])
                 for remixer in remixers:
-                    if (re_strip(remixer[0]), remixer[1]) not in base_artists:
+                    if (comparable(remixer[0]), remixer[1]) not in base_artists:
                         btrack["artists"].append(remixer)
 
             btrack["artists"] = check_for_artist_fragments(btrack["artists"])
@@ -271,9 +282,22 @@ def combine_tracks(base, meta, update_track_numbers):
 
 def check_for_artist_fragments(artists):
     """Check for artists that may be a fragment of another artist in the release."""
-    artist_set = {a for a, _ in artists}
+    names = [_comparable_words(a) for a, _ in artists]
     for a, i in artists.copy():
-        for artist in artist_set:
-            if a != artist and a in artist and len(a) > 1 and (a, i) in artists:
+        words = _comparable_words(a)
+        if len("".join(words)) <= 1:
+            continue
+        for other in names:
+            if words != other and _is_word_run(words, other) and (a, i) in artists:
                 artists.remove((a, i))
     return artists
+
+
+def _comparable_words(name):
+    """The words of a name with case, accents and punctuation dropped (`X-Men` is `xmen`)."""
+    return [word for word in (comparable(w) for w in name.split()) if word]
+
+
+def _is_word_run(words, other):
+    """True when `words` is a contiguous run of whole words inside `other`."""
+    return any(other[i : i + len(words)] == words for i in range(len(other) - len(words) + 1))
