@@ -77,7 +77,8 @@ def serve() -> Iterator[Callable[[Tracker], str]]:
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
-        assert started.wait(5)
+        is_up = started.wait(5)
+        assert is_up
 
         def stop() -> None:
             loop.call_soon_threadsafe(loop.stop)
