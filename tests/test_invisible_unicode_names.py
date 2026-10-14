@@ -12,8 +12,8 @@ import pytest
 
 from salmon import cfg
 from salmon.common import clean_name, invisible_chars
-from salmon.errors import NoncompliantFolderStructure
-from salmon.tagger.foldername import generate_folder_name
+from salmon.errors import NoncompliantFolderStructure, UploadError
+from salmon.tagger.foldername import generate_folder_name, rename_folder
 from salmon.tagger.folderstructure import _check_invisible_characters, check_folder_structure
 from salmon.tagger.retagger import generate_file_name
 
@@ -127,6 +127,39 @@ def test_generate_folder_name_replaces_and_removes_invisible_characters(monkeypa
     }
 
     assert generate_folder_name(metadata) == "An Artist - The Album (2024)"
+
+
+@pytest.mark.parametrize("title", [ZWSP, f"{NBSP}{BOM}", ""])
+def test_generate_file_name_refuses_a_name_with_nothing_visible(monkeypatch, title) -> None:
+    monkeypatch.setattr(cfg.upload.formatting, "file_template", "{title}")
+    tags = _tags()
+    tags.title = title
+
+    with pytest.raises(UploadError, match="its tags leave nothing visible in file_template"):
+        generate_file_name(tags, ".flac", multiple_artists=False)
+
+
+FOLDER_METADATA = {
+    "scene": False,
+    "artists": [("Artist", "main")],
+    "year": 2020,
+    "source": "WEB",
+    "format": "FLAC",
+    "encoding": "Lossless",
+}
+
+
+@pytest.mark.parametrize("title", [ZWSP, f"{NBSP}{BOM}"])
+def test_rename_folder_refuses_a_name_with_nothing_visible(tmp_path, monkeypatch, title) -> None:
+    monkeypatch.setattr(cfg.directory, "download_directory", str(tmp_path / "downloads"))
+    monkeypatch.setattr(cfg.upload.formatting, "folder_template", "{title}")
+    album = tmp_path / "Album"
+    album.mkdir()
+
+    with pytest.raises(UploadError, match="Invalid folder name"):
+        rename_folder(str(album), {**FOLDER_METADATA, "title": title}, auto_rename=True, check=False)
+
+    assert [entry.name for entry in tmp_path.iterdir()] == ["Album"]
 
 
 @pytest.mark.parametrize("replacements", [True, False])

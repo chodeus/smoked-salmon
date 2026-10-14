@@ -12,7 +12,7 @@ import asyncclick as click
 import msgspec
 
 from salmon import cfg
-from salmon.common.strings import clean_name
+from salmon.common.strings import clean_name, has_visible_chars
 from salmon.constants import (
     ARROWS,
     BLACKLISTED_CHARS,
@@ -582,7 +582,10 @@ def generate_file_name(tags, ext, multiple_artists, trackno_or=None, track_digit
             new_base = new_base.replace(char, sub)
     new_base = re.sub(BLACKLISTED_CHARS, cfg.upload.formatting.blacklisted_substitution, new_base)
     # Cleaned before the extension is added, so a space left at the end of the name does not sit before the dot.
-    return clean_name(new_base) + ext
+    new_base = clean_name(new_base)
+    if not has_visible_chars(new_base):
+        raise UploadError(f"Not naming a file {new_base!r}{ext}: its tags leave nothing visible in file_template.")
+    return new_base + ext
 
 
 def _parse_integer(value, width=2):

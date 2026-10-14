@@ -8,7 +8,7 @@ from string import Formatter
 import asyncclick as click
 
 from salmon import cfg
-from salmon.common import clean_name, strip_template_keys
+from salmon.common import clean_name, has_visible_chars, strip_template_keys
 from salmon.common.files import rewrite_refusal
 from salmon.common.strings import plain_spaces
 from salmon.constants import (
@@ -52,7 +52,8 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None):
 
     # A name with a path separator or . / .. would escape the download dir and, via the
     # rmtree below, delete something outside it — reject before building new_path.
-    if os.sep in new_base or (os.altsep and os.altsep in new_base) or new_base in {"", ".", ".."}:
+    invalid = new_base in {"", ".", ".."} or not has_visible_chars(new_base)
+    if os.sep in new_base or (os.altsep and os.altsep in new_base) or invalid:
         raise UploadError(f"Invalid folder name: {new_base!r}")
 
     new_path = os.path.join(parent or cfg.directory.download_directory, new_base)
