@@ -191,6 +191,10 @@ session = 'get-from-site-cookie'
 # # still asked when the frequency analysis measures the folder as suspect.
 # yes_all = false
 
+# # Conversions salmon up selects by default after a FLAC (and makes under -yyy): "24bit", "16bit", "320", "V0".
+# # [] makes none. Every possible one is still offered at the prompt. salmon up --conversions overrides it.
+# conversions = ["24bit", "16bit", "320", "V0"]
+
 # # enable seedbox uploading
 # upload_to_seedbox = true
 # # "NFC" / "NFD" (""/"none": as on disk): the form of the file names your client seeds; rclone keeps names

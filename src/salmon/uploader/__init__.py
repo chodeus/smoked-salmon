@@ -27,7 +27,7 @@ from salmon.checks.tag_rules import (
 )
 from salmon.checks.upconverts import upload_upconvert_test
 from salmon.common import AlbumPath, commandgroup, copy_to_clipboard, decade_tag, tagify
-from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
+from salmon.config.validations import CONVERSION_KINDS, RED_IMAGE_PROXY_TARGETS, canonical_conversions
 from salmon.constants import ENCODINGS, FORMATS, SOURCES, TAG_ENCODINGS
 from salmon.converter.conversions import conversion_of
 from salmon.converter.downconverting import (
@@ -107,6 +107,21 @@ from salmon.uploader.upload import (
 if TYPE_CHECKING:
     from salmon.tagger.tagfile import TagFile
     from salmon.trackers.base import BaseGazelleApi
+
+
+def validate_conversions(ctx, param, value: str | None) -> tuple[str, ...] | None:
+    """Parse --conversions: comma-separated kinds in any case, or none, or all; None when not given."""
+    if value is None:
+        return None
+    text = value.strip().lower()
+    if text == "all":
+        return CONVERSION_KINDS
+    if text == "none":
+        return ()
+    try:
+        return canonical_conversions(entry.strip() for entry in value.split(","))
+    except ValueError as e:
+        raise click.BadParameter(f"{e}, or use none or all.") from None
 
 
 @commandgroup.command()
@@ -229,6 +244,13 @@ if TYPE_CHECKING:
     is_flag=True,
     help="Only keep essential files; strip nfo, sfv, md5, txt, and other extras.",
 )
+@click.option(
+    "--conversions",
+    callback=validate_conversions,
+    help="The conversions to select by default after a FLAC, and to make with -yyy: a comma-separated list of "
+    f"{', '.join(CONVERSION_KINDS)}, or none, or all. Overrides upload.conversions for this run. "
+    "Every possible conversion is still offered at the prompt.",
+)
 async def up(
     path: str,
     group_id: int | None,
@@ -254,6 +276,7 @@ async def up(
     skip_log_check: bool,
     skip_integrity_check: bool,
     essential_only: bool,
+    conversions: tuple[str, ...] | None,
 ) -> None:
     """Command to upload an album folder to a Gazelle Site."""
     if skip_flac_upload and (conflict := skip_flac_upload_conflict(group_id, request, spectrals_after, trackers)):
@@ -317,6 +340,7 @@ async def up(
                 skip_initial_review=skip_initial_review,
                 apply_ai_suggestions=apply_ai_suggestions,
                 trackers=list(trackers) if len(trackers) > 1 else None,
+                conversions=conversions,
             )
         except* DryRunRefused as refused:
             # except*: a refusal in a task group comes out in an exception group.
@@ -509,6 +533,7 @@ async def upload(
     skip_initial_review: bool = False,
     apply_ai_suggestions: bool = False,
     trackers: list[str] | None = None,
+    conversions: tuple[str, ...] | None = None,
 ) -> None:
     """Upload an album folder to Gazelle Site.
 
@@ -542,6 +567,7 @@ async def upload(
         trackers: Restrict the follow-up tracker offer to these sites, in order;
             duplicates are ignored. None offers every configured tracker, which
             is what the CLI does; an empty list offers none.
+        conversions: The conversion kinds selected by default after a FLAC; None follows upload.conversions.
     """
     path = os.path.abspath(path)
     if flac_group is not None and (refusal := validate_skip_flac_source(path)):
@@ -586,6 +612,7 @@ async def upload(
             conversion=conversion,
             rename_into=rename_into,
             kept_source=None if staged == path else path,
+            conversions=conversions,
         )
 
 
@@ -663,6 +690,7 @@ async def _upload_staged(
     conversion: dict[str, Any] | None,
     rename_into: str | None,
     kept_source: str | None = None,
+    conversions: tuple[str, ...] | None = None,
 ) -> None:
     """upload() on a folder that is safe to change; see upload() for the arguments."""
     remove_downloaded_cover_image = scene or cfg.image.remove_auto_downloaded_cover_image
@@ -1010,17 +1038,17 @@ async def _upload_staged(
 
                 if (
                     group_id
-                    and get_downconversion_options(rls_data, track_data, quiet=True)
+                    and (conversion_options := get_downconversion_options(rls_data, track_data, quiet=True))
                     and (
                         source_flac is not None
                         or cfg.upload.yes_all
                         or click.confirm(
                             click.style("\nWould you like to check downconversion options?", fg="magenta"),
-                            default=True,
+                            default=bool(wanted_conversions(conversion_options, held, conversions)),
                         )
                     )
                 ):
-                    selected_tasks = await prompt_downconversion_choice(rls_data, track_data, held)
+                    selected_tasks = await prompt_downconversion_choice(rls_data, track_data, held, conversions)
                     if selected_tasks:
                         display_names = [task["name"] for task in selected_tasks]
                         click.secho(
@@ -1330,20 +1358,43 @@ def _held_options(
     return held
 
 
-async def prompt_downconversion_choice(rls_data, track_data, held: set[str] | frozenset[str] = frozenset()):
+def conversion_kind(task: dict[str, Any]) -> str:
+    """Name a downconversion task by its kind, whatever the release's rates: 24bit, 16bit, 320 or V0."""
+    if task["action"] == "transcode":
+        return task["encoding"]
+    return f"{task['target_bitdepth']}bit"
+
+
+def wanted_conversions(
+    options: list[dict[str, Any]],
+    held: set[str] | frozenset[str] = frozenset(),
+    conversions: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    """The options selected by default: those of a kind in `conversions` (None: upload.conversions) not in `held`."""
+    kinds = cfg.upload.conversions if conversions is None else conversions
+    return [option for option in options if conversion_kind(option) in kinds and option["name"] not in held]
+
+
+async def prompt_downconversion_choice(
+    rls_data,
+    track_data,
+    held: set[str] | frozenset[str] = frozenset(),
+    conversions: tuple[str, ...] | None = None,
+):
     """
     Prompt user to select downconversion formats.
     Returns a list of selected task dictionaries.
     Options in `held` are already in the edition: they are left out unless picked by number.
+    `conversions` (None: upload.conversions) names the kinds selected by default and made with --yes-all.
     """
     options = get_downconversion_options(rls_data, track_data)
 
     if not options:
         return []
 
-    unheld = [option for option in options if option["name"] not in held]
+    wanted = wanted_conversions(options, held, conversions)
     if cfg.upload.yes_all:
-        return unheld
+        return wanted
 
     click.secho("\nDownconversion Options", fg="cyan", bold=True)
 
@@ -1358,6 +1409,9 @@ async def prompt_downconversion_choice(rls_data, track_data, held: set[str] | fr
         current_format = encoding
 
     click.secho(f"Current format: {current_format}", fg="yellow")
+    kinds = cfg.upload.conversions if conversions is None else conversions
+    if left_out := [option["name"] for option in options if conversion_kind(option) not in kinds]:
+        click.secho(f"Not selected by default (upload.conversions / --conversions): {', '.join(left_out)}", fg="yellow")
     click.secho("Available downconversion formats:", fg="green")
 
     for i, option in enumerate(options, 1):
@@ -1365,10 +1419,10 @@ async def prompt_downconversion_choice(rls_data, track_data, held: set[str] | fr
 
     click.secho("  0. Skip downconversion", fg="white")
     click.secho("  *. All formats", fg="white")
-    if len(unheld) == len(options):
+    if len(wanted) == len(options):
         default = "*"
     else:
-        default = " ".join(str(i) for i, option in enumerate(options, 1) if option in unheld) or "0"
+        default = " ".join(str(i) for i, option in enumerate(options, 1) if option in wanted) or "0"
 
     selected_tasks = []
 
