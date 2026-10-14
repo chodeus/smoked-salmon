@@ -1102,8 +1102,7 @@ def most_requests(
 ) -> tuple[int, int, int]:
     """The most requests uploading one release can send, retries aside: GETs and POSTs to TARGET, GETs to SOURCE.
 
-    TARGET's index call, once per run, is not counted. SOURCE's GETs are its images to fetch, and the index call for
-    its image host's cookies when it needs some.
+    TARGET's index call, once per run, is not counted; the index call for SOURCE's image host's cookies is.
     """
     data = release.data
     uploads = len(release.tasks) + (0 if conversions_only else 1)
@@ -1302,8 +1301,7 @@ async def _rehost_images(
 ) -> None:
     """Fetch each SOURCE image TARGET cannot show through SOURCE's client, upload it to TARGET's host, swap the URL.
 
-    Each URL is fetched once, even when it is both the cover and a description image going to two hosts. A SOURCE
-    whose image host takes cookies of its own (RED's) gets one index call for them first, right before the images.
+    Each URL is fetched once, even when it is both the cover and a description image going to two hosts.
 
     Raises:
         CrossUploadRefused: If a fetch or an upload fails, or a host gives no usable URL.
@@ -1327,11 +1325,7 @@ async def _rehost_images(
 
 
 async def _source_image_cookies(source: "BaseGazelleApi") -> dict[str, str]:
-    """The cookies SOURCE's image host takes besides the session cookie: {} with no request for one that takes none.
-
-    Raises:
-        CrossUploadRefused: If SOURCE does not give them.
-    """
+    """The cookies SOURCE's image host takes besides the session cookie, {} if none; CrossUploadRefused if not given."""
     try:
         return await source.image_cookies()
     except RequestError as error:
@@ -1341,10 +1335,7 @@ async def _source_image_cookies(source: "BaseGazelleApi") -> dict[str, str]:
 
 
 async def _fetch_source_image(url: str, source: "BaseGazelleApi", cookies: dict[str, str]) -> tuple[bytes, str]:
-    """Fetch an image from SOURCE's own site through SOURCE's client: its content and its file suffix.
-
-    Args:
-        cookies: The cookies SOURCE's image host takes besides the session cookie, from _source_image_cookies.
+    """Fetch an image from SOURCE's own site through SOURCE's client, with its image cookies: content and suffix.
 
     Raises:
         CrossUploadRefused: If it is not on SOURCE's site, cannot be fetched, or is not an image.

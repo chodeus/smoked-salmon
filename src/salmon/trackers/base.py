@@ -730,11 +730,7 @@ class BaseGazelleApi:
         }
 
     async def image_cookies(self) -> dict[str, str]:
-        """IMAGE_COOKIES' values for this tracker's image host, from one index call with the session cookie; {} if none.
-
-        Raises:
-            RequestError: If there is no session cookie, the call fails, or its answer does not set them all.
-        """
+        """IMAGE_COOKIES' values from an index call with the session cookie; {} if none, RequestError if not all set."""
         if not self.IMAGE_COOKIES:
             return {}
         if not self.has_session_cookie:
