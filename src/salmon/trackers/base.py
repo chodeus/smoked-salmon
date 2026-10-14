@@ -266,12 +266,43 @@ _limiters: dict[str, SharedLimiter] = {}
 _limiters_lock = threading.Lock()
 
 
+# 0.5 s over the tracker's 10 s: requests arrive with jitter, and 6 entered a period apart could land within 10 s.
+_RATE_PERIOD = 10.5
+
+
 def _tracker_limiter(site_code: str) -> SharedLimiter:
-    """5 requests per 10 seconds for one tracker, process-wide."""
+    """5 requests per 10 seconds for one tracker, with a margin, process-wide."""
     with _limiters_lock:
         if site_code not in _limiters:
-            _limiters[site_code] = SharedLimiter(5, 10)
+            _limiters[site_code] = SharedLimiter(5, _RATE_PERIOD)
         return _limiters[site_code]
+
+
+# How often a request waiting for its account's lock tries it again.
+_ACCOUNT_LOCK_POLL = 0.05
+
+
+class _AccountLock:
+    """One request that is not idempotent at a time for a tracker account, across every thread and event loop."""
+
+    def __init__(self) -> None:
+        # A thread lock, polled: web UI jobs each run their own event loop, which an asyncio lock is bound to.
+        self._lock = threading.Lock()
+
+    async def __aenter__(self) -> None:
+        while not self._lock.acquire(blocking=False):
+            await asyncio.sleep(_ACCOUNT_LOCK_POLL)
+
+    async def __aexit__(self, *_exc: object) -> None:
+        self._lock.release()
+
+
+_account_locks: dict[str, _AccountLock] = {}
+
+
+def _account_lock(site_code: str) -> _AccountLock:
+    with _limiters_lock:
+        return _account_locks.setdefault(site_code, _AccountLock())
 
 
 # An upload that fills a request takes two hops; one spare.
@@ -433,11 +464,14 @@ class BaseGazelleApi:
             yield self._http_session()
             return
         # A pooled connection may be one the tracker is closing as idle, and a failure on it
-        # can't be told from a request the tracker acted on.
-        async with aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(force_close=True),
-            cookie_jar=aiohttp.DummyCookieJar(),
-        ) as session:
+        # can't be told from a request the tracker acted on. Two jobs' uploads or edits never overlap.
+        async with (
+            _account_lock(self.site_code),
+            aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(force_close=True),
+                cookie_jar=aiohttp.DummyCookieJar(),
+            ) as session,
+        ):
             yield session
 
     @asynccontextmanager
