@@ -6,6 +6,7 @@ import socket
 
 import pytest
 from fastapi import HTTPException
+from webui_client import web_client  # pyright: ignore[reportMissingImports]
 
 from salmon import cfg
 from salmon.webui.validation import assert_public_url, validate_album_dir
@@ -38,11 +39,8 @@ def test_symlink_escaping_a_root_is_rejected(tmp_path):
 
 
 def test_metadata_endpoint_rejects_internal_and_bad_scheme():
-    from fastapi.testclient import TestClient
 
-    from salmon.webui.app import create_app
-
-    with TestClient(create_app(), base_url="http://localhost") as c:
+    with web_client() as c:
         for bad in (
             "http://127.0.0.1/album/x",
             "http://192.168.1.10:8006/album/x",

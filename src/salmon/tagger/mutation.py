@@ -21,9 +21,15 @@ def _rename_no_clobber(src: str, dst: str) -> None:
     can put back. os.link fails outright when the destination exists, which is
     the guarantee this needs.
 
-    There is no check-then-rename fallback: that is the race being removed, so
+    A file has no check-then-rename fallback: that is the race being removed, so
     a filesystem without hardlinks aborts instead of quietly reintroducing it.
     """
+    if os.path.isdir(src) and not os.path.islink(src):
+        # A folder cannot be hardlinked, and rename only ever replaces an empty one: refuse any name in use.
+        if os.path.lexists(dst):
+            raise FileExistsError(errno.EEXIST, "the new name is in use", dst)
+        os.rename(src, dst)
+        return
     try:
         os.link(src, dst)
     except OSError as e:

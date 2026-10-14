@@ -5,7 +5,7 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager, suppress
 from http import HTTPStatus
 from typing import Any, NoReturn, cast
@@ -100,6 +100,31 @@ def _normalize_session_cookie(cookie: str) -> str:
         Canonical percent-encoded cookie value.
     """
     return quote(unquote(cookie.strip()), safe="")
+
+
+def session_cookie_forms(cookie: str | None) -> list[str]:
+    """A session cookie as configured, decoded, and as sent: a tracker answer or an error may repeat any of them."""
+    if not cookie:
+        return []
+    return list(dict.fromkeys([cookie, cookie.strip(), unquote(cookie.strip()), _normalize_session_cookie(cookie)]))
+
+
+def scrub_secrets(text: str, secrets: Iterable[str | None], shortest: int = 8) -> str:
+    """_redact, plus every secret of at least `shortest` characters, longest first so one inside another goes whole."""
+    text = _redact(text)
+    for secret in sorted({s for s in secrets if s and len(s) >= shortest}, key=len, reverse=True):
+        text = text.replace(secret, "[REDACTED]")
+    return text
+
+
+# The authkeys and passkeys trackers have sent this process, for salmon web to mask in all it sends out.
+_learned_secrets: set[str] = set()
+_learned_secrets_lock = threading.Lock()
+
+
+def learned_secrets() -> list[str]:
+    with _learned_secrets_lock:
+        return list(_learned_secrets)
 
 
 def _build_tracker_cookies(session_cookie: str, keeplogged_cookie: str | None = None) -> dict[str, str]:
@@ -522,6 +547,8 @@ class BaseGazelleApi:
         acctinfo = await self.api_call("index")
         self.authkey = acctinfo["authkey"]
         self.passkey = acctinfo["passkey"]
+        with _learned_secrets_lock:
+            _learned_secrets.update(secret for secret in (self.authkey, self.passkey) if secret)
         self._authenticated = True
 
     async def ensure_authenticated(self) -> None:
@@ -723,11 +750,7 @@ class BaseGazelleApi:
 
     def _scrub(self, text: str) -> str:
         """_redact, plus this client's own credentials wherever a tracker answer repeats them."""
-        text = _redact(text)
-        # Longest first, so a secret containing another is masked whole.
-        for secret in sorted((s for s in self._secrets() if s and len(s) >= 8), key=len, reverse=True):
-            text = text.replace(secret, "[REDACTED]")
-        return text
+        return scrub_secrets(text, self._secrets())
 
     def _debug_response(self, resp: aiohttp.ClientResponse, text: str) -> None:
         """Print a tracker answer, redacted, for debug_tracker_connection."""
@@ -748,7 +771,10 @@ class BaseGazelleApi:
         """Raise the error a failed tracker answer calls for."""
         error_msg = text
         with suppress(msgspec.DecodeError, ValueError):
-            error_msg = msgspec.json.encode(msgspec.json.decode(text)["error"]).decode()
+            decoded = msgspec.json.decode(text)
+            # A JSON answer need not be an object with an error key: anything else keeps its body as the message.
+            if isinstance(decoded, dict) and "error" in decoded:
+                error_msg = msgspec.json.encode(decoded["error"]).decode()
         # An error page can repeat the authkey or passkey, and callers print what they catch.
         shown = _safe_response_excerpt(self._scrub(error_msg))
 

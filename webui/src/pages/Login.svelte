@@ -31,7 +31,7 @@
 <div class="login">
   <form onsubmit={submit}>
     <div class="brand"><span class="fish">🐟</span> salmon<span class="accent">web</span></div>
-    <p>Enter the access token to continue.</p>
+    <p>Open the login link salmon web printed when it started, or enter the access token.</p>
     <!-- svelte-ignore a11y_autofocus -->
     <input type="password" bind:value={token} placeholder="Access token" autofocus autocomplete="current-password" />
     <button type="submit" disabled={busy || !token}>{busy ? 'Checking…' : 'Unlock'}</button>
