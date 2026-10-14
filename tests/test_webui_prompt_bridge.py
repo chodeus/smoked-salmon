@@ -29,6 +29,14 @@ def _imports(tree: ast.Module) -> Iterator[ast.ImportFrom]:
     return (node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
 
 
+def _top_level_names(tree: ast.Module) -> Iterator[str]:
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            yield from (alias.name for alias in node.names)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield node.name
+
+
 def test_no_module_binds_a_click_prompt_function_by_name() -> None:
     found = [
         (name, alias.name)
@@ -64,3 +72,17 @@ def test_input_is_called_only_where_salmon_web_shadows_it() -> None:
     ]
 
     assert found == []
+
+
+def test_the_scan_finds_each_guarded_name_where_it_is_allowed() -> None:
+    modules = dict(_modules())
+    held = {(name, held_name) for name, tree in modules.items() for held_name in _top_level_names(tree)}
+    calls_input = {
+        name
+        for name, tree in modules.items()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "input"
+    }
+
+    assert {(module, fn) for fn, allowed in _BOUND_WHERE_REPLACED.items() for module in allowed} <= held
+    assert calls_input == _INPUT_MODULES
