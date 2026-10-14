@@ -96,11 +96,11 @@ class AuthMiddleware:
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
         method = scope.get("method", "")
         is_http = scope["type"] == "http"
-        if is_http and method == "OPTIONS":
-            await self.app(scope, receive, send)
-            return
         if not origin_allowed(headers.get("origin"), headers.get("host")):
             await _refuse(scope, receive, send, 403, "Requests from another site are refused.")
+            return
+        if is_http and method == "OPTIONS":
+            await self.app(scope, receive, send)
             return
         if is_http and method not in SAFE_METHODS and not _sent_as_json(headers.get("content-type", "")):
             await _refuse(scope, receive, send, 415, "Send this request as JSON.")

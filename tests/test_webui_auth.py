@@ -22,53 +22,68 @@ def _clean():
 def test_an_app_without_a_token_refuses_every_api_request():
     _clean()
     with TestClient(create_app(auth_token=None), base_url="http://localhost") as c:
-        assert c.get("/api/jobs").status_code == 503
-        assert c.post("/api/login", json={"token": ""}).status_code == 503
-        assert c.get("/api/auth").json() == {"required": True, "authenticated": False}
+        answer = c.get("/api/jobs")
+        assert answer.status_code == 503
+        answer = c.post("/api/login", json={"token": ""})
+        assert answer.status_code == 503
+        answer = c.get("/api/auth")
+        assert answer.json() == {"required": True, "authenticated": False}
 
 
 def test_token_required_rejects_unauthenticated():
     _clean()
     with TestClient(create_app(auth_token="s3cret"), base_url="http://localhost") as c:
-        assert c.get("/api/jobs").status_code == 401
+        answer = c.get("/api/jobs")
+        assert answer.status_code == 401
         # /api/health now requires auth (it exposes config, directories, binaries, trackers)
-        assert c.get("/api/health").status_code == 401
+        answer = c.get("/api/health")
+        assert answer.status_code == 401
         # /api/auth stays exempt so the login screen can check status
-        assert c.get("/api/auth").json() == {"required": True, "authenticated": False}
+        answer = c.get("/api/auth")
+        assert answer.json() == {"required": True, "authenticated": False}
 
 
 def test_bearer_header_authenticates():
     _clean()
     with TestClient(create_app(auth_token="s3cret"), base_url="http://localhost") as c:
-        assert c.get("/api/jobs", headers={"Authorization": "Bearer s3cret"}).status_code == 200
-        assert c.get("/api/jobs", headers={"Authorization": "Bearer wrong"}).status_code == 401
+        answer = c.get("/api/jobs", headers={"Authorization": "Bearer s3cret"})
+        assert answer.status_code == 200
+        answer = c.get("/api/jobs", headers={"Authorization": "Bearer wrong"})
+        assert answer.status_code == 401
 
 
 def test_login_sets_cookie_then_requests_succeed():
     _clean()
     with TestClient(create_app(auth_token="s3cret"), base_url="http://localhost") as c:
-        assert c.post("/api/login", json={"token": "nope"}).status_code == 401
+        answer = c.post("/api/login", json={"token": "nope"})
+        assert answer.status_code == 401
         ok = c.post("/api/login", json={"token": "s3cret"})
         assert ok.status_code == 200 and ok.json()["authenticated"] is True
         # TestClient keeps the cookie jar; subsequent calls are now authorized
-        assert c.get("/api/jobs").status_code == 200
-        assert c.get("/api/auth").json()["authenticated"] is True
+        answer = c.get("/api/jobs")
+        assert answer.status_code == 200
+        answer = c.get("/api/auth")
+        assert answer.json()["authenticated"] is True
 
 
 def test_docs_hidden_unless_dev():
     _clean()
     with web_client() as c:
-        assert c.get("/api/openapi.json").status_code == 404
+        answer = c.get("/api/openapi.json")
+        assert answer.status_code == 404
     with web_client(dev=True) as c:
-        assert c.get("/api/openapi.json").status_code == 200
+        answer = c.get("/api/openapi.json")
+        assert answer.status_code == 200
 
 
 def test_debug_threads_dev_only():
     _clean()
     with web_client() as c:
-        assert c.get("/api/debug/threads").status_code == 404
+        answer = c.get("/api/debug/threads")
+        assert answer.status_code == 404
     with web_client(dev=True) as c:
-        assert c.get("/api/debug/threads").status_code == 200
+        answer = c.get("/api/debug/threads")
+        assert answer.status_code == 200
 
 
 @pytest.mark.parametrize("method", ["GET", "POST"])
@@ -178,3 +193,14 @@ async def test_a_lan_bind_without_a_token_does_not_start(serve_nothing):
     assert result.exit_code != 0
     assert "Refusing to serve on 0.0.0.0 without an auth token" in result.output
     assert serve_nothing == []
+
+
+def test_a_preflight_from_another_site_is_refused():
+    _clean()
+    with web_client(dev=True) as c:
+        refused = c.options("/api/jobs", headers={"Origin": "http://evil.example.com"})
+        dev_server = c.options(
+            "/api/jobs", headers={"Origin": "http://localhost:5173", "Access-Control-Request-Method": "POST"}
+        )
+    assert refused.status_code == 403
+    assert dev_server.status_code == 200
