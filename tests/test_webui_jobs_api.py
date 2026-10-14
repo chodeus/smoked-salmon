@@ -33,6 +33,9 @@ from salmon.webui.jobs import (
     manager,
 )
 
+# The bind address under test: nothing is served on it.
+LAN_BIND = "0.0.0.0"  # nosec B104
+
 
 def task_of(job) -> asyncio.Task:
     assert job.task is not None
@@ -431,7 +434,7 @@ def test_loopback_bind_rejects_evil_host_header(client):
 
 
 def test_non_loopback_bind_skips_trusted_host_check():
-    c = web_client(base_url="http://testserver", host="0.0.0.0")
+    c = web_client(base_url="http://testserver", host=LAN_BIND)
     resp = c.get("/api/jobs")
     assert resp.status_code == 200
 

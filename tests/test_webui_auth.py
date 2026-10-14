@@ -13,6 +13,9 @@ from salmon.webui import web
 from salmon.webui.app import create_app
 from salmon.webui.jobs import manager
 
+# The bind address under test: nothing is served on it.
+LAN_BIND = "0.0.0.0"  # nosec B104
+
 
 def _no_configured_token(monkeypatch) -> None:
     """Neither token source set, whatever the machine running the tests has configured."""
@@ -135,7 +138,7 @@ def test_ws_rejects_without_token_but_accepts_with_cookie():
 
 def test_ws_same_host_lan_origin_accepted():
     _clean()
-    with web_client(base_url="http://192.168.1.20:55155", host="0.0.0.0") as c:
+    with web_client(base_url="http://192.168.1.20:55155", host=LAN_BIND) as c:
         headers = {
             "host": "192.168.1.20:55155",
             "origin": "http://192.168.1.20:55155",
@@ -148,7 +151,7 @@ def test_ws_same_host_lan_origin_accepted():
 
 def test_ws_cross_site_origin_rejected_on_lan_bind():
     _clean()
-    with web_client(base_url="http://192.168.1.20:55155", host="0.0.0.0") as c:
+    with web_client(base_url="http://192.168.1.20:55155", host=LAN_BIND) as c:
         headers = {
             "host": "192.168.1.20:55155",
             "origin": "http://evil.example.com",
@@ -196,7 +199,7 @@ async def test_a_configured_token_is_never_printed(serve_nothing, monkeypatch: p
 
 
 async def test_a_lan_bind_without_a_token_does_not_start(serve_nothing):
-    result = await CliRunner().invoke(web, ["--host", "0.0.0.0"])
+    result = await CliRunner().invoke(web, ["--host", LAN_BIND])
 
     assert result.exit_code != 0
     assert "Refusing to serve on 0.0.0.0 without an auth token" in result.output
