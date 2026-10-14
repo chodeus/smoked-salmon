@@ -1,8 +1,4 @@
-"""Which conversions salmon up selects by default after a FLAC: upload.conversions and --conversions.
-
-The setting changes only the default answer: every possible conversion is still listed and can be picked by number.
-The end-to-end runs go against the local fake tracker of test_uploader_dry_run, never a real one.
-"""
+"""Which conversions salmon up selects by default after a FLAC: upload.conversions and --conversions."""
 
 from collections.abc import Iterator
 from contextlib import contextmanager

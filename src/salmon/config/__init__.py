@@ -106,11 +106,7 @@ def _walk_unknown(value: object, structs: list[mi.StructType], path: str, found:
 
 
 def unknown_keys(raw: dict[str, Any], struct_type: type[msgspec.Struct] = Cfg) -> list[str]:
-    """Full dotted paths of the keys in a decoded TOML table that the schema does not declare.
-
-    Only nested tables, optional tables and arrays of tables are descended into (``seedbox[0].name``);
-    anything else, such as a table-valued setting of another shape, is left alone.
-    """
+    """Dotted paths (``seedbox[0].name``) of the keys the schema lacks, searched through tables and arrays of tables."""
     found: list[str] = []
     _walk_unknown(raw, _table_members(mi.type_info(struct_type)), "", found)
     return found

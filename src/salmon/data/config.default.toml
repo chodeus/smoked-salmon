@@ -213,8 +213,8 @@ session = 'get-from-site-cookie'
 # # {source}, e.g. "[{source} FLAC {resolution}]", not {format}, which already says "24bit FLAC"
 # file_template = "{tracknumber}. {artist} - {title}"
 # # true removes the source folder once it has been copied or hardlinked to its new name in download_directory.
-# # It never applies to an album in library_dirs, or to a run that works on a copy (--skip-flac-upload,
-# # --dry-run), and salmon says so when it keeps the folder.
+# # It never applies to a folder salmon will not change (in library_dirs, holding one, or sharing its files
+# # through a link) or to a run that works on a copy (--skip-flac-upload, --dry-run); salmon says when it keeps one.
 # remove_source_dir = false
 # split_multi_disc_into_folders = true
 

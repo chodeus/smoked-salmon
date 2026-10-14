@@ -1,9 +1,4 @@
-"""A config key the schema does not know is warned about at load time (#681), and the config still loads.
-
-The tests build config files on disk from the shipped template and load them through
-``salmon.config._parse_config``, the path an end user's config goes through. ``unknown_keys`` is also called
-on untyped tables directly.
-"""
+"""A config key the schema does not know is warned about when the config loads, and the config still loads."""
 
 import re
 from pathlib import Path
