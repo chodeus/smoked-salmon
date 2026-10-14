@@ -122,6 +122,7 @@ async def tag(
     click.secho(f"\nProcessing {path}", fg="cyan", bold=True)
     # Read before staging: the library's Artist/Type/Album layout names the release type.
     folder_type = release_type_from_folder(path)
+    given = path
     # An album in library_dirs is tagged as a copy, renamed into download_directory.
     with staged_source(path, scratch=False) as (path, rename_into):
         standardize_tags(path)
@@ -145,7 +146,7 @@ async def tag(
 
         await download_cover_if_nonexistent(path, metadata["cover"])
         tags = await check_tags(path)
-        path = rename_folder(path, metadata, auto_rename, parent=rename_into)
+        path = rename_folder(path, metadata, auto_rename, parent=rename_into, original=given if path != given else None)
         rename_files(path, tags, metadata, auto_rename, None)
         await check_folder_structure(path, scene=False)
         click.secho(f"\nProcessed {path}", fg="cyan", bold=True)

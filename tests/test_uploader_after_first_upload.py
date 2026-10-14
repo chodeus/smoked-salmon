@@ -565,7 +565,7 @@ def test_conversions_the_edition_already_holds_are_left_out_after_the_flac(flow,
     async def printed(*_args, **_kwargs):
         return group
 
-    async def choose(_rls_data, _track_data, held):
+    async def choose(_rls_data, _track_data, held, _conversions=None):
         offered.append(held)
         return []
 
