@@ -15,6 +15,7 @@ from salmon.checks.report import build_report
 from salmon.common.files import get_audio_files
 from salmon.config.validations import spectrals_refusal
 from salmon.images import HOSTS, upload_images
+from salmon.images.files import NotAnImage, check_image
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.uploader.frequency import assess, generate_frequency_plots
 from salmon.uploader.spectrals import create_specs_folder, drop_specs_claim, generate_spectrals_all, get_spectrals_path
@@ -132,6 +133,12 @@ async def upload(req: UploadRequest) -> dict:
     files = [os.path.join(spectrals_path, f) for f in source_job.result["files"]]
 
     async def run(job: Job) -> dict:
+        # The files salmon made, checked anyway: nothing but an image goes to a public host.
+        for path in files:
+            try:
+                check_image(path)
+            except NotAnImage as e:
+                raise NotAnImage(f"Not uploading {os.path.basename(path)}: {e}") from None
         urls = await upload_images(files, host)
         return {"host": host_name, "urls": urls}
 

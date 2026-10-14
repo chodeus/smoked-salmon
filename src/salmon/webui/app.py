@@ -10,6 +10,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from salmon import cfg
 from salmon.webui.auth import AuthMiddleware, auth_router, resolve_auth_token
+from salmon.webui.egress import EgressMiddleware
 from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.routers import browse, checks, convert, jobs, search, spectrals, system, tools, upload
 
@@ -32,6 +33,9 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
     )
     app.state.auth_token = token
     app.state.dev = dev
+
+    # Innermost, so every route's answer passes it.
+    app.add_middleware(EgressMiddleware)
 
     configured_hosts = list(getattr(cfg.upload.web_interface, "allowed_hosts", []) or [])
     if host in LOOPBACK_HOSTS:
