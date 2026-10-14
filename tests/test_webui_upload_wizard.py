@@ -26,8 +26,8 @@ from types import SimpleNamespace
 
 import asyncclick as click
 import pytest
-from fastapi.testclient import TestClient
 from torf import Torrent
+from webui_client import web_client  # pyright: ignore[reportMissingImports]
 
 import salmon.tagger.pre_data
 import salmon.trackers
@@ -36,7 +36,6 @@ from salmon import cfg
 from salmon.constants import RELEASE_TYPES
 from salmon.uploader import upload as run_upload
 from salmon.webui import interaction as interaction_mod
-from salmon.webui.app import create_app
 from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.jobs import JobConflictError, JobManager
 from salmon.webui.jobs import manager as global_manager
@@ -786,7 +785,7 @@ def client():
     global_manager.jobs.clear()
     global_manager._subscribers.clear()
     global_manager._active_lock_keys.clear()
-    with TestClient(create_app(), base_url="http://localhost") as c:
+    with web_client() as c:
         try:
             yield c
         finally:

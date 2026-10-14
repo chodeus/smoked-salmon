@@ -10,7 +10,7 @@
   import Jobs from './pages/Jobs.svelte'
   import Login from './pages/Login.svelte'
   import { jobStore } from './lib/jobs.svelte'
-  import { checkAuth, onUnauthorized, type AuthState } from './lib/api'
+  import { checkAuth, login, onUnauthorized, type AuthState } from './lib/api'
 
   const routes: Record<string, { component: any; label: string }> = {
     '': { component: Dashboard, label: 'Dashboard' },
@@ -22,6 +22,10 @@
     tools: { component: Tools, label: 'Tools' },
     jobs: { component: Jobs, label: 'Jobs' },
   }
+
+  // salmon web's login link carries its token after the #, which is never sent: take it, then drop it at once.
+  const linkToken = location.hash.startsWith('#token=') ? location.hash.slice('#token='.length) : ''
+  if (linkToken) history.replaceState(null, '', location.pathname + location.search)
 
   let current = $state(location.hash.replace(/^#\/?/, ''))
   window.addEventListener('hashchange', () => {
@@ -42,8 +46,13 @@
     if (authState?.required) authState = { required: true, authenticated: false }
   })
 
+  async function start() {
+    if (linkToken) await login(linkToken).catch(() => false)
+    await refreshAuth()
+  }
+
   $effect(() => {
-    refreshAuth()
+    start()
   })
 
   $effect(() => {

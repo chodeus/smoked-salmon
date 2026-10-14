@@ -30,7 +30,8 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
-  return handle<T>(await fetch(BASE + path, { method: 'DELETE' }))
+  // The server takes a request that changes something only as JSON.
+  return handle<T>(await fetch(BASE + path, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }))
 }
 
 async function errorDetail(res: Response): Promise<string> {
@@ -52,10 +53,10 @@ export interface AuthState {
 export async function checkAuth(): Promise<AuthState> {
   try {
     const res = await fetch(BASE + '/auth')
-    if (!res.ok) return { required: false, authenticated: true }
+    if (!res.ok) return { required: true, authenticated: false }
     return await res.json()
   } catch {
-    return { required: false, authenticated: true }
+    return { required: true, authenticated: false }
   }
 }
 
