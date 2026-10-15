@@ -471,7 +471,7 @@ async def resolve_cover_url(
         bold=True,
     )
     if cfg.upload.yes_all:
-        click.secho("Not uploading a new group without a cover image with --yes-all.", fg="red", bold=True)
+        click.secho("Not uploading a new group without a cover image with -yyy (upload.yes_all).", fg="red", bold=True)
         return False, None
 
     while True:
@@ -1385,7 +1385,7 @@ async def prompt_downconversion_choice(
     Prompt user to select downconversion formats.
     Returns a list of selected task dictionaries.
     Options in `held` are already in the edition: they are left out unless picked by number.
-    `conversions` (None: upload.conversions) names the kinds selected by default and made with --yes-all.
+    `conversions` (None: upload.conversions) names the kinds selected by default and made with -yyy.
     """
     options = get_downconversion_options(rls_data, track_data)
 
