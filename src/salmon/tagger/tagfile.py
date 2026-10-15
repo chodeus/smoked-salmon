@@ -22,6 +22,7 @@ TAG_FIELDS = {
         "tracktotal": "tracktotal",
         "disctotal": "disctotal",
         "artist": "artist",
+        "artists": "artists",
         "title": "title",
         "replay_gain": "replaygain_track_gain",
         "peak": "replaygain_track_peak",
@@ -41,6 +42,7 @@ TAG_FIELDS = {
         "discnumber": ["TPOS"],
         "disctotal": ["TPOS"],
         "artist": ["TPE1"],
+        "artists": ["TXXX:ARTISTS"],
         "title": ["TIT2"],
         "isrc": ["TSRC"],
         "comment": ["COMM"],
@@ -77,10 +79,13 @@ class TagFile:
             if isinstance(mut, flac.FLAC):
                 # A Vorbis comment can repeat a field with the same value (TRACKNUMBER=1 twice); read it once.
                 values = list(dict.fromkeys(mut[TAG_FIELDS["FLAC"][attr]]))
-                if attr in {"artist", "genre"}:
+                if attr in {"artist", "artists", "genre"}:
                     return values
                 return "; ".join(values) or None
             elif isinstance(mut, mp3.MP3):
+                field = TAG_FIELDS["MP3"][attr][0]
+                if field.startswith("TXXX:") and isinstance(mut.tags, ID3Tags):
+                    return _txxx_values(mut.tags, field)
                 return self.parse_tag(attr, "MP3")
             elif isinstance(mut, mp4.MP4):
                 tag = self.parse_tag(attr, "AAC")
@@ -127,7 +132,7 @@ class TagFile:
                         number, total = tag_val[0]
                         return (number if "number" in attr else total) or None
                 try:
-                    if attr in {"artist", "genre"}:
+                    if attr in {"artist", "artists", "genre"}:
                         try:
                             # MP3: ID3 frames have .text attribute
                             frame = tags[field]
@@ -204,7 +209,10 @@ class TagFile:
         else:
             try:
                 tag_key, desc = TAG_FIELDS["MP3"][key][0].split(":")
-                frame = getattr(id3, tag_key)(desc=desc, text=value)
+                # A TXXX description is case-sensitive in the frame's key: a stale "artists" frame would stay beside it.
+                for stale in [frame for frame in tags.getall(tag_key) if frame.desc.lower() == desc.lower()]:
+                    tags.delall(stale.HashKey)
+                frame = getattr(id3, tag_key)(encoding=3, desc=desc, text=value)
                 tags.add(frame)
             except ValueError:
                 tag_key = TAG_FIELDS["MP3"][key][0]
@@ -245,6 +253,12 @@ class TagFile:
         mut = self.mut
         if mut is not None:
             mut.save()
+
+
+def _txxx_values(tags: ID3Tags, field: str) -> list[str] | None:
+    """A TXXX field's values from every case of its description, as players read it and set_mp3_tag replaces it."""
+    desc = field.split(":", 1)[1].lower()
+    return [value for frame in tags.getall("TXXX") if frame.desc.lower() == desc for value in frame.text] or None
 
 
 def parse_tag_number(tracktags, field):
