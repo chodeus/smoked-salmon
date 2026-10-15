@@ -11,7 +11,8 @@ from urllib.parse import unquote, urlparse
 import msgspec
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from salmon.trackers.base import learned_secrets, scrub_secrets, session_cookie_forms
+from salmon.common.redaction import scrub_secrets
+from salmon.trackers.base import learned_secrets, session_cookie_forms
 from salmon.uploader.seedbox import seedbox_secrets
 
 # A setting whose name ends so holds a credential, wherever it sits in the config.

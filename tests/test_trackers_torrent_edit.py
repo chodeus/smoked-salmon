@@ -330,9 +330,9 @@ def test_debug_output_masks_a_form_auth_the_client_does_not_know(monkeypatch, ca
     ],
 )
 def test_redaction_masks_a_secret_form_input_either_way_round(tag: str) -> None:
-    from salmon.trackers.base import _redact
+    from salmon.common.redaction import redact_tracker_fields
 
-    redacted = _redact(f'<form>{tag}<input name="title" value="Album"></form>')
+    redacted = redact_tracker_fields(f'<form>{tag}<input name="title" value="Album"></form>')
     assert "SECRET-123" not in redacted
     assert 'value="Album"' in redacted
 

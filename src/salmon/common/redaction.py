@@ -61,17 +61,59 @@ _CONNECTION_SECRET = re.compile(
 )
 
 
-def redact_secrets(text: str, known: Iterable[str | None] = ()) -> str:
-    """Mask known secret values, URL userinfo and password/token flags before text reaches a log."""
-    # Known values first: an error can repeat one in a shape no pattern expects.
-    for secret in sorted((s for s in known if s), key=len, reverse=True):
+# The names a secret goes by, in a JSON field, a URL query, a cookie header or a form input: one list for all three.
+_SECRET_NAMES = "authkey|passkey|torrent_pass|auth|api_key|session|keeplogged|imgauth_[hue]"
+_SENSITIVE_KEYS = re.compile(rf'("(?:{_SECRET_NAMES}|Authorization)"\s*:\s*")(?:[^"\\]|\\.)*(")', re.IGNORECASE)
+_SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=[^&\"'\s<>]+", re.IGNORECASE)
+
+_SECRET_INPUT_NAME = rf"""\bname=["'](?:{_SECRET_NAMES})["']"""
+# A form's hidden inputs, value before or after the name: <input name="auth" value="...">.
+_SENSITIVE_INPUTS = re.compile(
+    rf"""(<input\b[^>]*{_SECRET_INPUT_NAME}[^>]*\bvalue=["'])[^"']*"""
+    rf"""|(<input\b[^>]*\bvalue=["'])[^"']*(?=["'][^>]*{_SECRET_INPUT_NAME})""",
+    re.IGNORECASE,
+)
+
+
+def _mask_known(text: str, secrets: Iterable[str | None], shortest: int) -> str:
+    """Mask each secret of at least `shortest` characters, longest first so one inside another goes whole."""
+    for secret in sorted(dict.fromkeys(s for s in secrets if s and len(s) >= shortest), key=len, reverse=True):
         # A short one only as a whole word, so "ab" doesn't eat "about".
         pattern = re.escape(secret) if len(secret) >= 3 else rf"(?<!\w){re.escape(secret)}(?!\w)"
         text = re.sub(pattern, "[REDACTED]", text)
+    return text
+
+
+def redact_secrets(text: str, known: Iterable[str | None] = ()) -> str:
+    """Mask known secret values, URL userinfo and password/token flags before text reaches a log."""
+    # Known values first: an error can repeat one in a shape no pattern expects.
+    text = _mask_known(text, known, shortest=1)
     text = _SECRET_HEADER.sub(r"\1 [REDACTED]", text)
     text = _URL_USERINFO.sub(r"\1[REDACTED]@", text)
     text = _SECRET_FLAG.sub(r"\1[REDACTED]", text)
     return _SECRET_ASSIGNMENT.sub(r"\1=[REDACTED]", text)
+
+
+def redact_tracker_fields(text: str) -> str:
+    """Redact sensitive values (JSON fields, URL query params, form inputs) from a string."""
+    text = _SENSITIVE_KEYS.sub(lambda m: f"{m.group(1)}[REDACTED]{m.group(2)}", text)
+    text = _SENSITIVE_INPUTS.sub(lambda m: f"{m.group(1) or m.group(2)}[REDACTED]", text)
+    return _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
+
+
+def safe_response_excerpt(text: str, limit: int = 500) -> str:
+    """A redacted, length-capped excerpt of a tracker response for error messages.
+
+    Upload responses are whole HTML pages whose download links embed authkey/
+    torrent_pass; surfacing them raw leaks the passkey into job state.
+    """
+    redacted = redact_tracker_fields(text)
+    return redacted if len(redacted) <= limit else redacted[:limit] + "… [truncated]"
+
+
+def scrub_secrets(text: str, secrets: Iterable[str | None], shortest: int = 8) -> str:
+    """redact_tracker_fields, plus every secret of at least `shortest` characters."""
+    return _mask_known(redact_tracker_fields(text), secrets, shortest)
 
 
 def _hidden_flag(arg: str) -> bool:

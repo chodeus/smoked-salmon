@@ -21,6 +21,7 @@ from tenacity import wait_fixed
 
 from salmon import cfg
 from salmon.common import UploadFiles
+from salmon.common.redaction import redact_tracker_fields
 from salmon.errors import (
     LoginError,
     RequestError,
@@ -33,7 +34,6 @@ from salmon.trackers.base import (
     HttpResponse,
     RetryableError,
     SharedLimiter,
-    _redact,
 )
 from salmon.trackers.ops import OpsApi
 from salmon.trackers.red import RedApi
@@ -184,13 +184,13 @@ def install_fake_aiohttp(monkeypatch, outcomes):
 
 
 # ---------------------------------------------------------------------------
-# _redact
+# redact_tracker_fields
 # ---------------------------------------------------------------------------
 
 
 def test_redact_masks_authkey_and_passkey_values():
     text = '{"authkey": "topsecret", "passkey": "alsosecret"}'
-    redacted = _redact(text)
+    redacted = redact_tracker_fields(text)
     assert "topsecret" not in redacted
     assert "alsosecret" not in redacted
     assert '"authkey": "[REDACTED]"' in redacted
@@ -199,7 +199,7 @@ def test_redact_masks_authkey_and_passkey_values():
 
 def test_redact_masks_every_secret_name_in_json_and_form_inputs():
     text = '{"torrent_pass":"tp-0001","keeplogged":"kl-0001"} <input name="session" value="ss-0001">'
-    redacted = _redact(text)
+    redacted = redact_tracker_fields(text)
     for value in ("tp-0001", "kl-0001", "ss-0001"):
         assert value not in redacted
     # Only the value goes: the JSON keeps its shape.
@@ -208,13 +208,13 @@ def test_redact_masks_every_secret_name_in_json_and_form_inputs():
 
 @pytest.mark.parametrize("value", [r"tp-01\"tp-02", "tp-01\\\\"], ids=["escaped-quote", "escaped-backslash"])
 def test_redact_masks_a_json_secret_with_an_escape_in_it(value: str) -> None:
-    redacted = _redact(f'{{"torrent_pass":"{value}","artist":"Testartist"}}')
+    redacted = redact_tracker_fields(f'{{"torrent_pass":"{value}","artist":"Testartist"}}')
     assert redacted == '{"torrent_pass":"[REDACTED]","artist":"Testartist"}'
 
 
 def test_redact_masks_api_key_auth_and_authorization_case_insensitive():
     text = '{"API_KEY": "k1", "Auth": "k2", "authorization": "k3"}'
-    redacted = _redact(text)
+    redacted = redact_tracker_fields(text)
     for secret in ("k1", "k2", "k3"):
         assert secret not in redacted
     assert redacted.count("[REDACTED]") == 3
@@ -222,27 +222,27 @@ def test_redact_masks_api_key_auth_and_authorization_case_insensitive():
 
 def test_redact_keeps_non_sensitive_fields_untouched():
     text = '{"artist": "Testartist", "authkey": "secret"}'
-    redacted = _redact(text)
+    redacted = redact_tracker_fields(text)
     assert '"artist": "Testartist"' in redacted
     assert "secret" not in redacted
 
 
 def test_redact_masks_url_query_secrets_in_html():
     html = '<a href="torrents.php?action=download&id=5&authkey=DEADBEEF&torrent_pass=PA55KEY">DL</a>'
-    redacted = _redact(html)
+    redacted = redact_tracker_fields(html)
     assert "DEADBEEF" not in redacted
     assert "PA55KEY" not in redacted
     assert "authkey=[REDACTED]" in redacted
     assert "torrent_pass=[REDACTED]" in redacted
 
 
-def test_safe_response_excerpt_redacts_and_truncates():
-    from salmon.trackers.base import _safe_response_excerpt
+def testsafe_response_excerpt_redacts_and_truncates():
+    from salmon.common.redaction import safe_response_excerpt
 
     big = "x" * 999 + "?authkey=SECRET"
-    out = _safe_response_excerpt(big, limit=100)
+    out = safe_response_excerpt(big, limit=100)
     assert out.endswith("… [truncated]")
-    assert "SECRET" not in _safe_response_excerpt("?authkey=SECRET")
+    assert "SECRET" not in safe_response_excerpt("?authkey=SECRET")
 
 
 # ---------------------------------------------------------------------------
@@ -1071,10 +1071,10 @@ async def test_request_same_origin_redirect_is_allowed(api, monkeypatch):
 
 def test_redact_masks_cookie_credentials():
     set_cookie = "Set-Cookie: session=abc123; Path=/; HttpOnly"
-    assert "abc123" not in _redact(set_cookie)
+    assert "abc123" not in redact_tracker_fields(set_cookie)
 
     json_headers = '{"Set-Cookie": "keeplogged=deadbeef; expires=never", "session": "s3cr3t"}'
-    redacted = _redact(json_headers)
+    redacted = redact_tracker_fields(json_headers)
     assert "deadbeef" not in redacted
     assert "s3cr3t" not in redacted
 

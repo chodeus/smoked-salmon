@@ -5,7 +5,7 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from http import HTTPStatus
 from typing import Any, NoReturn, cast
@@ -24,6 +24,7 @@ from yarl import URL
 
 from salmon import cfg, dryrun
 from salmon.common import UploadFiles
+from salmon.common.redaction import redact_tracker_fields, safe_response_excerpt, scrub_secrets
 from salmon.common.urls import parse_retry_after
 from salmon.constants import RELEASE_TYPES
 from salmon.errors import (
@@ -54,36 +55,6 @@ INVERTED_RELEASE_TYPES = {
     1021: "Produced By",
 }
 
-# The names a secret goes by, in a JSON field, a URL query, a cookie header or a form input: one list for all three.
-_SECRET_NAMES = "authkey|passkey|torrent_pass|auth|api_key|session|keeplogged|imgauth_[hue]"
-_SENSITIVE_KEYS = re.compile(rf'("(?:{_SECRET_NAMES}|Authorization)"\s*:\s*")(?:[^"\\]|\\.)*(")', re.IGNORECASE)
-_SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=[^&\"'\s<>]+", re.IGNORECASE)
-
-_SECRET_INPUT_NAME = rf"""\bname=["'](?:{_SECRET_NAMES})["']"""
-# A form's hidden inputs, value before or after the name: <input name="auth" value="...">.
-_SENSITIVE_INPUTS = re.compile(
-    rf"""(<input\b[^>]*{_SECRET_INPUT_NAME}[^>]*\bvalue=["'])[^"']*"""
-    rf"""|(<input\b[^>]*\bvalue=["'])[^"']*(?=["'][^>]*{_SECRET_INPUT_NAME})""",
-    re.IGNORECASE,
-)
-
-
-def _redact(text: str) -> str:
-    """Redact sensitive values (JSON fields, URL query params, form inputs) from a string."""
-    text = _SENSITIVE_KEYS.sub(lambda m: f"{m.group(1)}[REDACTED]{m.group(2)}", text)
-    text = _SENSITIVE_INPUTS.sub(lambda m: f"{m.group(1) or m.group(2)}[REDACTED]", text)
-    return _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
-
-
-def _safe_response_excerpt(text: str, limit: int = 500) -> str:
-    """A redacted, length-capped excerpt of a tracker response for error messages.
-
-    Upload responses are whole HTML pages whose download links embed authkey/
-    torrent_pass; surfacing them raw leaks the passkey into job state.
-    """
-    redacted = _redact(text)
-    return redacted if len(redacted) <= limit else redacted[:limit] + "… [truncated]"
-
 
 def _normalize_session_cookie(cookie: str) -> str:
     """Normalize session cookies so aiohttp sends them in a browser-like form.
@@ -107,14 +78,6 @@ def session_cookie_forms(cookie: str | None) -> list[str]:
     if not cookie:
         return []
     return list(dict.fromkeys([cookie, cookie.strip(), unquote(cookie.strip()), _normalize_session_cookie(cookie)]))
-
-
-def scrub_secrets(text: str, secrets: Iterable[str | None], shortest: int = 8) -> str:
-    """_redact, plus every secret of at least `shortest` characters, longest first so one inside another goes whole."""
-    text = _redact(text)
-    for secret in sorted({s for s in secrets if s and len(s) >= shortest}, key=len, reverse=True):
-        text = text.replace(secret, "[REDACTED]")
-    return text
 
 
 # The authkeys, passkeys and image host keys trackers have sent this process, for salmon web to mask in all it sends.
@@ -671,7 +634,9 @@ class BaseGazelleApi:
         if cfg.upload.debug_tracker_connection:
             click.secho(f"[DEBUG] {method} {self._scrub(url)}", fg="cyan")
             shown_params = dict.fromkeys(params or {}, "[REDACTED]") if signed else params
-            click.secho(f"[DEBUG] params: {_redact(msgspec.json.encode(shown_params).decode())}", fg="cyan")
+            click.secho(
+                f"[DEBUG] params: {redact_tracker_fields(msgspec.json.encode(shown_params).decode())}", fg="cyan"
+            )
             click.secho(f"[DEBUG] use_api_key: {use_api_key}", fg="cyan")
 
         try:
@@ -733,7 +698,7 @@ class BaseGazelleApi:
         except (TimeoutError, aiohttp.ClientError) as err:
             # By type: a ConnectionTimeoutError is also a TimeoutError, and never connected is safe to resend.
             # Not chained: an aiohttp error can repeat the URL and its query, and a traceback would print it.
-            reason = _safe_response_excerpt(self._scrub(str(err)))
+            reason = safe_response_excerpt(self._scrub(str(err)))
             raise failure(f"Network error: {reason}", not_acted_on=isinstance(err, _NOT_SENT_ERRORS)) from None
         except RequestError as err:
             # After a redirect the tracker has acted, so a refused later hop is an unknown outcome.
@@ -817,7 +782,7 @@ class BaseGazelleApi:
         return bytes(body)
 
     def _scrub(self, text: str) -> str:
-        """_redact, plus this client's own credentials wherever a tracker answer repeats them."""
+        """redact_tracker_fields, plus this client's own credentials wherever a tracker answer repeats them."""
         text = scrub_secrets(text, self._secrets())
         # Its answers carry image URLs signed for this account, not only the ones image_auth() gives.
         return _SIGNED_IMAGE_QUERY.sub(r"\1[REDACTED]", text) if self.SIGNED_IMAGES else text
@@ -846,7 +811,7 @@ class BaseGazelleApi:
             if isinstance(decoded, dict) and "error" in decoded:
                 error_msg = msgspec.json.encode(decoded["error"]).decode()
         # An error page can repeat the authkey or passkey, and callers print what they catch.
-        shown = _safe_response_excerpt(self._scrub(error_msg))
+        shown = safe_response_excerpt(self._scrub(error_msg))
 
         server_wait = parse_retry_after(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
         if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
@@ -940,7 +905,7 @@ class BaseGazelleApi:
             resp_json = {"status": "error", "error": resp.text}
 
         if resp_json.get("status") != "success":
-            raise RequestFailedError(_safe_response_excerpt(self._scrub(str(resp_json.get("error", resp.text)))))
+            raise RequestFailedError(safe_response_excerpt(self._scrub(str(resp_json.get("error", resp.text)))))
         return cast("dict", resp_json["response"])
 
     async def torrentgroup(self, group_id: int) -> dict:
@@ -1159,14 +1124,14 @@ class BaseGazelleApi:
             resp = msgspec.json.decode(response.text)
         except (msgspec.DecodeError, ValueError):
             # The tracker may have taken it before answering with a page.
-            excerpt = _safe_response_excerpt(self._scrub(response.text))
+            excerpt = safe_response_excerpt(self._scrub(response.text))
             reason = f"its answer was not JSON ({response.status}): {excerpt}"
             return await self._find_lost_upload(files, UnknownOutcomeError(reason))
 
         try:
             if resp["status"] != "success":
                 raise RequestError(
-                    f"API upload failed: {_safe_response_excerpt(self._scrub(str(resp.get('error', resp))))}"
+                    f"API upload failed: {safe_response_excerpt(self._scrub(str(resp.get('error', resp))))}"
                 )
             if ("requestid" in resp["response"] and resp["response"]["requestid"]) or (
                 "fillRequest" in resp["response"]
@@ -1193,13 +1158,11 @@ class BaseGazelleApi:
             elif "requestid" not in resp["response"] and "fillRequest" not in resp["response"]:
                 raise UploadError(
                     "API upload succeeded but returned no torrent id, response: "
-                    f"{_safe_response_excerpt(self._scrub(str(resp)))}"
+                    f"{safe_response_excerpt(self._scrub(str(resp)))}"
                 )
             return torrent_id, group_id
         except TypeError as err:
-            raise RequestError(
-                f"API upload failed, response: {_safe_response_excerpt(self._scrub(str(resp)))}"
-            ) from err
+            raise RequestError(f"API upload failed, response: {safe_response_excerpt(self._scrub(str(resp)))}") from err
 
     def upload_form_fields(self, metadata: dict[str, Any], track_data: dict[str, Any]) -> dict[str, str]:
         """Upload form fields only this tracker has, for one torrent; UploadRefusedError if none describes it."""
@@ -1237,7 +1200,7 @@ class BaseGazelleApi:
             match = re.search(r'<p style="color: red; text-align: center;">(.+)<\/p>', resp_text)
             if match:
                 raise RequestError(
-                    f"Site upload failed: {_safe_response_excerpt(self._scrub(match[1]))} ({response.status})"
+                    f"Site upload failed: {safe_response_excerpt(self._scrub(match[1]))} ({response.status})"
                 )
         if "requests.php" in resp_url:
             return await self._request_fill_result(data, files, resp_text, resp_url)
@@ -1245,7 +1208,7 @@ class BaseGazelleApi:
             return self.parse_most_recent_torrent_and_group_id_from_group_page(resp_text)
         except TypeError:
             # Neither an error the form shows nor the group page: the tracker may have taken it.
-            reason = f"its answer was not the group page: {_safe_response_excerpt(self._scrub(resp_text))}"
+            reason = f"its answer was not the group page: {safe_response_excerpt(self._scrub(resp_text))}"
             return await self._find_lost_upload(files, UnknownOutcomeError(reason))
 
     async def _request_fill_result(
@@ -1279,8 +1242,8 @@ class BaseGazelleApi:
         soup = BeautifulSoup(resp_text, "lxml")
         error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
         if error and error.parent and error.parent.parent and (p_tag := error.parent.parent.find("p")):
-            return _safe_response_excerpt(self._scrub(p_tag.text))
-        return _safe_response_excerpt(self._scrub(resp_text))
+            return safe_response_excerpt(self._scrub(p_tag.text))
+        return safe_response_excerpt(self._scrub(resp_text))
 
     async def _find_lost_upload(self, files: UploadFiles, err: UnknownOutcomeError) -> tuple[int, int]:
         """Look an upload whose answer was lost up by its infohash, after a wait and once more if not found yet."""
@@ -1299,7 +1262,7 @@ class BaseGazelleApi:
             except RequestFailedError as unconfirmed:
                 # Not-found answers differ by tracker, so only a login or network failure skips the second lookup.
                 click.secho(
-                    f"{self.site_string} did not find it ({_safe_response_excerpt(self._scrub(str(unconfirmed)))}). "
+                    f"{self.site_string} did not find it ({safe_response_excerpt(self._scrub(str(unconfirmed)))}). "
                     f"Waiting {_LOST_UPLOAD_SECOND_WAIT} s more, then looking it up one last time...",
                     fg="yellow",
                 )
@@ -1308,7 +1271,7 @@ class BaseGazelleApi:
             torrent_id, group_id = int(found["torrent"]["id"]), int(found["group"]["id"])
         except (RequestError, TorfError, KeyError, TypeError, ValueError) as lookup_err:
             # A non-JSON answer arrives here whole, and a logged-in page's links carry secrets.
-            reason = _safe_response_excerpt(self._scrub(str(lookup_err)))
+            reason = safe_response_excerpt(self._scrub(str(lookup_err)))
             raise UnknownOutcomeError(
                 f"Could not tell whether {self.site_string} took the upload ({err}), and looking it up by "
                 f"its infohash did not confirm it ({reason}). The upload may still have gone through: "
@@ -1424,7 +1387,7 @@ class BaseGazelleApi:
         edit_error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
         if edit_error and edit_error.parent and edit_error.parent.parent:
             p_tag = edit_error.parent.parent.find("p")
-            error_message = _safe_response_excerpt(self._scrub(p_tag.text)) if p_tag else "Unknown error"
+            error_message = safe_response_excerpt(self._scrub(p_tag.text)) if p_tag else "Unknown error"
             raise RequestError(f"Failed to edit torrent: {error_message}")
         else:
             click.secho("Added spectrals to the torrent description.", fg="green")
