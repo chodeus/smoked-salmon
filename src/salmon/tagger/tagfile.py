@@ -112,6 +112,12 @@ class TagFile:
             return None
         tags: ID3Tags | MP4Tags = raw_tags
         fields = TAG_FIELDS[format][attr]
+        if isinstance(tags, ID3Tags) and fields[0].startswith("TXXX:"):
+            # Every case of the description, as players read them and set_mp3_tag replaces them.
+            desc = fields[0].split(":", 1)[1].lower()
+            return [
+                value for frame in tags.getall("TXXX") if frame.desc.lower() == desc for value in frame.text
+            ] or None
         for field in fields:
             try:
                 if attr in {"tracknumber", "tracktotal", "discnumber", "disctotal"}:

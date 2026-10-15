@@ -225,6 +225,22 @@ def test_mp3_txxx_artists_in_another_case_is_replaced(tmp_path):
     assert tags["TXXX:ARTISTS"].text == ["Dree Low", "Owen"]
 
 
+def test_mp3_txxx_artists_in_another_case_beside_a_matching_one_is_removed(tmp_path):
+    path = _mp3_album(
+        tmp_path,
+        TXXX(encoding=3, desc="ARTISTS", text=["Dree Low", "Owen"]),
+        TXXX(encoding=3, desc="artists", text=["X"]),
+    )
+
+    _, track_changes = _retag(tmp_path, _metadata(_trackmeta(CREDIT)))
+
+    tags = MP3(path).tags
+    assert tags is not None
+    assert "artists" in [c.tag for c in track_changes["01.mp3"]]
+    assert [frame.desc for frame in tags.getall("TXXX")] == ["ARTISTS"]
+    assert tags["TXXX:ARTISTS"].text == ["Dree Low", "Owen"]
+
+
 @pytest.mark.parametrize("guests_in_title", [False, True])
 def test_artists_lists_every_main_and_guest_by_name(tmp_path, monkeypatch, guests_in_title):
     monkeypatch.setattr(
