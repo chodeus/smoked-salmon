@@ -27,10 +27,11 @@ import salmon.trackers
 import salmon.uploader
 import salmon.uploader.spectrals
 from salmon import cfg, dryrun
+from salmon.common.redaction import redact_tracker_fields
 from salmon.config.validations import Seedbox
 from salmon.errors import DryRunRefused
 from salmon.images.base import BaseImageUploader
-from salmon.trackers.base import BaseGazelleApi, SharedLimiter, _redact
+from salmon.trackers.base import BaseGazelleApi, SharedLimiter
 from salmon.trackers.ops import OpsApi
 from salmon.trackers.red import RedApi
 from salmon.uploader import staging
@@ -140,8 +141,8 @@ class FakeTracker:
 
 
 def _scrubbed(text: str, secrets: list[str]) -> str:
-    """What BaseGazelleApi._scrub shows: _redact, then each known secret of 8+ characters masked, longest first."""
-    text = _redact(text)
+    """What BaseGazelleApi._scrub shows: tracker fields masked, then each known secret of 8+ chars, longest first."""
+    text = redact_tracker_fields(text)
     for secret in sorted((s for s in secrets if s and len(s) >= 8), key=len, reverse=True):
         text = text.replace(secret, "[REDACTED]")
     return text

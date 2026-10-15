@@ -11,9 +11,9 @@ import msgspec
 from yarl import URL
 
 from salmon import cfg
+from salmon.common.redaction import safe_response_excerpt
 from salmon.errors import ImageUploadFailed, RequestError
 from salmon.images.base import BaseImageUploader
-from salmon.trackers.base import _safe_response_excerpt
 from salmon.trackers.red import RedApi
 
 BASE_URL = "https://redacted.sh"
@@ -66,7 +66,7 @@ class ImageUploader(BaseImageUploader):
         except RequestError as error:
             # Not chained: the original message isn't scrubbed, and a traceback would print it.
             raise ImageUploadFailed(
-                f"RED image upload failed: {_safe_response_excerpt(site._scrub(str(error)))}"
+                f"RED image upload failed: {safe_response_excerpt(site._scrub(str(error)))}"
             ) from None
         finally:
             await site.close()
@@ -110,4 +110,4 @@ def _rejection_reason(payload: Any, scrub: Callable[[str], str]) -> str | None:
     if error is None:
         return None
     text = error if isinstance(error, str) else msgspec.json.encode(error).decode()
-    return _safe_response_excerpt(scrub(text))
+    return safe_response_excerpt(scrub(text))

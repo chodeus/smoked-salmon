@@ -1,7 +1,8 @@
 """Tracker connectivity checks shared by `salmon checkconf` and the web interface."""
 
 import salmon.trackers
-from salmon.trackers.base import BaseGazelleApi, _safe_response_excerpt
+from salmon.common.redaction import safe_response_excerpt
+from salmon.trackers.base import BaseGazelleApi
 
 
 async def check_tracker_connection(code: str) -> dict:
@@ -35,7 +36,7 @@ async def _probe(tracker: BaseGazelleApi, index_url: str, result: dict) -> None:
         await tracker._request("GET", index_url, params={"action": "index"}, prefer_api_key=False)
         result["session_ok"] = True
     except Exception as error:
-        result["session_error"] = _safe_response_excerpt(str(error), limit=300)
+        result["session_error"] = safe_response_excerpt(str(error), limit=300)
 
     if tracker.api_key:
         try:
@@ -43,4 +44,4 @@ async def _probe(tracker: BaseGazelleApi, index_url: str, result: dict) -> None:
             result["api_key_ok"] = True
         except Exception as error:
             result["api_key_ok"] = False
-            result["api_key_error"] = _safe_response_excerpt(str(error), limit=300)
+            result["api_key_error"] = safe_response_excerpt(str(error), limit=300)
