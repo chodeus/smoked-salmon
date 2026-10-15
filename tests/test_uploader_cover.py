@@ -2,13 +2,13 @@ import anyio
 import msgspec
 import pytest
 
-import salmon.uploader
 from salmon.config.validations import ImageUploader
+from salmon.uploader import cover
 
 
 @pytest.fixture(autouse=True)
 def _interactive(monkeypatch) -> None:
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", False)
+    monkeypatch.setattr(cover.cfg.upload, "yes_all", False)
 
 
 def _uploads(monkeypatch, *urls: str | None) -> list[str | None]:
@@ -19,11 +19,11 @@ def _uploads(monkeypatch, *urls: str | None) -> list[str | None]:
         return "cover.jpg", False
 
     async def fake_upload(cover_path: str | None, site_code: str | None = None) -> str | None:
-        hosts.append(salmon.uploader.cfg.image.resolve(site_code, "cover_uploader"))
+        hosts.append(cover.cfg.image.resolve(site_code, "cover_uploader"))
         return urls[len(hosts) - 1]
 
-    monkeypatch.setattr(salmon.uploader, "download_cover_if_nonexistent", fake_download)
-    monkeypatch.setattr(salmon.uploader, "upload_cover", fake_upload)
+    monkeypatch.setattr(cover, "download_cover_if_nonexistent", fake_download)
+    monkeypatch.setattr(cover, "upload_cover", fake_upload)
     return hosts
 
 
@@ -35,20 +35,20 @@ def _answers(monkeypatch, *answers: str) -> list[str]:
         asked.append(text)
         return answers[len(asked) - 1]
 
-    monkeypatch.setattr(salmon.uploader.click, "prompt", fake_prompt)
+    monkeypatch.setattr(cover.click, "prompt", fake_prompt)
     return asked
 
 
 def _resolve(group_id: int | None = None) -> tuple[bool, str | None]:
-    return anyio.run(salmon.uploader.resolve_cover_url, "RED", group_id, {}, "/release", None, False)
+    return anyio.run(cover.resolve_cover_url, "RED", group_id, {}, "/release", None, False)
 
 
 def _use_hosts(monkeypatch, config: dict) -> None:
-    monkeypatch.setattr(salmon.uploader.cfg, "image", msgspec.convert(config, ImageUploader))
+    monkeypatch.setattr(cover.cfg, "image", msgspec.convert(config, ImageUploader))
 
 
 def test_yes_all_does_not_upload_a_new_group_without_a_cover(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
+    monkeypatch.setattr(cover.cfg.upload, "yes_all", True)
     _uploads(monkeypatch, None)
     asked = _answers(monkeypatch)
 
@@ -96,7 +96,7 @@ def test_existing_group_needs_no_cover(monkeypatch) -> None:
         downloads.append(cover_source)
         return "cover.jpg", True
 
-    monkeypatch.setattr(salmon.uploader, "download_cover_if_nonexistent", fake_download)
+    monkeypatch.setattr(cover, "download_cover_if_nonexistent", fake_download)
 
     assert _resolve(group_id=123) == (True, None)
     assert hosts == []
@@ -121,8 +121,7 @@ def test_reload_does_not_upload_again_to_a_host_that_has_the_cover(monkeypatch) 
     async def run() -> list[tuple[bool, str | None]]:
         stored: dict[str, str] = {}
         return [
-            await salmon.uploader.resolve_cover_url(tracker, None, stored, "/release", None, False)
-            for tracker in ("DIC", "RED")
+            await cover.resolve_cover_url(tracker, None, stored, "/release", None, False) for tracker in ("DIC", "RED")
         ]
 
     result = anyio.run(run)
@@ -138,8 +137,7 @@ def test_ops_reuses_the_red_cover_without_uploading(monkeypatch) -> None:
     async def run() -> list[tuple[bool, str | None]]:
         stored: dict[str, str] = {}
         return [
-            await salmon.uploader.resolve_cover_url(tracker, None, stored, "/release", None, False)
-            for tracker in ("RED", "OPS")
+            await cover.resolve_cover_url(tracker, None, stored, "/release", None, False) for tracker in ("RED", "OPS")
         ]
 
     result = anyio.run(run)
