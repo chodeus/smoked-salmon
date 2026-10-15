@@ -236,7 +236,7 @@ def test_redact_masks_url_query_secrets_in_html():
     assert "torrent_pass=[REDACTED]" in redacted
 
 
-def testsafe_response_excerpt_redacts_and_truncates():
+def test_safe_response_excerpt_redacts_and_truncates():
     from salmon.common.redaction import safe_response_excerpt
 
     big = "x" * 999 + "?authkey=SECRET"
