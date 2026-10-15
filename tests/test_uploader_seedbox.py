@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import unicodedata
 
 import anyio
 import msgspec
@@ -78,6 +79,37 @@ def test_rclone_upload_folder_treats_a_launch_failure_as_a_failed_copy(monkeypat
 
     assert ok is False
     assert any("rclone could not start" in message for message in messages)
+
+
+def _rclone_commands(monkeypatch, box: Seedbox, folder: str) -> list[str]:
+    """The command _rclone_upload_folder runs to copy /tmp/<folder> into /music."""
+    calls: list[list[str]] = []
+
+    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(commands)
+        return subprocess.CompletedProcess(commands, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
+    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: None)
+    anyio.run(seedbox._rclone_upload_folder, box, "/music", f"/tmp/{folder}")
+    return calls[0]
+
+
+@pytest.mark.parametrize("flag", ["--local-unicode-normalization", "--local-unicode-normalization=true"])
+def test_rclone_destination_folder_is_nfc_with_the_unicode_flag(monkeypatch, flag: str) -> None:
+    nfd = unicodedata.normalize("NFD", "Café")
+
+    commands = _rclone_commands(monkeypatch, Seedbox(url="box", extra_args=[flag]), nfd)
+
+    assert commands[2:4] == [f"/tmp/{nfd}", f"box:/music/{unicodedata.normalize('NFC', 'Café')}"]
+
+
+def test_rclone_destination_folder_keeps_its_name_without_the_unicode_flag(monkeypatch) -> None:
+    nfd = unicodedata.normalize("NFD", "Café")
+
+    commands = _rclone_commands(monkeypatch, Seedbox(url="box", extra_args=["--checksum"]), nfd)
+
+    assert commands[2:4] == [f"/tmp/{nfd}", f"box:/music/{nfd}"]
 
 
 def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkeypatch) -> None:

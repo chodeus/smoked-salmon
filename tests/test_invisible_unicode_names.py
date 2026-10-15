@@ -13,7 +13,7 @@ import pytest
 from salmon import cfg
 from salmon.common import clean_name, invisible_chars
 from salmon.errors import NoncompliantFolderStructure, UploadError
-from salmon.tagger.foldername import generate_folder_name, rename_folder
+from salmon.tagger.foldername import _edit_folder_interactive, generate_folder_name, rename_folder
 from salmon.tagger.folderstructure import _check_invisible_characters, check_folder_structure
 from salmon.tagger.retagger import generate_file_name
 
@@ -141,6 +141,7 @@ def test_generate_file_name_refuses_a_name_with_nothing_visible(monkeypatch, tit
 
 FOLDER_METADATA = {
     "scene": False,
+    "title": "Album",
     "artists": [("Artist", "main")],
     "year": 2020,
     "source": "WEB",
@@ -160,6 +161,127 @@ def test_rename_folder_refuses_a_name_with_nothing_visible(tmp_path, monkeypatch
         rename_folder(str(album), {**FOLDER_METADATA, "title": title}, auto_rename=True, check=False)
 
     assert [entry.name for entry in tmp_path.iterdir()] == ["Album"]
+
+
+def _download_dir(tmp_path, monkeypatch):
+    """A download directory with a file in it, below a parent holding a sibling file."""
+    parent = tmp_path / "parent"
+    downloads = parent / "downloads"
+    downloads.mkdir(parents=True)
+    (parent / "sibling.txt").write_text("keep")
+    (downloads / "other.txt").write_text("keep")
+    album = downloads / "Album"
+    album.mkdir()
+    (album / "01.flac").write_bytes(b"fLaC")
+    monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
+    return parent, downloads, album
+
+
+def _assert_untouched(parent, downloads, album) -> None:
+    assert (parent / "sibling.txt").read_text() == "keep"
+    assert (downloads / "other.txt").read_text() == "keep"
+    assert (album / "01.flac").read_bytes() == b"fLaC"
+
+
+def _default_answers(monkeypatch) -> list[str]:
+    """Every question answered with its default, as -yyy does."""
+    asked: list[str] = []
+
+    def confirm(text, default=False, **_kwargs):
+        asked.append(text)
+        return default
+
+    monkeypatch.setattr(click, "confirm", confirm)
+    return asked
+
+
+@pytest.mark.parametrize("name", ["", ".", ".."])
+def test_rename_folder_refuses_a_name_that_is_not_a_folder_name(tmp_path, monkeypatch, name) -> None:
+    parent, downloads, album = _download_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr("salmon.tagger.foldername.generate_folder_name", lambda _metadata: name)
+    _default_answers(monkeypatch)
+
+    # The default answer to "replace the existing folder?" is yes, and that used to rmtree the directory.
+    with pytest.raises(UploadError, match="Invalid folder name"):
+        rename_folder(str(album), FOLDER_METADATA, auto_rename=True)
+
+    _assert_untouched(parent, downloads, album)
+
+
+@pytest.mark.parametrize("name", ["", ".", ".."])
+def test_rename_folder_without_check_refuses_a_name_that_is_not_a_folder_name(tmp_path, monkeypatch, name) -> None:
+    parent, downloads, album = _download_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr("salmon.tagger.foldername.generate_folder_name", lambda _metadata: name)
+    _default_answers(monkeypatch)
+
+    with pytest.raises(UploadError, match="Invalid folder name"):
+        rename_folder(str(album), FOLDER_METADATA, auto_rename=True, check=False)
+
+    _assert_untouched(parent, downloads, album)
+
+
+@pytest.mark.parametrize("name", ["", ".", ".."])
+def test_rename_folder_refuses_an_edited_name_that_is_not_a_folder_name(tmp_path, monkeypatch, name) -> None:
+    parent, downloads, album = _download_dir(tmp_path, monkeypatch)
+    asked: list[str] = []
+
+    def confirm(text, default=False, **_kwargs):
+        asked.append(text)
+        # The new name is not acceptable (so it is edited), the retry is declined, the rest take the default.
+        return default and "acceptable" not in text and "retry" not in text
+
+    monkeypatch.setattr(click, "confirm", confirm)
+    monkeypatch.setattr(click, "edit", lambda *_args, **_kwargs: name)
+
+    with pytest.raises(SystemExit):
+        rename_folder(str(album), FOLDER_METADATA, auto_rename=False)
+
+    assert any("retry" in text for text in asked)
+    _assert_untouched(parent, downloads, album)
+
+
+def test_rename_folder_refuses_a_template_that_renders_empty(tmp_path, monkeypatch) -> None:
+    parent, downloads, album = _download_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr(cfg.upload.formatting, "folder_template", "{description}")
+    _default_answers(monkeypatch)
+
+    with pytest.raises(UploadError, match="Invalid folder name"):
+        rename_folder(str(album), {**FOLDER_METADATA, "description": ""}, auto_rename=True, check=False)
+
+    _assert_untouched(parent, downloads, album)
+
+
+@pytest.mark.parametrize("name", ["..", ZWSP, ""])
+def test_edit_folder_offers_a_retry_for_a_name_that_would_be_refused(monkeypatch, name) -> None:
+    names = iter([name, "Fixed Name"])
+    monkeypatch.setattr(click, "edit", lambda *_args, **_kwargs: next(names))
+    monkeypatch.setattr(click, "confirm", lambda text, default=False, **_kwargs: "acceptable" not in text)
+
+    assert _edit_folder_interactive("Old", auto_rename=False) == "Fixed Name"
+
+
+def test_rename_folder_still_renames_a_normal_name(tmp_path, monkeypatch) -> None:
+    parent, downloads, album = _download_dir(tmp_path, monkeypatch)
+    _default_answers(monkeypatch)
+
+    new_path = rename_folder(str(album), FOLDER_METADATA, auto_rename=True, check=False)
+
+    assert new_path.startswith(str(downloads))
+    assert new_path != str(album)
+    assert (downloads / "other.txt").read_text() == "keep"
+
+
+@pytest.mark.parametrize("name", ["a/b", "../escape", "/abs"])
+def test_rename_folder_refuses_a_name_with_a_path_separator(tmp_path, monkeypatch, name) -> None:
+    parent, downloads, album = _download_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr("salmon.tagger.foldername.generate_folder_name", lambda _metadata: name)
+    _default_answers(monkeypatch)
+
+    with pytest.raises(UploadError, match="Invalid folder name"):
+        rename_folder(str(album), FOLDER_METADATA, auto_rename=True, check=False)
+
+    _assert_untouched(parent, downloads, album)
+    assert not (parent / "escape").exists()
 
 
 @pytest.mark.parametrize("replacements", [True, False])

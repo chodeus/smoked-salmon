@@ -142,6 +142,14 @@ def test_two_files_that_normalize_to_one_path_are_refused() -> None:
         _normalize_torrent_names(cast("Torrent", cast("object", t)), "NFC")
 
 
+def test_a_file_and_a_folder_that_normalize_to_one_path_are_refused() -> None:
+    files = [{"length": 1, "path": [COMPOSED_NAME]}, {"length": 1, "path": [DECOMPOSED_NAME, "track.flac"]}]
+    t = SimpleNamespace(metainfo={"info": {"name": "Album", "files": files}})
+
+    with pytest.raises(UploadRefusedError, match="folder are both Café.flac once NFC-normalized"):
+        _normalize_torrent_names(cast("Torrent", cast("object", t)), "NFC")
+
+
 def test_torrent_name_normalization_rejects_invalid_value() -> None:
     with pytest.raises(ValueError, match="torrent_name_normalization"):
         Upload(torrent_name_normalization="nfc")

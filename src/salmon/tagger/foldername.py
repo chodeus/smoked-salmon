@@ -32,8 +32,7 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None, original
     `original` is the folder the user gave, when `path` is the run's copy of it: that one is kept, and the run says why.
     """
     old_base = os.path.basename(path)
-    template_fields = {name for _, name, _, _ in Formatter().parse(cfg.upload.formatting.folder_template) if name}
-    if "resolution" in template_fields:
+    if _template_has_resolution():
         metadata = {**metadata, "resolution": _resolution(path)}
     new_base = generate_folder_name(metadata)
     if metadata["scene"]:
@@ -53,8 +52,7 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None, original
 
     # A name with a path separator or . / .. would escape the download dir and, via the
     # rmtree below, delete something outside it — reject before building new_path.
-    invalid = new_base in {"", ".", ".."} or not has_visible_chars(new_base)
-    if os.sep in new_base or (os.altsep and os.altsep in new_base) or invalid:
+    if not _is_folder_name(new_base):
         raise UploadError(f"Invalid folder name: {new_base!r}")
 
     new_path = os.path.join(parent or cfg.directory.download_directory, new_base)
@@ -188,10 +186,31 @@ def resolution_token(audio_info):
     return f"{bit_depth}-{sample_rate / 1000:g}"
 
 
+def _template_has_resolution() -> bool:
+    """Whether the folder template places {resolution} (with or without a format spec) in the name."""
+    template = cfg.upload.formatting.folder_template
+    return any(field == "resolution" for _, field, _, _ in Formatter().parse(template))
+
+
+def _bracketed(foldername, position) -> bool:
+    """Whether position is inside a [...], (...) or {...} group of the name."""
+    depth = 0
+    for char in foldername[:position]:
+        if char in "[({":
+            depth += 1
+        elif char in "])}":
+            depth = max(depth - 1, 0)
+    return depth > 0
+
+
 def _token_span(foldername, token):
     """Where the name's last standalone token is, or None: "1924-48" in a title holds "24-48" but not as a token."""
-    # Anywhere in the name, as a template may put {resolution} outside brackets; the last match wins.
-    matches = list(re.finditer(r"(?<![\w.-])" + re.escape(token) + r"(?![\w.-])", foldername)) if token else []
+    if not token:
+        return None
+    matches = list(re.finditer(r"(?<![\w.-])" + re.escape(token) + r"(?![\w.-])", foldername))
+    # Unless the template places {resolution} itself, a bare "24-96" outside brackets is the title's.
+    if not _template_has_resolution():
+        matches = [m for m in matches if _bracketed(foldername, m.start())]
     return matches[-1].span() if matches else None
 
 
@@ -300,6 +319,13 @@ def _fix_format(metadata, keys):
     return sub_metadata
 
 
+def _is_folder_name(name: str) -> bool:
+    """Whether a name is one folder name: not empty, not . or .., no path separator, something visible in it."""
+    if name in {"", ".", ".."} or os.sep in name or (os.altsep and os.altsep in name):
+        return False
+    return has_visible_chars(name)
+
+
 def _edit_folder_interactive(foldername, auto_rename):
     """Allow the user to edit the pending folder name in a text editor."""
     if auto_rename:
@@ -312,10 +338,10 @@ def _edit_folder_interactive(foldername, auto_rename):
         while True:
             if newname is None:
                 return foldername
-            elif re.search(BLACKLISTED_CHARS, newname):
+            elif re.search(BLACKLISTED_CHARS, newname) or not _is_folder_name(clean_name(newname.replace("\n", ""))):
                 if not click.confirm(
                     click.style(
-                        "Folder name contains invalid characters, retry?",
+                        "Folder name is empty or contains invalid characters, retry?",
                         fg="magenta",
                         bold=True,
                     ),
