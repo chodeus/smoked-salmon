@@ -261,6 +261,24 @@ def _txxx_values(tags: ID3Tags, field: str) -> list[str] | None:
     return [value for frame in tags.getall("TXXX") if frame.desc.lower() == desc for value in frame.text] or None
 
 
+_FORMATS = ((flac.FLAC, "FLAC"), (mp3.MP3, "MP3"), (mp4.MP4, "AAC"))
+
+
+def keeps_field(tags: Any, field: str) -> bool:
+    """Whether the file behind ``tags`` has the field at all (an M4A has no ARTISTS); a stand-in keeps every field."""
+    mut = getattr(tags, "mut", None)
+    kind = next((name for cls, name in _FORMATS if isinstance(mut, cls)), None)
+    return kind is None or field in TAG_FIELDS[kind]
+
+
+def as_stored(tags: Any, value: Any) -> Any:
+    """A value as the file behind ``tags`` keeps it: text, or a list of texts that an M4A joins into one."""
+    if not isinstance(value, list):
+        return str(value)
+    values = [str(v) for v in value]
+    return "; ".join(values) if isinstance(getattr(tags, "mut", None), mp4.MP4) else values
+
+
 def parse_tag_number(tracktags, field):
     """The tag's number, or None when it is absent or not a number (unlike ``_get_tag_number``, no default)."""
     value = tracktags.get(field) if isinstance(tracktags, dict) else getattr(tracktags, field, None)

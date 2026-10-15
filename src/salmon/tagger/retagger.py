@@ -10,7 +10,6 @@ from typing import Any
 
 import asyncclick as click
 import msgspec
-from mutagen import mp4
 
 from salmon import cfg
 from salmon.common.strings import clean_name, has_visible_chars
@@ -21,7 +20,7 @@ from salmon.constants import (
 )
 from salmon.errors import UploadError
 from salmon.tagger.mutation import abort_partial
-from salmon.tagger.tagfile import TagFile, parse_tag_number
+from salmon.tagger.tagfile import TagFile, as_stored, keeps_field, parse_tag_number
 
 
 class Change(msgspec.Struct, frozen=True):
@@ -139,7 +138,7 @@ def create_track_changes(tags, metadata):
         if old_artist_str != new_artist_str:
             changes[filename].append(Change("artist", old_artist_str, new_artist_str))
 
-        if not _is_aac(tagset):
+        if keeps_field(tagset, "artists"):
             old_artists = list(getattr(tagset, "artists", None) or [])
             new_artists = create_artists_list(trackmeta["artists"])
             if old_artists != new_artists:
@@ -335,11 +334,6 @@ def create_artists_list(artists):
     return _ordered_unique([*(a for a, i in artists if i == "main"), *(a for a, i in artists if i == "guest")])
 
 
-def _is_aac(tagset) -> bool:
-    """Whether the tags are an M4A's, which has no ARTISTS tag and takes a genre as one string."""
-    return isinstance(getattr(tagset, "mut", None), mp4.MP4)
-
-
 def create_composer_str(artists):
     """Create the composer string from the metadata."""
     composers = _ordered_unique(a for a, i in artists if i == "composer")
@@ -373,7 +367,7 @@ def print_changes(album_changes, track_changes, a_track):
         previous = getattr(a_track, field, None)
         if isinstance(value, list):
             # Compared as the file would keep them, not as their joined text.
-            value = _written(a_track, value)
+            value = as_stored(a_track, value)
             previous = _values(previous) if previous is not None else None
             is_different = (previous or []) != _values(value)
         else:
@@ -408,13 +402,6 @@ def _quoted(values):
     return ", ".join(f'"{v}"' for v in values)
 
 
-def _written(mut, value):
-    """What a file takes for a tag value: FLAC and MP3 one value per list item, M4A one string."""
-    if isinstance(value, list):
-        return "; ".join(map(str, value)) if _is_aac(mut) else [str(v) for v in value]
-    return str(value)
-
-
 def retag_files(path, album_changes, track_changes):
     """Apply the proposed metadata changes to the files."""
     done: list[str] = []
@@ -422,11 +409,9 @@ def retag_files(path, album_changes, track_changes):
         try:
             mut = TagFile(os.path.join(path, filename))
             for change in changes:
-                if change.tag == "artists" and _is_aac(mut):
-                    continue
-                setattr(mut, change.tag, _written(mut, change.new))
+                setattr(mut, change.tag, as_stored(mut, change.new))
             for tag, value in album_changes.items():
-                setattr(mut, tag, _written(mut, value))
+                setattr(mut, tag, as_stored(mut, value))
             mut.save()
         except Exception as e:
             remaining = [f for f in track_changes if f not in done and f != filename]
