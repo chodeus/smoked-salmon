@@ -308,7 +308,7 @@ _ACCOUNT_LOCK_POLL = 0.05
 
 
 class _AccountLock:
-    """One request that is not idempotent at a time for a tracker account, across every thread and event loop."""
+    """One upload or edit at a time for a tracker account, across every thread and event loop."""
 
     def __init__(self) -> None:
         # A thread lock, polled: web UI jobs each run their own event loop, which an asyncio lock is bound to.
@@ -1330,19 +1330,24 @@ class BaseGazelleApi:
     async def append_to_torrent_description(self, torrent_id: int, description_addition: str) -> None:
         """Prepend text to a torrent's description; RequestError if the form is unreadable or the edit refused."""
         url = self.base_url + "/torrents.php"
-        # Send the tracker's own edit form back with only the description changed (a rebuilt one loses fields).
-        # Authenticated first: the page holds the authkey, and _scrub masks only a known one.
-        page = await self._request("GET", url, params={"action": "edit", "id": torrent_id})
-        try:
-            fields = _torrent_edit_fields(page.text, torrent_id)
-        except RequestError as err:
-            raise RequestError(
-                f"Could not read the edit form of torrent {torrent_id} on {self.site_string} ({err}). "
-                "Nothing was sent: its description is unchanged."
-            ) from err
-        new_data = [(name, description_addition + value if name == "release_desc" else value) for name, value in fields]
-        # Every field is the one the form showed, or the description above, so sending it twice is harmless.
-        resp = await self._request("POST", url, data=new_data, idempotent=True, needs_authkey=False)
+        # Held from the read to the write, or another job's edit in between is lost. Both requests are
+        # idempotent: _session_for must not take this lock again, as it isn't re-entrant.
+        async with _account_lock(self.site_code):
+            # Send the tracker's own edit form back with only the description changed (a rebuilt one loses fields).
+            # Authenticated first: the page holds the authkey, and _scrub masks only a known one.
+            page = await self._request("GET", url, params={"action": "edit", "id": torrent_id})
+            try:
+                fields = _torrent_edit_fields(page.text, torrent_id)
+            except RequestError as err:
+                raise RequestError(
+                    f"Could not read the edit form of torrent {torrent_id} on {self.site_string} ({err}). "
+                    "Nothing was sent: its description is unchanged."
+                ) from err
+            new_data = [
+                (name, description_addition + value if name == "release_desc" else value) for name, value in fields
+            ]
+            # Every field is the one the form showed, or the description above, so sending it twice is harmless.
+            resp = await self._request("POST", url, data=new_data, idempotent=True, needs_authkey=False)
         resp_text = resp.text
 
         soup = BeautifulSoup(resp_text, "lxml")

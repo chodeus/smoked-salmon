@@ -1,4 +1,4 @@
-"""One tracker account sends one request that is not idempotent at a time, from whichever thread and event loop."""
+"""One tracker account sends one upload or edit at a time, from whichever thread and event loop."""
 
 import asyncio
 import threading
@@ -55,11 +55,34 @@ class Tracker:
         return web.json_response({"status": "success", "response": {}})
 
 
+class EditTracker:
+    """A fake tracker's torrent edit form, read slowly enough for two jobs' edits to interleave."""
+
+    def __init__(self) -> None:
+        self.description = "Old"
+
+    async def handle(self, request: web.Request) -> web.Response:
+        if request.method == "GET":
+            shown = self.description
+            await asyncio.sleep(0.3)
+            return web.Response(text=_edit_page(shown), content_type="text/html")
+        self.description = str((await request.post())["release_desc"])
+        return web.Response(text="<html><body><h2>Edit successful</h2></body></html>", content_type="text/html")
+
+
+def _edit_page(description: str) -> str:
+    return (
+        '<html><body><form name="torrent" method="post"><input type="hidden" name="action" value="takeedit">'
+        '<input type="hidden" name="auth" value="AK"><input type="hidden" name="torrentid" value="42">'
+        f'<textarea name="release_desc">{description}</textarea></form></body></html>'
+    )
+
+
 @pytest.fixture
-def serve() -> Iterator[Callable[[Tracker], str]]:
+def serve() -> Iterator[Callable[[Tracker | EditTracker], str]]:
     stops: list[Callable[[], None]] = []
 
-    def start(tracker: Tracker) -> str:
+    def start(tracker: Tracker | EditTracker) -> str:
         loop = asyncio.new_event_loop()
         started = threading.Event()
         address: list[str] = []
@@ -106,16 +129,28 @@ def _send(url: str, method: str) -> None:
     anyio.run(request)
 
 
-def _from_two_threads(url: str, method: str) -> list[BaseException]:
+def _append(url: str, addition: str) -> None:
+    async def edit() -> None:
+        api = FakeApi(url)
+        try:
+            with anyio.fail_after(10):
+                await api.append_to_torrent_description(42, addition)
+        finally:
+            await api.close()
+
+    anyio.run(edit)
+
+
+def _at_once(*jobs: Callable[[], None]) -> list[BaseException]:
     errors: list[BaseException] = []
 
-    def run() -> None:
+    def run(job: Callable[[], None]) -> None:
         try:
-            _send(url, method)
+            job()
         except BaseException as error:  # noqa: BLE001 - reported by the test
             errors.append(error)
 
-    threads = [threading.Thread(target=run) for _ in range(2)]
+    threads = [threading.Thread(target=run, args=(job,)) for job in jobs]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -125,8 +160,9 @@ def _from_two_threads(url: str, method: str) -> list[BaseException]:
 
 def test_two_jobs_uploads_to_one_account_never_overlap(serve) -> None:
     tracker = Tracker()
+    url = serve(tracker)
 
-    errors = _from_two_threads(serve(tracker), "POST")
+    errors = _at_once(lambda: _send(url, "POST"), lambda: _send(url, "POST"))
 
     assert errors == []
     assert tracker.handled == 2
@@ -135,11 +171,22 @@ def test_two_jobs_uploads_to_one_account_never_overlap(serve) -> None:
 
 def test_reads_are_not_held_back_by_the_lock(serve) -> None:
     tracker = Tracker()
+    url = serve(tracker)
 
-    errors = _from_two_threads(serve(tracker), "GET")
+    errors = _at_once(lambda: _send(url, "GET"), lambda: _send(url, "GET"))
 
     assert errors == []
     assert tracker.peak == 2
+
+
+def test_two_jobs_editing_one_description_keep_both_additions(serve) -> None:
+    tracker = EditTracker()
+    url = serve(tracker)
+
+    errors = _at_once(lambda: _append(url, "A: "), lambda: _append(url, "B: "))
+
+    assert errors == []
+    assert tracker.description in ("A: B: Old", "B: A: Old")
 
 
 def test_a_failed_upload_lets_the_next_one_go(serve) -> None:

@@ -7,7 +7,8 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parent.parent / "src" / "salmon"
 # Replaced on the asyncclick module itself: reachable only as click.<name>.
 _CLICK_NAMES = {"prompt", "confirm", "edit", "echo", "secho"}
-# salmon's own, replaced on these modules only: install_interaction_patches lists them.
+# salmon's own, imported only by these modules, where install_interaction_patches replaces each but prompt_async:
+# that is awaited only under view_spectrals, which it replaces.
 _BOUND_WHERE_REPLACED = {
     "view_spectrals": {"uploader/spectrals.py"},
     "flush_stdin": {"uploader/spectrals.py"},
@@ -35,6 +36,15 @@ def _top_level_names(tree: ast.Module) -> Iterator[str]:
             yield from (alias.name for alias in node.names)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             yield node.name
+
+
+def _callers(tree: ast.Module, callee: str) -> Iterator[str]:
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == callee
+            for node in ast.walk(fn)
+        ):
+            yield fn.name
 
 
 def test_no_module_binds_a_click_prompt_function_by_name() -> None:
@@ -72,6 +82,15 @@ def test_input_is_called_only_where_salmon_web_shadows_it() -> None:
     ]
 
     assert found == []
+
+
+def test_prompt_async_is_awaited_only_under_view_spectrals() -> None:
+    modules = dict(_modules())
+    awaits = {(name, fn) for name, tree in modules.items() for fn in _callers(tree, "prompt_async")}
+    opens = {(name, fn) for name, tree in modules.items() for fn in _callers(tree, "_open_specs_in_web_server")}
+
+    assert awaits == {("uploader/spectrals.py", "_open_specs_in_web_server")}
+    assert opens == {("uploader/spectrals.py", "view_spectrals")}
 
 
 def test_the_scan_finds_each_guarded_name_where_it_is_allowed() -> None:
