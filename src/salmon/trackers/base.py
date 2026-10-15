@@ -117,7 +117,7 @@ def scrub_secrets(text: str, secrets: Iterable[str | None], shortest: int = 8) -
     return text
 
 
-# The authkeys and passkeys trackers have sent this process, for salmon web to mask in all it sends out.
+# The authkeys, passkeys and image host keys trackers have sent this process, for salmon web to mask in all it sends.
 _learned_secrets: set[str] = set()
 _learned_secrets_lock = threading.Lock()
 
@@ -788,8 +788,9 @@ class BaseGazelleApi:
                 f"{self.site_string} gave no usable credentials for its image host: it may have changed how it "
                 "serves its images"
             ) from None
-        if not auth["h"]:
-            raise RequestFailedError(f"{self.site_string} gave an empty key for its image host")
+        if len(auth["h"]) < 8:
+            # scrub_secrets, which salmon web's filter also uses, masks a value only from 8 characters on.
+            raise RequestFailedError(f"{self.site_string} gave no usable key for its image host")
         # The key is the credential, masked by value wherever salmon prints; the expiry and user id are masked
         # only in a URL's query (_scrub), as masking numbers by value would cut them out of every other number.
         self._image_auth = auth

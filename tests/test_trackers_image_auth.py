@@ -145,11 +145,20 @@ async def test_only_the_key_becomes_a_secret(red) -> None:
         {"status": "failure", "error": "bad action"},
         {"status": "success", "response": {"h": KEY, "e": int(EXPIRY)}},
         {"status": "success", "response": {"h": "", "e": int(EXPIRY), "u": int(USER)}},
+        {"status": "success", "response": {"h": "k3y4567", "e": int(EXPIRY), "u": int(USER)}},
         {"status": "success", "response": {"h": KEY, "e": "soon", "u": int(USER)}},
         {"status": "success", "response": []},
         ["not", "an", "object"],
     ],
-    ids=["refused", "no user id", "empty key", "expiry not a number", "response not an object", "not an object"],
+    ids=[
+        "refused",
+        "no user id",
+        "empty key",
+        "key too short to mask",
+        "expiry not a number",
+        "response not an object",
+        "not an object",
+    ],
 )
 async def test_an_answer_without_all_three_is_refused_and_nothing_is_kept(red, answer) -> None:
     api, tracker = await red()
