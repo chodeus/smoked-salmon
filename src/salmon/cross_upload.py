@@ -454,6 +454,13 @@ async def _prepare(
         release.data["album_desc"] = generate_description(_track_data(release), {"comment": None, "urls": []})
         release.notes.append(f"{source.site_string} has no album description: sending the tracklist from the tags")
     release.rehost = _images_to_rehost(release.data, source, target)
+    if release.rehost and source.IMAGE_COOKIES and not source.has_session_cookie:
+        code = source.site_code.lower()
+        raise CrossUploadRefused(
+            f"its images on {source.site_string} need fetching for {target.site_string}, and {source.site_string}'s "
+            f"image host takes the session cookie, not the API key: set tracker.{code}.session in your config, or "
+            f"upload it to {target.site_string} with salmon up meanwhile"
+        )
     await _check_lossy_approval(release, source, target)
     return release
 
@@ -935,7 +942,7 @@ def _shows_on(tracker: str, target: str) -> bool:
 
 
 def _bare(url: str) -> str:
-    """The URL without its query, fragment or user info: RED signs its image URLs per viewer, with their id."""
+    """The URL without its query, fragment or user info. RED signs its images in cookies (IMAGE_COOKIES), not URLs."""
     parsed = urlparse(url)
     netloc = parsed.hostname or ""
     if parsed.port:
@@ -1087,11 +1094,15 @@ def lossy_label(page: str, torrent_id: int) -> bool | None:
 
 
 def most_requests(
-    release: Release, target: "BaseGazelleApi", group_id: int | None, conversions_only: bool = False
+    release: Release,
+    source: "BaseGazelleApi",
+    target: "BaseGazelleApi",
+    group_id: int | None,
+    conversions_only: bool = False,
 ) -> tuple[int, int, int]:
     """The most requests uploading one release can send, retries aside: GETs and POSTs to TARGET, GETs to SOURCE.
 
-    TARGET's index call, once per run, is not counted.
+    TARGET's index call, once per run, is not counted; the index call for SOURCE's image host's cookies is.
     """
     data = release.data
     uploads = len(release.tasks) + (0 if conversions_only else 1)
@@ -1116,7 +1127,10 @@ def most_requests(
     if release.lossy_report is not None:
         posts += uploads  # The lossy report of each upload, never sent again
         gets += 2 * uploads  # The pages each redirects to
-    return gets, posts, len({url for _, url in release.rehost})
+    source_gets = len({url for _, url in release.rehost})
+    if source_gets and source.IMAGE_COOKIES:
+        source_gets += 1  # The index call for the image host's cookies
+    return gets, posts, source_gets
 
 
 def _searchstrs(data: dict[str, Any]) -> list[str]:
@@ -1153,16 +1167,23 @@ def _print_plan(
         click.echo(f"   files: {release.path}")
         into = f" (only these, into {target.base_url}/torrents.php?id={target_group_id})" if target_group_id else ""
         click.echo(f"   uploads: {', '.join(formats)}{into}")
-        gets, posts, image_gets = most_requests(release, target, group_id, conversions_only=bool(target_group_id))
-        if release.rehost:
-            click.echo(f"   images to rehost: {image_gets}, each fetched once from {source.site_string}")
+        gets, posts, source_gets = most_requests(
+            release, source, target, group_id, conversions_only=bool(target_group_id)
+        )
+        images = len({url for _, url in release.rehost})
+        if images:
+            click.echo(f"   images to rehost: {images}, each fetched once from {source.site_string}")
         for note in release.notes:
             click.echo(f"   {note}")
-        # The reads of SOURCE done so far are not counted: only the images still to fetch are.
-        source_gets = (
-            f"{image_gets} image GET to {source.site_string}" if image_gets else f"no more GET to {source.site_string}"
-        )
-        click.echo(f"   at most {gets} GET and {posts} POST to {target.site_string}, {source_gets}")
+        # The reads of SOURCE done so far are not counted: only the images still to fetch, and the index call
+        # for its image host's cookies, are.
+        if not source_gets:
+            source_line = f"no more GET to {source.site_string}"
+        elif source_gets > images:
+            source_line = f"{images} image GET and {source_gets - images} index GET to {source.site_string}"
+        else:
+            source_line = f"{images} image GET to {source.site_string}"
+        click.echo(f"   at most {gets} GET and {posts} POST to {target.site_string}, {source_line}")
     if cfg.upload.torrent_name_normalization not in ("", "none"):
         click.secho(
             "torrent_name_normalization is not applied: each new torrent names the files as they are on disk, so it "
@@ -1287,6 +1308,8 @@ async def _rehost_images(
     """
     images: dict[str, tuple[bytes, str]] = {}
     new_urls: dict[tuple[str, str], str] = {}
+    # Every image to rehost is on SOURCE's own site (_images_to_rehost).
+    cookies = await _source_image_cookies(source) if rehost else {}
     for field_name, url in rehost:
         host = (
             cfg.image.resolve(target.site_code, "cover_uploader")
@@ -1294,28 +1317,44 @@ async def _rehost_images(
             else image_host_for_tracker(target.site_code)
         )
         if url not in images:
-            images[url] = await _fetch_source_image(url, source)
+            images[url] = await _fetch_source_image(url, source, cookies)
         key = (host, url)
         if key not in new_urls:
             new_urls[key] = await _upload_image(*images[url], _bare(url), target, host)
         data[field_name] = data[field_name].replace(url, new_urls[key])
 
 
-async def _fetch_source_image(url: str, source: "BaseGazelleApi") -> tuple[bytes, str]:
-    """Fetch an image from SOURCE's own site through SOURCE's client: its content and its file suffix.
+async def _source_image_cookies(source: "BaseGazelleApi") -> dict[str, str]:
+    """The cookies SOURCE's image host takes besides the session cookie, {} if none; CrossUploadRefused if not given."""
+    try:
+        return await source.image_cookies()
+    except RequestError as error:
+        raise CrossUploadRefused(
+            f"could not fetch its images from {source.site_string}: {str(error) or type(error).__name__}"
+        ) from None
+
+
+async def _fetch_source_image(url: str, source: "BaseGazelleApi", cookies: dict[str, str]) -> tuple[bytes, str]:
+    """Fetch an image from SOURCE's own site through SOURCE's client, with its image cookies: content and suffix.
 
     Raises:
         CrossUploadRefused: If it is not on SOURCE's site, cannot be fetched, or is not an image.
     """
-    shown = _bare(url)  # The URL may carry SOURCE's per-viewer signature: never printed.
+    shown = _bare(url)
     if not _same_origin(url, source.base_url):
         raise CrossUploadRefused(f"{shown} is not on {source.site_string}'s own site")
     click.secho(f"Fetching {shown} from {source.site_string}...", fg="yellow")
     try:
         # Through SOURCE's client: its rate limit, retries and redirect rules, and its credentials only ever
-        # go to its own site.
+        # go to its own site. Image cookies go with the session cookie, never the API key.
         response = await source._request(
-            "GET", url, timeout_secs=30, prefer_api_key=not source.has_session_cookie, needs_authkey=False, binary=True
+            "GET",
+            url,
+            timeout_secs=30,
+            prefer_api_key=not cookies and not source.has_session_cookie,
+            needs_authkey=False,
+            binary=True,
+            cookies=cookies,
         )
     except RequestError as error:
         raise CrossUploadRefused(f"could not fetch {shown} ({type(error).__name__})") from None

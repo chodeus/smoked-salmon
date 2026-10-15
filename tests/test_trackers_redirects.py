@@ -239,7 +239,7 @@ async def test_a_source_image_to_rehost_is_read_to_the_end(serve, api_for):
         return await _stream_image(request, chunks=3, size=65536, pause=0.05, head=jpeg)
 
     url = await serve(image=image)
-    content, suffix = await cross_upload._fetch_source_image(f"{url}/image.php", api_for(url))
+    content, suffix = await cross_upload._fetch_source_image(f"{url}/image.php", api_for(url), {})
     assert (len(content), suffix) == (len(jpeg) + 3 * 65536, ".jpg")
 
 
@@ -445,7 +445,7 @@ async def test_a_source_image_on_another_site_is_refused():
     site = FakeApi("https://redacted.sh")
     try:
         with pytest.raises(cross_upload.CrossUploadRefused, match="is not on RED's own site"):
-            await cross_upload._fetch_source_image("https://evil.example/i/x.jpg", site)
+            await cross_upload._fetch_source_image("https://evil.example/i/x.jpg", site, {})
     finally:
         await site.close()
 
@@ -460,7 +460,7 @@ async def test_a_failed_source_image_fetch_never_carries_the_signed_url(monkeypa
     monkeypatch.setattr(site, "_request", cut_off)
     try:
         with pytest.raises(cross_upload.CrossUploadRefused) as caught:
-            await cross_upload._fetch_source_image(signed, site)
+            await cross_upload._fetch_source_image(signed, site, {})
     finally:
         await site.close()
 

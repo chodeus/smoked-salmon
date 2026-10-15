@@ -151,6 +151,8 @@ class Sent:
     cookie: bool
     authorization: bool
     fields: dict[str, Any] = field(default_factory=dict)
+    # The Cookie header as sent, raw: a value may hold / + =, which a cookie parser would mangle.
+    cookie_header: str = ""
 
     @property
     def step(self) -> str:
@@ -200,6 +202,7 @@ class FakeTracker:
                 "session" in request.cookies,
                 "Authorization" in request.headers,
                 fields,
+                request.headers.get("Cookie", ""),
             )
         )
         if self.sent[-1].step in self.answers:
@@ -305,12 +308,13 @@ class FakeTracker:
         return [sent for sent in self.posts() if sent.path == "/reportsv2.php"]
 
 
-def _client(code: str, tracker: FakeTracker, torrents: Path) -> BaseGazelleApi:
+def _client(code: str, tracker: FakeTracker, torrents: Path, red_session: bool = False) -> BaseGazelleApi:
     site = {"RED": RedApi, "OPS": OpsApi, "DIC": DICApi}[code]()
     site.base_url = tracker.url
-    # RED with its API key only, OPS with both, DIC with its session cookie only (it has no API key).
+    # RED with its API key only (and its session cookie with red_session), OPS with both, DIC with its session cookie
+    # only (it has no API key).
     site.api_key = API_KEYS.get(code, "")
-    site.cookie = SESSIONS[code] if code != "RED" else ""
+    site.cookie = SESSIONS[code] if code != "RED" or red_session else ""
     site.dot_torrents_dir = str(torrents)
     return site
 
@@ -374,6 +378,7 @@ def _cross_upload(
     target: str = "RED",
     prepare=None,
     transcode=None,
+    red_session: bool = False,
 ) -> Run:
     """Run `salmon cross-upload ARGS SOURCE TARGET` against two fake trackers, a fake image host and seedbox."""
     trackers = {source: FakeTracker(source), target: FakeTracker(target)}
@@ -432,7 +437,7 @@ def _cross_upload(
 
     def get_class(code: str):
         def make() -> BaseGazelleApi:
-            clients[code] = _client(code, trackers[code], dirs.torrents)
+            clients[code] = _client(code, trackers[code], dirs.torrents, red_session)
             return clients[code]
 
         return make
@@ -1012,6 +1017,67 @@ def _ops_hosted_images(ops_url: str):
         return response
 
     return answer
+
+
+# RED's image host cookies as its ajax.php sets them: a user id, a signature that may hold / + =, an expiry.
+IMGAUTH = {"imgauth_u": "12345", "imgauth_h": "test/sig+nature=0123", "imgauth_e": "1700000000"}
+
+
+def _sets_red_image_cookies(source: FakeTracker) -> None:
+    def index() -> web.Response:
+        response = _success({"authkey": AUTHKEY, "passkey": PASSKEY})
+        for name, value in IMGAUTH.items():
+            # Raw: aiohttp's set_cookie would quote the value.
+            response.headers.add("Set-Cookie", f"{name}={value}; path=/i/; HttpOnly")
+        return response
+
+    source.answers["GET ajax.php?action=index"] = index
+
+
+def _cookies(sent: Sent) -> dict[str, str]:
+    return dict(part.split("=", 1) for part in sent.cookie_header.split("; ") if part)
+
+
+def test_red_images_for_dic_are_fetched_with_reds_image_cookies_and_the_signature_is_never_printed(
+    monkeypatch, dirs
+) -> None:
+    def prepare(source: FakeTracker, _target: FakeTracker) -> None:
+        source.images = {"/i/cover.jpg": JPEG, "/i/inline.png": PNG}
+        _sets_red_image_cookies(source)
+
+    run = _to_dic(monkeypatch, dirs, "RED", input="\n", prepare=prepare, red_session=True)
+
+    assert run.result.exit_code == 0, run.output
+    fetched = [sent for sent in run.source.sent if sent.path.startswith("/i/")]
+    assert [sent.path for sent in fetched] == ["/i/cover.jpg", "/i/inline.png"]
+    for sent in fetched:
+        cookies = _cookies(sent)
+        # Each as RED set it, beside the session cookie, never with the API key.
+        assert {name: cookies.get(name) for name in IMGAUTH} == IMGAUTH
+        assert "session" in cookies
+        assert not sent.authorization
+    assert "2 image GET and 1 index GET to RED" in run.output
+    assert IMGAUTH["imgauth_h"] not in run.output
+    # Only the images get them: no request to DIC, and no other request to RED.
+    to_dic = run.target.sent
+    other_red = [sent for sent in run.source.sent if not sent.path.startswith("/i/")]
+    assert "/upload.php" in {sent.path for sent in to_dic}
+    assert "/ajax.php" in {sent.path for sent in other_red}
+    assert not any("imgauth" in sent.cookie_header for sent in to_dic + other_red)
+
+
+def test_red_images_for_dic_without_reds_session_cookie_are_refused_before_any_target_request(
+    monkeypatch, dirs
+) -> None:
+    def prepare(source: FakeTracker, _target: FakeTracker) -> None:
+        source.images = {"/i/cover.jpg": JPEG, "/i/inline.png": PNG}
+
+    run = _to_dic(monkeypatch, dirs, "RED", input="\n", prepare=prepare)
+
+    assert run.result.exit_code == 1
+    assert "RED's image host takes the session cookie, not the API key: set tracker.red.session" in run.output
+    assert run.target.sent == []
+    assert not any(sent.path.startswith("/i/") for sent in run.source.sent)
 
 
 def test_an_image_only_the_source_shows_is_fetched_through_its_client_and_rehosted_to_the_targets_host(
@@ -2002,10 +2068,12 @@ def _site_uploads(run: Run) -> list[Sent]:
 @pytest.mark.parametrize("source", ["OPS", "RED"])
 def test_an_upload_to_dic_goes_through_its_upload_page_with_its_session_and_no_marks(monkeypatch, dirs, source) -> None:
     def prepare(source_tracker: FakeTracker, _target: FakeTracker) -> None:
-        # RED's own images do not show on DIC: they are fetched from RED and rehosted.
+        # RED's own images do not show on DIC: they are fetched from RED, with its image cookies, and rehosted.
         source_tracker.images = {"/i/cover.jpg": JPEG, "/i/inline.png": PNG}
+        if source == "RED":
+            _sets_red_image_cookies(source_tracker)
 
-    run = _to_dic(monkeypatch, dirs, source, input="\n", prepare=prepare)
+    run = _to_dic(monkeypatch, dirs, source, input="\n", prepare=prepare, red_session=source == "RED")
 
     assert run.result.exit_code == 0, run.output
     # Measured: the upload and the group page it redirects to. DIC has a session cookie: its site log is read

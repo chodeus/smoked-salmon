@@ -55,7 +55,7 @@ INVERTED_RELEASE_TYPES = {
 }
 
 # The names a secret goes by, in a JSON field, a URL query, a cookie header or a form input: one list for all three.
-_SECRET_NAMES = "authkey|passkey|torrent_pass|auth|api_key|session|keeplogged"
+_SECRET_NAMES = "authkey|passkey|torrent_pass|auth|api_key|session|keeplogged|imgauth_[hue]"
 _SENSITIVE_KEYS = re.compile(rf'("(?:{_SECRET_NAMES}|Authorization)"\s*:\s*")(?:[^"\\]|\\.)*(")', re.IGNORECASE)
 _SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=[^&\"'\s<>]+", re.IGNORECASE)
 
@@ -417,6 +417,8 @@ class HttpResponse(msgspec.Struct, frozen=True):
     status: int
     # The body as bytes, for a request made with binary=True (its text is then empty).
     content: bytes = b""
+    # The cookies the answer sets, by name, each value as set: the session keeps none, so nothing resends them.
+    cookies: dict[str, str] = msgspec.field(default_factory=dict)
 
 
 class BaseGazelleApi:
@@ -429,6 +431,9 @@ class BaseGazelleApi:
     site_code: str
     site_string: str
     api_key: str = ""  # Optional, only for API key upload
+    # The cookies this tracker's own image host checks besides the session cookie, which its ajax.php sets on an
+    # answer to a request made with the session cookie. Empty when its images need no more than its pages.
+    IMAGE_COOKIES: tuple[str, ...] = ()
 
     # Artist roles (from ARTIST_IMPORTANCES) that this tracker's upload form does not offer.
     # Uploads drop artists with these roles rather than send an unrecognised importance value.
@@ -454,6 +459,8 @@ class BaseGazelleApi:
         self._authentication_waiters = 0
         self._session: aiohttp.ClientSession | None = None
         self._pool_owner: set[aiohttp.ClientSession] | None = None
+        # The signatures of the image cookies image_cookies() got, masked as the session cookie is.
+        self._image_cookie_secrets: list[str] = []
 
     @property
     def _rate_limiter(self) -> SharedLimiter:
@@ -584,6 +591,7 @@ class BaseGazelleApi:
         idempotent: bool | None = None,
         needs_authkey: bool = True,
         binary: bool = False,
+        cookies: dict[str, str] | None = None,
     ) -> HttpResponse:
         """Authenticated HTTP request, returns response data.
 
@@ -600,6 +608,8 @@ class BaseGazelleApi:
                 once. Defaults to True for everything but POST.
             binary: Read a successful answer as bytes, into the response's content, streamed and
                 capped at 25 MiB; its text is then empty.
+            cookies: Cookies sent with the session cookie, on every hop; refused (ValueError, nothing sent)
+                for a request that would use the API key.
 
         Returns:
             HttpResponse with text, url, status, and headers.
@@ -610,6 +620,9 @@ class BaseGazelleApi:
             RateLimitedError: The tracker rate limits it and asks for more than 60 s of waits in all.
             RequestFailedError: With binary, if the answer holds more than 25 MiB. Not retried.
         """
+        if cookies and prefer_api_key and self.api_key:
+            # A request authenticates with the session cookie or the API key, never both.
+            raise ValueError("cookies are only sent with the session cookie, not with the API key")
         # A dry run only reads from the tracker; each sending step skips itself, and this stops any that was missed.
         if method != "GET" and dryrun.active():
             dryrun.refuse(f"send {method} {self._scrub(url)} to {self.site_string}")
@@ -618,7 +631,9 @@ class BaseGazelleApi:
         if needs_authkey and not (params and params.get("action") == "index"):
             await self.ensure_authenticated()
         # One list for every attempt, so the rate limit waits add up across the retries.
-        return await self._send(method, url, params, data, timeout_secs, prefer_api_key, idempotent, binary, [])
+        return await self._send(
+            method, url, params, data, timeout_secs, prefer_api_key, idempotent, binary, [], extra_cookies=cookies
+        )
 
     @retry(
         retry=retry_if_exception_type(RetryableError),
@@ -638,6 +653,7 @@ class BaseGazelleApi:
         idempotent: bool | None = None,
         binary: bool = False,
         rate_limit_waits: list[int] | None = None,
+        extra_cookies: dict[str, str] | None = None,
     ) -> HttpResponse:
         """Send one authenticated request with the retry policy; rate_limit_waits gains each attempt's wait."""
         if rate_limit_waits is None:
@@ -656,6 +672,10 @@ class BaseGazelleApi:
         use_api_key = prefer_api_key and bool(self.api_key)
         headers = {**self.headers, **({"Authorization": f"{self.api_key_prefix}{self.api_key}"} if use_api_key else {})}
         cookies = {} if use_api_key else self._get_cookies()
+        if extra_cookies and not use_api_key:
+            # One Cookie header, each value as the tracker set it: aiohttp would quote a value holding / or =.
+            headers["Cookie"] = "; ".join(f"{name}={value}" for name, value in {**cookies, **extra_cookies}.items())
+            cookies = {}
 
         if cfg.upload.debug_tracker_connection:
             click.secho(f"[DEBUG] {method} {url}", fg="cyan")
@@ -695,7 +715,13 @@ class BaseGazelleApi:
                             await self._raise_for_status(resp, self._scrub(text), failure, idempotent, rate_limit_waits)
                         location = resp.headers.get(aiohttp.hdrs.LOCATION)
                         if resp.status not in _REDIRECT_STATUSES or not location:
-                            return HttpResponse(text=text, url=str(resp.url), status=resp.status, content=content)
+                            return HttpResponse(
+                                text=text,
+                                url=str(resp.url),
+                                status=resp.status,
+                                content=content,
+                                cookies={name: morsel.coded_value for name, morsel in resp.cookies.items()},
+                            )
                         try:
                             method, data, url = self._next_hop(
                                 str(resp.url), resp.status, method, data, location, idempotent
@@ -728,7 +754,39 @@ class BaseGazelleApi:
 
     def _secrets(self) -> set[str | None]:
         """This client's own credentials, as configured and as sent, which a tracker answer may repeat."""
-        return {self.api_key, self.authkey, self.passkey, self.cookie, *self._get_cookies().values()}
+        return {
+            self.api_key,
+            self.authkey,
+            self.passkey,
+            self.cookie,
+            *self._get_cookies().values(),
+            *self._image_cookie_secrets,
+        }
+
+    async def image_cookies(self) -> dict[str, str]:
+        """IMAGE_COOKIES' values from an index call with the session cookie; {} if none, RequestError if not all set."""
+        if not self.IMAGE_COOKIES:
+            return {}
+        if not self.has_session_cookie:
+            raise RequestFailedError(
+                f"{self.site_string}'s image host needs tracker.{self.site_code.lower()}.session, not the API key"
+            )
+        answer = await self._request(
+            "GET", f"{self.base_url}/ajax.php", params={"action": "index"}, timeout_secs=5, needs_authkey=False
+        )
+        cookies = {name: answer.cookies[name] for name in self.IMAGE_COOKIES if answer.cookies.get(name)}
+        if len(cookies) < len(self.IMAGE_COOKIES):
+            raise RequestFailedError(
+                f"{self.site_string} set none of the cookies its image host takes, or not all: it may have changed "
+                f"how it serves its images, or the session cookie is logged out"
+            )
+        # The signature is the credential, masked wherever salmon prints; the user id and expiry are numbers, which
+        # masking by value would cut out of every other number (their names mask them in _redact).
+        signatures = [value for value in cookies.values() if not value.isdigit()]
+        self._image_cookie_secrets = signatures
+        with _learned_secrets_lock:
+            _learned_secrets.update(signatures)
+        return cookies
 
     async def _read_capped(self, resp: aiohttp.ClientResponse) -> bytes:
         """Read an answer's body as bytes, as it comes, and stop once it holds more than _MAX_BINARY_BODY.
