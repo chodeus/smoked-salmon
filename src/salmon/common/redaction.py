@@ -102,11 +102,7 @@ def redact_tracker_fields(text: str) -> str:
 
 
 def safe_response_excerpt(text: str, limit: int = 500) -> str:
-    """A redacted, length-capped excerpt of a tracker response for error messages.
-
-    Upload responses are whole HTML pages whose download links embed authkey/
-    torrent_pass; surfacing them raw leaks the passkey into job state.
-    """
+    """A redacted, length-capped excerpt of a tracker response for error messages."""
     redacted = redact_tracker_fields(text)
     return redacted if len(redacted) <= limit else redacted[:limit] + "… [truncated]"
 
