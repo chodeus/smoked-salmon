@@ -1,6 +1,7 @@
 """Retagging writes one value per genre and per artist (GENRE, ARTISTS) in FLAC and MP3; ARTIST stays the credit."""
 
 import struct
+from types import SimpleNamespace
 
 import av
 import msgspec
@@ -21,7 +22,7 @@ from salmon.tagger.retagger import (
     print_changes,
     retag_files,
 )
-from salmon.tagger.tagfile import TagFile
+from salmon.tagger.tagfile import TagFile, as_stored, keeps_field
 
 FRAME_HEADER = bytes([0xFF, 0xFB, 0x90, 0x00])
 FRAME_SIZE = 417
@@ -447,3 +448,28 @@ def test_preview_quotes_an_m4a_genre_list_that_becomes_one_string(tmp_path, caps
 
     out = capsys.readouterr().out
     assert _preview_line(out, "> genre") == '"Hip Hop", "Rap" >>> "Hip Hop; Rap"'
+
+
+def test_keeps_field_is_false_only_for_a_field_the_format_lacks(tmp_path):
+    flac_path = _flac_album(tmp_path)
+    mp3_path = _mp3_album(tmp_path)
+    _write_m4a(tmp_path / "01.m4a", trkn=[(1, 0)])
+
+    kept = {
+        name: keeps_field(TagFile(str(path)), "artists")
+        for name, path in [("flac", flac_path), ("mp3", mp3_path), ("m4a", tmp_path / "01.m4a")]
+    }
+    stand_in = keeps_field(SimpleNamespace(tracknumber="1"), "artists")
+
+    assert kept == {"flac": True, "mp3": True, "m4a": False}
+    assert stand_in is True
+
+
+def test_as_stored_gives_text_and_joins_a_list_only_for_an_m4a(tmp_path):
+    flac = TagFile(str(_flac_album(tmp_path)))
+    _write_m4a(tmp_path / "01.m4a", trkn=[(1, 0)])
+    m4a = TagFile(str(tmp_path / "01.m4a"))
+
+    assert as_stored(flac, ["Hip Hop", 2020]) == ["Hip Hop", "2020"]
+    assert as_stored(m4a, ["Hip Hop", "Rap"]) == "Hip Hop; Rap"
+    assert as_stored(m4a, 2020) == "2020"
