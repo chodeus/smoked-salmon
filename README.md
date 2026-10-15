@@ -357,7 +357,7 @@ This only works from a lossless FLAC (anything else stops before a file is touch
 tracker. The usual checks still run, on a scratch copy in `download_directory/.salmon-staging` that is removed when
 the run ends: the source folder is never modified, since it is likely seeding the FLAC. The transcodes land in
 `download_directory` as for any upload. The transcode
-descriptions link to the group's FLAC in this release's edition (same media, encoding, year, catalogue number and
+descriptions link to the group's FLAC in this release's edition (same media, encoding, year and
 edition title); if there are several, salmon asks which one (with `-yyy` it stops). Formats the edition already
 has are flagged as a dupe risk and left out unless you pick them by number. In the web interface this is the
 "Transcodes only" option.
