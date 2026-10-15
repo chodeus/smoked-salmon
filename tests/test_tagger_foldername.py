@@ -45,7 +45,8 @@ def test_hardlink_fallback_survives_a_partial_tree(tmp_path, monkeypatch) -> Non
     }
 
     new_path = foldername.rename_folder(str(source), metadata, auto_rename=True, check=False)
+    copied = [(Path(new_path) / name).read_bytes() for name in file_names]
 
+    assert calls["n"] >= 2
     assert new_path == str(download_dir / source.name)
-    for i, name in enumerate(file_names):
-        assert (Path(new_path) / name).read_bytes() == f"content-{i}".encode()
+    assert copied == [f"content-{i}".encode() for i in range(len(file_names))]
