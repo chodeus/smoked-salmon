@@ -645,7 +645,9 @@ async def choose_source_flac(group: dict, release: dict) -> dict | None:
     for index, torrent in enumerate(flacs, 1):
         click.echo(f" {index:02d} >> {describe_torrent(torrent, group)}")
     if cfg.upload.yes_all:
-        click.secho("Not picking the FLAC to transcode from with --yes-all. Run without it to choose.", fg="red")
+        click.secho(
+            "Not picking the FLAC to transcode from with -yyy (upload.yes_all). Run without it to choose.", fg="red"
+        )
         return None
     while True:
         choice = (

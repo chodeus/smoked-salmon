@@ -47,13 +47,17 @@ def _use_hosts(monkeypatch, config: dict) -> None:
     monkeypatch.setattr(salmon.uploader.cfg, "image", msgspec.convert(config, ImageUploader))
 
 
-def test_yes_all_does_not_upload_a_new_group_without_a_cover(monkeypatch) -> None:
+def test_yes_all_does_not_upload_a_new_group_without_a_cover(monkeypatch, capsys) -> None:
     monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
     _uploads(monkeypatch, None)
     asked = _answers(monkeypatch)
 
-    assert _resolve() == (False, None)
+    resolved = _resolve()
+
+    out = capsys.readouterr().out
+    assert resolved == (False, None)
     assert asked == []
+    assert "Not uploading a new group without a cover image with -yyy (upload.yes_all)." in out
 
 
 @pytest.mark.parametrize("answer", ["n", "", "no", "x"])

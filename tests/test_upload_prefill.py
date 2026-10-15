@@ -462,7 +462,7 @@ def test_the_downconversion_question_stays_when_there_is_something_to_convert(mo
     assert DOWNCONVERSION in run.result.output
 
 
-# --yes-all
+# -yyy
 
 
 def _result(group_id: int, name: str = "Album", year: Any = 2020, artist: str = "Artist", **kw: Any) -> dict:

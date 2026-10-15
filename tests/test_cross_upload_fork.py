@@ -181,7 +181,7 @@ def test_conversions_only_with_yyy_and_several_edition_flacs_upload_nothing(monk
     run = _conversions_only(monkeypatch, dirs, _target_group(_web_flac(), _web_flac(id=TARGET_FLAC_ID + 1)))
 
     assert run.result.exit_code == 1
-    assert "Not picking the FLAC to transcode from" in run.output
+    assert "Not picking the FLAC to transcode from with -yyy (upload.yes_all). Run without it to choose." in run.output
     assert f"no FLAC of this edition in group {TARGET_GROUP_ID} on RED was picked to convert from" in run.output
     assert run.target.posts() == []
 
