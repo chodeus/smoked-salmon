@@ -83,6 +83,9 @@ class TagFile:
                     return values
                 return "; ".join(values) or None
             elif isinstance(mut, mp3.MP3):
+                field = TAG_FIELDS["MP3"][attr][0]
+                if field.startswith("TXXX:") and isinstance(mut.tags, ID3Tags):
+                    return _txxx_values(mut.tags, field)
                 return self.parse_tag(attr, "MP3")
             elif isinstance(mut, mp4.MP4):
                 tag = self.parse_tag(attr, "AAC")
@@ -112,12 +115,6 @@ class TagFile:
             return None
         tags: ID3Tags | MP4Tags = raw_tags
         fields = TAG_FIELDS[format][attr]
-        if isinstance(tags, ID3Tags) and fields[0].startswith("TXXX:"):
-            # Every case of the description, as players read them and set_mp3_tag replaces them.
-            desc = fields[0].split(":", 1)[1].lower()
-            return [
-                value for frame in tags.getall("TXXX") if frame.desc.lower() == desc for value in frame.text
-            ] or None
         for field in fields:
             try:
                 if attr in {"tracknumber", "tracktotal", "discnumber", "disctotal"}:
@@ -256,6 +253,12 @@ class TagFile:
         mut = self.mut
         if mut is not None:
             mut.save()
+
+
+def _txxx_values(tags: ID3Tags, field: str) -> list[str] | None:
+    """A TXXX field's values from every case of its description, as players read it and set_mp3_tag replaces it."""
+    desc = field.split(":", 1)[1].lower()
+    return [value for frame in tags.getall("TXXX") if frame.desc.lower() == desc for value in frame.text] or None
 
 
 def parse_tag_number(tracktags, field):
