@@ -1,10 +1,11 @@
 import asyncio
 import html
+import math
 import re
 import threading
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager, suppress
 from http import HTTPStatus
 from typing import Any, NoReturn, cast
@@ -15,17 +16,19 @@ import aiohttp
 import asyncclick as click
 import msgspec
 from aiohttp import FormData
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
+from humanfriendly import format_size
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential, wait_random
 from torf import TorfError, Torrent
 from yarl import URL
 
-from salmon import cfg
+from salmon import cfg, dryrun
 from salmon.common import UploadFiles
 from salmon.common.urls import parse_retry_after
 from salmon.constants import RELEASE_TYPES
 from salmon.errors import (
     LoginError,
+    RateLimitedError,
     RequestError,
     RequestFailedError,
     UnknownOutcomeError,
@@ -51,21 +54,24 @@ INVERTED_RELEASE_TYPES = {
     1021: "Produced By",
 }
 
-_SENSITIVE_KEYS = re.compile(
-    r'"(authkey|passkey|auth|api_key|Authorization|session|keeplogged)"\s*:\s*"[^"]*"',
-    re.IGNORECASE,
-)
-# Same secrets as they appear in HTML/URLs/cookie headers (download links carry
-# authkey/torrent_pass; Cookie/Set-Cookie carry session/keeplogged).
-_SENSITIVE_URL_PARAMS = re.compile(
-    r"\b(authkey|passkey|torrent_pass|auth|api_key|session|keeplogged)=[^&\"'\s<>]+",
+# The names a secret goes by, in a JSON field, a URL query, a cookie header or a form input: one list for all three.
+_SECRET_NAMES = "authkey|passkey|torrent_pass|auth|api_key|session|keeplogged|imgauth_[hue]"
+_SENSITIVE_KEYS = re.compile(rf'("(?:{_SECRET_NAMES}|Authorization)"\s*:\s*")(?:[^"\\]|\\.)*(")', re.IGNORECASE)
+_SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=[^&\"'\s<>]+", re.IGNORECASE)
+
+_SECRET_INPUT_NAME = rf"""\bname=["'](?:{_SECRET_NAMES})["']"""
+# A form's hidden inputs, value before or after the name: <input name="auth" value="...">.
+_SENSITIVE_INPUTS = re.compile(
+    rf"""(<input\b[^>]*{_SECRET_INPUT_NAME}[^>]*\bvalue=["'])[^"']*"""
+    rf"""|(<input\b[^>]*\bvalue=["'])[^"']*(?=["'][^>]*{_SECRET_INPUT_NAME})""",
     re.IGNORECASE,
 )
 
 
 def _redact(text: str) -> str:
-    """Redact sensitive values (JSON fields and URL query params) from a string."""
-    text = _SENSITIVE_KEYS.sub(lambda m: f'"{m.group(1)}": "[REDACTED]"', text)
+    """Redact sensitive values (JSON fields, URL query params, form inputs) from a string."""
+    text = _SENSITIVE_KEYS.sub(lambda m: f"{m.group(1)}[REDACTED]{m.group(2)}", text)
+    text = _SENSITIVE_INPUTS.sub(lambda m: f"{m.group(1) or m.group(2)}[REDACTED]", text)
     return _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
 
 
@@ -96,6 +102,31 @@ def _normalize_session_cookie(cookie: str) -> str:
     return quote(unquote(cookie.strip()), safe="")
 
 
+def session_cookie_forms(cookie: str | None) -> list[str]:
+    """A session cookie as configured, decoded, and as sent: a tracker answer or an error may repeat any of them."""
+    if not cookie:
+        return []
+    return list(dict.fromkeys([cookie, cookie.strip(), unquote(cookie.strip()), _normalize_session_cookie(cookie)]))
+
+
+def scrub_secrets(text: str, secrets: Iterable[str | None], shortest: int = 8) -> str:
+    """_redact, plus every secret of at least `shortest` characters, longest first so one inside another goes whole."""
+    text = _redact(text)
+    for secret in sorted({s for s in secrets if s and len(s) >= shortest}, key=len, reverse=True):
+        text = text.replace(secret, "[REDACTED]")
+    return text
+
+
+# The authkeys and passkeys trackers have sent this process, for salmon web to mask in all it sends out.
+_learned_secrets: set[str] = set()
+_learned_secrets_lock = threading.Lock()
+
+
+def learned_secrets() -> list[str]:
+    with _learned_secrets_lock:
+        return list(_learned_secrets)
+
+
 def _build_tracker_cookies(session_cookie: str, keeplogged_cookie: str | None = None) -> dict[str, str]:
     """Build the cookie payload for tracker requests.
 
@@ -112,58 +143,89 @@ def _build_tracker_cookies(session_cookie: str, keeplogged_cookie: str | None = 
     return cookies
 
 
-def _add_form_field(form: FormData, key: str, value: Any) -> None:
-    """Add a single value to FormData, coercing types as needed.
-
-    aiohttp FormData only accepts str/bytes/IO types, so bool and int
-    values are converted accordingly. False and None are skipped.
-
-    Args:
-        form: The FormData instance to add the field to.
-        key: The field name.
-        value: The field value.
-    """
-    if value is True:
-        form.add_field(key, "on")
-    elif value is False or value is None:
-        return
-    elif isinstance(value, int):
-        form.add_field(key, str(value))
-    else:
-        form.add_field(key, value)
+def _form_parts(files: UploadFiles, data: dict[str, Any]) -> list[tuple[str, Any, str | None]]:
+    """The upload form's (name, value, file name or None) parts, in the order they are sent."""
+    # aiohttp FormData only takes str/bytes/IO: True goes as "on", an int as its digits, False and None not at all.
+    parts: list[tuple[str, Any, str | None]] = [("file_input", files.torrent_data, "meowmeow.torrent")]
+    parts += [("logfiles[]", log_data, log_name) for log_name, log_data in files.log_files]
+    for key, value in data.items():
+        for item in value if isinstance(value, list) else [value]:
+            if item is True:
+                parts.append((key, "on", None))
+            elif item is False or item is None:
+                continue
+            elif isinstance(item, int):
+                parts.append((key, str(item), None))
+            else:
+                parts.append((key, item, None))
+    return parts
 
 
 def _compose_form_data(files: UploadFiles, data: dict[str, Any]) -> FormData:
-    """Compose FormData by converting UploadFiles and adding data fields.
-
-    Args:
-        files: The UploadFiles object containing file uploads.
-        data: Dictionary of field names and values to add.
-
-    Returns:
-        A new FormData object with all files and fields added.
-    """
+    """The upload's FormData, built from _form_parts."""
     form = FormData()
-    form.add_field(
-        "file_input",
-        files.torrent_data,
-        filename="meowmeow.torrent",
-        content_type="application/octet-stream",
-    )
-    for log_name, log_data in files.log_files:
-        form.add_field(
-            "logfiles[]",
-            log_data,
-            filename=log_name,
-            content_type="application/octet-stream",
-        )
-    for key, value in data.items():
-        if isinstance(value, list):
-            for item in value:
-                _add_form_field(form, key, item)
+    for name, value, filename in _form_parts(files, data):
+        if filename is None:
+            form.add_field(name, value)
         else:
-            _add_form_field(form, key, value)
+            form.add_field(name, value, filename=filename, content_type="application/octet-stream")
     return form
+
+
+# Inputs a browser does not submit as text: a file input sends a file, a button only its own name when clicked.
+_UNSUBMITTED_INPUT_TYPES = frozenset({"file", "submit", "button", "reset", "image"})
+
+
+def _submitted_fields(form: Tag) -> list[tuple[str, str]]:
+    """The form's (name, value) pairs in page order, disabled fields kept: RED's onsubmit enables them all."""
+    fields: list[tuple[str, str]] = []
+    for control in form.find_all(["input", "select", "textarea"]):
+        if not isinstance(control, Tag) or not control.get("name"):
+            continue
+        name = str(control["name"])
+        if control.name == "input":
+            input_type = str(control.get("type", "text")).lower()
+            if input_type in _UNSUBMITTED_INPUT_TYPES:
+                continue
+            if input_type not in ("checkbox", "radio"):
+                fields.append((name, str(control.get("value", ""))))
+            elif control.has_attr("checked"):
+                fields.append((name, str(control.get("value", "on"))))
+        elif control.name == "select":
+            options = [option for option in control.find_all("option") if isinstance(option, Tag)]
+            selected = [option for option in options if option.has_attr("selected")]
+            if not control.has_attr("multiple"):
+                # The last selected option wins; with none, the first one not disabled.
+                selected = selected[-1:] or [option for option in options if not option.has_attr("disabled")][:1]
+            for option in selected:
+                value = option.get("value")
+                fields.append((name, " ".join(option.get_text().split()) if value is None else str(value)))
+        else:
+            # A newline right after the opening tag is not part of the text.
+            fields.append((name, control.get_text().removeprefix("\n")))
+    return fields
+
+
+def _torrent_edit_fields(page: str, torrent_id: int) -> list[tuple[str, str]]:
+    """The torrent edit form's fields as a browser submits them; RequestError unless it is exactly this torrent's."""
+    soup = BeautifulSoup(page, "lxml")
+    # The page also holds forms that move the torrent to another group; only one posts action=takeedit.
+    forms = [
+        form
+        for form in soup.find_all("form", attrs={"name": "torrent"})
+        if isinstance(form, Tag) and form.find("input", attrs={"type": "hidden", "name": "action", "value": "takeedit"})
+    ]
+    if len(forms) != 1:
+        raise RequestError(f"expected one edit form on the page, found {len(forms)}")
+    fields = _submitted_fields(forms[0])
+    descriptions = [name for name, _ in fields].count("release_desc")
+    if descriptions != 1:
+        raise RequestError(f"expected one description field in the edit form, found {descriptions}")
+    if ("torrentid", str(torrent_id)) not in fields:
+        raise RequestError(f"the edit form is not for torrent {torrent_id}")
+    if not dict(fields).get("auth"):
+        raise RequestError("the edit form has no auth field")
+    return fields
 
 
 class SearchReleaseData(msgspec.Struct, frozen=True):
@@ -229,16 +291,55 @@ _limiters: dict[str, SharedLimiter] = {}
 _limiters_lock = threading.Lock()
 
 
+# 0.5 s over the tracker's 10 s: requests arrive with jitter, and 6 entered a period apart could land within 10 s.
+_RATE_PERIOD = 10.5
+
+
 def _tracker_limiter(site_code: str) -> SharedLimiter:
-    """5 requests per 10 seconds for one tracker, process-wide."""
+    """5 requests per 10 seconds for one tracker, with a margin, process-wide."""
     with _limiters_lock:
         if site_code not in _limiters:
-            _limiters[site_code] = SharedLimiter(5, 10)
+            _limiters[site_code] = SharedLimiter(5, _RATE_PERIOD)
         return _limiters[site_code]
+
+
+# How often a request waiting for its account's lock tries it again.
+_ACCOUNT_LOCK_POLL = 0.05
+
+
+class _AccountLock:
+    """One upload or edit at a time for a tracker account, across every thread and event loop."""
+
+    def __init__(self) -> None:
+        # A thread lock, polled: web UI jobs each run their own event loop, which an asyncio lock is bound to.
+        self._lock = threading.Lock()
+
+    async def __aenter__(self) -> None:
+        while not self._lock.acquire(blocking=False):
+            await asyncio.sleep(_ACCOUNT_LOCK_POLL)
+
+    async def __aexit__(self, *_exc: object) -> None:
+        self._lock.release()
+
+
+_account_locks: dict[str, _AccountLock] = {}
+
+
+def _account_lock(site_code: str) -> _AccountLock:
+    with _limiters_lock:
+        return _account_locks.setdefault(site_code, _AccountLock())
 
 
 # An upload that fills a request takes two hops; one spare.
 _MAX_REDIRECTS = 3
+# The most a binary answer (an image on the tracker's own host) may hold. Reading stops there.
+_MAX_BINARY_BODY = 25 * 1024 * 1024
+_BINARY_READ_CHUNK = 64 * 1024
+# The site log pages a recent-uploads check reads; cross-upload's request budget counts them.
+SITE_LOG_PAGES = 10
+# Seconds before the first and the last lookup of an upload whose answer was lost: the tracker may still be on it.
+_LOST_UPLOAD_FIRST_WAIT = 10
+_LOST_UPLOAD_SECOND_WAIT = 30
 _REDIRECT_STATUSES = frozenset(
     {
         HTTPStatus.MOVED_PERMANENTLY,
@@ -248,8 +349,12 @@ _REDIRECT_STATUSES = frozenset(
         HTTPStatus.PERMANENT_REDIRECT,
     }
 )
-# A 429 without a usable Retry-After waits this long; no server wait is taken past the cap.
-_RATE_LIMIT_WAIT = 20.0
+# A rate limit without a usable Retry-After waits this long, and none waits less than the limiter's spacing.
+_RATE_LIMIT_WAIT = 20
+_MIN_RATE_LIMIT_WAIT = 2
+# One request's rate-limit waits add up to this at most; a tracker asking for more fails it with RateLimitedError.
+_MAX_RATE_LIMIT_WAITS = 60
+# No 5xx Retry-After is waited past this.
 _MAX_SERVER_WAIT = 120.0
 # The request never left, so re-sending it is safe whatever it does.
 _NOT_SENT_ERRORS = (aiohttp.ClientConnectorError, aiohttp.ConnectionTimeoutError)
@@ -296,27 +401,45 @@ class RetryableError(RequestError):
     pass
 
 
+def _rate_limit_wait(retry_after: str | None) -> int:
+    """How long to wait, in whole seconds, before sending a rate limited request again."""
+    wait = parse_retry_after(retry_after)
+    if wait is None:
+        return _RATE_LIMIT_WAIT
+    return max(math.ceil(wait), _MIN_RATE_LIMIT_WAIT)
+
+
 class HttpResponse(msgspec.Struct, frozen=True):
     """HTTP response data extracted from aiohttp.ClientResponse."""
 
     text: str
     url: str
     status: int
+    # The body as bytes, for a request made with binary=True (its text is then empty).
+    content: bytes = b""
+    # The cookies the answer sets, by name, each value as set: the session keeps none, so nothing resends them.
+    cookies: dict[str, str] = msgspec.field(default_factory=dict)
 
 
 class BaseGazelleApi:
     """Base API client for Gazelle-based trackers."""
 
-    # Subclasses must set these attributes before calling __init__
-    cookie: str
+    # Subclasses must set these attributes before calling __init__; a tracker with no session configured has none.
+    cookie: str = ""
     base_url: str
     tracker_url: str
     site_code: str
     site_string: str
     api_key: str = ""  # Optional, only for API key upload
+    # The cookies this tracker's own image host checks besides the session cookie, which its ajax.php sets on an
+    # answer to a request made with the session cookie. Empty when its images need no more than its pages.
+    IMAGE_COOKIES: tuple[str, ...] = ()
+
+    # Artist roles (from ARTIST_IMPORTANCES) that this tracker's upload form does not offer.
+    # Uploads drop artists with these roles rather than send an unrecognised importance value.
+    unsupported_artist_roles: frozenset[str] = frozenset()
     api_key_prefix: str = ""  # OPS wants "token <key>"; RED wants the bare key
     keeplogged: str | None = None
-    dry_run: bool = False  # when True, validate the upload but never actually send it
 
     def __init__(self) -> None:
         """Initialize the API client. Subclasses should call this after setting cookie/base_url."""
@@ -332,8 +455,12 @@ class BaseGazelleApi:
         self.authkey: str | None = None
         self.passkey: str | None = None
         self._authenticated = False
+        self._authentication: asyncio.Task[None] | None = None
+        self._authentication_waiters = 0
         self._session: aiohttp.ClientSession | None = None
         self._pool_owner: set[aiohttp.ClientSession] | None = None
+        # The signatures of the image cookies image_cookies() got, masked as the session cookie is.
+        self._image_cookie_secrets: list[str] = []
 
     @property
     def _rate_limiter(self) -> SharedLimiter:
@@ -369,11 +496,14 @@ class BaseGazelleApi:
             yield self._http_session()
             return
         # A pooled connection may be one the tracker is closing as idle, and a failure on it
-        # can't be told from a request the tracker acted on.
-        async with aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(force_close=True),
-            cookie_jar=aiohttp.DummyCookieJar(),
-        ) as session:
+        # can't be told from a request the tracker acted on. Two jobs' uploads or edits never overlap.
+        async with (
+            _account_lock(self.site_code),
+            aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(force_close=True),
+                cookie_jar=aiohttp.DummyCookieJar(),
+            ) as session,
+        ):
             yield session
 
     @asynccontextmanager
@@ -424,20 +554,32 @@ class BaseGazelleApi:
         acctinfo = await self.api_call("index")
         self.authkey = acctinfo["authkey"]
         self.passkey = acctinfo["passkey"]
+        with _learned_secrets_lock:
+            _learned_secrets.update(secret for secret in (self.authkey, self.passkey) if secret)
         self._authenticated = True
 
     async def ensure_authenticated(self) -> None:
-        """Ensure we are authenticated before making requests."""
-        if not self._authenticated:
-            await self.authenticate()
+        """Ensure we are authenticated before making requests.
 
-    @retry(
-        retry=retry_if_exception_type(RetryableError),
-        stop=stop_after_attempt(5),
-        # Jitter keeps a batch that failed together from retrying in one salvo.
-        wait=wait_exponential(multiplier=1, min=1, max=30) + wait_random(0, 2),
-        reraise=True,
-    )
+        Requests that go out together on a fresh client share one authentication attempt, so one index call
+        instead of one each. If it fails, each of them gets its error; a call made once it is over tries again.
+        The attempt runs on its own, and is cancelled only when no request waits for it any more.
+        """
+        if self._authenticated:
+            return
+        if self._authentication is None or self._authentication.done():
+            self._authentication = asyncio.create_task(self.authenticate())
+        attempt = self._authentication
+        self._authentication_waiters += 1
+        try:
+            await asyncio.shield(attempt)
+        finally:
+            self._authentication_waiters -= 1
+            if not self._authentication_waiters and not attempt.done():
+                attempt.cancel()
+                # A request arriving meanwhile must not wait on an attempt being cancelled.
+                self._authentication = None
+
     async def _request(
         self,
         method: str,
@@ -448,6 +590,8 @@ class BaseGazelleApi:
         prefer_api_key: bool = False,
         idempotent: bool | None = None,
         needs_authkey: bool = True,
+        binary: bool = False,
+        cookies: dict[str, str] | None = None,
     ) -> HttpResponse:
         """Authenticated HTTP request, returns response data.
 
@@ -462,6 +606,10 @@ class BaseGazelleApi:
                 (no Authorization header).
             idempotent: Whether sending the request twice does no more than sending it
                 once. Defaults to True for everything but POST.
+            binary: Read a successful answer as bytes, into the response's content, streamed and
+                capped at 25 MiB; its text is then empty.
+            cookies: Cookies sent with the session cookie, on every hop; refused (ValueError, nothing sent)
+                for a request that would use the API key.
 
         Returns:
             HttpResponse with text, url, status, and headers.
@@ -469,7 +617,47 @@ class BaseGazelleApi:
         Raises:
             UnknownOutcomeError: A request that is not idempotent failed after it may have
                 reached the tracker, so it is not sent again.
+            RateLimitedError: The tracker rate limits it and asks for more than 60 s of waits in all.
+            RequestFailedError: With binary, if the answer holds more than 25 MiB. Not retried.
         """
+        if cookies and prefer_api_key and self.api_key:
+            # A request authenticates with the session cookie or the API key, never both.
+            raise ValueError("cookies are only sent with the session cookie, not with the API key")
+        # A dry run only reads from the tracker; each sending step skips itself, and this stops any that was missed.
+        if method != "GET" and dryrun.active():
+            dryrun.refuse(f"send {method} {self._scrub(url)} to {self.site_string}")
+        # An api key request that sends no auth field needs no index call for the authkey.
+        # Outside _send's retries: the attempt makes its own tries, which a retried request would repeat.
+        if needs_authkey and not (params and params.get("action") == "index"):
+            await self.ensure_authenticated()
+        # One list for every attempt, so the rate limit waits add up across the retries.
+        return await self._send(
+            method, url, params, data, timeout_secs, prefer_api_key, idempotent, binary, [], extra_cookies=cookies
+        )
+
+    @retry(
+        retry=retry_if_exception_type(RetryableError),
+        stop=stop_after_attempt(5),
+        # Jitter keeps a batch that failed together from retrying in one salvo.
+        wait=wait_exponential(multiplier=1, min=1, max=30) + wait_random(0, 2),
+        reraise=True,
+    )
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        params: dict[str, Any] | None = None,
+        data: Any = None,
+        timeout_secs: int = 10,
+        prefer_api_key: bool = False,
+        idempotent: bool | None = None,
+        binary: bool = False,
+        rate_limit_waits: list[int] | None = None,
+        extra_cookies: dict[str, str] | None = None,
+    ) -> HttpResponse:
+        """Send one authenticated request with the retry policy; rate_limit_waits gains each attempt's wait."""
+        if rate_limit_waits is None:
+            rate_limit_waits = []
         if idempotent is None:
             idempotent = method.upper() != "POST"
         # Once the tracker redirects, it has acted on the request, whatever happens next.
@@ -481,13 +669,13 @@ class BaseGazelleApi:
                 return RetryableError(message)
             return UnknownOutcomeError(message)
 
-        # An api key request that sends no auth field needs no index call for the authkey.
-        if needs_authkey and not (params and params.get("action") == "index"):
-            await self.ensure_authenticated()
-
         use_api_key = prefer_api_key and bool(self.api_key)
         headers = {**self.headers, **({"Authorization": f"{self.api_key_prefix}{self.api_key}"} if use_api_key else {})}
         cookies = {} if use_api_key else self._get_cookies()
+        if extra_cookies and not use_api_key:
+            # One Cookie header, each value as the tracker set it: aiohttp would quote a value holding / or =.
+            headers["Cookie"] = "; ".join(f"{name}={value}" for name, value in {**cookies, **extra_cookies}.items())
+            cookies = {}
 
         if cfg.upload.debug_tracker_connection:
             click.secho(f"[DEBUG] {method} {url}", fg="cyan")
@@ -514,15 +702,26 @@ class BaseGazelleApi:
                         ) as resp,
                     ):
                         # sock_read resets on every chunk, so a trickled body needs its own bound.
+                        content = b""
                         async with asyncio.timeout(timeout_secs):
-                            text = await resp.text()
+                            if binary and resp.ok and resp.status not in _REDIRECT_STATUSES:
+                                content = await self._read_capped(resp)
+                                text = ""
+                            else:
+                                text = await resp.text()
                         if cfg.upload.debug_tracker_connection:
-                            self._debug_response(resp, text)
+                            self._debug_response(resp, text if text or not binary else f"<{len(content)} bytes>")
                         if not resp.ok:
-                            await self._raise_for_status(resp, self._scrub(text), failure, idempotent)
+                            await self._raise_for_status(resp, self._scrub(text), failure, idempotent, rate_limit_waits)
                         location = resp.headers.get(aiohttp.hdrs.LOCATION)
                         if resp.status not in _REDIRECT_STATUSES or not location:
-                            return HttpResponse(text=text, url=str(resp.url), status=resp.status)
+                            return HttpResponse(
+                                text=text,
+                                url=str(resp.url),
+                                status=resp.status,
+                                content=content,
+                                cookies={name: morsel.coded_value for name, morsel in resp.cookies.items()},
+                            )
                         try:
                             method, data, url = self._next_hop(
                                 str(resp.url), resp.status, method, data, location, idempotent
@@ -537,23 +736,79 @@ class BaseGazelleApi:
             click.secho(f"Too many redirects from {self.site_string}, last to {urlparse(url).path}", fg="red")
             raise RequestFailedError(f"Too many redirects from {self.site_string}")
         except (TimeoutError, aiohttp.ClientError) as err:
-            # Checked by type: ConnectionTimeoutError is also a TimeoutError, and never connected is safe to resend.
-            raise failure(f"Network error: {err}", not_acted_on=isinstance(err, _NOT_SENT_ERRORS)) from err
+            # By type: a ConnectionTimeoutError is also a TimeoutError, and never connected is safe to resend.
+            # Not chained: an aiohttp error can repeat the URL and its query, and a traceback would print it.
+            reason = _safe_response_excerpt(self._scrub(str(err)))
+            raise failure(f"Network error: {reason}", not_acted_on=isinstance(err, _NOT_SENT_ERRORS)) from None
         except RequestError as err:
             # After a redirect the tracker has acted, so a refused later hop is an unknown outcome.
             if idempotent or not redirected or isinstance(err, UnknownOutcomeError):
                 raise
-            # By type only: a RequestFailedError carries the raw response body.
+            # By type only: a RequestFailedError's message holds response text.
             raise UnknownOutcomeError(f"{self.site_string} failed on a later hop ({type(err).__name__})") from err
+
+    @property
+    def has_session_cookie(self) -> bool:
+        """Whether a session cookie is configured. Site pages outside the API need one."""
+        return bool(self.cookie.strip())
+
+    def _secrets(self) -> set[str | None]:
+        """This client's own credentials, as configured and as sent, which a tracker answer may repeat."""
+        return {
+            self.api_key,
+            self.authkey,
+            self.passkey,
+            self.cookie,
+            *self._get_cookies().values(),
+            *self._image_cookie_secrets,
+        }
+
+    async def image_cookies(self) -> dict[str, str]:
+        """IMAGE_COOKIES' values from an index call with the session cookie; {} if none, RequestError if not all set."""
+        if not self.IMAGE_COOKIES:
+            return {}
+        if not self.has_session_cookie:
+            raise RequestFailedError(
+                f"{self.site_string}'s image host needs tracker.{self.site_code.lower()}.session, not the API key"
+            )
+        answer = await self._request(
+            "GET", f"{self.base_url}/ajax.php", params={"action": "index"}, timeout_secs=5, needs_authkey=False
+        )
+        cookies = {name: answer.cookies[name] for name in self.IMAGE_COOKIES if answer.cookies.get(name)}
+        if len(cookies) < len(self.IMAGE_COOKIES):
+            raise RequestFailedError(
+                f"{self.site_string} set none of the cookies its image host takes, or not all: it may have changed "
+                f"how it serves its images, or the session cookie is logged out"
+            )
+        # The signature is the credential, masked wherever salmon prints; the user id and expiry are numbers, which
+        # masking by value would cut out of every other number (their names mask them in _redact).
+        signatures = [value for value in cookies.values() if not value.isdigit()]
+        self._image_cookie_secrets = signatures
+        with _learned_secrets_lock:
+            _learned_secrets.update(signatures)
+        return cookies
+
+    async def _read_capped(self, resp: aiohttp.ClientResponse) -> bytes:
+        """Read an answer's body as bytes, as it comes, and stop once it holds more than _MAX_BINARY_BODY.
+
+        Raises:
+            RequestFailedError: If the body is larger: the tracker would send the same answer again.
+        """
+        too_large = RequestFailedError(
+            f"{self.site_string} sent more than {_MAX_BINARY_BODY // (1024 * 1024)} MiB: not reading the rest"
+        )
+        if resp.content_length is not None and resp.content_length > _MAX_BINARY_BODY:
+            raise too_large
+        body = bytearray()
+        async for chunk in resp.content.iter_chunked(_BINARY_READ_CHUNK):
+            body += chunk
+            if len(body) > _MAX_BINARY_BODY:
+                raise too_large
+        return bytes(body)
 
     def _scrub(self, text: str) -> str:
         """_redact, plus this client's own credentials wherever a tracker answer repeats them."""
-        text = _redact(text)
-        secrets = {self.api_key, self.authkey, self.passkey, self.cookie, *self._get_cookies().values()}
-        # Longest first, so a secret containing another is masked whole.
-        for secret in sorted((s for s in secrets if s and len(s) >= 8), key=len, reverse=True):
-            text = text.replace(secret, "[REDACTED]")
-        return text
+        return scrub_secrets(text, self._secrets())
 
     def _debug_response(self, resp: aiohttp.ClientResponse, text: str) -> None:
         """Print a tracker answer, redacted, for debug_tracker_connection."""
@@ -564,27 +819,51 @@ class BaseGazelleApi:
         click.secho(f"[DEBUG] response body: {self._scrub(text)}", fg="green")
 
     async def _raise_for_status(
-        self, resp: aiohttp.ClientResponse, text: str, failure: Callable[..., RequestError], idempotent: bool
+        self,
+        resp: aiohttp.ClientResponse,
+        text: str,
+        failure: Callable[..., RequestError],
+        idempotent: bool,
+        rate_limit_waits: list[int],
     ) -> NoReturn:
         """Raise the error a failed tracker answer calls for."""
         error_msg = text
         with suppress(msgspec.DecodeError, ValueError):
-            error_msg = msgspec.json.encode(msgspec.json.decode(text)["error"]).decode()
+            decoded = msgspec.json.decode(text)
+            # A JSON answer need not be an object with an error key: anything else keeps its body as the message.
+            if isinstance(decoded, dict) and "error" in decoded:
+                error_msg = msgspec.json.encode(decoded["error"]).decode()
+        # An error page can repeat the authkey or passkey, and callers print what they catch.
+        shown = _safe_response_excerpt(self._scrub(error_msg))
 
         server_wait = parse_retry_after(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
         if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
-            retry_after = min(_RATE_LIMIT_WAIT if server_wait is None else server_wait, _MAX_SERVER_WAIT)
-            click.secho(f"Rate limit exceeded, waiting {retry_after:g} seconds...", fg="yellow")
+            # Only a 429 says the tracker did not act: another error status naming
+            # the rate limit may come after it did, so the outcome is unknown.
+            error = failure(
+                f"Rate limit exceeded ({resp.status})", not_acted_on=resp.status == HTTPStatus.TOO_MANY_REQUESTS
+            )
+            if not isinstance(error, RetryableError):
+                raise error
+            wait = _rate_limit_wait(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
+            waited = sum(rate_limit_waits)
+            if waited + wait > _MAX_RATE_LIMIT_WAITS:
+                already = f" more (after {waited} s already)" if waited else ""
+                message = f"{self.site_string} asks to wait {wait} s{already} before the next request; try again later"
+                click.secho(message, fg="red")
+                raise RateLimitedError(message)
+            rate_limit_waits.append(wait)
+            click.secho(f"Rate limit exceeded, waiting {wait} seconds...", fg="yellow")
             # Every request to this tracker waits, not just this one; its retry waits in the limiter.
-            self._rate_limiter.pause(retry_after)
-            raise failure("Rate limit exceeded", not_acted_on=True)
+            self._rate_limiter.pause(wait)
+            raise error
 
         if resp.status == HTTPStatus.UNAUTHORIZED:
             click.secho(
-                f"Authentication to {self.site_string} failed: {error_msg}.\nYour API key may be invalid.",
+                f"Authentication to {self.site_string} failed: {shown}.\nYour API key may be invalid.",
                 fg="red",
             )
-            raise LoginError(error_msg)
+            raise LoginError(shown)
 
         # Any 5xx may follow the tracker acting on a POST; a GET is resent only on these.
         if resp.status >= HTTPStatus.INTERNAL_SERVER_ERROR and (not idempotent or resp.status in _TRANSIENT_5XX):
@@ -593,8 +872,8 @@ class BaseGazelleApi:
                 await asyncio.sleep(min(server_wait, _MAX_SERVER_WAIT))
             raise failure(f"Server error {resp.status}")
 
-        click.secho(f"Request to {self.site_string} failed ({resp.status}): {error_msg}", fg="red")
-        raise RequestFailedError(error_msg)
+        click.secho(f"Request to {self.site_string} failed ({resp.status}): {shown}", fg="red")
+        raise RequestFailedError(shown)
 
     def _next_hop(
         self, current: str, status: int, method: str, data: Any, location: str, idempotent: bool
@@ -649,7 +928,7 @@ class BaseGazelleApi:
             resp_json = {"status": "error", "error": resp.text}
 
         if resp_json.get("status") != "success":
-            raise RequestFailedError(self._scrub(str(resp_json.get("error", resp.text))))
+            raise RequestFailedError(_safe_response_excerpt(self._scrub(str(resp_json.get("error", resp.text)))))
         return cast("dict", resp_json["response"])
 
     async def torrentgroup(self, group_id: int) -> dict:
@@ -673,18 +952,14 @@ class BaseGazelleApi:
             The torrent group ID as int, or None if not found.
         """
         url = self.base_url + "/torrents.php"
-        try:
-            resp = await self._request("GET", url, params={"torrentid": torrentid}, timeout_secs=5)
-        except TimeoutError:
-            click.secho("Connection to API timed out, try script again later. Gomen!", fg="red")
-            raise click.Abort() from None
+        resp = await self._request("GET", url, params={"torrentid": torrentid}, timeout_secs=5)
         parsed = urlparse(resp.url)
         query = parse_qs(parsed.query)
         group_id = query.get("id", [None])[0]
         if group_id:
             return int(group_id)
         click.secho("Couldn't retrieve torrent_group_id from torrent_id, no Redirect found!", fg="red")
-        raise click.Abort()
+        return None
 
     async def get_request(self, id: int) -> dict:
         """Get information about a request.
@@ -807,7 +1082,7 @@ class BaseGazelleApi:
         resp = await self._request("GET", url, params={"action": "loglist", "torrentid": torrentid})
         return re.sub(r" ?\([^)]+\)", "", resp.text)
 
-    async def get_uploads_from_log(self, max_pages: int = 10) -> list:
+    async def get_uploads_from_log(self, max_pages: int = SITE_LOG_PAGES) -> list:
         """Crawl log pages and return uploads.
 
         Args:
@@ -817,7 +1092,7 @@ class BaseGazelleApi:
             List of (torrent_id, artist, title) tuples.
         """
         # log.php is a site page: an API key doesn't open it, and without a cookie it bounces to login.
-        if not self.cookie.strip():
+        if not self.has_session_cookie:
             click.secho(
                 f"Skipping the recent-uploads check: the {self.site_string} site log needs a session cookie "
                 f"(tracker.{self.site_code.lower()}.session), and none is set.",
@@ -859,6 +1134,8 @@ class BaseGazelleApi:
         """
         url = self.base_url + "/ajax.php?action=upload"
         data["auth"] = self.authkey
+        if dryrun.active():
+            return self._dry_run_upload(url, data, files, prefer_api_key=True)
 
         try:
             response = await self._request(
@@ -868,15 +1145,17 @@ class BaseGazelleApi:
             return await self._find_lost_upload(files, err)
         try:
             resp = msgspec.json.decode(response.text)
-        except (msgspec.DecodeError, ValueError) as e:
-            click.secho("❌ Failed to decode JSON response", fg="red", err=True)
-            click.secho(f"Status code: {response.status}", fg="red", err=True)
-            click.secho(f"Response text: {_safe_response_excerpt(self._scrub(response.text))}", fg="red", err=True)
-            raise click.Abort from e
+        except (msgspec.DecodeError, ValueError):
+            # The tracker may have taken it before answering with a page.
+            excerpt = _safe_response_excerpt(self._scrub(response.text))
+            reason = f"its answer was not JSON ({response.status}): {excerpt}"
+            return await self._find_lost_upload(files, UnknownOutcomeError(reason))
 
         try:
             if resp["status"] != "success":
-                raise RequestError(f"API upload failed: {self._scrub(str(resp.get('error', resp)))}")
+                raise RequestError(
+                    f"API upload failed: {_safe_response_excerpt(self._scrub(str(resp.get('error', resp))))}"
+                )
             if ("requestid" in resp["response"] and resp["response"]["requestid"]) or (
                 "fillRequest" in resp["response"]
                 and resp["response"]["fillRequest"]
@@ -901,11 +1180,18 @@ class BaseGazelleApi:
                 group_id = resp["response"]["groupId"]
             elif "requestid" not in resp["response"] and "fillRequest" not in resp["response"]:
                 raise UploadError(
-                    f"API upload succeeded but returned no torrent id, response: {self._scrub(str(resp))}"
+                    "API upload succeeded but returned no torrent id, response: "
+                    f"{_safe_response_excerpt(self._scrub(str(resp)))}"
                 )
             return torrent_id, group_id
         except TypeError as err:
-            raise RequestError(f"API upload failed, response: {self._scrub(str(resp))}") from err
+            raise RequestError(
+                f"API upload failed, response: {_safe_response_excerpt(self._scrub(str(resp)))}"
+            ) from err
+
+    def upload_form_fields(self, metadata: dict[str, Any], track_data: dict[str, Any]) -> dict[str, str]:
+        """Upload form fields only this tracker has, for one torrent; UploadRefusedError if none describes it."""
+        return {}
 
     async def site_page_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Upload torrent via upload.php.
@@ -925,6 +1211,8 @@ class BaseGazelleApi:
         else:
             url = self.base_url + "/upload.php"
         data["auth"] = self.authkey
+        if dryrun.active():
+            return self._dry_run_upload(url, data, files, prefer_api_key=False)
 
         try:
             response = await self._request("POST", url, data=_compose_form_data(files, data), timeout_secs=30)
@@ -936,36 +1224,75 @@ class BaseGazelleApi:
         if self.announce in resp_text:
             match = re.search(r'<p style="color: red; text-align: center;">(.+)<\/p>', resp_text)
             if match:
-                raise RequestError(f"Site upload failed: {match[1]} ({response.status})")
+                raise RequestError(
+                    f"Site upload failed: {_safe_response_excerpt(self._scrub(match[1]))} ({response.status})"
+                )
         if "requests.php" in resp_url:
-            try:
-                torrent_id = self.parse_torrent_id_from_filled_request_page(resp_text)
-                group_id = await self.get_redirect_torrentgroupid(torrent_id) or 0
-                click.secho(f"Filled request: {resp_url}", fg="green")
-                return torrent_id, group_id
-            except (TypeError, ValueError) as err:
-                soup = BeautifulSoup(resp_text, "lxml")
-                error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
-                error_message = _safe_response_excerpt(self._scrub(resp_text))
-                if error and error.parent and error.parent.parent:
-                    p_tag = error.parent.parent.find("p")
-                    if p_tag:
-                        error_message = self._scrub(p_tag.text)
-                raise RequestError(f"Request fill failed: {error_message}") from err
+            return await self._request_fill_result(data, files, resp_text, resp_url)
         try:
             return self.parse_most_recent_torrent_and_group_id_from_group_page(resp_text)
-        except TypeError as err:
-            raise RequestError(
-                f"Site upload failed, response text: {_safe_response_excerpt(self._scrub(resp_text))}"
-            ) from err
+        except TypeError:
+            # Neither an error the form shows nor the group page: the tracker may have taken it.
+            reason = f"its answer was not the group page: {_safe_response_excerpt(self._scrub(resp_text))}"
+            return await self._find_lost_upload(files, UnknownOutcomeError(reason))
+
+    async def _request_fill_result(
+        self, data: dict, files: UploadFiles, resp_text: str, resp_url: str
+    ) -> tuple[int, int]:
+        """The ids of an upload that went on to fill a request; Gazelle stores the torrent before it tries the fill."""
+        query = parse_qs(urlparse(resp_url).query)
+        try:
+            torrent_id = self.parse_torrent_id_from_filled_request_page(resp_text)
+            click.secho(f"Filled request: {self._scrub(resp_url)}", fg="green")
+        except (TypeError, ValueError):
+            reason = self._request_fill_error(resp_text)
+            stored = query.get("torrentid", [""])[0]
+            if not stored.isdigit():
+                return await self._find_lost_upload(files, UnknownOutcomeError(f"filling the request failed: {reason}"))
+            torrent_id = int(stored)
+            request = query.get("requestid", [""])[0]
+            where = self.request_url(int(request)) if request.isdigit() else "the request"
+            click.secho(f"The upload went through, but filling {where} failed: {reason}", fg="red", bold=True)
+        if data.get("groupid"):
+            return torrent_id, int(data["groupid"])
+        try:
+            return torrent_id, await self.get_redirect_torrentgroupid(torrent_id) or 0
+        except RequestError as err:
+            # _request has already retried this GET. The torrent is up: raising would report it failed, unseeded.
+            click.secho(f"Could not look up the group of torrent {torrent_id}: {err}", fg="yellow")
+            return torrent_id, 0
+
+    def _request_fill_error(self, resp_text: str) -> str:
+        """The error a request page shows, redacted and capped."""
+        soup = BeautifulSoup(resp_text, "lxml")
+        error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
+        if error and error.parent and error.parent.parent and (p_tag := error.parent.parent.find("p")):
+            return _safe_response_excerpt(self._scrub(p_tag.text))
+        return _safe_response_excerpt(self._scrub(resp_text))
 
     async def _find_lost_upload(self, files: UploadFiles, err: UnknownOutcomeError) -> tuple[int, int]:
-        """Look an upload whose answer was lost up once, by its infohash, and return its ids."""
-        click.secho(f"Could not tell whether {self.site_string} took the upload ({err}), looking it up...", fg="yellow")
+        """Look an upload whose answer was lost up by its infohash, after a wait and once more if not found yet."""
         try:
             # Gazelle's API documentation asks for the hash in uppercase.
             infohash = Torrent.read_stream(files.torrent_data).infohash.upper()
-            found = await self.api_call("torrent", params={"hash": infohash})
+            click.secho(
+                f"Could not tell whether {self.site_string} took the upload ({err}). "
+                f"Waiting {_LOST_UPLOAD_FIRST_WAIT} s for {self.site_string} to finish processing it, "
+                "then looking it up...",
+                fg="yellow",
+            )
+            await asyncio.sleep(_LOST_UPLOAD_FIRST_WAIT)
+            try:
+                found = await self.api_call("torrent", params={"hash": infohash})
+            except RequestFailedError as unconfirmed:
+                # Not-found answers differ by tracker, so only a login or network failure skips the second lookup.
+                click.secho(
+                    f"{self.site_string} did not find it ({_safe_response_excerpt(self._scrub(str(unconfirmed)))}). "
+                    f"Waiting {_LOST_UPLOAD_SECOND_WAIT} s more, then looking it up one last time...",
+                    fg="yellow",
+                )
+                await asyncio.sleep(_LOST_UPLOAD_SECOND_WAIT)
+                found = await self.api_call("torrent", params={"hash": infohash})
             torrent_id, group_id = int(found["torrent"]["id"]), int(found["group"]["id"])
         except (RequestError, TorfError, KeyError, TypeError, ValueError) as lookup_err:
             # A non-JSON answer arrives here whole, and a logged-in page's links carry secrets.
@@ -975,6 +1302,14 @@ class BaseGazelleApi:
                 f"its infohash did not confirm it ({reason}). The upload may still have gone through: "
                 f"check your uploads on {self.site_string} before uploading it again."
             ) from lookup_err
+        except asyncio.CancelledError:
+            # Ctrl-C while waiting: still warn before the user uploads it again.
+            click.secho(
+                f"Stopped before finding out. The upload may still have gone through: check your uploads on "
+                f"{self.site_string} before uploading it again.",
+                fg="yellow",
+            )
+            raise
         click.secho(f"Found the upload on {self.site_string}: torrent {torrent_id}.", fg="green")
         return torrent_id, group_id
 
@@ -993,19 +1328,33 @@ class BaseGazelleApi:
 
         return await self.site_page_upload(data, files)
 
-    async def dry_run_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
-        """Build the upload locally and send nothing.
-
-        Never call a tracker-side dryrun here: posting the form to validate it is
-        still posting it, which is not what --dry-run promises.
-        """
-        click.secho(
-            f"\n[DRY RUN] {self.site_string}: prepared the torrent and upload form locally. "
-            f"Nothing was sent to {self.site_string}.",
-            fg="cyan",
-            bold=True,
+    def _dry_run_upload(self, url: str, data: dict, files: UploadFiles, prefer_api_key: bool) -> tuple[int, int]:
+        """Print the upload a dry run does not send, part by part, and return the IDs it stands in for."""
+        # Every value is redacted as the debug output is: the form holds the authkey.
+        auth = "the API key" if prefer_api_key and self.api_key else "the session cookie"
+        dryrun.say(f"not uploading to {self.site_string}. It would send POST {self._scrub(url)} with {auth}:")
+        for name, value, filename in _form_parts(files, data):
+            shown = f"{filename} ({format_size(len(value), binary=True)})" if filename else self._scrub(str(value))
+            first, *more = shown.split("\n")
+            click.echo(f"  {name}: {first}")
+            for line in more:
+                click.echo(f"      {line}")
+        torrent = Torrent.read_stream(files.torrent_data)
+        click.echo(
+            f"  The torrent: {torrent.name}, {len(torrent.files)} file(s), {format_size(torrent.size, binary=True)}, "
+            f"piece size {format_size(torrent.piece_size, binary=True)}, source {torrent.source}"
         )
-        return 0, 0
+        for file in torrent.files:
+            # The first part of a path in a torrent of several files is the torrent's name.
+            click.echo(f"    {'/'.join(file.parts[1:]) or file}  ({format_size(file.size, binary=True)})")
+        group_id = data.get("groupid")
+        return dryrun.NEW_TORRENT_ID, group_id if group_id else dryrun.NEW_GROUP_ID
+
+    def skip_upload_marks(self) -> None:
+        """Ask for none of the marks this tracker's upload form has for the uploader's own work, and send none.
+
+        For a re-post, such as a cross-upload. A tracker whose form has no such marks has nothing to skip.
+        """
 
     async def report_lossy_master(self, torrent_id: int, comment: str, source: str) -> bool:
         """Report torrent for lossy master/web approval.
@@ -1037,42 +1386,33 @@ class BaseGazelleApi:
         raise RequestError(f"Failed to report the torrent for lossy master, code {resp.status}.")
 
     async def append_to_torrent_description(self, torrent_id: int, description_addition: str) -> None:
-        """Add text to start of torrent description.
-
-        Args:
-            torrent_id: The torrent ID.
-            description_addition: Text to prepend to description.
-
-        Raises:
-            RequestError: If edit fails.
-        """
-        current_details = await self.api_call("torrent", params={"id": torrent_id})
-        new_data = {
-            "action": "takeedit",
-            "torrentid": torrent_id,
-            "type": 1,
-            "groupremasters": 0,
-            "remaster_year": current_details["torrent"]["remasterYear"],
-            "remaster_title": current_details["torrent"]["remasterTitle"],
-            "remaster_record_label": current_details["torrent"]["remasterRecordLabel"],
-            "remaster_catalogue_number": current_details["torrent"]["remasterCatalogueNumber"],
-            "format": current_details["torrent"]["format"],
-            "bitrate": current_details["torrent"]["encoding"],
-            "other_bitrate": "",
-            "media": current_details["torrent"]["media"],
-            "release_desc": description_addition + current_details["torrent"]["description"],
-            "auth": self.authkey,
-        }
+        """Prepend text to a torrent's description; RequestError if the form is unreadable or the edit refused."""
         url = self.base_url + "/torrents.php"
-        # Every field is rebuilt from the torrent's current state, so sending it twice is harmless.
-        resp = await self._request("POST", url, data=new_data, idempotent=True)
+        # Held from the read to the write, or another job's edit in between is lost. Both requests are
+        # idempotent: _session_for must not take this lock again, as it isn't re-entrant.
+        async with _account_lock(self.site_code):
+            # Send the tracker's own edit form back with only the description changed (a rebuilt one loses fields).
+            # Authenticated first: the page holds the authkey, and _scrub masks only a known one.
+            page = await self._request("GET", url, params={"action": "edit", "id": torrent_id})
+            try:
+                fields = _torrent_edit_fields(page.text, torrent_id)
+            except RequestError as err:
+                raise RequestError(
+                    f"Could not read the edit form of torrent {torrent_id} on {self.site_string} ({err}). "
+                    "Nothing was sent: its description is unchanged."
+                ) from err
+            new_data = [
+                (name, description_addition + value if name == "release_desc" else value) for name, value in fields
+            ]
+            # Every field is the one the form showed, or the description above, so sending it twice is harmless.
+            resp = await self._request("POST", url, data=new_data, idempotent=True, needs_authkey=False)
         resp_text = resp.text
 
         soup = BeautifulSoup(resp_text, "lxml")
         edit_error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
         if edit_error and edit_error.parent and edit_error.parent.parent:
             p_tag = edit_error.parent.parent.find("p")
-            error_message = self._scrub(p_tag.text) if p_tag else "Unknown error"
+            error_message = _safe_response_excerpt(self._scrub(p_tag.text)) if p_tag else "Unknown error"
             raise RequestError(f"Failed to edit torrent: {error_message}")
         else:
             click.secho("Added spectrals to the torrent description.", fg="green")

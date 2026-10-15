@@ -1,15 +1,61 @@
 import os
 import re
+import stat
 from collections.abc import Awaitable, Callable
-from typing import TypeVar, cast
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, TypeVar, cast
 
 import anyio
+import asyncclick as click
 from tqdm import tqdm
 
 from salmon import cfg
 from salmon.common.progress import report_progress
 
 T = TypeVar("T")
+
+
+class AlbumPath(click.Path):
+    """A click.Path made absolute without resolving symlinks, so an album symlinked into a library is seen there."""
+
+    def convert(self, value: Any, param: click.Parameter | None, ctx: click.Context | None) -> Any:
+        path = os.fsdecode(super().convert(value, param, ctx))
+        parts = Path(path).parts
+        if os.pardir not in parts:
+            return os.path.abspath(path)
+        # The filesystem takes "link/.." from where the link leads; abspath would drop both as text.
+        last = len(parts) - parts[::-1].index(os.pardir)
+        return os.path.join(os.path.realpath(os.path.join(*parts[:last])), *parts[last:])
+
+
+def shares_files(path: str) -> bool:
+    """Whether path is a symlink, or holds a symlink or a file with another hardlink."""
+    if os.path.islink(path):
+        return True
+    if not os.path.isdir(path):
+        return os.path.isfile(path) and os.stat(path).st_nlink > 1
+    errors: list[OSError] = []
+    for root, folders, files in os.walk(path, onerror=errors.append):
+        for name in (*folders, *files):
+            try:
+                entry = os.lstat(os.path.join(root, name))
+            except OSError:
+                return True  # Gone or unreadable mid-walk: as for an unreadable folder, assume a link.
+            if stat.S_ISLNK(entry.st_mode) or (stat.S_ISREG(entry.st_mode) and entry.st_nlink > 1):
+                return True
+    return bool(errors)  # An unreadable folder could hide a link.
+
+
+def rewrite_refusal(path: str) -> str | None:
+    """Why salmon must not rewrite the files of path in place, or None."""
+    if cfg.directory.is_library_path(path):
+        return "it is in library_dirs"
+    if (library := cfg.directory.library_inside(path)) is not None:
+        return f"it holds the library folder {library}"
+    if shares_files(path):
+        return "it shares files with another folder through a hardlink or symlink"
+    return None
 
 
 def get_audio_files(path, sort_by_tracknumber=False):
@@ -27,6 +73,11 @@ def get_audio_files(path, sort_by_tracknumber=False):
     if sort_by_tracknumber:
         return sorted(files, key=_tracknumber_sort_key)
     return sorted(files)
+
+
+def get_flac_files(path, sort_by_tracknumber=False):
+    """The FLAC files under path, relative to it, as get_audio_files lists them."""
+    return [f for f in get_audio_files(path, sort_by_tracknumber) if f.lower().endswith(".flac")]
 
 
 def _tracknumber_sort_key(filename):
@@ -55,22 +106,26 @@ def create_relative_path(root, path, filename):
     return os.path.join(root.split(path, 1)[1][1:], filename)  # [1:] to get rid of the slash.
 
 
-async def compress(filepath: str) -> None:
-    """Re-compress a .flac file with the configured compression level.
+@dataclass
+class CompressResult:
+    """The outcome of re-compressing one FLAC file."""
 
-    Args:
-        filepath: Path to the FLAC file to re-compress.
-    """
-    await anyio.run_process(
-        [
-            "flac",
-            f"-{cfg.upload.compression.flac_compression_level}",
-            "-V",
-            filepath,
-            "--force",
-        ],
-        check=False,
-    )
+    filepath: str
+    success: bool
+    error: str | None = None
+
+
+async def compress(filepath: str) -> CompressResult:
+    """Re-compress a .flac file at the configured level; flac replaces the original only once encode and -V pass."""
+    command = ["flac", f"-{cfg.upload.compression.flac_compression_level}", "-V", "-s", filepath, "--force"]
+    try:
+        result = await anyio.run_process(command, check=False)
+    except OSError as e:
+        return CompressResult(filepath, False, str(e))
+    if result.returncode != 0:
+        error = result.stderr.decode(errors="replace").strip() or f"flac exited with code {result.returncode}"
+        return CompressResult(filepath, False, error)
+    return CompressResult(filepath, True)
 
 
 async def process_files(

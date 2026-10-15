@@ -9,10 +9,10 @@ Seams used:
   with an in-memory fake so no network is ever touched.
 """
 
+import traceback
 from typing import Any, cast
 
 import aiohttp
-import asyncclick as click
 import pytest
 import torf
 from aiohttp import web
@@ -21,7 +21,13 @@ from tenacity import wait_fixed
 
 from salmon import cfg
 from salmon.common import UploadFiles
-from salmon.errors import LoginError, RequestError, RequestFailedError, UnknownOutcomeError, UploadError
+from salmon.errors import (
+    LoginError,
+    RequestError,
+    RequestFailedError,
+    UnknownOutcomeError,
+    UploadError,
+)
 from salmon.trackers.base import (
     BaseGazelleApi,
     HttpResponse,
@@ -67,7 +73,16 @@ def script_requests(api, outcomes):
     """
     calls = []
 
-    async def fake_request(method, url, params=None, data=None, timeout_secs=10, prefer_api_key=False, idempotent=None):
+    async def fake_request(
+        method,
+        url,
+        params=None,
+        data=None,
+        timeout_secs=10,
+        prefer_api_key=False,
+        idempotent=None,
+        needs_authkey=True,
+    ):
         calls.append(
             {
                 "method": method,
@@ -77,6 +92,7 @@ def script_requests(api, outcomes):
                 "timeout_secs": timeout_secs,
                 "prefer_api_key": prefer_api_key,
                 "idempotent": idempotent,
+                "needs_authkey": needs_authkey,
             }
         )
         outcome = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
@@ -99,6 +115,7 @@ class FakeAiohttpResponse:
         self.url = url
         self.headers = headers or {}
         self.history = tuple(history)
+        self.cookies: dict[str, Any] = {}
 
     @property
     def ok(self):
@@ -179,6 +196,21 @@ def test_redact_masks_authkey_and_passkey_values():
     assert "alsosecret" not in redacted
     assert '"authkey": "[REDACTED]"' in redacted
     assert '"passkey": "[REDACTED]"' in redacted
+
+
+def test_redact_masks_every_secret_name_in_json_and_form_inputs():
+    text = '{"torrent_pass":"tp-0001","keeplogged":"kl-0001"} <input name="session" value="ss-0001">'
+    redacted = _redact(text)
+    for value in ("tp-0001", "kl-0001", "ss-0001"):
+        assert value not in redacted
+    # Only the value goes: the JSON keeps its shape.
+    assert '"torrent_pass":"[REDACTED]"' in redacted
+
+
+@pytest.mark.parametrize("value", [r"tp-01\"tp-02", "tp-01\\\\"], ids=["escaped-quote", "escaped-backslash"])
+def test_redact_masks_a_json_secret_with_an_escape_in_it(value: str) -> None:
+    redacted = _redact(f'{{"torrent_pass":"{value}","artist":"Testartist"}}')
+    assert redacted == '{"torrent_pass":"[REDACTED]","artist":"Testartist"}'
 
 
 def test_redact_masks_api_key_auth_and_authorization_case_insensitive():
@@ -299,11 +331,33 @@ async def test_api_call_non_json_body_raises_request_failed_with_body(api):
     assert "<html>maintenance</html>" in str(excinfo.value)
 
 
+async def test_api_call_non_json_body_is_masked_and_capped(api):
+    script_requests(api, [http(text=f"<html>{'x' * 2000}{api.cookie}</html>")])
+    with pytest.raises(RequestFailedError) as excinfo:
+        await api.api_call("index")
+    assert api.cookie not in str(excinfo.value)
+    assert len(str(excinfo.value)) < 600
+
+
+async def test_a_network_error_masks_the_clients_credentials(api, monkeypatch):
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
+    install_fake_aiohttp(monkeypatch, [aiohttp.ClientConnectionError(f"failed: https://dummy.example/x/{api.cookie}")])
+    api._authenticated = True
+
+    with pytest.raises(RetryableError) as excinfo:
+        await api.api_call("index")
+
+    assert api.cookie not in str(excinfo.value)
+    assert "Network error: failed: https://dummy.example/x/" in str(excinfo.value)
+    # Nor in a printed traceback: the original error is not chained.
+    assert api.cookie not in "".join(traceback.format_exception(excinfo.value))
+
+
 async def test_api_call_persistent_network_error_raises_retryable_error(api, monkeypatch):
     # After 5 attempts the network failure surfaces as RetryableError, which
     # is part of the RequestError hierarchy so callers catching RequestError
     # handle it too.
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [aiohttp.ClientConnectionError("connection refused")])
     api._authenticated = True
 
@@ -326,6 +380,24 @@ async def test_request_http_400_raises_request_failed(api, monkeypatch):
     with pytest.raises(RequestFailedError) as excinfo:
         await api._request("GET", "https://dummy.example/ajax.php")
     assert "no such action" in str(excinfo.value)
+
+
+async def test_an_error_page_is_masked_and_capped_before_anyone_prints_it(api, monkeypatch, capsys):
+    # Callers print what they catch, so the page must already be safe when it is raised.
+    page = (
+        "<html><a href='torrents.php?action=download&id=1&authkey=DEADBEEFDEAD'>x</a>"
+        "https://announce.example/PASSKEYPASSKEY1/announce" + "y" * 5000 + "</html>"
+    )
+    install_fake_aiohttp(monkeypatch, [FakeAiohttpResponse(text=page, status=403)])
+    api._authenticated = True
+    api.passkey = "PASSKEYPASSKEY1"
+
+    with pytest.raises(RequestFailedError) as excinfo:
+        await api._request("GET", "https://dummy.example/torrents.php")
+    shown = str(excinfo.value) + capsys.readouterr().out
+    assert "DEADBEEFDEAD" not in shown
+    assert "PASSKEYPASSKEY1" not in shown
+    assert len(str(excinfo.value)) < 600
 
 
 async def test_request_with_api_key_uses_authorization_header_and_no_cookie(api, monkeypatch):
@@ -354,7 +426,7 @@ async def test_request_without_api_key_sends_the_session_cookie(api, monkeypatch
 
 
 async def test_request_rate_limited_retries_and_succeeds(api, monkeypatch):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(
         monkeypatch,
         [
@@ -421,10 +493,11 @@ async def test_api_key_upload_failure_json_without_error_key_raises_request_erro
     assert "'status': 'failure'" in str(excinfo.value)
 
 
-async def test_api_key_upload_non_json_response_raises_abort(api):
+async def test_api_key_upload_non_json_response_is_an_unknown_outcome(api):
     script_requests(api, [http(text="<html><body>Cloudflare says no</body></html>")])
-    with pytest.raises(click.Abort):
+    with pytest.raises(UnknownOutcomeError) as excinfo:
         await api.api_key_upload({}, UploadFiles(torrent_data=b"torrent"))
+    assert "its answer was not JSON (200): <html><body>Cloudflare says no" in str(excinfo.value)
 
 
 async def test_api_key_upload_non_dict_json_raises_request_error(api):
@@ -463,7 +536,8 @@ async def test_api_key_upload_request_fill_failed_returns_zero_ids(api, capsys):
     result = await api.api_key_upload({}, UploadFiles(torrent_data=b"torrent"))
 
     assert result == (0, 0)
-    assert "Request fill failed!" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Request fill failed!" in out
 
 
 async def test_api_key_upload_fill_request_shape_reports_url_and_returns_ids(api, capsys):
@@ -545,13 +619,41 @@ async def test_site_page_upload_failure_page_extracts_red_error(api):
     assert "Site upload failed: No torrent file uploaded, or file empty." in str(excinfo.value)
 
 
-async def test_site_page_upload_unparseable_page_raises_request_error(api):
+async def test_site_page_upload_failure_masks_the_clients_credentials(api):
     api.passkey = "PK"
-    script_requests(api, [http(text="<html><body>login page</body></html>", url="https://dummy.example/login.php")])
+    failure_html = (
+        f"<html><body><input value='{api.announce}' />"
+        f'<p style="color: red; text-align: center;">Bad session {api.cookie}</p>'
+        "</body></html>"
+    )
+    script_requests(api, [http(text=failure_html, url="https://dummy.example/upload.php", status=200)])
 
     with pytest.raises(RequestError) as excinfo:
         await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
-    assert "Site upload failed, response text" in str(excinfo.value)
+    assert "Site upload failed: Bad session [REDACTED]" in str(excinfo.value)
+
+
+async def test_site_page_upload_failure_is_capped(api):
+    api.passkey = "PK"
+    failure_html = (
+        f"<html><body><input value='{api.announce}' />"
+        f'<p style="color: red; text-align: center;">{"x" * 2000}</p>'
+        "</body></html>"
+    )
+    script_requests(api, [http(text=failure_html, url="https://dummy.example/upload.php", status=200)])
+
+    with pytest.raises(RequestError) as excinfo:
+        await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
+    assert len(str(excinfo.value)) < 600
+
+
+async def test_site_page_upload_unparseable_page_is_an_unknown_outcome(api):
+    api.passkey = "PK"
+    script_requests(api, [http(text="<html><body>login page</body></html>", url="https://dummy.example/login.php")])
+
+    with pytest.raises(UnknownOutcomeError) as excinfo:
+        await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
+    assert "its answer was not the group page: <html><body>login page" in str(excinfo.value)
 
 
 async def test_site_page_upload_request_fill_success_resolves_group_via_redirect(api):
@@ -573,14 +675,89 @@ async def test_site_page_upload_request_fill_success_resolves_group_via_redirect
     assert calls[1]["params"] == {"torrentid": 789}
 
 
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        RequestFailedError("Network error: timed out"),
+        http(text="", url="https://dummy.example/torrents.php?torrentid=789"),
+    ],
+    ids=["failed", "no-redirect"],
+)
+async def test_a_filled_request_whose_group_lookup_fails_is_still_an_upload(api, capsys, lookup):
+    fill_html = '<html><body><a href="torrents.php?torrentid=789">Yes</a></body></html>'
+    script_requests(api, [http(text=fill_html, url="https://dummy.example/requests.php?action=view&id=77"), lookup])
+    api.authkey = "AK"
+
+    result = await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
+
+    assert result == (789, 0)
+    out = capsys.readouterr().out
+    assert "Filled request" in out
+
+
+async def test_a_fill_that_fails_after_the_torrent_was_stored_is_still_an_upload(api, capsys):
+    fill_error_html = "<html><body><div><div><h2>Error</h2></div><p>Request already filled</p></div></body></html>"
+    takefill = "https://dummy.example/requests.php?action=takefill&requestid=77&torrentid=789&auth=test-auth-0001"
+    script_requests(api, [http(text=fill_error_html, url=takefill)])
+    api.authkey = "test-auth-0001"
+
+    result = await api.site_page_upload({"groupid": "456"}, UploadFiles(torrent_data=b"torrent"))
+
+    assert result == (789, 456)
+    out = capsys.readouterr().out
+    assert "filling https://dummy.example/requests.php?action=view&id=77 failed: Request already filled" in out
+    assert "test-auth-0001" not in out
+
+
+async def test_a_request_fill_into_a_known_group_needs_no_lookup(api):
+    fill_html = '<html><body><a href="torrents.php?torrentid=789">Yes</a></body></html>'
+    calls = script_requests(api, [http(text=fill_html, url="https://dummy.example/requests.php?action=view&id=77")])
+
+    result = await api.site_page_upload({"groupid": "456"}, UploadFiles(torrent_data=b"torrent"))
+
+    assert result == (789, 456)
+    assert len(calls) == 1
+
+
 async def test_site_page_upload_request_fill_failure_extracts_error(api):
     fill_error_html = "<html><body><div><div><h2>Error</h2></div><p>Request already filled</p></div></body></html>"
     script_requests(api, [http(text=fill_error_html, url="https://dummy.example/requests.php?action=takefill")])
     api.passkey = "PK"
 
+    with pytest.raises(UnknownOutcomeError) as excinfo:
+        await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
+    assert "filling the request failed: Request already filled" in str(excinfo.value)
+
+
+async def test_a_failed_fill_with_no_torrent_id_is_looked_up_by_its_infohash(api, tmp_path):
+    torrent = _real_torrent(tmp_path)
+    fill_error_html = "<html><body><div><div><h2>Error</h2></div><p>Request already filled</p></div></body></html>"
+    found = '{"status": "success", "response": {"torrent": {"id": 789}, "group": {"id": 456}}}'
+    takefill = http(text=fill_error_html, url="https://dummy.example/requests.php?action=takefill")
+    calls = script_requests(api, [takefill, http(text=found)])
+
+    result = await api.site_page_upload({}, UploadFiles(torrent_data=torrent))
+
+    assert result == (789, 456)
+    assert [c["method"] for c in calls] == ["POST", "GET"]
+
+
+async def test_a_long_request_fill_error_is_capped(api):
+    fill_error_html = f"<html><body><div><div><h2>Error</h2></div><p>{'x' * 2000}</p></div></body></html>"
+    script_requests(api, [http(text=fill_error_html, url="https://dummy.example/requests.php?action=takefill")])
+    api.passkey = "PK"
+
     with pytest.raises(RequestError) as excinfo:
         await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
-    assert "Request fill failed: Request already filled" in str(excinfo.value)
+    assert "[truncated]" in str(excinfo.value)
+
+
+async def test_a_long_api_upload_error_is_capped(api):
+    script_requests(api, [http(text='{"status": "failure", "error": "' + "x" * 2000 + '"}')])
+
+    with pytest.raises(RequestError) as excinfo:
+        await api.api_key_upload({}, UploadFiles(torrent_data=b"torrent"))
+    assert "[truncated]" in str(excinfo.value)
 
 
 async def test_site_page_upload_bounced_to_login_raises_login_error(api, monkeypatch):
@@ -777,11 +954,10 @@ async def test_report_lossy_master_failure_raises_request_error(api):
 # append_to_torrent_description
 # ---------------------------------------------------------------------------
 
-TORRENT_DETAILS_JSON = (
-    '{"status": "success", "response": {"torrent": {'
-    '"remasterYear": 2020, "remasterTitle": "", "remasterRecordLabel": "", '
-    '"remasterCatalogueNumber": "", "format": "FLAC", "encoding": "Lossless", '
-    '"media": "WEB", "description": "Old description"}}}'
+EDIT_PAGE = (
+    '<html><body><form name="torrent" method="post"><input type="hidden" name="action" value="takeedit">'
+    '<input type="hidden" name="auth" value="AK"><input type="hidden" name="torrentid" value="42">'
+    '<textarea name="release_desc">Old description</textarea></form></body></html>'
 )
 
 
@@ -789,24 +965,26 @@ async def test_append_to_torrent_description_success_prepends_text(api, capsys):
     calls = script_requests(
         api,
         [
-            http(text=TORRENT_DETAILS_JSON),
+            http(text=EDIT_PAGE),
             http(text="<html><body><h2>Edit successful</h2></body></html>"),
         ],
     )
-    api.authkey = "AK"
 
     await api.append_to_torrent_description(42, "Spectrals: ")
 
+    assert (calls[0]["method"], calls[0]["params"]) == ("GET", {"action": "edit", "id": 42})
     assert calls[1]["method"] == "POST"
     assert calls[1]["url"] == "https://dummy.example/torrents.php"
-    assert calls[1]["data"]["release_desc"] == "Spectrals: Old description"
-    assert "Added spectrals to the torrent description." in capsys.readouterr().out
+    assert dict(calls[1]["data"])["release_desc"] == "Spectrals: Old description"
+    # Authenticated before the page is read, so _scrub knows the authkey the form repeats.
+    assert [call["needs_authkey"] for call in calls] == [True, False]
+    out = capsys.readouterr().out
+    assert "Added spectrals to the torrent description." in out
 
 
 async def test_append_to_torrent_description_error_page_raises_request_error(api):
     error_html = "<html><body><div><div><h2>Error</h2></div><p>No changes detected</p></div></body></html>"
-    script_requests(api, [http(text=TORRENT_DETAILS_JSON), http(text=error_html)])
-    api.authkey = "AK"
+    script_requests(api, [http(text=EDIT_PAGE), http(text=error_html)])
 
     with pytest.raises(RequestError) as excinfo:
         await api.append_to_torrent_description(42, "Spectrals: ")
@@ -827,20 +1005,14 @@ async def test_get_redirect_torrentgroupid_found_returns_int_group_id(api):
     assert calls[0]["params"] == {"torrentid": 5}
 
 
-async def test_get_redirect_torrentgroupid_without_redirect_raises_abort(api, capsys):
+async def test_get_redirect_torrentgroupid_without_redirect_returns_none(api, capsys):
     script_requests(api, [http(url="https://dummy.example/torrents.php?torrentid=5")])
 
-    with pytest.raises(click.Abort):
-        await api.get_redirect_torrentgroupid(5)
-    assert "no Redirect found" in capsys.readouterr().out
+    result = await api.get_redirect_torrentgroupid(5)
 
-
-async def test_get_redirect_torrentgroupid_timeout_raises_abort(api, capsys):
-    script_requests(api, [TimeoutError("timed out")])
-
-    with pytest.raises(click.Abort):
-        await api.get_redirect_torrentgroupid(5)
-    assert "timed out" in capsys.readouterr().out
+    assert result is None
+    out = capsys.readouterr().out
+    assert "no Redirect found" in out
 
 
 async def test_label_rls_fetches_every_page_exactly_once(api):
@@ -938,7 +1110,7 @@ def _real_torrent(tmp_path) -> bytes:
     ids=["answer-dropped", "timeout", "502", "503", "501", "524"],
 )
 async def test_a_post_that_may_have_reached_the_tracker_is_sent_once(api, monkeypatch, outcome):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [outcome])
     api._authenticated = True
 
@@ -958,7 +1130,7 @@ async def test_an_unusual_5xx_on_a_get_fails_without_a_retry(api, monkeypatch):
 
 async def test_a_post_that_never_connected_is_retried(api, monkeypatch):
     # Nothing reached the tracker, so sending it again cannot do anything twice.
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [_connect_refused()])
     api._authenticated = True
 
@@ -981,11 +1153,11 @@ def _record_sleeps(monkeypatch) -> list[float]:
 
 @pytest.mark.parametrize(
     ("retry_after", "expected"),
-    [(None, 20.0), ("7", 7.0), ("-5", 20.0), ("not a number", 20.0), ("Wed, 21 Oct 2099 07:28:00 GMT", 120.0)],
-    ids=["missing", "seconds", "negative", "garbage", "far-future date"],
+    [(None, 20), ("7", 7), ("-5", 20), ("not a number", 20), ("0.2", 2)],
+    ids=["missing", "seconds", "negative", "garbage", "under the spacing"],
 )
 async def test_a_429_pauses_the_tracker_for_any_retry_after_form(api, monkeypatch, retry_after, expected):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     pauses: list[float] = []
     # Recorded, not applied, so the retry is not held for real time.
     monkeypatch.setattr(SharedLimiter, "pause", lambda _self, seconds: pauses.append(seconds))
@@ -1002,7 +1174,7 @@ async def test_a_429_pauses_the_tracker_for_any_retry_after_form(api, monkeypatc
 
 @pytest.mark.parametrize(("method", "expected"), [("GET", [3.0]), ("POST", [])])
 async def test_a_5xx_retry_after_is_honoured_only_when_retried(api, monkeypatch, method, expected):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     sleeps = _record_sleeps(monkeypatch)
     captured = install_fake_aiohttp(
         monkeypatch, [FakeAiohttpResponse(status=503, headers={"Retry-After": "3"}), FakeAiohttpResponse(text="ok")]
@@ -1021,7 +1193,7 @@ async def test_a_5xx_retry_after_is_honoured_only_when_retried(api, monkeypatch,
 
 
 async def test_a_post_refused_with_429_is_retried(api, monkeypatch):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(
         monkeypatch,
         [FakeAiohttpResponse(status=429, headers={"Retry-After": "0"}), FakeAiohttpResponse(text="ok")],
@@ -1036,7 +1208,7 @@ async def test_a_post_refused_with_429_is_retried(api, monkeypatch):
 @pytest.mark.parametrize("status", [429, 401, 403, 404])
 async def test_a_failure_after_the_post_was_redirected_is_an_unknown_outcome(api, monkeypatch, status):
     # A redirect means the tracker already acted on the POST, whatever the later hop answers.
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     hop = FakeAiohttpResponse(
         status=302, url="https://dummy.example/upload.php", headers={"Location": "/torrents.php?id=5"}
     )
@@ -1095,7 +1267,7 @@ async def test_a_post_bounced_straight_to_login_stays_a_login_error(api, monkeyp
 
 
 async def test_an_idempotent_post_keeps_retrying(api, monkeypatch):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [aiohttp.ServerDisconnectedError()])
     api._authenticated = True
 
@@ -1105,7 +1277,7 @@ async def test_an_idempotent_post_keeps_retrying(api, monkeypatch):
 
 
 async def test_a_get_whose_answer_is_dropped_is_still_retried(api, monkeypatch):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [aiohttp.ServerDisconnectedError()])
     api._authenticated = True
 
@@ -1131,10 +1303,31 @@ async def test_a_lost_upload_found_by_its_infohash_returns_its_ids(api, tmp_path
     assert calls[1]["params"]["hash"] == torf.Torrent.read_stream(torrent).infohash.upper()
 
 
+@pytest.mark.parametrize(
+    ("method", "answer"),
+    [
+        ("api_key_upload", http(text="<html>Service unavailable</html>")),
+        ("site_page_upload", http(text="<html><body>Something else</body></html>", url="https://dummy.example/x.php")),
+    ],
+    ids=["api-not-json", "site-not-the-group-page"],
+)
+async def test_an_upload_answer_salmon_cannot_read_is_looked_up_by_its_infohash(api, tmp_path, method, answer):
+    torrent = _real_torrent(tmp_path)
+    found = '{"status": "success", "response": {"torrent": {"id": 123}, "group": {"id": 456}}}'
+    calls = script_requests(api, [answer, http(text=found)])
+    api.authkey = "AK"
+
+    result = await getattr(api, method)({}, UploadFiles(torrent_data=torrent))
+
+    assert result == (123, 456)
+    assert [c["method"] for c in calls] == ["POST", "GET"]
+
+
 @pytest.mark.parametrize("method", ["api_key_upload", "site_page_upload"])
 async def test_a_lost_upload_not_found_says_it_may_have_gone_through(api, tmp_path, method):
     torrent = _real_torrent(tmp_path)
-    calls = script_requests(api, [UnknownOutcomeError("answer lost"), http(text='{"status": "failure"}')])
+    not_found = '{"status": "failure"}'
+    calls = script_requests(api, [UnknownOutcomeError("answer lost"), http(text=not_found), http(text=not_found)])
     api.authkey = "AK"
 
     with pytest.raises(UnknownOutcomeError) as excinfo:
@@ -1143,19 +1336,14 @@ async def test_a_lost_upload_not_found_says_it_may_have_gone_through(api, tmp_pa
     assert "may still have gone through" in str(excinfo.value)
     # The lookup may have failed rather than come back empty.
     assert "did not confirm it" in str(excinfo.value)
-    assert [c["method"] for c in calls] == ["POST", "GET"]
+    # Looked up once more after the second wait, and no more.
+    assert [c["method"] for c in calls] == ["POST", "GET", "GET"]
 
 
 async def test_the_description_edit_is_sent_as_idempotent(api):
-    torrent = (
-        '{"remasterYear": 2020, "remasterTitle": "", "remasterRecordLabel": "", "remasterCatalogueNumber": "",'
-        ' "format": "FLAC", "encoding": "Lossless", "media": "WEB", "description": "old"}'
-    )
-    group = '{"status": "success", "response": {"torrent": ' + torrent + ', "group": {"id": 1}}}'
-    calls = script_requests(api, [http(text=group), http(text="<html></html>")])
-    api.authkey = "AK"
+    calls = script_requests(api, [http(text=EDIT_PAGE), http(text="<html></html>")])
 
-    await api.append_to_torrent_description(7, "addition")
+    await api.append_to_torrent_description(42, "addition")
 
     assert calls[-1]["method"] == "POST"
     assert calls[-1]["idempotent"] is True
@@ -1185,7 +1373,7 @@ async def tracker_that_drops_answers():
 
 async def test_a_real_dropped_answer_to_a_post_is_not_resent(api, monkeypatch, tracker_that_drops_answers):
     # Pins the exception aiohttp really raises here, which the fakes above can only assume.
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     base, hits = tracker_that_drops_answers
     api.base_url = base
     api._authenticated = True
@@ -1196,7 +1384,7 @@ async def test_a_real_dropped_answer_to_a_post_is_not_resent(api, monkeypatch, t
 
 
 async def test_a_real_dropped_answer_to_a_get_is_retried(api, monkeypatch, tracker_that_drops_answers):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     base, hits = tracker_that_drops_answers
     api.base_url = base
     api._authenticated = True
@@ -1228,7 +1416,7 @@ async def test_a_report_with_an_unknown_outcome_is_not_filed_again(capsys):
 
 async def test_opss_own_report_is_not_resent_either(monkeypatch):
     # OPS overrides report_lossy_master with its own takereport POST.
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     captured = install_fake_aiohttp(monkeypatch, [aiohttp.ServerDisconnectedError()])
     ops = OpsApi()
     ops._authenticated = True

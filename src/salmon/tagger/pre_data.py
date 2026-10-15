@@ -7,9 +7,12 @@ from copy import deepcopy
 import asyncclick as click
 
 from salmon import cfg
-from salmon.common import RE_FEAT, re_split, split_genre
+from salmon.common import RE_USELESS_VERSION, re_split, split_genre
 from salmon.common.files import _tracknumber_sort_key
+from salmon.common.strings import strip_numbered_suffixes
 from salmon.constants import FORMATS, TAG_ENCODINGS
+
+_RE_FEAT_START = re.compile(r" [\(\[\{]?(?:f(?:ea)?t(?:uring)?\.?|with\.) ", flags=re.IGNORECASE)
 
 EMPTY_METADATA = {
     "artists": [],
@@ -82,19 +85,9 @@ def parse_title(title):
     base = title.strip()
 
     if cfg.upload.formatting.strip_useless_versions:
-        # Define patterns to strip and capture
-        junk_pattern = re.compile(
-            r"\s*\(*\b("
-            r"Original( Mix)?|Remastered|Clean|"
-            r"(Expanded|Deluxe|Anniversary|Limited|Collector'?s|Ultimate|Reissue|Bonus|Special)\s+Edition|"
-            r"Album.+(edition|mix)|feat[^\)]+"
-            r")\b\)*\s*$",
-            flags=re.IGNORECASE,
-        )
-
-        match = junk_pattern.search(base)
+        match = RE_USELESS_VERSION.search(base)
         if match:
-            edition = match.group(1).strip()
+            edition = match.group("version").strip()
             base = base[: match.start()].strip()
 
     return base, edition
@@ -110,10 +103,10 @@ def construct_artists_li(tags):
 
 def split_genres(genres_list):
     """Create a list of genres from splitting the string."""
-    genres = set()
-    if genres_list:
-        for g in genres_list:
-            genres.update(split_genre(g))
+    # A dict, not a set, so the order follows the file tags rather than the hash seed.
+    genres: dict[str, None] = {}
+    for g in genres_list or []:
+        genres.update(dict.fromkeys(split_genre(g)))
     return list(genres)
 
 
@@ -187,19 +180,33 @@ def parse_artists(artist_list):
     if isinstance(artist_list, str):
         artist_list = [artist_list]
     for artist in artist_list:
-        feat = RE_FEAT.search(artist)
-        if feat:
-            for a in re_split(feat[1]):
-                artists.append((a, "guest"))
-            artist = artist.replace(feat[0], "")
+        guests, artist = _extract_feat(artist)
+        for a in re_split(guests):
+            artists.append((strip_numbered_suffixes(a), "guest"))
         remix = re.search(r" \(?remix(?:\.|ed|ed by)? ([^\)]+)\)?", artist)
         if remix:
             for a in re_split(remix[1]):
-                artists.append((a, "remixer"))
+                artists.append((strip_numbered_suffixes(a), "remixer"))
             artist = artist.replace(remix[0], "")
         for a in re_split(artist):
-            artists.append((a, "main"))
+            artists.append((strip_numbered_suffixes(a), "main"))
     return artists
+
+
+def _extract_feat(artist):
+    """Split a `feat.` credit off an artist string as (guests, rest); guests end at the bracket closing the credit's."""
+    feat = _RE_FEAT_START.search(artist)
+    if not feat:
+        return "", artist
+    depth = 0
+    for i in range(feat.end(), len(artist)):
+        if artist[i] in "([{":
+            depth += 1
+        elif artist[i] in ")]}":
+            if depth == 0:
+                return artist[feat.end() : i], artist[: feat.start()] + artist[i + 1 :]
+            depth -= 1
+    return artist[feat.end() :], artist[: feat.start()]
 
 
 def construct_track_artists(track):

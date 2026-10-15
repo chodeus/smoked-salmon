@@ -10,6 +10,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from salmon import cfg
 from salmon.webui.auth import AuthMiddleware, auth_router, resolve_auth_token
+from salmon.webui.egress import EgressMiddleware
 from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.routers import browse, checks, convert, jobs, search, spectrals, system, tools, upload
 
@@ -33,6 +34,9 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
     app.state.auth_token = token
     app.state.dev = dev
 
+    # Innermost, so every route's answer passes it.
+    app.add_middleware(EgressMiddleware)
+
     configured_hosts = list(getattr(cfg.upload.web_interface, "allowed_hosts", []) or [])
     if host in LOOPBACK_HOSTS:
         # DNS-rebinding protection for loopback/dev binds.
@@ -40,9 +44,6 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
     elif configured_hosts:
         # A LAN bind can be locked to its own hostname(s)/IP via config.
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=configured_hosts)
-
-    # The token gate is the primary protection for a non-loopback bind.
-    app.add_middleware(AuthMiddleware, token=token)
 
     if dev:
         app.add_middleware(
@@ -52,6 +53,9 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    # Added last, so outermost: CORS answers a preflight itself, which must not come before the Origin check.
+    app.add_middleware(AuthMiddleware, token=token)
 
     for router in (system, search, browse, spectrals, convert, checks, jobs, upload, tools):
         app.include_router(router.router, prefix="/api")

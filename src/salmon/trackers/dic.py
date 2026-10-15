@@ -1,11 +1,44 @@
+from typing import Any
+
 import asyncclick as click
 
 from salmon import cfg
 from salmon.common import UploadFiles
+from salmon.errors import UploadRefusedError
 from salmon.trackers.base import BaseGazelleApi
+
+SAMPLE_RATES = {
+    44100: "44.1kHz",
+    48000: "48kHz",
+    88200: "88.2kHz",
+    96000: "96kHz",
+    176400: "176.4kHz",
+    192000: "192kHz",
+}
+
+
+API_KEY_IGNORED = "tracker.dic.api_key is ignored: DIC does not take API keys, salmon uses its session cookie."
+
+# Whether this run has said so already: salmon builds a DICApi per upload, per cross-upload side and per check.
+_api_key_warned = False
+
+
+def warn_api_key_ignored() -> None:
+    """Say once per run that the configured DIC API key is not used."""
+    global _api_key_warned
+    if cfg.tracker.dic and cfg.tracker.dic.api_key and not _api_key_warned:
+        _api_key_warned = True
+        click.secho(API_KEY_IGNORED, fg="yellow")
+
+
+def _khz(rate: int) -> str:
+    return f"{rate / 1000:g} kHz"
 
 
 class DICApi(BaseGazelleApi):
+    # DIC's upload form has no Arranger role (unconfirmed whether it ever will).
+    unsupported_artist_roles = frozenset({"arranger"})
+
     def __init__(self):
         self.site_code = "DIC"
         self.base_url = "https://dicmusic.com"
@@ -24,10 +57,15 @@ class DICApi(BaseGazelleApi):
 
             self.cookie = dic_cfg.session
             self.keeplogged = dic_cfg.keeplogged
-            if dic_cfg.api_key:
-                self.api_key = dic_cfg.api_key
+            # DIC takes no API key: without one, every request goes by the session cookie.
+            warn_api_key_ignored()
 
         super().__init__()
+
+    def skip_upload_marks(self) -> None:
+        """Send none of the Self-purchased, Self-rip and Exclusive marks, and do not ask for them."""
+        self.specific_params = {}
+        self._marks_prompted = True
 
     async def upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Attempt to upload a torrent to the site using the upload.php.
@@ -85,3 +123,24 @@ class DICApi(BaseGazelleApi):
         enriched_data = {**data, **self.specific_params}
 
         return await super().upload(enriched_data, files)
+
+    def upload_form_fields(self, metadata: dict[str, Any], track_data: dict[str, Any]) -> dict[str, str]:
+        """DIC's sample_rate field for a 24bit Lossless torrent; UploadRefusedError for mixed or unlisted rates."""
+        if metadata["encoding"] != "24bit Lossless":
+            return {}
+
+        rates = sorted({track["sample rate"] for track in track_data.values()})
+        if len(rates) != 1:
+            found = ", ".join(_khz(rate) for rate in rates) or "none"
+            raise UploadRefusedError(
+                f"{self.site_string} takes one sample rate per torrent, and the files of this one have "
+                f"{found}: not uploading it there."
+            )
+        rate = rates[0]
+        if rate not in SAMPLE_RATES:
+            offered = ", ".join(_khz(rate) for rate in SAMPLE_RATES)
+            raise UploadRefusedError(
+                f"The files of this torrent are {_khz(rate)}, and {self.site_string}'s upload form has no "
+                f"sample rate option for it (only {offered}): not uploading it there."
+            )
+        return {"sample_rate": SAMPLE_RATES[rate]}

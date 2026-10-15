@@ -9,10 +9,11 @@ import anyio
 import asyncclick as click
 import msgspec
 
+from salmon import cfg
 from salmon.common.constants import IMAGE_EXTENSIONS, LOSSY_EXTENSIONS
 from salmon.common.files import process_files
-from salmon.converter.conversions import record_conversion
-from salmon.errors import InvalidSampleRate
+from salmon.converter.conversions import conversion_of, record_conversion
+from salmon.errors import InvalidSampleRate, UploadError
 from salmon.release_notification import upload_footer
 from salmon.tagger.audio_info import gather_audio_info
 
@@ -57,18 +58,56 @@ def _resolve_sample_rate(sample_rate: int) -> int:
     raise InvalidSampleRate
 
 
-def _build_output_path(path: str, bit_depth: BitDepth, sample_rate: int | None) -> str:
+def _build_output_path(path: str, bit_depth: BitDepth, sample_rate: int | None, output_dir: str | None = None) -> str:
     """Generate the output directory path based on source path and conversion params.
 
     Args:
         path: Source album directory path.
         bit_depth: Target bit depth.
         sample_rate: Target sample rate, or None.
+        output_dir: Directory the output goes into; the source's own directory by default.
 
     Returns:
         The output directory path string.
     """
     foldername = os.path.basename(path)
+    # Imported here: foldername imports this package, through salmon.converter.conversions.
+    from salmon.tagger.foldername import (
+        drop_resolution_token,
+        holds_resolution_token,
+        resolution_token,
+        swap_resolution_token,
+    )
+
+    try:
+        audio_info = gather_audio_info(path)
+    except UploadError:
+        # A file it cannot read names the output as before, so an existing one is still found and skipped.
+        audio_info = {}
+    # From the source's files, and only where the name holds it as its own word, never digits inside a title.
+    current_token = resolution_token(audio_info)
+    has_token = holds_resolution_token(foldername, current_token)
+    # A {resolution}-only name has no "24bit"/"16bit FLAC" wording: swap its token for the conversion's
+    # in place instead of the bit-depth rewriting below.
+    carries_bit_depth_wording = bool(re.search(r"\d+ ?bit FLAC", foldername, flags=re.IGNORECASE))
+
+    if has_token and not carries_bit_depth_wording:
+        target_rate = sample_rate
+        if target_rate is None:
+            (source_rate,) = {info["sample rate"] for info in audio_info.values()}
+            target_rate = _resolve_sample_rate(source_rate)
+        new_token = resolution_token({"_": {"precision": bit_depth, "sample rate": target_rate}})
+        if new_token:
+            foldername = swap_resolution_token(foldername, current_token, new_token)
+        else:
+            foldername = drop_resolution_token(foldername, current_token)
+        return os.path.join(output_dir or os.path.dirname(path), foldername)
+
+    if has_token:
+        # A template pairing {format} and {resolution} (e.g. "24bit FLAC 24-96"): drop the stale
+        # token so the FLAC/bit-depth rewriting below does not have to work around it.
+        foldername = drop_resolution_token(foldername, current_token)
+
     if re.search(r"24 ?bit FLAC", foldername, flags=re.IGNORECASE):
         foldername = re.sub(r"24 ?bit FLAC", "FLAC", foldername, flags=re.IGNORECASE)
     elif re.search("FLAC", foldername, flags=re.IGNORECASE):
@@ -84,7 +123,7 @@ def _build_output_path(path: str, bit_depth: BitDepth, sample_rate: int | None) 
             flags=re.IGNORECASE,
         )
 
-    return os.path.join(os.path.dirname(path), foldername)
+    return os.path.join(output_dir or os.path.dirname(path), foldername)
 
 
 def _collect_convert_items(
@@ -223,11 +262,30 @@ async def _convert_audio_files(
 # ---------------------------------------------------------------------------
 
 
+def _recorded_rate(items: list[ConvertItem]) -> int | list[int]:
+    """The target sample rate as a conversion record holds it: the one rate, or each rate in order."""
+    rates = sorted({item.target_rate for item in items})
+    return rates[0] if len(rates) == 1 else rates
+
+
+def _is_finished_conversion(path: str, new_path: str, items: list[ConvertItem], bit_depth: BitDepth) -> bool:
+    """Whether new_path holds every converted file and a record, written after the last, of this conversion of path."""
+    if not all(os.path.isfile(item.dst) for item in items):
+        return False
+    record = conversion_of(new_path)
+    if record is None or os.path.realpath(record["source"]) != os.path.realpath(path):
+        return False
+    # The name alone can match: a 16-bit conversion at 44.1 kHz and at 48 kHz can share one.
+    wanted = {"kind": "downconvert", "bit_depth": bit_depth, "sample_rate": _recorded_rate(items)}
+    return all(record.get(key) == value for key, value in wanted.items())
+
+
 async def convert_folder(
     path: str,
     bit_depth: BitDepth = 16,
     sample_rate: int | None = None,
     essential_only: bool = False,
+    output_dir: str | None = None,
 ) -> tuple[int | None, str]:
     """Convert a folder of 24-bit FLAC files to the target bit depth.
 
@@ -237,31 +295,36 @@ async def convert_folder(
         sample_rate: Target sample rate. None for automatic detection.
         essential_only: If True, only image files are copied; all other extra
             files (scans, cues, logs, etc.) are skipped.
+        output_dir: Directory the output goes into; the source's own directory by default.
 
     Returns:
         Tuple of (final_sample_rate, new_folder_path).
     """
     _validate_lossless(path)
-    new_path = _build_output_path(path, bit_depth, sample_rate)
+    new_path = _build_output_path(path, bit_depth, sample_rate, output_dir)
+    # Resolved, so a symlink on the way cannot carry the output into a library.
+    if cfg.directory.protects(new_path):
+        raise UploadError(f"Not converting into {new_path}: it is in library_dirs, or holds one.")
 
+    items = _collect_convert_items(path, new_path, sample_rate)
     if os.path.isdir(new_path):
+        # Never removed: unlike a transcode's, this name can belong to a folder the user made.
+        if items and not _is_finished_conversion(path, new_path, items, bit_depth):
+            raise UploadError(
+                f"{new_path} is incomplete or not salmon's conversion of this album at these settings: "
+                "remove it and run again."
+            )
         click.secho(f"{new_path} already exists.", fg="yellow")
         return sample_rate, new_path
 
-    items = _collect_convert_items(path, new_path, sample_rate)
     convert_srcs = frozenset(item.src for item in items)
     _copy_extra_files(path, new_path, convert_srcs, essential_only=essential_only)
     await _convert_audio_files(items, bit_depth)
 
     final_rate = items[-1].target_rate if items else None
-    target_rates = sorted({item.target_rate for item in items})
     if items:
         record_conversion(
-            new_path,
-            source=path,
-            kind="downconvert",
-            bit_depth=bit_depth,
-            sample_rate=target_rates[0] if len(target_rates) == 1 else target_rates,
+            new_path, source=path, kind="downconvert", bit_depth=bit_depth, sample_rate=_recorded_rate(items)
         )
     return final_rate or sample_rate, new_path
 
@@ -280,12 +343,16 @@ def generate_conversion_description(url: str, sample_rate: int | Sequence[int] |
     if not sample_rate:
         return ""
     rates = [sample_rate] if isinstance(sample_rate, int) else list(sample_rate)
+    specifics = " / ".join(f"{rate / 1000:.01f}" for rate in rates)
+    note = conversion_note(url, sample_rate, bit_depth)
+    return f"Encode Specifics: {bit_depth} bit {specifics} kHz\n{note}{upload_footer()}"
+
+
+def conversion_note(url: str, sample_rate: int | Sequence[int] | None, bit_depth: BitDepth = 16) -> str:
+    """The source and the sox commands of a conversion, without the specifics line or the footer."""
+    if not sample_rate:
+        return ""
+    rates = [sample_rate] if isinstance(sample_rate, int) else list(sample_rate)
     depth_args = " ".join(SOX_DEPTH_ARGS[bit_depth])
     sox_cmds = "\n".join(f"sox input.flac {depth_args} output.flac rate -v -L {rate} dither" for rate in rates)
-    specifics = " / ".join(f"{rate / 1000:.01f}" for rate in rates)
-    return (
-        f"Encode Specifics: {bit_depth} bit {specifics} kHz\n"
-        f"[b]Source:[/b] {url}\n"
-        f"[b]Transcode process:[/b] [code]{sox_cmds}[/code]\n"
-        f"{upload_footer()}"
-    )
+    return f"[b]Source:[/b] {url}\n[b]Transcode process:[/b] [code]{sox_cmds}[/code]\n"

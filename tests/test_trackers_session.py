@@ -103,7 +103,7 @@ async def test_queued_requests_do_not_time_out_while_waiting(serve):
 
 
 async def test_a_trickled_answer_still_times_out(serve, monkeypatch):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._request).retry, "wait", wait_fixed(0))
+    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
 
     async def handler(request: web.Request) -> web.StreamResponse:
         await request.read()
@@ -281,3 +281,32 @@ async def test_closing_a_pool_never_walks_every_contexts_pools(serve, monkeypatc
         await api._request("GET", f"{base}/ajax.php")
         await api.close()
     assert api._session is None
+
+
+@pytest.mark.parametrize("body", ['{"status": "failure"}', '["a", "b"]', '"nope"', "42"])
+async def test_an_error_answer_without_an_error_key_keeps_its_body_as_the_message(serve, body: str):
+    async def handler(_request: web.Request) -> web.Response:
+        return web.Response(status=400, text=body, content_type="application/json")
+
+    api = FakeApi(await serve(handler))
+    try:
+        with pytest.raises(RequestFailedError) as raised:
+            await api._request("GET", f"{api.base_url}/ajax.php", params={"action": "index"})
+    finally:
+        await api.close()
+
+    assert str(raised.value) == body
+
+
+async def test_an_error_answer_with_an_error_key_gives_that_message(serve):
+    async def handler(_request: web.Request) -> web.Response:
+        return web.json_response({"status": "failure", "error": "bad id"}, status=400)
+
+    api = FakeApi(await serve(handler))
+    try:
+        with pytest.raises(RequestFailedError) as raised:
+            await api._request("GET", f"{api.base_url}/ajax.php", params={"action": "index"})
+    finally:
+        await api.close()
+
+    assert str(raised.value) == '"bad id"'

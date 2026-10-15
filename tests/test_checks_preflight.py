@@ -1,7 +1,10 @@
 import json
+from types import SimpleNamespace
 
 import pytest
+from test_checks_do_not_upload import write_lists  # pyright: ignore[reportMissingImports]
 
+from salmon.checks import album
 from salmon.checks import preflight as pf
 
 NO_FILE_CHECKS: list[str] = []
@@ -68,47 +71,76 @@ def test_upconvert_still_blocks_when_a_deeper_file_is_upconverted():
     assert pf._upconvert_verdict(result, {})[0] == pf.BLOCK
 
 
-@pytest.mark.parametrize("source", ["WEB", "Vinyl", "Cassette"])
-def test_log_check_does_not_apply_to_non_cd(source):
-    assert pf._log_verdict({"logs": []}, {"source": source})[0] == pf.SKIP
+def _log(**fields) -> dict:
+    """A rip log as album.run_log_check reads it: full marks, unless fields say otherwise."""
+    return {"file": "rip.log", "score": 100, "checksum_integrity": "Match", "crcs": "match", "crcs_detail": ""} | fields
 
 
-def test_missing_log_on_cd_warns_but_does_not_block():
-    row = pf._log_verdict({"logs": []}, {"source": "CD"})
-    assert row[0] == pf.WARN
+def test_a_missing_log_warns_but_does_not_block():
+    verdict, _detail = pf._log_verdict({"logs": []}, {})
+    assert verdict == pf.WARN
 
 
-def test_unknown_source_still_checks_the_log():
-    assert pf._log_verdict({"logs": []}, {"source": None})[0] == pf.WARN
+def test_a_full_marks_log_is_green():
+    found = pf._log_verdict({"logs": [_log()]}, {})
+    assert found == (pf.OK, "Score 100/100, checksum and CRCs match in 1 log(s).")
 
 
-def test_perfect_log_is_green():
-    logs = {"logs": [{"file": "r.log", "score": 100, "checksum_integrity": "Match"}]}
-    assert pf._log_verdict(logs, {"source": "CD"})[0] == pf.OK
+@pytest.mark.parametrize(
+    ("fields", "verdict", "said"),
+    [
+        ({"checksum_integrity": "Mismatch"}, pf.BLOCK, "rip.log: its checksum does not match, so the log was edited."),
+        (
+            {"crcs": "error", "crcs_detail": "no decoder"},
+            pf.BLOCK,
+            "could not be checked against its CRCs (no decoder)",
+        ),
+        ({"crcs": "mismatch"}, pf.WARN, "rip.log: the audio does not match its CRCs."),
+        (
+            {"crcs": "skipped", "crcs_detail": "No audio files found!"},
+            pf.WARN,
+            "CRCs not checked: No audio files found!",
+        ),
+        ({"checksum_integrity": "Unknown"}, pf.WARN, "no checksum to verify it"),
+        ({"score": 87}, pf.WARN, "rip.log: score 87/100."),
+        ({"score": None}, pf.WARN, "rip.log: no score."),
+    ],
+    ids=["edited", "crcs-unverifiable", "crc-mismatch", "crcs-skipped", "no-checksum", "low-score", "no-score"],
+)
+def test_each_log_problem_gets_the_verdict_salmon_up_gives_it(fields: dict, verdict: str, said: str):
+    found, detail = pf._log_verdict({"logs": [_log(**fields)]}, {})
+    assert found == verdict
+    assert said in detail
 
 
-def test_imperfect_score_warns():
-    logs = {"logs": [{"file": "r.log", "score": 87, "checksum_integrity": "Match"}]}
-    row = pf._log_verdict(logs, {"source": "CD"})
-    assert row[0] == pf.WARN
-    assert "87" in row[1]
+def test_a_good_log_does_not_vouch_for_one_that_cannot_be_read():
+    logs = {"logs": [_log(file="good.log"), {"file": "broken.log", "error": "not a log"}]}
+    found = pf._log_verdict(logs, {})
+    assert found == (pf.WARN, "broken.log: could not be read (not a log). 1 other log(s) pass.")
 
 
-def test_checksum_mismatch_warns_even_at_full_score():
-    logs = {"logs": [{"file": "r.log", "score": 100, "checksum_integrity": "Mismatch"}]}
-    assert pf._log_verdict(logs, {"source": "CD"})[0] == pf.WARN
+def test_one_edited_log_blocks_whatever_the_others_say():
+    logs = [_log(file="cd1.log", score=90), _log(file="cd2.log", checksum_integrity="Mismatch"), _log(file="cd3.log")]
+    found = pf._log_verdict({"logs": logs}, {})
+    assert found == (
+        pf.BLOCK,
+        "cd1.log: score 90/100. cd2.log: its checksum does not match, so the log was edited. 1 other log(s) pass.",
+    )
 
 
-def test_worst_log_decides_the_verdict():
-    logs = {
-        "logs": [
-            {"file": "a.log", "score": 100, "checksum_integrity": "Match"},
-            {"file": "b.log", "score": 40, "checksum_integrity": "Match"},
-        ]
-    }
-    row = pf._log_verdict(logs, {"source": "CD"})
-    assert row[0] == pf.WARN
-    assert "b.log" in row[1]
+@pytest.mark.parametrize(("source", "read"), [("WEB", False), ("Vinyl", False), ("CD", True), (None, True)])
+async def test_logs_are_read_for_a_cd_or_an_unknown_source_only(album_dir, monkeypatch, source, read: bool):
+    monkeypatch.setattr(
+        pf, "detect_source", lambda _p: {"source": None, "confidence": "unknown", "reasons": ["undecidable"]}
+    )
+    searched: list[str] = []
+    monkeypatch.setattr(album, "_log_paths", lambda path: searched.append(path) or [])
+
+    result = await pf.run_checks(str(album_dir), ["log"], source, [])
+
+    row = next(r for r in result["rows"] if r["id"] == "log")
+    assert bool(searched) is read
+    assert row["verdict"] == (pf.WARN if read else pf.SKIP)
 
 
 def test_source_must_be_chosen_when_undetectable():
@@ -174,6 +206,116 @@ def test_dupe_row_names_each_matched_edition():
     assert "2026 / 1200214726676: WEB FLAC Lossless, WEB MP3 320" in row.detail
 
 
+def _oracle_release(**fields) -> dict:
+    """The release ORACLE_GROUP's FLAC is, unless fields say otherwise."""
+    return {"source": "WEB", "format": "FLAC", "encoding": "Lossless", "year": "2026", "edition_title": None} | fields
+
+
+@pytest.mark.parametrize(
+    ("fields", "verdict", "said"),
+    [
+        (
+            {},
+            pf.WARN,
+            "RED already has this edition's WEB FLAC Lossless: 2026 / 1200214726676 / WEB / FLAC / Lossless.",
+        ),
+        ({"source": "CD"}, pf.OK, "None holds this edition's CD FLAC Lossless."),
+        ({"encoding": "24bit Lossless"}, pf.OK, "None holds this edition's WEB FLAC 24bit Lossless."),
+        ({"year": "2020"}, pf.OK, "None holds this edition's WEB FLAC Lossless."),
+        ({"edition_title": "Deluxe Edition"}, pf.WARN, "RED already has this edition's WEB FLAC Lossless"),
+        ({"encoding": None}, pf.WARN, "not known from the files, so check them by hand"),
+    ],
+    ids=["same-edition", "other-media", "other-encoding", "other-year", "untitled-held-edition", "unknown-encoding"],
+)
+def test_a_match_warns_only_when_it_holds_this_editions_format(fields: dict, verdict: str, said: str):
+    row = pf.dupe_row("RED", [ORACLE_GROUP], _oracle_release(**fields))
+
+    assert row.verdict == verdict
+    assert said in row.detail
+
+
+@pytest.mark.parametrize(
+    ("track_data", "release_format", "encoding"),
+    [
+        ({"01.flac": {"precision": 24}, "02.flac": {"precision": 16}}, "FLAC", "24bit Lossless"),
+        ({"01.flac": {"precision": 16}}, "FLAC", "Lossless"),
+        ({"01.mp3": {"precision": 16}}, "MP3", None),
+        ({"01.xyz": {}}, None, None),
+        ({}, None, None),
+    ],
+    ids=["24bit", "16bit", "mp3", "unknown-extension", "unread"],
+)
+def test_the_release_takes_its_format_and_encoding_from_the_files(track_data, release_format, encoding):
+    release = pf._release({"title": "Y"}, track_data, "WEB")
+
+    assert (release["format"], release["encoding"], release["source"]) == (release_format, encoding, "WEB")
+
+
+async def _offline(_site, _searchstrs):
+    raise RuntimeError("offline")
+
+
+async def _null_group(_site, _searchstrs):
+    return [None]
+
+
+async def _no_results_field(_site, _searchstrs):
+    raise KeyError("results")
+
+
+@pytest.mark.parametrize(
+    ("search", "said"),
+    [
+        (_offline, "Could not search DIC: offline"),
+        (_null_group, "DIC gave an unexpected answer"),
+        (_no_results_field, "DIC gave an unexpected answer"),
+    ],
+    ids=["offline", "null-group", "no-results-field"],
+)
+async def test_a_failed_or_malformed_search_warns_and_closes_the_client(monkeypatch, search, said: str):
+    closed: list[bool] = []
+
+    class Site:
+        base_url = "https://tracker.example"
+
+        async def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(pf.salmon.trackers, "get_class", lambda _code: Site)
+    monkeypatch.setattr(pf, "get_search_results", search)
+    release = _oracle_release(artists=[("X", "main")], title="Y", catno=None)
+
+    rows, raw = await pf._tracker_rows("DIC", release)
+
+    assert [(row.verdict, said in row.detail) for row in rows] == [(pf.WARN, True)]
+    assert raw == {}
+    assert closed == [True]
+
+
+@pytest.mark.parametrize(("source", "verdict"), [("WEB", pf.WARN), ("CD", pf.OK)])
+async def test_run_checks_weighs_the_matches_against_the_chosen_source(album_dir, monkeypatch, source, verdict):
+    class Site:
+        base_url = "https://tracker.example"
+
+        async def close(self) -> None:
+            pass
+
+    async def oracle(_site, _searchstrs):
+        return [ORACLE_GROUP]
+
+    monkeypatch.setattr(pf, "detect_source", lambda _p: {"source": None, "confidence": "unknown", "reasons": ["none"]})
+    identity = {"artists": [("X", "main")], "title": "Oracle", "edition_title": None, "year": "2026", "catno": None}
+    monkeypatch.setattr(pf, "_release_identity", lambda _p: identity | {"label": None})
+    monkeypatch.setattr(pf, "_audio_info", lambda _p: {"01.flac": {"precision": 16, "sample rate": 44100}})
+    monkeypatch.setattr(pf.salmon.trackers, "get_class", lambda _code: Site)
+    monkeypatch.setattr(pf, "get_search_results", oracle)
+
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, source, ["DIC"])
+
+    row = next(r for r in result["rows"] if r["id"] == "dupe:DIC")
+    assert row["verdict"] == verdict
+
+
 def test_dupe_matches_keep_the_catalogue_number():
     [group] = pf.dupe_matches("https://redacted.sh", [ORACLE_GROUP])
 
@@ -193,8 +335,8 @@ def test_no_dupes_is_green():
     assert pf.dupe_row("OPS", []).verdict == pf.OK
 
 
-def test_blacklisted_release_blocks():
-    assert pf.blacklist_row("RED", "on the Do-Not-Upload list").verdict == pf.BLOCK
+def test_a_listed_release_blocks():
+    assert pf.do_not_upload_row("RED", "on the Do-Not-Upload list").verdict == pf.BLOCK
 
 
 async def test_run_checks_blocks_until_a_source_is_chosen(album_dir, monkeypatch):
@@ -203,7 +345,7 @@ async def test_run_checks_blocks_until_a_source_is_chosen(album_dir, monkeypatch
     )
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, None, [])
     assert result["blocking"] == ["source"]
-    assert [r["verdict"] for r in result["rows"] if r["id"] != "source"] == [pf.SKIP] * 5
+    assert [r["verdict"] for r in result["rows"] if r["id"] != "source"] == [pf.SKIP] * len(pf.CHECKS)
 
 
 async def test_run_checks_clears_when_everything_passes(album_dir, monkeypatch):
@@ -233,8 +375,13 @@ async def test_run_checks_reports_a_tracker_search_failure_as_a_warning(album_di
 
 
 async def test_run_checks_exposes_every_dupe_match_not_just_the_two_it_names(album_dir, monkeypatch):
+    closed: list[bool] = []
+
     class FakeSite:
         base_url = "https://redacted.sh"
+
+        async def close(self) -> None:
+            closed.append(True)
 
     async def three_matches(_site, _searchstrs):
         return [
@@ -273,6 +420,7 @@ async def test_run_checks_exposes_every_dupe_match_not_just_the_two_it_names(alb
     assert first["torrents"][1]["seeders"] == 0
     # An allowlist, so a download URL carrying the torrent pass cannot ride along.
     assert "SECRET" not in json.dumps(detail)
+    assert closed == [True]
 
 
 def test_every_check_is_declared_once_in_the_table():
@@ -303,54 +451,36 @@ async def test_unselected_checks_are_skipped_not_dropped(album_dir, monkeypatch)
     assert verdicts["mqa"] != pf.SKIP
 
 
-async def test_a_failing_blacklist_lookup_blocks_rather_than_clears(album_dir, monkeypatch):
-    """Fail closed: an unreadable blacklist must never look like 'not blacklisted'."""
+def _tagged_x_y(monkeypatch) -> None:
     monkeypatch.setattr(
         pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
     )
-    monkeypatch.setattr(
-        pf, "_release_identity", lambda _p: {"artists": [("X", "main")], "title": "Y", "label": None, "catno": None}
-    )
+    identity = {"artists": [("X", "main")], "title": "Y", "edition_title": None, "label": None, "catno": None}
+    monkeypatch.setattr(pf, "_release_identity", lambda _p: identity)
     monkeypatch.setattr(pf, "get_search_results", lambda *_a: _empty())
-    monkeypatch.setattr(pf, "red_blacklist_reason", lambda *_a: (_ for _ in ()).throw(RuntimeError("bad toml")))
+
+
+async def test_an_unreadable_list_blocks_rather_than_clears(album_dir, monkeypatch, tmp_path):
+    """Fail closed: a list salmon cannot read must never look like 'not listed'."""
+    _tagged_x_y(monkeypatch)
+    write_lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nnot toml")
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED"])
-    assert "blacklist:RED" in result["blocking"]
+    assert "do-not-upload:RED" in result["blocking"]
+
+
+async def test_a_release_on_ops_list_blocks_ops_only(album_dir, monkeypatch, tmp_path):
+    _tagged_x_y(monkeypatch)
+    write_lists(monkeypatch, tmp_path / "lists", OPS="[[entry]]\nartist = 'X'\nnote = 'Fakes only.'\n")
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED", "OPS", "DIC"])
+    assert result["blocking"] == ["do-not-upload:OPS"]
+    assert [r["id"] for r in result["rows"] if r["id"].startswith("do-not-upload")] == [
+        "do-not-upload:RED",
+        "do-not-upload:OPS",
+    ]
 
 
 async def _empty():
     return []
-
-
-def test_one_unparseable_log_warns_even_when_another_scores_full_marks():
-    """A good log does not vouch for a sibling that would not parse."""
-    logs = {
-        "logs": [
-            {"file": "good.log", "score": 100, "checksum_integrity": "Match"},
-            {"file": "broken.log", "error": "not a log"},
-        ]
-    }
-    verdict, detail = pf._log_verdict(logs, {"source": "CD"})
-    assert verdict == pf.WARN
-    assert "1 of 2" in detail
-
-
-def test_a_log_with_no_checksum_is_unverifiable_not_altered():
-    # EAC only began signing logs in 1.0 beta 3; an older log has none at all,
-    # which is a different state from a checksum that fails.
-    logs = {"logs": [{"file": "r.log", "score": 100, "checksum_integrity": "Unknown"}]}
-    verdict, detail = pf._log_verdict(logs, {"source": "CD"})
-    assert verdict == pf.WARN
-    assert "No log checksum" in detail
-    assert "does not match" not in detail
-    assert "trumpable" in detail
-
-
-def test_a_failing_checksum_still_says_the_log_was_altered():
-    logs = {"logs": [{"file": "r.log", "score": 100, "checksum_integrity": "Mismatch"}]}
-    verdict, detail = pf._log_verdict(logs, {"source": "CD"})
-    assert verdict == pf.WARN
-    assert "does not match" in detail
-    assert "altered" in detail
 
 
 def test_integrity_warnings_are_not_reported_as_clean():
@@ -371,9 +501,54 @@ def test_rules_row_reports_a_path_that_would_be_trumped():
     assert "180" in row.detail
 
 
-def test_rules_row_is_green_when_nothing_breaks_a_rule():
-    row = pf.rules_row("RED", "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}})
+@pytest.mark.parametrize(
+    ("tracker", "paths"),
+    [("RED", "Paths are within RED's 180-character limit"), ("DIC", "DIC sets no path limit")],
+)
+def test_rules_row_is_green_when_nothing_breaks_a_rule(tracker: str, paths: str):
+    row = pf.rules_row(tracker, "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}})
     assert row.verdict == pf.OK
+    assert row.detail == f"{paths}, and sample rates are standard."
+
+
+LONG_LOG = "x" * 180 + ".log"
+
+
+def test_a_long_log_name_breaks_the_path_rule_as_a_track_does():
+    row = pf.rules_row("RED", "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}}, [LONG_LOG, "cover.jpg"])
+
+    assert row.verdict == pf.WARN
+    assert row.detail == f"191-char path exceeds RED's 180 limit (2.3.12, a trump reason): Folder/{LONG_LOG}"
+
+
+def test_a_long_path_is_reported_even_when_the_audio_cannot_be_read():
+    row = pf.rules_row("RED", "Folder", {}, [LONG_LOG])
+
+    assert row.verdict == pf.WARN
+
+
+def test_the_other_files_are_every_file_but_the_audio(tmp_path):
+    (tmp_path / "CD1").mkdir()
+    for name in ("CD1/01.flac", "CD1/rip.log", "cover.jpg"):
+        (tmp_path / name).write_bytes(b"")
+
+    others = pf._other_files(str(tmp_path), {"CD1/01.flac": {}})
+
+    assert others == ["CD1/rip.log", "cover.jpg"]
+
+
+async def test_run_checks_measures_the_path_of_a_log_beside_the_audio(album_dir, monkeypatch):
+    monkeypatch.setattr(
+        pf, "detect_source", lambda _p: {"source": "CD", "confidence": "confirmed", "reasons": ["rip log"]}
+    )
+    monkeypatch.setattr(pf, "_release_identity", lambda _p: {})
+    (album_dir / LONG_LOG).write_text("log", encoding="utf-8")
+
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "CD", ["RED"])
+
+    row = next(r for r in result["rows"] if r["id"] == "rules:RED")
+    assert row["verdict"] == pf.WARN
+    assert LONG_LOG in row["detail"]
 
 
 def test_rules_row_is_skipped_when_the_audio_could_not_be_read():
@@ -483,3 +658,155 @@ def test_a_part_web_album_says_how_many():
 
     assert verdict == WARN
     assert "3 of 17" in detail
+
+
+async def test_a_media_only_entry_blocks_once_the_source_is_known(album_dir, monkeypatch, tmp_path):
+    _tagged_x_y(monkeypatch)
+    write_lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nartist = 'X'\nmedia = 'WEB'\nnote = 'WEB fakes.'\n")
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED"])
+    assert "do-not-upload:RED" in result["blocking"]
+
+
+async def test_a_listed_release_is_not_searched_for_on_that_tracker(album_dir, monkeypatch, tmp_path):
+    _tagged_x_y(monkeypatch)
+    searched: list[object] = []
+
+    async def search(site, _searchstrs):
+        searched.append(site.site_code)
+        return []
+
+    monkeypatch.setattr(pf, "get_search_results", search)
+    write_lists(monkeypatch, tmp_path / "lists", RED="[[entry]]\nartist = 'X'\nnote = 'Fakes only.'\n")
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED", "OPS"])
+    assert searched == ["OPS"]
+    verdicts = {r["id"]: r["verdict"] for r in result["rows"]}
+    assert verdicts["dupe:RED"] == pf.SKIP
+
+
+async def test_without_an_album_title_the_lists_are_said_not_checked(album_dir, monkeypatch):
+    monkeypatch.setattr(
+        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+    )
+    monkeypatch.setattr(pf, "_release_identity", lambda _p: {})
+    result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED", "DIC"])
+    verdicts = {r["id"]: r["verdict"] for r in result["rows"]}
+    assert verdicts["do-not-upload:RED"] == pf.SKIP
+    assert "do-not-upload:DIC" not in verdicts
+
+
+def test_the_identity_keeps_the_edition_title(monkeypatch):
+    tagged = SimpleNamespace(album="Night Songs (Deluxe Edition)", label="Label", catno="CAT1", date="2020-05-01")
+    monkeypatch.setattr(pf, "gather_tags", lambda _path: {"01.flac": tagged})
+    monkeypatch.setattr(pf, "construct_artists_li", lambda _tags: [("Artist", "main")])
+    identity = pf._release_identity("/album")
+    assert (identity["title"], identity["edition_title"], identity["year"]) == ("Night Songs", "Deluxe Edition", "2020")
+
+
+def test_16bit_above_48khz_blocks_for_ops_and_warns_for_red():
+    files = {"01.flac": {"sample rate": 96000, "precision": 16}}
+    ops, red = pf.sixteen_bit_row("OPS", files), pf.sixteen_bit_row("RED", files)
+    assert ops is not None and ops.verdict == pf.BLOCK
+    assert red is not None and red.verdict == pf.WARN
+    dic = pf.sixteen_bit_row("DIC", files)
+    twenty_four = pf.sixteen_bit_row("OPS", {"01.flac": {"sample rate": 96000, "precision": 24}})
+    assert dic is None
+    assert twenty_four is None
+
+
+def test_notes_name_eight_and_count_the_rest():
+    notes = pf._notes(f"line {n}" for n in range(10))
+
+    assert notes == (*(f"line {n}" for n in range(8)), "... and 2 more.")
+
+
+def _spec_notes(check: str, result: dict) -> list[str]:
+    spec = next(spec for spec in pf.CHECKS if spec.id == check)
+    assert spec.notes is not None
+    return list(spec.notes(result))
+
+
+@pytest.mark.parametrize(
+    ("check", "result", "notes"),
+    [
+        ("provenance", {"contradictions": ["01.flac: claims 24bit"]}, ["01.flac: claims 24bit"]),
+        (
+            "integrity",
+            {"decode_failures": ["01.flac"], "md5_unset": ["02.flac"], "concerns": ["03.mp3: junk"]},
+            ["01.flac: does not decode", "02.flac: no MD5 stored", "03.mp3: junk"],
+        ),
+        (
+            "upconvert",
+            {
+                "files": [
+                    {"file": "01.flac", "is_upconverted": True, "wasted_bits": 8, "bitdepth": 24},
+                    {"file": "02.flac"},
+                    {"file": "03.flac", "error": "bad header"},
+                    {"file": "04.flac", "error": "truncated"},
+                ]
+            },
+            [
+                "01.flac: 8 of 24 bits wasted",
+                "03.flac: could not test: bad header",
+                "04.flac: could not test: truncated",
+            ],
+        ),
+        (
+            "mqa",
+            {"files": [{"file": "01.flac", "detected": True}, {"file": "02.flac", "detected": False}]},
+            ["01.flac"],
+        ),
+        ("tags", {"dual_id3": ["01.mp3"], "errors": [{"file": "02.mp3", "error": "e"}]}, ["01.mp3", "02.mp3: e"]),
+        (
+            "log",
+            {"logs": [_log(), _log(file="cd2.log", score=90)]},
+            [
+                "rip.log: score 100/100, checksum and CRCs match.",
+                "cd2.log: score 90/100.",
+            ],
+        ),
+    ],
+    ids=["provenance", "integrity", "upconvert", "mqa", "tags", "log"],
+)
+def test_each_check_lists_the_items_behind_its_detail(check: str, result: dict, notes: list[str]):
+    found = _spec_notes(check, result)
+
+    assert found == notes
+
+
+def test_the_rules_row_lists_every_warning_it_names_two_of():
+    tracks = {f"{'x' * 180}{n}.flac": {"sample rate": 44100, "precision": 16} for n in range(3)}
+
+    row = pf.rules_row("RED", "Folder", tracks)
+
+    assert len(row.notes) == 3
+    assert row.detail == " ".join(row.notes[:2])
+
+
+def test_the_dupe_row_lists_every_group_it_found():
+    groups = [{"groupId": n, "groupName": f"Group {n}", "torrents": []} for n in range(3)]
+
+    row = pf.dupe_row("RED", groups)
+
+    assert row.notes == ("Group 0", "Group 1", "Group 2")
+
+
+async def test_run_checks_puts_a_checks_notes_on_its_row(album_dir, monkeypatch):
+    import cambia
+
+    monkeypatch.setattr(pf, "detect_source", lambda _p: {"source": "CD", "confidence": "confirmed", "reasons": ["log"]})
+    (album_dir / "rip.log").write_text("test log", encoding="utf-8")
+    rip = SimpleNamespace(checksum=SimpleNamespace(integrity=cambia.Integrity.Match))
+    output = SimpleNamespace(
+        evaluation_combined=[SimpleNamespace(combined_score="90")], parsed=SimpleNamespace(parsed_logs=[rip])
+    )
+
+    async def verified(*_args) -> None:
+        return None
+
+    monkeypatch.setattr(album, "parse_log", lambda _path: output)
+    monkeypatch.setattr(album, "verify_log_crcs", verified)
+
+    result = await pf.run_checks(str(album_dir), ["log"], "CD", [])
+
+    row = next(r for r in result["rows"] if r["id"] == "log")
+    assert tuple(row["notes"]) == ("rip.log: score 90/100.",)

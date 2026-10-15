@@ -5,11 +5,14 @@ torrent generation, prepare_and_upload) plus upload_and_report and
 _prompt_source from src/salmon/uploader/__init__.py.
 """
 
+import errno
 import importlib
 import os
 from types import SimpleNamespace
+from typing import Any, cast
 
 import asyncclick as click
+import pyperclip
 import pytest
 from torf import Torrent
 
@@ -17,7 +20,7 @@ from salmon import cfg
 from salmon.common import decade_tag
 from salmon.constants import RELEASE_TYPES
 from salmon.errors import RequestError, UploadError
-from salmon.uploader import _prompt_source, convert_genres, upload_and_report
+from salmon.uploader import _prompt_source, convert_genres, finish_upload, upload_and_report
 from salmon.uploader.upload import (
     collect_logfiles,
     compile_data_existing_group,
@@ -283,6 +286,26 @@ def test_compile_data_hybrid_forces_tracklist_and_drops_encode_specifics(tracker
     assert "01. Intro [i](3:05)[/i] [16 bit / 44.1 kHz]" in data["release_desc"]
     assert "Encode Specifics" not in data["release_desc"]
     assert "https://i.ibb.co/hPnL0dT/cdq.png" not in data["release_desc"]
+
+
+def test_a_hybrid_tracklist_keeps_a_zero_bit_depth(tracker, pinned_cfg):
+    tracks = make_track_data()
+    for track in tracks.values():
+        track["precision"] = 0
+
+    data = compile_data_new_group(tracker, "/p", make_metadata(), tracks, True, COVER_URL, None, None, None, None)
+
+    assert "01. Intro [i](3:05)[/i] [0 bit / 44.1 kHz]" in data["release_desc"]
+
+
+def test_a_lossy_hybrid_tracklist_names_no_bit_depth(tracker, pinned_cfg):
+    tracks = make_track_data()
+    for track in tracks.values():
+        track["precision"] = None
+
+    data = compile_data_new_group(tracker, "/p", make_metadata(), tracks, True, COVER_URL, None, None, None, None)
+
+    assert "01. Intro [i](3:05)[/i] [44.1 kHz]" in data["release_desc"]
 
 
 def test_compile_data_new_group_year_and_group_year_go_to_different_fields(tracker, pinned_cfg):
@@ -686,6 +709,8 @@ class FakeTorrentContent:
 
     def write(self, path, overwrite=False):
         self.writes.append((path, overwrite))
+        with open(path, "wb") as f:
+            f.write(f"comment={self.comment}".encode())
 
 
 class RecordingSeedbox:
@@ -693,29 +718,35 @@ class RecordingSeedbox:
         self.tasks = []
         self.site_codes = []
 
-    def add_upload_task(self, directory, task_type, is_flac, site_code=None):
-        self.tasks.append((directory, task_type, is_flac))
+    def add_upload_task(self, directory, task_type, is_flac, folder=None, site_code=None):
+        self.tasks.append((directory, task_type, is_flac, folder))
         self.site_codes.append(site_code)
 
 
-TORRENT_PATH = "/fake/dottorrents/album.torrent"
-
-
-def install_fakes(monkeypatch, *, error=None, clipboard=False, seedbox=False):
-    state = {"prepare_calls": [], "reports": [], "clipboard": [], "content": FakeTorrentContent()}
+def install_fakes(monkeypatch, tmp_path, *, error=None, clipboard=False, seedbox=False, content=None):
+    torrent_path = str(tmp_path / "album.torrent")
+    with open(torrent_path, "wb") as f:
+        f.write(b"as generated")
+    state = {
+        "prepare_calls": [],
+        "reports": [],
+        "clipboard": [],
+        "content": content or FakeTorrentContent(),
+        "torrent_path": torrent_path,
+    }
 
     async def fake_prepare_and_upload(**kwargs):
         state["prepare_calls"].append(kwargs)
         if error is not None:
             raise error
-        return 1001, 2002, TORRENT_PATH, state["content"]
+        return 1001, 2002, torrent_path, state["content"]
 
     async def fake_report_lossy_master(*args, **kwargs):
         state["reports"].append((args, kwargs))
 
     monkeypatch.setattr("salmon.uploader.prepare_and_upload", fake_prepare_and_upload)
     monkeypatch.setattr("salmon.uploader.report_lossy_master", fake_report_lossy_master)
-    monkeypatch.setattr("salmon.uploader.pyperclip.copy", lambda text: state["clipboard"].append(text))
+    monkeypatch.setattr("pyperclip.copy", lambda text: state["clipboard"].append(text))
     monkeypatch.setattr(cfg.upload.description, "copy_uploaded_url_to_clipboard", clipboard)
     monkeypatch.setattr(cfg.upload, "upload_to_seedbox", seedbox)
     return state
@@ -743,28 +774,31 @@ def uar_args(tracker, seedbox_uploader, **overrides):
     return kwargs
 
 
-async def test_upload_and_report_happy_path_returns_ids_url_and_writes_comment(monkeypatch, fake_tracker):
-    state = install_fakes(monkeypatch)
+async def test_upload_and_report_happy_path_returns_ids_url_and_writes_comment(monkeypatch, fake_tracker, tmp_path):
+    state = install_fakes(monkeypatch, tmp_path)
     seedbox = RecordingSeedbox()
 
     result = await upload_and_report(**uar_args(fake_tracker, seedbox))
 
     torrent_id, group_id, torrent_path, torrent_content, url = result
     assert (torrent_id, group_id) == (1001, 2002)
-    assert torrent_path == TORRENT_PATH
+    assert torrent_path == state["torrent_path"]
     assert torrent_content is state["content"]
     assert url == "https://redacted.sh/torrents.php?torrentid=1001"
     # The torrent is rewritten with the permalink as its comment.
     assert state["content"].comment == url
-    assert state["content"].writes == [(TORRENT_PATH, True)]
+    with open(torrent_path, "rb") as f:
+        written = f.read()
+    assert written == f"comment={url}".encode()
+    assert os.listdir(os.path.dirname(torrent_path)) == ["album.torrent"]
     # Not lossy: no report is filed.
     assert state["reports"] == []
     # Seedbox disabled: nothing queued.
     assert seedbox.tasks == []
 
 
-async def test_upload_and_report_forwards_arguments_to_prepare_and_upload(monkeypatch, fake_tracker):
-    state = install_fakes(monkeypatch)
+async def test_upload_and_report_forwards_arguments_to_prepare_and_upload(monkeypatch, fake_tracker, tmp_path):
+    state = install_fakes(monkeypatch, tmp_path)
     metadata = make_metadata()
     await upload_and_report(
         **uar_args(
@@ -786,20 +820,20 @@ async def test_upload_and_report_forwards_arguments_to_prepare_and_upload(monkey
     assert "override_description" not in call
 
 
-async def test_upload_and_report_passes_override_description_when_given(monkeypatch, fake_tracker):
-    state = install_fakes(monkeypatch)
+async def test_upload_and_report_passes_override_description_when_given(monkeypatch, fake_tracker, tmp_path):
+    state = install_fakes(monkeypatch, tmp_path)
     await upload_and_report(**uar_args(fake_tracker, RecordingSeedbox(), override_description="transcode desc"))
     assert state["prepare_calls"][0]["override_description"] == "transcode desc"
 
 
-async def test_upload_and_report_forwards_explicit_empty_override_description(monkeypatch, fake_tracker):
-    state = install_fakes(monkeypatch)
+async def test_upload_and_report_forwards_explicit_empty_override_description(monkeypatch, fake_tracker, tmp_path):
+    state = install_fakes(monkeypatch, tmp_path)
     await upload_and_report(**uar_args(fake_tracker, RecordingSeedbox(), override_description=""))
     assert state["prepare_calls"][0]["override_description"] == ""
 
 
-async def test_upload_and_report_lossy_true_files_report_with_comment(monkeypatch, fake_tracker):
-    state = install_fakes(monkeypatch)
+async def test_upload_and_report_lossy_true_files_report_with_comment(monkeypatch, fake_tracker, tmp_path):
+    state = install_fakes(monkeypatch, tmp_path)
     spectral_urls = {1: ["u1", "u2"]}
     spectral_ids = {1: "01. Intro"}
     await upload_and_report(
@@ -819,8 +853,8 @@ async def test_upload_and_report_lossy_true_files_report_with_comment(monkeypatc
     assert kwargs == {"source_url": "https://example.com/x"}
 
 
-async def test_upload_and_report_override_lossy_comment_wins(monkeypatch, fake_tracker):
-    state = install_fakes(monkeypatch)
+async def test_upload_and_report_override_lossy_comment_wins(monkeypatch, fake_tracker, tmp_path):
+    state = install_fakes(monkeypatch, tmp_path)
     await upload_and_report(
         **uar_args(
             fake_tracker,
@@ -834,53 +868,97 @@ async def test_upload_and_report_override_lossy_comment_wins(monkeypatch, fake_t
     assert args[5] == "Transcode of https://redacted.sh/torrents.php?torrentid=1"
 
 
-async def test_upload_and_report_lossy_false_does_not_report(monkeypatch, fake_tracker):
-    state = install_fakes(monkeypatch)
+async def test_upload_and_report_lossy_false_does_not_report(monkeypatch, fake_tracker, tmp_path):
+    state = install_fakes(monkeypatch, tmp_path)
     await upload_and_report(**uar_args(fake_tracker, RecordingSeedbox(), lossy_master=False, lossy_comment="ignored"))
     assert state["reports"] == []
 
 
-async def test_upload_and_report_queues_seedbox_folder_then_seed_tasks(monkeypatch, fake_tracker):
-    install_fakes(monkeypatch, seedbox=True)
+async def test_upload_and_report_queues_seedbox_folder_then_seed_tasks(monkeypatch, fake_tracker, tmp_path):
+    state = install_fakes(monkeypatch, tmp_path, seedbox=True)
     seedbox = RecordingSeedbox()
     args = uar_args(fake_tracker, seedbox)
     await upload_and_report(**args)
     assert seedbox.tasks == [
-        (args["path"], "folder", True),
-        (TORRENT_PATH, "seed", True),
+        (args["path"], "folder", True, None),
+        # The seed names its folder, so a failed copy of that folder skips it.
+        (state["torrent_path"], "seed", True, args["path"]),
     ]
 
 
-async def test_upload_and_report_passes_site_code_for_seedbox_routing(monkeypatch, fake_tracker):
+async def test_upload_and_report_passes_site_code_for_seedbox_routing(monkeypatch, fake_tracker, tmp_path):
     # Per-tracker seedbox destinations need to know which site the upload went to.
-    install_fakes(monkeypatch, seedbox=True)
+    install_fakes(monkeypatch, tmp_path, seedbox=True)
     seedbox = RecordingSeedbox()
     await upload_and_report(**uar_args(fake_tracker, seedbox))
     assert seedbox.site_codes == [fake_tracker.site_code, fake_tracker.site_code]
 
 
-async def test_upload_and_report_seedbox_is_flac_false_for_mp3(monkeypatch, fake_tracker):
-    install_fakes(monkeypatch, seedbox=True)
+async def test_upload_and_report_seedbox_is_flac_false_for_mp3(monkeypatch, fake_tracker, tmp_path):
+    install_fakes(monkeypatch, tmp_path, seedbox=True)
     seedbox = RecordingSeedbox()
     await upload_and_report(**uar_args(fake_tracker, seedbox, metadata=make_metadata(format="MP3")))
     assert [task[2] for task in seedbox.tasks] == [False, False]
 
 
-async def test_upload_and_report_copies_url_to_clipboard_when_enabled(monkeypatch, fake_tracker):
-    state = install_fakes(monkeypatch, clipboard=True)
+async def test_upload_and_report_copies_url_to_clipboard_when_enabled(monkeypatch, fake_tracker, tmp_path):
+    state = install_fakes(monkeypatch, tmp_path, clipboard=True)
     await upload_and_report(**uar_args(fake_tracker, RecordingSeedbox()))
     assert state["clipboard"] == ["https://redacted.sh/torrents.php?torrentid=1001"]
 
 
-async def test_upload_and_report_clipboard_disabled_does_not_copy(monkeypatch, fake_tracker):
-    state = install_fakes(monkeypatch, clipboard=False)
+async def test_upload_and_report_clipboard_disabled_does_not_copy(monkeypatch, fake_tracker, tmp_path):
+    state = install_fakes(monkeypatch, tmp_path, clipboard=False)
     await upload_and_report(**uar_args(fake_tracker, RecordingSeedbox()))
     assert state["clipboard"] == []
 
 
+class PartlyWrittenTorrent(FakeTorrentContent):
+    def write(self, path, overwrite=False):
+        self.writes.append((path, overwrite))
+        with open(path, "wb") as f:
+            f.write(b"cut off")
+        raise OSError(errno.ENOSPC, "No space left on device", path)
+
+
+async def test_a_torrent_rewrite_that_fails_partway_still_seeds_the_torrent_as_generated(
+    monkeypatch, fake_tracker, tmp_path, capsys
+):
+    state = install_fakes(monkeypatch, tmp_path, seedbox=True, content=PartlyWrittenTorrent())
+    seedbox = RecordingSeedbox()
+
+    await upload_and_report(**uar_args(fake_tracker, seedbox))
+
+    assert [task[1] for task in seedbox.tasks] == ["folder", "seed"]
+    with open(state["torrent_path"], "rb") as f:
+        written = f.read()
+    assert written == b"as generated"
+    assert os.listdir(tmp_path) == ["album.torrent"]
+    out = capsys.readouterr().out
+    assert "Could not add the URL" in out
+
+
+async def test_a_missing_clipboard_does_not_stop_the_upload_being_seeded(monkeypatch, fake_tracker, tmp_path, capsys):
+    install_fakes(monkeypatch, tmp_path, clipboard=True, seedbox=True)
+
+    def no_clipboard(text):
+        raise pyperclip.PyperclipException("no copy/paste mechanism")
+
+    monkeypatch.setattr("pyperclip.copy", no_clipboard)
+    seedbox = RecordingSeedbox()
+
+    await upload_and_report(**uar_args(fake_tracker, seedbox))
+
+    assert [task[1] for task in seedbox.tasks] == ["folder", "seed"]
+    out = capsys.readouterr().out
+    assert "Could not copy to the clipboard: no copy/paste mechanism" in out
+
+
 @pytest.mark.parametrize("error_cls", [UploadError, RequestError])
-async def test_upload_and_report_propagates_prepare_errors_without_side_effects(monkeypatch, fake_tracker, error_cls):
-    state = install_fakes(monkeypatch, error=error_cls("upload failed"), clipboard=True, seedbox=True)
+async def test_upload_and_report_propagates_prepare_errors_without_side_effects(
+    monkeypatch, fake_tracker, error_cls, tmp_path
+):
+    state = install_fakes(monkeypatch, tmp_path, error=error_cls("upload failed"), clipboard=True, seedbox=True)
     seedbox = RecordingSeedbox()
     with pytest.raises(error_cls, match="upload failed"):
         await upload_and_report(**uar_args(fake_tracker, seedbox, lossy_master=True, lossy_comment="c"))
@@ -947,3 +1025,25 @@ async def test_prompt_source_other_a_input_reprompts_instead_of_aborting(monkeyp
     actual = await _prompt_source()
     assert actual == "WEB"
     assert len(calls) == 2
+
+
+def test_finish_upload_without_the_folder_queues_only_the_seed(monkeypatch, fake_tracker, tmp_path) -> None:
+    """A cross-upload's files already seed the other tracker's torrent: no second copy of the folder."""
+    torrent_path = tmp_path / "album.torrent"
+    torrent_path.write_bytes(b"as generated")
+    monkeypatch.setattr(cfg.upload, "upload_to_seedbox", True)
+    monkeypatch.setattr(cfg.upload.description, "copy_uploaded_url_to_clipboard", False)
+    seedbox = RecordingSeedbox()
+
+    finish_upload(
+        fake_tracker,
+        "/fake/album",
+        1001,
+        str(torrent_path),
+        FakeTorrentContent(),
+        "FLAC",
+        cast("Any", seedbox),
+        copy_folder=False,
+    )
+
+    assert [task[1] for task in seedbox.tasks] == ["seed"]

@@ -1,34 +1,85 @@
+"""`salmon cross-upload`: upload a torrent that is on RED, OPS or DIC to another of them, from the files on disk.
+
+The run reads every release's torrent from SOURCE and checks it locally first (the data the form gets, TARGET's
+Do-Not-Upload list, the files on disk, the log, the images), shows the plan, and only then sends anything to TARGET:
+per release, the dupe check as `up` makes it, the upload of the source format, and the conversions asked for. The
+first failure there stops the run, and says what is already up.
+
+An INPUT may also be a folder of .torrent files; --target-group-id adds only conversions, to a group TARGET has.
+"""
+
 import html
+import os
 import re
+import unicodedata
+from collections.abc import Iterable
+from contextlib import nullcontext
+from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Any, cast
+from time import monotonic
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-import aiohttp
 import anyio
 import asyncclick as click
-from torf import Torrent
+from bs4 import BeautifulSoup
+from torf import TorfError, Torrent, VerifyContentError
 
 import salmon.trackers
-from salmon import cfg
-from salmon.common import commandgroup, is_http_url
+from salmon import cfg, dryrun
+from salmon.checks.do_not_upload import Candidate, do_not_upload_reason
+from salmon.checks.high_rate import sixteen_bit_notice
+from salmon.checks.tag_rules import SIXTEEN_BIT_ABOVE_48KHZ, path_limit_for
+from salmon.common import commandgroup, invisible_chars, show_invisible
 from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
-from salmon.constants import ARTIST_IMPORTANCES
-from salmon.converter.downconverting import convert_folder, generate_conversion_description
-from salmon.converter.transcoding import Bitrate, generate_transcode_description, transcode_folder
-from salmon.errors import RequestError
-from salmon.images import HOSTS
-from salmon.images.red import bare_image_url
+from salmon.constants import ARTIST_IMPORTANCES, ENCODINGS, FORMATS, SOURCES
+from salmon.errors import (
+    DryRunRefused,
+    ImageUploadFailed,
+    LoginError,
+    RequestError,
+    RequestFailedError,
+    UploadError,
+    UploadRefusedError,
+)
+from salmon.images import HOSTS, image_host_for_tracker
 from salmon.release_notification import FORK_URL, get_version, has_upload_footer, upload_footer
-from salmon.uploader.dupe_checker import check_existing_group, generate_dupe_check_searchstrs
-from salmon.uploader.upload import compile_files, generate_torrent
+from salmon.tagger.audio_info import gather_audio_info
+from salmon.tagger.tags import gather_tags
+from salmon.trackers.base import SITE_LOG_PAGES, BaseGazelleApi
+from salmon.uploader import (
+    _check_logs,
+    downconversion_format,
+    execute_downconversion_tasks,
+    finish_upload,
+    get_downconversion_options,
+)
+from salmon.uploader.dupe_checker import (
+    _confirm_group_id,
+    check_existing_group,
+    choose_source_flac,
+    generate_dupe_check_searchstrs,
+    held_formats,
+)
+from salmon.uploader.seedbox import UploadManager
+from salmon.uploader.spectrals import report_lossy_master
+from salmon.uploader.staging import run_directory
+from salmon.uploader.upload import (
+    compile_files,
+    concat_track_data,
+    generate_description,
+    generate_torrent,
+)
 
-if TYPE_CHECKING:
-    from salmon.trackers.base import BaseGazelleApi
+# The trackers a release can go between.
+TRACKERS = ("RED", "OPS", "DIC")
+MAX_RELEASES = 5
+# The most images one release may need fetched from SOURCE and uploaded again.
+MAX_REHOSTED_IMAGES = 10
 
-
-_ARTIST_FIELDS = {
+# The Gazelle musicInfo key of each artist role, in the order the form gets them.
+ARTIST_FIELDS = {
     "artists": "main",
     "with": "guest",
     "remixedBy": "remixer",
@@ -36,533 +87,1361 @@ _ARTIST_FIELDS = {
     "conductor": "conductor",
     "dj": "djcompiler",
     "producer": "producer",
+    "arranger": "arranger",
 }
 
-# RED serves hosted images under /i/ (per its API) and /t/; match both. HTTPS only so the
-# cookie-bearing rehost fetch is never made over cleartext.
-_RED_IMAGE_URL = re.compile(
-    r"https://redacted\.sh/(?:i|t)/[^\s\[\]\"'<>]+",
-    flags=re.IGNORECASE,
+# The hosts each tracker serves its site, its images and its announces from (and their subdomains).
+TRACKER_HOSTS = {
+    "RED": ("redacted.sh", "flacsfor.me"),
+    "OPS": ("orpheus.network", "opsfet.ch"),
+    # DIC's site, and the domain its announces are on (tracker.52dic.vip).
+    "DIC": ("dicmusic.com", "52dic.vip"),
+}
+# The media a tracker names otherwise than SOURCES does: OPS's BD is RED's and DIC's Blu-Ray.
+TRACKER_MEDIA = {"OPS": {"Blu-Ray": "BD"}, "RED": {"BD": "Blu-Ray"}, "DIC": {"BD": "Blu-Ray"}}
+# The trackers whose API gives descriptions HTML-escaped. DIC is assumed to be like RED: no sample of its answers
+# shows it either way.
+ESCAPED_DESCRIPTIONS = ("RED", "DIC")
+
+# The one known broken shape an album description salmon wrote used to have (#597).
+_BROKEN_TRACKLIST_HEADER = "[b][size=4]Tracklist[/b]"
+_TRACKLIST_HEADER = "[b][size=4]Tracklist[/size][/b]"
+
+_FILE_ENTRY = re.compile(r"(.+)\{\{\{(\d+)\}\}\}$", re.DOTALL)
+_IMAGE_TAG = re.compile(r"\[img\]\s*(https?://[^\[\]\s]+?)\s*\[/img\]|\[img=(https?://[^\]\s]+)\]", re.IGNORECASE)
+# What a description can link with, in the order it is read: an image (never a link), a link with its text, a
+# link that is its own text, a link left open, one of Gazelle's tags that open the site's own pages by id (a torrent
+# group, a torrent, a collage, a forum, a thread) or by name (a user, a rule of that site), a bare URL. An artist
+# tag is left: it finds the artist by name, the same on both trackers.
+_LINK_TOKEN = re.compile(
+    r"(?P<image>\[img\][^\[\]]*\[/img\]|\[img=[^\]]*\])"
+    r"|\[url=(?P<target>[^\]]*)\](?P<text>(?:(?!\[/?url[=\]]).)*?)\[/url\]"
+    r"|\[url\](?P<own_target>[^\[\]]*)\[/url\]"
+    r"|\[url=(?P<open_target>[^\]]*)\]"
+    r"|\[(?P<by_id>torrent|pl|collage|forum|thread)(?:=[^\]]*)?\][^\[\]]*\[/(?P=by_id)\]"
+    r"|\[(?P<by_name>user|rule)\](?P<name>[^\[\]]*)\[/(?P=by_name)\]"
+    r"|(?P<url>https?://[^\s\[\]<>\"']+)",
+    re.IGNORECASE | re.DOTALL,
 )
+_LOSSY_CLASSES = ("tl_lossymaster_approved", "tl_lossyweb_approved")
+# The lossy report comment offered when the torrent description shows spectrals, which a cross-upload does not make.
+SPECTRALS_COMMENT = "Spectrals are in the torrent description."
+_LOSSY_TITLES = ("lossy master approved", "lossy web approved")
+_IMAGE_MAGIC = {b"\xff\xd8\xff": ".jpg", b"\x89PNG\r\n\x1a\n": ".png", b"GIF87a": ".gif", b"GIF89a": ".gif"}
 
 
-@commandgroup.command()
-@click.option("--downconvert", is_flag=True, help="Also upload a 16-bit FLAC downconversion.")
+class CrossUploadRefused(Exception):
+    """A release that cannot be cross-uploaded; the message says why."""
+
+
+@dataclass
+class Release:
+    """A release that passed every check before anything is sent to TARGET."""
+
+    label: str  # How the user named it: the id, URL or .torrent file
+    response: dict[str, Any]  # SOURCE's torrent answer
+    path: Path  # The album folder, resolved
+    data: dict[str, Any]  # The upload form of the source format, before its images are rehosted
+    rehost: list[tuple[str, str]] = field(default_factory=list)  # (field, URL) of each SOURCE image to rehost
+    tasks: list[dict[str, Any]] = field(default_factory=list)  # The conversions asked for, as `up` makes them
+    track_data: dict[str, Any] = field(default_factory=dict)  # Read from the files, when needed
+    notes: list[str] = field(default_factory=list)  # What the plan says about it
+    lossy_report: str | None = None  # The lossy report TARGET gets after the upload, if any
+
+    @property
+    def torrent(self) -> dict[str, Any]:
+        return self.response["torrent"]
+
+    @property
+    def group(self) -> dict[str, Any]:
+        return self.response["group"]
+
+
+@commandgroup.command("cross-upload")
+@click.argument("inputs", nargs=-1, required=True, metavar="INPUT...")
+@click.argument("source", metavar="SOURCE_TRACKER", type=click.Choice(TRACKERS, case_sensitive=False))
+@click.argument("target", metavar="TARGET_TRACKER", type=click.Choice(TRACKERS, case_sensitive=False))
+@click.option(
+    "--path",
+    "-p",
+    type=click.Path(exists=True, file_okay=False),
+    help="The album folder, if it is not download_directory/<the torrent's folder>. One release only.",
+)
+@click.option("--group-id", "-g", type=click.IntRange(min=1), help="The TARGET group to upload into. One release only.")
 @click.option(
     "--target-group-id",
     type=click.IntRange(min=1),
-    help="Skip the source format and add conversions to this existing target group.",
-)
-@click.option(
-    "--all-formats",
-    "--all",
-    is_flag=True,
-    help="Upload every possible downconversion and MP3 transcode.",
+    help="Upload only the conversions asked for, into this TARGET group, made from its FLAC of the edition. "
+    "One release only.",
 )
 @click.option(
     "--transcode",
     "transcodes",
     type=click.Choice(("320", "V0"), case_sensitive=False),
     multiple=True,
-    help="Also upload an MP3 transcode; may be passed more than once.",
+    help="Also upload this MP3 transcode of a FLAC; may be given twice.",
 )
-@click.argument("torrent_or_directory", metavar="INPUT")
-@click.argument(
-    "source",
-    metavar="SOURCE_TRACKER",
-    type=click.Choice(tuple(salmon.trackers.tracker_classes), case_sensitive=False),
+@click.option("--downconvert", is_flag=True, help="Also upload the lossless downconversions of a 24-bit FLAC.")
+@click.option(
+    "--all", "--all-formats", "all_formats", is_flag=True, help="Also upload every conversion `up` would offer."
 )
-@click.argument(
-    "target",
-    metavar="TARGET_TRACKER",
-    type=click.Choice(tuple(salmon.trackers.tracker_classes), case_sensitive=False),
+@click.option("-yyy", is_flag=True, help="Automatically pick the default answer for prompts.")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Read from both trackers and build every upload, but send nothing: print what each upload would send.",
 )
 async def cross_upload(
-    torrent_or_directory: str,
+    inputs: tuple[str, ...],
     source: str,
     target: str,
-    downconvert: bool,
+    path: str | None,
+    group_id: int | None,
     target_group_id: int | None,
-    all_formats: bool,
     transcodes: tuple[str, ...],
+    downconvert: bool,
+    all_formats: bool,
+    yyy: bool,
+    dry_run: bool,
 ) -> None:
-    """Cross-upload torrents from SOURCE_TRACKER to TARGET_TRACKER.
+    """Upload torrents that are on SOURCE_TRACKER to TARGET_TRACKER, from the files on disk.
 
-    INPUT is a source torrent URL/ID, a .torrent file, or a directory of
-    .torrent files. Tracker choices are RED, OPS, and DIC.
+    INPUT is a SOURCE torrent ID, a SOURCE torrent URL, a SOURCE .torrent file, or a folder of .torrent files; at
+    most 5 releases. The files must be the torrent's, unchanged, in download_directory (or at --path).
 
     \b
     Examples:
-      salmon cross-upload 456 RED OPS --all
-      salmon cross-upload 456 RED OPS --target-group-id 123 --transcode 320 --transcode V0
+      salmon cross-upload 456 RED OPS
+      salmon cross-upload 456 789 OPS RED --dry-run
     """
     source, target = source.upper(), target.upper()
     if source == target:
-        raise click.UsageError("SOURCE and TARGET must be different trackers.")
-
+        raise click.UsageError("SOURCE_TRACKER and TARGET_TRACKER must be different trackers.")
     missing = [code for code in (source, target) if code not in salmon.trackers.tracker_list]
     if missing:
-        raise click.UsageError(f"Tracker(s) not configured: {', '.join(missing)}")
+        raise click.UsageError(f"Not configured: {', '.join(missing)}. Add it under [tracker] in your config.")
+    if group_id and target_group_id:
+        raise click.UsageError("--group-id and --target-group-id cannot go together.")
+    if target_group_id and not (transcodes or downconvert or all_formats):
+        raise click.UsageError("--target-group-id needs --transcode, --downconvert or --all.")
+
+    values = [entry for value in inputs for entry in _folder_torrents(value)]
+    if len(values) > MAX_RELEASES:
+        raise click.UsageError(f"At most {MAX_RELEASES} releases per run, not {len(values)}.")
+    if (path or group_id or target_group_id) and len(values) > 1:
+        raise click.UsageError("--path, --group-id and --target-group-id go with a single release.")
+    if yyy:
+        cfg.upload.yes_all = True
 
     source_site = salmon.trackers.get_class(source)()
     target_site = salmon.trackers.get_class(target)()
-    items = _input_items(torrent_or_directory, source_site)
-    if target_group_id and len(items) != 1:
-        raise click.UsageError("--target-group-id requires a single torrent input, not batch mode.")
-    await target_site.ensure_authenticated()
-
-    failures = 0
-    for item in items:
+    # The same ID or file given twice is read once.
+    items = list(dict.fromkeys(_input_item(value, source_site) for value in values))
+    # A cross-upload is a re-post: it is never marked as the user's own purchase or rip.
+    target_site.skip_upload_marks()
+    with dryrun.mode(dry_run):
+        if dry_run:
+            dryrun.say("reading from both trackers and sending nothing. Each upload's form is printed instead.")
         try:
-            response = await _source_response(item, source_site)
-            torrent_id, group_id = await _upload_response(
-                response,
+            await _run(
+                items,
                 source_site,
                 target_site,
-                downconvert=downconvert,
+                path=path,
+                group_id=group_id,
                 target_group_id=target_group_id,
+                transcodes=tuple(t.upper() for t in transcodes),
+                downconvert=downconvert,
                 all_formats=all_formats,
-                transcodes=transcodes,
             )
-            if torrent_id:
-                click.secho(
-                    f"Uploaded: {target_site.base_url}/torrents.php?id={group_id}&torrentid={torrent_id}",
-                    fg="green",
-                )
-            else:
-                click.secho(f"Uploaded conversions to: {target_site.base_url}/torrents.php?id={group_id}", fg="green")
-        except Exception as error:
-            if len(items) == 1:
-                if isinstance(error, click.ClickException):
-                    raise
-                raise click.ClickException(str(error)) from error
-            failures += 1
-            click.secho(f"Failed {item}: {error}", fg="red", err=True)
-
-    if failures:
-        raise click.ClickException(f"{failures} of {len(items)} torrents failed.")
-
-
-def _input_items(value: str, source_site: "BaseGazelleApi") -> list[int | Path]:
-    # A reference is never looked up on disk: "42" is torrent 42 even if a folder "42" exists.
-    if is_torrent_reference(value):
-        return [_torrent_id(value, source_site)]
-    path = Path(value).expanduser()
-    if path.is_dir():
-        torrents = sorted(path.glob("*.torrent"))
-        if not torrents:
-            raise click.UsageError(f"No .torrent files found in {path}.")
-        items: list[int | Path] = list(torrents)
-        return items
-    if path.is_file():
-        return [path]
-    return [_torrent_id(value, source_site)]
+        except* DryRunRefused as refused:
+            click.secho(f"\n{refused.exceptions[0]}", fg="red", bold=True)
+            raise click.exceptions.Exit(1) from refused
+        if dry_run:
+            dryrun.say("done. Nothing was sent.")
 
 
 def is_torrent_reference(value: str) -> bool:
-    """A torrent ID or an http(s) URL, as opposed to a local path — decided without touching the filesystem."""
+    """A torrent ID or an http(s) URL, as opposed to a local path: decided without touching the filesystem."""
     value = value.strip()
     return value.isdigit() or urlparse(value).scheme in ("http", "https")
 
 
-def _torrent_id(value: str, source_site: "BaseGazelleApi") -> int:
-    if value.strip().isdigit():
-        return int(value)
+def _folder_torrents(value: str) -> list[str]:
+    """Each .torrent file directly in a folder INPUT, or the INPUT itself; UsageError for a folder with none."""
+    if not is_torrent_reference(value) and (folder := Path(value).expanduser()).is_dir():
+        real = os.path.realpath(folder)
+        # Only what stays in the folder once links are followed: an INPUT never reaches past it. Hidden files
+        # are left out: macOS writes an AppleDouble "._name.torrent" beside each file on a share.
+        torrents = sorted(
+            entry
+            for entry in folder.iterdir()
+            if entry.suffix.lower() == ".torrent"
+            and not entry.name.startswith(".")
+            and entry.is_file()
+            and os.path.realpath(entry).startswith(real + os.sep)
+        )
+        if not torrents:
+            raise click.UsageError(f"No .torrent files found in {folder}.")
+        return [str(entry) for entry in torrents]
+    return [value]
 
+
+def _input_item(value: str, source_site: "BaseGazelleApi") -> int | Path:
+    """The torrent ID an INPUT names, or the .torrent file it is.
+
+    Raises:
+        click.UsageError: If it is none of a SOURCE torrent ID, URL or .torrent file.
+    """
+    # A reference is never looked up on disk: "42" is torrent 42 even if a folder "42" exists.
+    if is_torrent_reference(value):
+        return _torrent_id(value, source_site)
+    path = Path(value).expanduser()
+    if path.is_file() and path.suffix.lower() == ".torrent":
+        return path
+    raise click.UsageError(f"{value} is not a {source_site.site_string} torrent ID or URL, or a .torrent file.")
+
+
+def _torrent_id(value: str, source_site: "BaseGazelleApi") -> int:
+    value = value.strip()
+    if value.isdigit():
+        return int(value)
     parsed = urlparse(value)
     if parsed.hostname != urlparse(source_site.base_url).hostname:
-        raise click.UsageError(f"Expected a torrent URL from {source_site.base_url}, an ID, or a local path.")
+        raise click.UsageError(f"Expected a torrent URL from {source_site.base_url}, an ID, or a .torrent file.")
     torrent_ids = parse_qs(parsed.query).get("torrentid")
     if not torrent_ids or not torrent_ids[0].isdigit():
-        raise click.UsageError("Torrent URL must contain a numeric torrentid parameter.")
+        raise click.UsageError("The torrent URL must hold a numeric torrentid.")
     return int(torrent_ids[0])
 
 
-async def _source_response(item: int | Path, source_site: "BaseGazelleApi") -> dict[str, Any]:
-    if isinstance(item, int):
-        return await source_site.api_call("torrent", params={"id": item})
-
-    torrent = Torrent.read(item)
-    source_host = urlparse(source_site.tracker_url).hostname
-    announce_hosts = {urlparse(url).hostname for tier in torrent.trackers for url in tier}
-    if source_host not in announce_hosts:
-        raise click.ClickException("announce host does not match the source tracker")
-    return await source_site.api_call("torrent", params={"hash": torrent.infohash.upper()})
-
-
-async def _upload_response(
-    response: dict[str, Any],
-    source_site: "BaseGazelleApi",
-    target_site: "BaseGazelleApi",
+async def _run(
+    items: list[int | Path],
+    source: "BaseGazelleApi",
+    target: "BaseGazelleApi",
     *,
-    downconvert: bool = False,
+    path: str | None,
+    group_id: int | None,
     target_group_id: int | None = None,
-    all_formats: bool = False,
-    transcodes: tuple[str, ...] = (),
-) -> tuple[int, int]:
-    source_torrent = response["torrent"]
-    downconvert, transcodes = _conversion_options(source_torrent, downconvert, transcodes, all_formats)
-
-    path = _release_path(response)
-    _verify_release_files(response, path)
-    data = _compile_data(response, source_site, target_site)
-    if target_group_id:
-        if not downconvert and not transcodes:
-            raise click.UsageError("--target-group-id requires --all, --downconvert, or --transcode.")
-        await _upload_conversions(
-            path,
-            data,
-            target_site,
-            target_group_id,
-            f"{target_site.base_url}/torrents.php?id={target_group_id}",
-            source_torrent["media"],
-            downconvert,
-            transcodes,
-        )
-        return 0, target_group_id
-    data = await _rehost_red_images(data, source_site, target_site)
-    # Add to an existing target group if the album is already there, rather than
-    # creating a duplicate group and splitting the swarm.
-    searchstrs = generate_dupe_check_searchstrs(
-        [(name, "main") for name in data["artists[]"]], data["title"], data.get("catalogue_number")
-    )
-    existing_group = await check_existing_group(target_site, searchstrs, offer_deletion=False)
-    if existing_group:
-        data = {**data, "groupid": existing_group}
-    torrent_path, torrent = generate_torrent(target_site, str(path))
-    files = await compile_files(str(path), torrent, {"source": source_torrent["media"]})
-    click.secho(f"Uploading {path.name} using {torrent_path}...", fg="yellow")
-    torrent_id, group_id = await target_site.upload(data, files)
-
-    if downconvert or transcodes:
-        original_url = f"{target_site.base_url}/torrents.php?id={group_id}&torrentid={torrent_id}"
-        await _upload_conversions(
-            path,
-            data,
-            target_site,
-            group_id,
-            original_url,
-            source_torrent["media"],
-            downconvert,
-            transcodes,
-        )
-    return torrent_id, group_id
-
-
-def _conversion_options(
-    source_torrent: dict[str, Any],
-    downconvert: bool,
     transcodes: tuple[str, ...],
+    downconvert: bool,
     all_formats: bool,
-) -> tuple[bool, tuple[str, ...]]:
-    if all_formats and source_torrent["format"] == "FLAC":
-        downconvert = downconvert or source_torrent["encoding"] == "24bit Lossless"
-        transcodes = tuple(dict.fromkeys((*transcodes, "320", "V0")))
-    if (downconvert or transcodes) and source_torrent["format"] != "FLAC":
-        raise click.ClickException("Only FLAC torrents can be downconverted or transcoded.")
-    if downconvert and source_torrent["encoding"] != "24bit Lossless":
-        raise click.ClickException("--downconvert requires a 24bit Lossless source torrent.")
-    return downconvert, transcodes
-
-
-async def _missing_conversions(
-    target_site: "BaseGazelleApi",
-    group_id: int,
-    data: dict[str, Any],
-    downconvert: bool,
-    transcodes: tuple[str, ...],
-) -> tuple[bool, tuple[str, ...]]:
-    target_group = await target_site.torrentgroup(group_id)
-    group = target_group["group"]
-
-    def has_variant(format_: str, encoding: str) -> bool:
-        expected = (
-            data["media"],
-            format_,
-            encoding,
-            data.get("remaster_year") or data.get("year"),
-            data.get("remaster_title"),
-            data.get("remaster_record_label") or data.get("record_label"),
-            data.get("remaster_catalogue_number") or data.get("catalogue_number"),
-        )
-        for torrent in target_group["torrents"]:
-            actual = (
-                torrent["media"],
-                torrent["format"],
-                torrent["encoding"],
-                torrent.get("remasterYear") or group.get("year"),
-                torrent.get("remasterTitle"),
-                torrent.get("remasterRecordLabel") or group.get("recordLabel"),
-                torrent.get("remasterCatalogueNumber") or group.get("catalogueNumber"),
-            )
-            if tuple(_normalized(value) for value in actual) == tuple(_normalized(value) for value in expected):
-                return True
-        return False
-
-    if downconvert and has_variant("FLAC", "Lossless"):
-        click.secho("Skipping 16-bit FLAC: it already exists in the target group.", fg="yellow")
-        downconvert = False
-
-    missing_transcodes = []
-    for bitrate in dict.fromkeys(transcodes):
-        encoding = "V0 (VBR)" if bitrate == "V0" else "320"
-        if has_variant("MP3", encoding):
-            click.secho(f"Skipping MP3 {bitrate}: it already exists in the target group.", fg="yellow")
-        else:
-            missing_transcodes.append(bitrate)
-    return downconvert, tuple(missing_transcodes)
-
-
-def _normalized(value: Any) -> str:
-    return html.unescape(str(value or "")).strip().casefold()
-
-
-async def _upload_conversions(
-    path: Path,
-    original_data: dict[str, Any],
-    target_site: "BaseGazelleApi",
-    group_id: int,
-    original_url: str,
-    media: str,
-    downconvert: bool,
-    transcodes: tuple[str, ...],
 ) -> None:
-    downconvert, transcodes = await _missing_conversions(
-        target_site,
-        group_id,
-        original_data,
-        downconvert,
-        transcodes,
-    )
-    if not downconvert and not transcodes:
-        click.secho("All requested conversions already exist in the target group.", fg="yellow")
-        return
-
-    group_fields = {
-        "title",
-        "artists[]",
-        "importance[]",
-        "year",
-        "record_label",
-        "catalogue_number",
-        "releasetype",
-        "tags",
-        "image",
-        "album_desc",
-    }
-    base_data = {key: value for key, value in original_data.items() if key not in group_fields}
-    base_data["groupid"] = group_id
-
-    variants: list[tuple[str, str, dict[str, Any]]] = []
-    if downconvert:
-        sample_rate, converted_path = await convert_folder(str(path))
-        variants.append(
-            (
-                "16-bit FLAC",
-                converted_path,
-                {
-                    **base_data,
-                    "format": "FLAC",
-                    "bitrate": "Lossless",
-                    "vbr": False,
-                    "release_desc": generate_conversion_description(original_url, sample_rate),
-                },
+    """Check every release against SOURCE and the disk, confirm the plan, then upload each to TARGET."""
+    releases: list[Release] = []
+    seen: set[int] = set()
+    for item in items:
+        label = str(item)
+        click.secho(f"\nReading {source.site_string} torrent {label}...", fg="cyan", bold=True)
+        try:
+            releases.append(
+                await _prepare(
+                    item,
+                    source,
+                    target,
+                    seen,
+                    path=path,
+                    transcodes=transcodes,
+                    downconvert=downconvert,
+                    all_formats=all_formats,
+                    conversions_only=target_group_id is not None,
+                )
             )
-        )
-    for bitrate in dict.fromkeys(transcodes):
-        transcoded_path = await transcode_folder(str(path), cast("Bitrate", bitrate))
-        variants.append(
-            (
-                f"MP3 {bitrate}",
-                transcoded_path,
-                {
-                    **base_data,
-                    "format": "MP3",
-                    "bitrate": "V0 (VBR)" if bitrate == "V0" else "320",
-                    "vbr": bitrate == "V0",
-                    "release_desc": generate_transcode_description(original_url, cast("Bitrate", bitrate)),
-                },
-            )
-        )
+        except (CrossUploadRefused, RequestFailedError, click.Abort) as error:
+            # Only this release: SOURCE answered, about it.
+            reason = str(error) or "stopped"
+            click.secho(f"Not cross-uploading {label}: {reason}", fg="red", bold=True)
+        except RequestError as error:
+            # SOURCE itself (a rate limit, an outage, the login, TLS): every later release would fail the same way,
+            # after sending its own requests. Nothing has gone to TARGET yet.
+            click.secho(f"\nStopping: {source.site_string} could not be read ({error}).", fg="red", bold=True)
+            raise click.exceptions.Exit(1) from error
 
-    for label, variant_path, data in variants:
-        torrent_path, torrent = generate_torrent(target_site, variant_path)
-        files = await compile_files(variant_path, torrent, {"source": media})
-        click.secho(f"Uploading {label} using {torrent_path}...", fg="yellow")
-        torrent_id, _ = await target_site.upload(data, files)
-        click.secho(f"Uploaded {label}: {target_site.base_url}/torrents.php?torrentid={torrent_id}", fg="green")
+    if not releases:
+        click.secho("\nNothing to cross-upload.", fg="red")
+        raise click.exceptions.Exit(1)
+    _print_plan(releases, source, target, group_id, target_group_id)
+    if not cfg.upload.yes_all and not click.confirm(
+        click.style(
+            f"\nCross-upload {'this' if len(releases) == 1 else 'these'} to {target.site_string}?", fg="magenta"
+        ),
+        default=True,
+    ):
+        raise click.Abort
 
-
-_RED_IMAGE_FIELDS = ("image", "album_desc", "release_desc")
-
-
-def _bare_red_image_urls(data: dict[str, Any]) -> dict[str, Any]:
-    """Strip RED's per-viewer credentials from every RED image URL the target will store."""
-    rewritten = data.copy()
-    for field in _RED_IMAGE_FIELDS:
-        value = str(rewritten.get(field) or "")
-        rewritten[field] = _RED_IMAGE_URL.sub(lambda match: bare_image_url(match.group(0)), value)
-    return rewritten
-
-
-async def _rehost_red_images(
-    data: dict[str, Any], source_site: "BaseGazelleApi", target_site: "BaseGazelleApi"
-) -> dict[str, Any]:
-    if source_site.site_code != "RED":
-        return data
-    if target_site.site_code in RED_IMAGE_PROXY_TARGETS:
-        return _bare_red_image_urls(data)
-
-    # Config validation keeps "red" out of every non-RED slot, so these hosts can display the copies.
-    cover_host = cfg.image.resolve(target_site.site_code, "cover_uploader")
-    desc_host = cfg.image.resolve(target_site.site_code, "image_uploader")
-    fields = {field: cover_host if field == "image" else desc_host for field in _RED_IMAGE_FIELDS}
-    rewritten = data.copy()
-    replacements: dict[tuple[str, str], str] = {}
-    for field, image_host in fields.items():
-        value = str(rewritten.get(field) or "")
-        # Longest first: if one URL is a prefix of another, replacing the short one first
-        # would corrupt the longer link.
-        for url in sorted(dict.fromkeys(_RED_IMAGE_URL.findall(value)), key=len, reverse=True):
-            key = image_host, url
-            if key not in replacements:
-                click.secho(f"Rehosting RED image to {image_host}: {bare_image_url(url)}", fg="yellow")
-                replacements[key] = await _rehost_red_image(url, source_site, image_host)
-            value = value.replace(url, replacements[key])
-        rewritten[field] = value
-    return rewritten
+    # Torrents and conversions go into a directory of the run's own in a dry run, removed when it ends.
+    scratch = run_directory(str(releases[0].path)) if dryrun.active() else nullcontext(None)
+    with scratch as scratch_dir, dryrun.writing_into(scratch_dir):
+        seedbox = UploadManager()
+        uploaded: list[str] = []
+        try:
+            for release in releases:
+                await _upload(
+                    release, source, target, seedbox, uploaded, group_id=group_id, target_group_id=target_group_id
+                )
+        except (CrossUploadRefused, RequestError, UploadError, click.Abort) as error:
+            click.secho(f"\nStopping: {str(error) or 'aborted'}. Nothing more is uploaded.", fg="red", bold=True)
+            if uploaded and not dryrun.active():
+                click.secho("Already uploaded:", fg="red")
+                for url in uploaded:
+                    click.echo(f"  {url}")
+            raise click.exceptions.Exit(1) from error
+        finally:
+            await seedbox.execute_upload()
 
 
-async def _rehost_red_image(url: str, source_site: "BaseGazelleApi", image_host: str) -> str:
-    shown = bare_image_url(url)  # the stored URL may carry RED's per-viewer signature; never print it
-    suffix = Path(urlparse(url).path).suffix or ".jpg"
-    try:
-        async with source_site.site_get(url, headers={"Referer": f"{source_site.base_url}/"}) as response:
-            if response.status >= 400 or not response.content_type.startswith("image/"):
-                raise click.ClickException(f"Could not download RED image {shown} (HTTP {response.status}).")
-            # Cap the fetch so tracker-supplied metadata can't make us buffer a huge body.
-            max_bytes = 25 * 1024 * 1024  # RED accepts up to 20 MiB
-            if response.content_length is not None and response.content_length > max_bytes:
-                raise click.ClickException(f"RED image {shown} is too large ({response.content_length} bytes).")
-            # read(n) returns what is buffered so far, not n bytes, so read to the end.
-            content = bytearray()
-            async for chunk in response.content.iter_chunked(64 * 1024):
-                content += chunk
-                if len(content) > max_bytes:
-                    raise click.ClickException(f"RED image {shown} exceeds the {max_bytes}-byte limit.")
-    except (aiohttp.ClientError, TimeoutError, RequestError) as error:
-        # aiohttp's error text repeats the request URL, signature included; name the type only.
-        raise click.ClickException(f"Could not download RED image {shown} ({type(error).__name__}).") from error
-
-    with TemporaryDirectory() as directory:
-        image_path = Path(directory) / f"image{suffix}"
-        await anyio.Path(image_path).write_bytes(bytes(content))
-        uploaded_url, _ = await HOSTS[image_host].ImageUploader().upload_file(str(image_path))
-    if not is_http_url(uploaded_url):
-        raise click.ClickException(f"{image_host} returned no usable URL for {shown}.")
-    return uploaded_url
+# Phase B: SOURCE reads and local checks, nothing sent to TARGET.
 
 
-def _release_path(response: dict[str, Any]) -> Path:
-    root = Path(cfg.directory.download_directory).expanduser().resolve()
-    path = (root / html.unescape(response["torrent"]["filePath"])).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as error:
-        raise click.ClickException("Source torrent path is outside download_directory.") from error
-    if not path.is_dir():
-        raise click.ClickException(f"Release files not found at {path}.")
-    return path
+async def _prepare(
+    item: int | Path,
+    source: "BaseGazelleApi",
+    target: "BaseGazelleApi",
+    seen: set[int],
+    *,
+    path: str | None,
+    transcodes: tuple[str, ...],
+    downconvert: bool,
+    all_formats: bool,
+    conversions_only: bool = False,
+) -> Release:
+    """Read a release from SOURCE and check everything that needs no TARGET request.
 
+    Args:
+        seen: The IDs of the torrents already in the run: one given again (as an ID and as its .torrent file)
+            is dropped. This one's is added.
+        conversions_only: Only its conversions go up, into a group TARGET has: the FLAC's own checks are skipped.
 
-def _verify_release_files(response: dict[str, Any], path: Path) -> None:
-    """Abort if the on-disk files don't match the source torrent's file list.
-
-    The target torrent is generated fresh (different infohash by design, due to the
-    site 'source' tag), so we verify content by name+size against the API file list.
-    Catches a folder that was retagged or renamed since it was grabbed.
+    Raises:
+        CrossUploadRefused: If the release cannot go, saying why.
+        RequestError: If SOURCE could not be read.
+        click.Abort: If a check stopped and the user chose to stop.
     """
-    file_list = response["torrent"].get("fileList") or ""
-    expected: dict[str, int] = {}
-    for entry in file_list.split("|||"):
-        match = re.match(r"(.+)\{\{\{(\d+)\}\}\}$", entry.strip())
-        if match:
-            expected[Path(html.unescape(match.group(1))).name] = int(match.group(2))
-    if not expected:
-        return
+    response, given = await _source_response(item, source)
+    torrent_id = int(response["torrent"]["id"])
+    if torrent_id in seen:
+        raise CrossUploadRefused(f"torrent {torrent_id} is already in this run")
+    seen.add(torrent_id)
+    release = Release(label=str(item), response=response, path=Path(), data={})
+    release.notes = _check_torrent(response, source, target)
+    release.data = compile_data(response, source, target)
+    if reason := do_not_upload_reason(target.site_code, Candidate.from_form(release.data)):
+        raise CrossUploadRefused(reason)
+    release.path = _release_path(response, path)
+    _verify_release_files(response, release.path, target)
+    _check_invisible_names(release.path, _file_list(response["torrent"]), source)
+    # Before anything reads the audio: a file still downloading may not even read as audio.
+    await _check_pieces(release, given, source)
+    release.tasks = _conversion_tasks(release, transcodes, downconvert, all_formats)
+    if conversions_only:
+        await _check_lossy_approval(release, source, target)
+        return release
+    # Any FLAC, whatever its label: no tracker's torrent says its sample rate, and a label can be wrong.
+    rule = SIXTEEN_BIT_ABOVE_48KHZ.get(target.site_code, "") if release.torrent["format"] == "FLAC" else ""
+    if rule and (notice := sixteen_bit_notice(target.site_code, rule, _track_data(release))):
+        if rule == "refused":
+            raise CrossUploadRefused(notice)
+        release.notes.append(notice)
+    release.data.update(_target_form_fields(release, target))
 
-    actual = {f.name: f.stat().st_size for f in path.rglob("*") if f.is_file()}
-    mismatched = sorted(name for name, size in expected.items() if actual.get(name) != size)
-    if mismatched:
-        raise click.ClickException(
-            f"Local files don't match the source torrent ({len(mismatched)} differ, e.g. "
-            f"{mismatched[0]!r}). Re-download or point at the original files before cross-uploading."
+    if release.torrent["media"] == "CD":
+        try:
+            await _check_logs(str(release.path))
+        except click.Abort:
+            raise CrossUploadRefused("the log check stopped it") from None
+
+    if not release.data["album_desc"]:
+        release.data["album_desc"] = generate_description(_track_data(release), {"comment": None, "urls": []})
+        release.notes.append(f"{source.site_string} has no album description: sending the tracklist from the tags")
+    release.rehost = _images_to_rehost(release.data, source, target)
+    if release.rehost and source.IMAGE_COOKIES and not source.has_session_cookie:
+        code = source.site_code.lower()
+        raise CrossUploadRefused(
+            f"its images on {source.site_string} need fetching for {target.site_string}, and {source.site_string}'s "
+            f"image host takes the session cookie, not the API key: set tracker.{code}.session in your config, or "
+            f"upload it to {target.site_string} with salmon up meanwhile"
         )
+    await _check_lossy_approval(release, source, target)
+    return release
 
 
-def _compile_data(
-    response: dict[str, Any], source_site: "BaseGazelleApi", target_site: "BaseGazelleApi"
-) -> dict[str, Any]:
+async def _source_response(item: int | Path, source: "BaseGazelleApi") -> tuple[dict[str, Any], Torrent | None]:
+    """SOURCE's torrent answer, and the .torrent file read if the INPUT is one."""
+    if isinstance(item, int):
+        return await source.api_call("torrent", params={"id": item}), None
+    try:
+        torrent = Torrent.read(item)
+    except TorfError as error:
+        raise CrossUploadRefused(f"{item} is not a readable .torrent file ({error})") from None
+    source_host = urlparse(source.tracker_url).hostname
+    announce_hosts = {urlparse(url).hostname for tier in torrent.trackers for url in tier}
+    # qBittorrent saves a .torrent without its announce URL (it keeps trackers elsewhere): its source flag, which
+    # the tracker (and salmon's own torrents) set, then says whose it is.
+    if not announce_hosts and torrent.source != source.site_string:
+        raise CrossUploadRefused(f"{item} has no announce URL and no {source.site_string} source flag")
+    if announce_hosts and source_host not in announce_hosts:
+        raise CrossUploadRefused(f"{item} does not announce to {source.site_string}")
+    return await source.api_call("torrent", params={"hash": torrent.infohash.upper()}), torrent
+
+
+def _check_torrent(response: dict[str, Any], source: "BaseGazelleApi", target: "BaseGazelleApi") -> list[str]:
+    """Stop on what TARGET has no value for, and say what the plan should show about the rest.
+
+    A CD with no log or a log under 100, and a torrent SOURCE flags as trumpable or reported, go up as they are
+    (RED and OPS accept them; DIC is assumed to), and the plan says so.
+
+    Returns:
+        The plan's notes about the torrent.
+
+    Raises:
+        CrossUploadRefused: Naming the value.
+    """
     group, torrent = response["group"], response["torrent"]
-    artists: list[str] = []
-    importances: list[int] = []
-    for field, importance in _ARTIST_FIELDS.items():
-        for artist in group["musicInfo"].get(field, []):
-            artists.append(html.unescape(artist["name"]))
-            importances.append(ARTIST_IMPORTANCES[importance])
-    if not artists:
-        raise click.ClickException("Source torrent has no artists.")
+    media, format_, encoding = torrent.get("media"), torrent.get("format"), torrent.get("encoding")
+    target_media = _target_media(media, target)
+    if target_media not in SOURCES.values() and target_media not in TRACKER_MEDIA[target.site_code].values():
+        raise CrossUploadRefused(f"salmon does not know {target.site_string} has the media {media!r}")
+    if format_ not in FORMATS.values() or encoding not in ENCODINGS:
+        raise CrossUploadRefused(f"salmon does not cross-upload {format_} {encoding}")
 
-    source_release_types = {value: name for name, value in source_site.release_types.items()}
-    release_type = source_release_types.get(group["releaseType"], "Unknown")
-    source_url = f"{source_site.base_url}/torrents.php?torrentid={torrent['id']}"
-    description = html.unescape(torrent.get("description") or "")
-    uploader_name = html.unescape(torrent.get("username") or "the original uploader")
-    uploader = (
-        f"[url={source_site.base_url}/user.php?id={torrent['userId']}]{uploader_name}[/url]"
-        if torrent.get("userId")
-        else uploader_name
-    )
-    cross_post = (
-        f"[align=center][size=3][b]{source_site.site_code} → {target_site.site_code}[/b][/size]\n"
-        f"[size=1]Original upload by {uploader} · [url={source_url}]View source torrent[/url]\n"
-        f"Cross-uploaded with [url={FORK_URL}]smoked-salmon[/url] v{get_version()} (chodeus fork)"
-        "[/size][/align]"
-    )
+    on_source = f"on {source.site_string}"
+    notes = []
+    if target_media != media:
+        notes.append(f"media {media} {on_source} is {target_media} on {target.site_string}")
+    if media == "CD":
+        if not torrent.get("hasLog"):
+            notes.append(f"a CD with no rip log {on_source}")
+        else:
+            # RED's answer has no checksum key (nor, presumably, DIC's): only OPS's says whether the checksum is good.
+            checksum = ""
+            if "logChecksum" in torrent:
+                checksum = ", checksum good" if torrent["logChecksum"] else ", checksum missing or bad"
+            notes.append(f"log score {torrent.get('logScore')} {on_source}{checksum}")
+    if torrent.get("trumpable"):
+        reasons = ", ".join(str(reason) for reason in torrent.get("trumpable_reasons") or [])
+        notes.append(f"trumpable {on_source}{f': {reasons}' if reasons else ''}")
+    if torrent.get("reported"):
+        notes.append(f"reported {on_source}")
+    if group.get("vanityHouse"):
+        notes.append(f"Vanity House {on_source}: sent to {target.site_string} without the flag")
+    return notes
+
+
+def _target_form_fields(release: Release, target: "BaseGazelleApi") -> dict[str, str]:
+    """The fields only TARGET's upload form has, as `up` sends them: DIC's sample rate for 24bit Lossless.
+
+    The files are read for them only for a tracker that has some, and only a 24-bit torrent's: no tracker's own
+    fields depend on the files of any other.
+
+    Raises:
+        CrossUploadRefused: If TARGET's form has no value that describes the files.
+    """
+    if type(target).upload_form_fields is BaseGazelleApi.upload_form_fields:
+        return {}
+    track_data = _track_data(release) if release.torrent["encoding"] == "24bit Lossless" else {}
+    try:
+        return target.upload_form_fields(_edition(release), track_data)
+    except UploadRefusedError as error:
+        raise CrossUploadRefused(str(error)) from None
+
+
+def _target_media(media: Any, target: "BaseGazelleApi") -> Any:
+    """The media as TARGET names it."""
+    return TRACKER_MEDIA[target.site_code].get(media, media)
+
+
+def compile_data(response: dict[str, Any], source: "BaseGazelleApi", target: "BaseGazelleApi") -> dict[str, Any]:
+    """Give TARGET's upload form for SOURCE's torrent: the fork's form, field for field, but for what it stops on.
+
+    The torrent description is the fork's: a header naming SOURCE, the uploader and the source torrent, then
+    SOURCE's description and the footer. Links to either tracker's site are taken out of the copied descriptions.
+
+    Raises:
+        CrossUploadRefused: If a value has no counterpart on TARGET.
+    """
+    group, torrent = response["group"], response["torrent"]
+    artists = _artists(group, target)
+    source_types = {value: name for name, value in source.release_types.items()}
+    release_type = source_types.get(group.get("releaseType"))
+    if release_type not in target.release_types:
+        raise CrossUploadRefused(
+            f"{target.site_string} has no release type {release_type or group.get('releaseType')!r}"
+        )
+    if not group.get("year"):
+        raise CrossUploadRefused(f"the group has no year on {source.site_string}")
+    # An original release (RED says so with remastered: false) takes the group's year. Without a year
+    # otherwise, the edition is unknown, which the form cannot say.
+    if not torrent.get("remasterYear") and torrent.get("remastered") is not False:
+        raise CrossUploadRefused(f"its edition is unknown on {source.site_string}")
+
+    sites = (source, target)
+    description = without_tracker_links(_as_written(torrent.get("description") or "", source), sites).strip()
     # The source description is the other tracker's, so it may already end with a footer.
-    carried_footer = "" if has_upload_footer(description) else f"\n\n{upload_footer()}"
-
-    media = torrent["media"]
-    if target_site.site_code == "OPS" and media == "Blu-Ray":
-        media = "BD"
-    elif target_site.site_code != "OPS" and media == "BD":
-        media = "Blu-Ray"
+    footer = "" if has_upload_footer(description) else upload_footer()
+    album_desc = _as_written(group.get("bbBody") or group.get("wikiBBcode") or "", source)
+    album_desc = without_tracker_links(album_desc, sites)
+    # The group's label and catalogue number are the original release's: a remaster with none of its own sends none.
+    original = _is_original_release(group, torrent)
+    edition_label = torrent.get("remasterRecordLabel") or (group.get("recordLabel") if original else "") or ""
+    edition_catno = torrent.get("remasterCatalogueNumber") or (group.get("catalogueNumber") if original else "") or ""
 
     return {
         "submit": True,
         "type": 0,
         "title": html.unescape(group["name"]),
-        "artists[]": artists,
-        "importance[]": importances,
+        "artists[]": [name for name, _ in artists],
+        "importance[]": [ARTIST_IMPORTANCES[role] for _, role in artists],
         "year": group["year"],
         "record_label": html.unescape(group.get("recordLabel") or ""),
         "catalogue_number": html.unescape(group.get("catalogueNumber") or ""),
-        "releasetype": target_site.release_types.get(release_type, target_site.release_types["Unknown"]),
+        "releasetype": target.release_types[release_type],
         "remaster": True,
         "remaster_year": torrent.get("remasterYear") or group["year"],
         "remaster_title": html.unescape(torrent.get("remasterTitle") or ""),
-        "remaster_record_label": html.unescape(torrent.get("remasterRecordLabel") or group.get("recordLabel") or ""),
-        "remaster_catalogue_number": html.unescape(
-            torrent.get("remasterCatalogueNumber") or group.get("catalogueNumber") or ""
-        ),
+        "remaster_record_label": html.unescape(edition_label),
+        "remaster_catalogue_number": html.unescape(edition_catno),
         "format": torrent["format"],
         "bitrate": torrent["encoding"],
         "other_bitrate": None,
         "vbr": "VBR" in torrent["encoding"],
-        "media": media,
+        "media": _target_media(torrent["media"], target),
         "tags": ",".join(group.get("tags") or []),
         "image": html.unescape(group.get("wikiImage") or ""),
-        "album_desc": group.get("bbBody") or group.get("wikiBBcode") or "",
-        "release_desc": f"{cross_post}\n\n{description}{carried_footer}",
+        "album_desc": album_desc.replace(_BROKEN_TRACKLIST_HEADER, _TRACKLIST_HEADER),
+        # One blank line between the parts, and none for an empty description.
+        "release_desc": "\n\n".join(
+            part for part in (_source_header(torrent, source, target), description, footer) if part
+        ),
         **({"scene": True} if torrent.get("scene") else {}),
     }
+
+
+def _as_written(description: str, source: "BaseGazelleApi") -> str:
+    """A description from SOURCE's API as it was written.
+
+    RED's comes HTML-escaped (&#39;, &amp;, anything outside ASCII as a numeric entity), and DIC's is assumed to (no
+    sample of it). OPS's is the text as written: unescaping it would turn a link's "&section=" into "§ion=".
+    """
+    return html.unescape(description) if source.site_code in ESCAPED_DESCRIPTIONS else description
+
+
+def _is_original_release(group: dict[str, Any], torrent: dict[str, Any]) -> bool:
+    """Whether the torrent is the group's original release: RED says so (remastered: false).
+
+    OPS has no flag: it shows its original release as an edition of the group's year with no title.
+    """
+    if torrent.get("remastered") is not None:
+        return not torrent["remastered"]
+    return str(torrent.get("remasterYear")) == str(group.get("year")) and not torrent.get("remasterTitle")
+
+
+def _source_header(torrent: dict[str, Any], source: "BaseGazelleApi", target: "BaseGazelleApi") -> str:
+    """The fork's header: SOURCE to TARGET, who uploaded it there (linked to their profile), and its torrent."""
+    name = html.unescape(torrent.get("username") or "the original uploader")
+    uploader = f"[url={source.base_url}/user.php?id={torrent['userId']}]{name}[/url]" if torrent.get("userId") else name
+    source_url = f"{source.base_url}/torrents.php?torrentid={torrent['id']}"
+    return (
+        f"[align=center][size=3][b]{source.site_code} → {target.site_code}[/b][/size]\n"
+        f"[size=1]Original upload by {uploader} · [url={source_url}]View source torrent[/url]\n"
+        f"Cross-uploaded with [url={FORK_URL}]smoked-salmon[/url] v{get_version()} (chodeus fork)[/size][/align]"
+    )
+
+
+def without_tracker_links(text: str, sites: tuple["BaseGazelleApi", ...]) -> str:
+    """The description without its links to either tracker's site, which name SOURCE's pages and ids.
+
+    A link keeps its text; a bare URL, or a link that is its own text, goes. A link with no scheme is one to the
+    tracker's own pages (Gazelle's relative links): on TARGET it would point at TARGET's pages with SOURCE's ids,
+    so it goes too, and so do Gazelle's tags that open the site's own pages by id. A user or rule tag keeps its
+    text. Images are not links: they are left to the image rules.
+    """
+
+    def to_tracker(url: str) -> bool:
+        url = url.strip().strip("\"'")
+        return not urlparse(url).scheme or _tracker_of(url, sites) is not None
+
+    def replace(match: re.Match[str]) -> str:
+        if match["image"] is not None:
+            return match[0]
+        if match["target"] is not None:
+            return without_tracker_links(match["text"], sites) if to_tracker(match["target"]) else match[0]
+        if match["own_target"] is not None:
+            return "" if to_tracker(match["own_target"]) else match[0]
+        if match["open_target"] is not None:
+            return "" if to_tracker(match["open_target"]) else match[0]
+        if match["by_id"] is not None:
+            return ""
+        if match["by_name"] is not None:
+            return match["name"]
+        return "" if _tracker_of(match["url"], sites) is not None else match[0]
+
+    return _LINK_TOKEN.sub(replace, text)
+
+
+def _artists(group: dict[str, Any], target: "BaseGazelleApi") -> list[tuple[str, str]]:
+    """The group's artists with their roles, in the form's order.
+
+    Raises:
+        CrossUploadRefused: On a role salmon does not know or TARGET does not have, or no artist at all.
+    """
+    music_info = group.get("musicInfo") or {}
+    unknown = sorted(key for key, value in music_info.items() if value and key not in ARTIST_FIELDS)
+    if unknown:
+        raise CrossUploadRefused(f"salmon does not know the artist role {', '.join(unknown)}")
+    artists = [
+        (html.unescape(artist["name"]), role)
+        for key, role in ARTIST_FIELDS.items()
+        for artist in music_info.get(key) or []
+    ]
+    if not artists:
+        raise CrossUploadRefused("the group has no artist")
+    dropped = sorted({role for _, role in artists if role in target.unsupported_artist_roles})
+    if dropped:
+        raise CrossUploadRefused(f"{target.site_string} has no {', '.join(dropped)} role")
+    return artists
+
+
+def _release_path(response: dict[str, Any], path: str | None) -> Path:
+    """Find the album folder: --path, or download_directory/<the torrent's folder>, symlinks resolved.
+
+    Raises:
+        CrossUploadRefused: If the folder is not there, is named otherwise, or resolves out of where it must be.
+    """
+    name = html.unescape(response["torrent"].get("filePath") or "")
+    if not name:
+        raise CrossUploadRefused("it is a torrent of a single file, with no folder: not supported")
+    if name in (".", "..") or "/" in name or "\\" in name:
+        raise CrossUploadRefused(f"its folder name {name!r} is not a folder name")
+    if path is not None:
+        folder = Path(path).expanduser().resolve()
+    else:
+        root = Path(cfg.directory.download_directory).expanduser().resolve()
+        folder = (root / name).resolve()
+        if folder.parent != root:
+            raise CrossUploadRefused(f"{root / name} resolves to {folder}, outside download_directory")
+    if folder.name != name:
+        raise CrossUploadRefused(f"the folder is {folder}, but the torrent's folder is named {name!r}")
+    if not folder.is_dir():
+        raise CrossUploadRefused(f"the files are not at {folder}: give the album folder with --path")
+    return folder
+
+
+def _file_list(torrent: dict[str, Any]) -> dict[str, int]:
+    """The torrent's files from its fileList, by path in the torrent's folder (NFC), with their size."""
+    files: dict[str, int] = {}
+    for entry in (torrent.get("fileList") or "").split("|||"):
+        match = _FILE_ENTRY.match(entry)
+        if match:
+            files[unicodedata.normalize("NFC", html.unescape(match[1]))] = int(match[2])
+    return files
+
+
+def _check_invisible_names(folder: Path, files: Iterable[str], source: "BaseGazelleApi") -> None:
+    """Refuse a release whose names hold a character clean_name would change: the source's torrent must be fixed."""
+    offending: list[tuple[str, list[str]]] = []
+    if chars := invisible_chars(folder.name):
+        offending.append((folder.name, chars))
+    seen: set[str] = set()
+    for file in files:
+        parts = file.split("/")
+        for depth in range(1, len(parts) + 1):
+            relative = "/".join(parts[:depth])
+            if relative in seen:
+                continue
+            seen.add(relative)
+            if chars := invisible_chars(parts[depth - 1]):
+                offending.append((f"{folder.name}/{relative}", chars))
+    if not offending:
+        return
+    click.secho("These names hold invisible or unusual Unicode characters:", fg="red", bold=True)
+    for name, chars in offending:
+        click.echo(f" >> {show_invisible(name)}")
+        for char in chars:
+            click.echo(f"      {char}")
+    raise CrossUploadRefused(
+        f"{len(offending)} name(s) hold invisible Unicode characters: fix the torrent on {source.site_string} first"
+    )
+
+
+def _verify_release_files(response: dict[str, Any], folder: Path, target: "BaseGazelleApi") -> None:
+    """Check the folder holds exactly the torrent's files: the same paths with the same sizes, and nothing more.
+
+    The new torrent is made from the folder, so a retagged, renamed or added file would change it.
+
+    Raises:
+        CrossUploadRefused: Naming the first differences.
+    """
+    expected = _file_list(response["torrent"])
+    if not expected:
+        raise CrossUploadRefused("its file list could not be read")
+    actual: dict[str, int] = {}
+    for entry in sorted(folder.rglob("*")):
+        relative = entry.relative_to(folder).as_posix()
+        if not entry.resolve().is_relative_to(folder):
+            raise CrossUploadRefused(f"{relative} is a link out of the album folder")
+        if entry.is_file():
+            actual[unicodedata.normalize("NFC", relative)] = entry.stat().st_size
+    differences = [f"missing {name}" for name in expected if name not in actual]
+    differences += [f"not in the torrent: {name}" for name in actual if name not in expected]
+    differences += [
+        f"{name} is {actual[name]} bytes, not {size}"
+        for name, size in expected.items()
+        if name in actual and actual[name] != size
+    ]
+    if differences:
+        more = f" (and {len(differences) - 3} more)" if len(differences) > 3 else ""
+        raise CrossUploadRefused(f"the files at {folder} are not the torrent's: {'; '.join(differences[:3])}{more}")
+    limit = path_limit_for([target.site_code])
+    too_long = [name for name in expected if len(f"{folder.name}/{name}") > limit]
+    if too_long:
+        raise CrossUploadRefused(f"{len(too_long)} path(s) are longer than {target.site_string}'s {limit} characters")
+
+
+async def _check_pieces(release: Release, given: Torrent | None, source: "BaseGazelleApi") -> None:
+    """Check the files against the source torrent's pieces: a download in progress has every file at its full size.
+
+    Args:
+        given: The .torrent file the INPUT is, if it is one. Otherwise SOURCE's is downloaded, once.
+
+    Raises:
+        CrossUploadRefused: If the torrent cannot be had or read, or pieces differ and the user does not go on.
+        RequestError: If SOURCE could not be read.
+    """
+    torrent = given
+    if torrent is None:
+        if source.site_code == "DIC":
+            # Where DIC's .torrent downloads from is not known: no DIC answer or page has been seen.
+            release.notes.append(f"files checked by size only: give the {source.site_string} .torrent to check pieces")
+            return
+        torrent = await _download_torrent(release.response, source)
+    started = monotonic()
+
+    def checking() -> tuple[int, TorfError | None]:
+        differing: set[int] = set()
+        failure: list[TorfError] = []
+
+        def progress(_torrent, _path, done, total, index, _hash, error) -> bool | None:
+            if isinstance(error, VerifyContentError):
+                differing.add(index)
+            elif error is not None:
+                failure.append(error)
+                return True  # Stops the check
+            # A small album is checked within the second, without a progress line.
+            if monotonic() - started >= 1:
+                click.echo(f"\rChecking pieces: {done} of {total}", nl=False)
+            return None
+
+        torrent.verify(str(release.path), callback=progress, interval=0.5)
+        if monotonic() - started >= 1:
+            click.echo()
+        return len(differing), failure[0] if failure else None
+
+    differing, failure = await anyio.to_thread.run_sync(checking)
+    if failure is not None:
+        raise CrossUploadRefused(f"its pieces could not be checked ({failure})")
+    if not differing:
+        return
+    differ = f"{differing} of {torrent.pieces} pieces differ from the {source.site_string} torrent"
+    click.secho(f"{differ}: is the download complete?", fg="yellow", bold=True)
+    if cfg.upload.yes_all or not click.confirm(click.style("Cross-upload it anyway?", fg="magenta"), default=False):
+        raise CrossUploadRefused(differ)
+    release.notes.append(f"{differ}: going anyway")
+
+
+async def _download_torrent(response: dict[str, Any], source: "BaseGazelleApi") -> Torrent:
+    """SOURCE's .torrent of the torrent in its answer, with one GET, and never with a freeleech token.
+
+    Raises:
+        CrossUploadRefused: If SOURCE gives something else, or another torrent's.
+        RequestError: If SOURCE could not be read.
+    """
+    torrent_id = response["torrent"]["id"]
+    # Measured on RED and OPS: each one's API gives the .torrent for the API key, and its download page for the
+    # session cookie. RED's download page answers the API key with a 401, and the passkey alone with its login page.
+    if source.api_key:
+        url, params = f"{source.base_url}/ajax.php", {"action": "download", "id": torrent_id}
+    else:
+        # The site's own download link.
+        await source.ensure_authenticated()
+        url = f"{source.base_url}/torrents.php"
+        params = {"action": "download", "id": torrent_id, "torrent_pass": source.passkey}
+    try:
+        answer = await source._request(
+            "GET", url, params=params, timeout_secs=30, prefer_api_key=bool(source.api_key), binary=True
+        )
+    except LoginError:
+        raise CrossUploadRefused(
+            f"{source.site_string} did not give its .torrent: give the .torrent file as INPUT"
+        ) from None
+    try:
+        torrent = Torrent.read_stream(answer.content)
+    except TorfError:
+        # Its text could hold the passkey: it is not shown.
+        raise CrossUploadRefused(f"what {source.site_string} gave for its .torrent is not one") from None
+    if not _is_the_torrent(torrent, response["torrent"]):
+        raise CrossUploadRefused(f"the .torrent {source.site_string} gave is not this torrent's")
+    return torrent
+
+
+def _is_the_torrent(torrent: Torrent, answer: dict[str, Any]) -> bool:
+    """Whether a .torrent is the one SOURCE's answer is about: the same infohash, or else the same files."""
+    if answer.get("infoHash"):
+        return str(answer["infoHash"]).upper() == torrent.infohash.upper()
+    files = {unicodedata.normalize("NFC", "/".join(file.parts[1:])): file.size for file in torrent.files}
+    return torrent.name == html.unescape(answer.get("filePath") or "") and files == _file_list(answer)
+
+
+def _track_data(release: Release) -> dict[str, Any]:
+    """The files' audio info and tags, read once (read only)."""
+    if not release.track_data:
+        path = str(release.path)
+        release.track_data = concat_track_data(gather_tags(path), gather_audio_info(path))
+    return release.track_data
+
+
+def _conversion_tasks(
+    release: Release, transcodes: tuple[str, ...], downconvert: bool, all_formats: bool
+) -> list[dict[str, Any]]:
+    """The conversions asked for, as the tasks `up` makes for this source.
+
+    Raises:
+        CrossUploadRefused: If one is asked for that this source cannot give.
+    """
+    if not (transcodes or downconvert or all_formats):
+        return []
+    if release.torrent["format"] != "FLAC":
+        raise CrossUploadRefused("only a FLAC can be transcoded or downconverted")
+    options = get_downconversion_options({"encoding": release.torrent["encoding"]}, _track_data(release))
+    if all_formats:
+        return options
+    tasks = [option for option in options if option["action"] == "downconvert"] if downconvert else []
+    if downconvert and not tasks:
+        if len({track["sample rate"] for track in _track_data(release).values()}) > 1:
+            raise CrossUploadRefused("--downconvert: the files have different sample rates")
+        raise CrossUploadRefused("--downconvert: there is no lossless downconversion of this FLAC")
+    tasks += [option for option in options if option["action"] == "transcode" and option["encoding"] in transcodes]
+    return tasks
+
+
+def _tracker_of(url: str, sites: tuple["BaseGazelleApi", ...]) -> str | None:
+    """The tracker whose site or image host serves url, or None: one of sites by its origin, or by its hosts."""
+    for site in sites:
+        if _same_origin(url, site.base_url):
+            return site.site_code
+    host = (urlparse(url).hostname or "").lower()
+    for code, hosts in TRACKER_HOSTS.items():
+        if any(host == known or host.endswith(f".{known}") for known in hosts):
+            return code
+    return None
+
+
+def _shows_on(tracker: str, target: str) -> bool:
+    """Whether an image on tracker's own host shows on target's pages, as its bare URL (cover and descriptions)."""
+    # RED's images show on the trackers that proxy them; any other tracker's on its own pages only.
+    return tracker == target or (tracker == "RED" and target in RED_IMAGE_PROXY_TARGETS)
+
+
+def _bare(url: str) -> str:
+    """The URL without its query, fragment or user info. RED signs its images in cookies (IMAGE_COOKIES), not URLs."""
+    parsed = urlparse(url)
+    netloc = parsed.hostname or ""
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    return parsed._replace(netloc=netloc, query="", fragment="").geturl()
+
+
+def _images(data: dict[str, Any]) -> list[tuple[str, str]]:
+    """Every image the form shows: (field, URL), the cover first."""
+    found = [("image", data["image"])] if data.get("image") else []
+    for field_name in ("album_desc", "release_desc"):
+        for match in _IMAGE_TAG.finditer(data.get(field_name) or ""):
+            found.append((field_name, match[1] or match[2]))
+    return found
+
+
+def _images_to_rehost(
+    data: dict[str, Any], source: "BaseGazelleApi", target: "BaseGazelleApi"
+) -> list[tuple[str, str]]:
+    """Decide what happens to each tracker image.
+
+    An image on a host that is no tracker's stays as it is. One on a tracker's host that TARGET shows goes as
+    its bare URL (rewritten in data here). One on SOURCE's own site that TARGET cannot show is rehosted.
+
+    Returns:
+        The (field, URL) of each image to rehost, in order.
+
+    Raises:
+        CrossUploadRefused: For an image no client can fetch, or too many to rehost.
+    """
+    rehost: list[tuple[str, str]] = []
+    for field_name, url in _images(data):
+        tracker = _tracker_of(url, (source, target))
+        if tracker is None:
+            continue
+        if _shows_on(tracker, target.site_code):
+            data[field_name] = data[field_name].replace(url, _bare(url))
+            continue
+        if tracker != source.site_code or not _same_origin(url, source.base_url):
+            raise CrossUploadRefused(
+                f"it shows an image on {urlparse(url).hostname}, which {target.site_string} cannot show"
+            )
+        rehost.append((field_name, url))
+    if len({url for _, url in rehost}) > MAX_REHOSTED_IMAGES:
+        raise CrossUploadRefused(f"more than {MAX_REHOSTED_IMAGES} images would need rehosting")
+    return rehost
+
+
+def _same_origin(url: str, base_url: str) -> bool:
+    left, right = urlparse(url), urlparse(base_url)
+    return (left.scheme, left.hostname, left.port) == (right.scheme, right.hostname, right.port)
+
+
+async def _check_lossy_approval(release: Release, source: "BaseGazelleApi", target: "BaseGazelleApi") -> None:
+    """Decide whether TARGET gets a lossy report after the upload: SOURCE's lossy approval does not carry over.
+
+    Approved on SOURCE (lossy master or lossy WEB): the report goes, with the user's comment if they give one.
+    Unknown: the user is asked, and no report goes by default. A cross-upload makes no spectrals: when the torrent
+    description shows some, the comment says so by default; otherwise the user is told the report should say where
+    TARGET's staff can check.
+    """
+    page = f"{source.base_url}/torrents.php?torrentid={release.torrent['id']}"
+    approved = await _lossy_approval(release, source)
+    if approved is None:
+        click.secho(
+            f"Could not tell whether {source.site_string} approved torrent {release.torrent['id']} as lossy master or "
+            f"lossy WEB.",
+            fg="yellow",
+        )
+        if cfg.upload.yes_all:
+            click.secho(
+                f"Not reporting it as lossy on {target.site_string}: check {page}, and if it is approved, report the "
+                f"new torrent on {target.site_string} by hand.",
+                fg="yellow",
+            )
+            release.notes.append(f"lossy approval unknown on {source.site_string}: no lossy report, check {page}")
+            return
+        approved = click.confirm(
+            click.style(f"Report it as lossy on {target.site_string} after the upload?", fg="magenta"), default=False
+        )
+    if not approved:
+        return
+    spectrals = _shows_spectrals(release.data["release_desc"])
+    if not spectrals:
+        click.secho(
+            f"The torrent description shows no spectrals, so the lossy report on {target.site_string} should say "
+            "where its staff can check the files.",
+            fg="yellow",
+        )
+    comment = SPECTRALS_COMMENT if spectrals else ""
+    if not cfg.upload.yes_all:
+        comment = await click.prompt(
+            click.style(
+                f"Comment for the lossy report on {target.site_string} (it already links the torrent on "
+                f"{source.site_string})",
+                fg="cyan",
+                bold=True,
+            ),
+            default=comment,
+            show_default=spectrals,
+        )
+    note = f"Approved as lossy on {source.site_string}: {page}"
+    release.lossy_report = f"{comment}\n\n{note}" if comment else note
+    release.notes.append(
+        f"approved as lossy on {source.site_string}: a lossy report goes to {target.site_string} after the upload"
+    )
+
+
+def _shows_spectrals(description: str) -> bool:
+    """Whether a torrent description shows spectrals: it names them and has an image."""
+    return "spectral" in description.lower() and _IMAGE_TAG.search(description) is not None
+
+
+async def _lossy_approval(release: Release, source: "BaseGazelleApi") -> bool | None:
+    """Whether SOURCE approved the torrent as lossy master or lossy WEB, or None when it cannot be told."""
+    torrent = release.torrent
+    keys = ("lossyMasterApproved", "lossyWebApproved")
+    if any(key in torrent for key in keys):
+        return any(torrent.get(key) for key in keys)
+    if source.site_code != "OPS" or not source.has_session_cookie:
+        return None
+    # OPS's API does not say: its group page does, as a label on the torrent's row. The page holds the
+    # user's passkey and authkey: it is only parsed, never printed or kept.
+    try:
+        page = await source._request("GET", f"{source.base_url}/torrents.php", params={"id": release.group["id"]})
+    except RequestFailedError:
+        # An answer about this group: no page to read the label from. Any other failure is SOURCE's own and
+        # stops the run.
+        return None
+    return lossy_label(page.text, int(torrent["id"]))
+
+
+def lossy_label(page: str, torrent_id: int) -> bool | None:
+    """Whether the group page labels the torrent's row lossy master or lossy WEB approved; None without the row."""
+    try:
+        row = BeautifulSoup(page, "lxml").find("tr", id=f"torrent{torrent_id}")
+    except Exception:
+        return None
+    if row is None or "torrent_row" not in (row.get("class") or []):
+        return None
+    for tag in row.find_all(True):
+        classes = tag.get("class") or []
+        title = str(tag.get("title") or "").strip().lower()
+        if any(name in classes for name in _LOSSY_CLASSES) or title in _LOSSY_TITLES:
+            return True
+        if tag.name == "strong" and tag.get_text(strip=True).lower() in _LOSSY_TITLES:
+            return True
+    return False
+
+
+def most_requests(
+    release: Release,
+    source: "BaseGazelleApi",
+    target: "BaseGazelleApi",
+    group_id: int | None,
+    conversions_only: bool = False,
+) -> tuple[int, int, int]:
+    """The most requests uploading one release can send, retries aside: GETs and POSTs to TARGET, GETs to SOURCE.
+
+    TARGET's index call, once per run, is not counted; the index call for SOURCE's image host's cookies is.
+    """
+    data = release.data
+    uploads = len(release.tasks) + (0 if conversions_only else 1)
+    if conversions_only:
+        gets = 1  # The group, for its FLAC of the edition
+    elif group_id is not None:
+        gets = 1  # The group, to confirm it
+    else:
+        gets = len(_searchstrs(data)) + 1  # The search, and a group pasted at the prompt
+        if cfg.upload.requests.check_recent_uploads and target.has_session_cookie:
+            gets += SITE_LOG_PAGES  # The site log, read when the search finds nothing
+    if release.tasks:
+        gets += 1  # The group, for the formats it already has
+    if target.site_code == "RED":
+        gets += uploads  # RED's upload page, for an upload into an existing group through it
+    if target.site_code == "RED" or not target.api_key:
+        # The new torrent's page, which an upload through the upload page redirects to: DIC's (it has no API key),
+        # RED's with a log.
+        gets += uploads
+    gets += 2  # Looking up an upload whose answer was lost (then the run stops)
+    posts = uploads
+    if release.lossy_report is not None:
+        posts += uploads  # The lossy report of each upload, never sent again
+        gets += 2 * uploads  # The pages each redirects to
+    source_gets = len({url for _, url in release.rehost})
+    if source_gets and source.IMAGE_COOKIES:
+        source_gets += 1  # The index call for the image host's cookies
+    return gets, posts, source_gets
+
+
+def _searchstrs(data: dict[str, Any]) -> list[str]:
+    """What `up` searches TARGET for: the main artists with the title, and the catalogue number."""
+    main = [
+        (name, "main")
+        for name, importance in zip(data["artists[]"], data["importance[]"], strict=True)
+        if importance == ARTIST_IMPORTANCES["main"]
+    ]
+    return generate_dupe_check_searchstrs(main, data["title"], data["remaster_catalogue_number"])
+
+
+def _print_plan(
+    releases: list[Release],
+    source: "BaseGazelleApi",
+    target: "BaseGazelleApi",
+    group_id: int | None,
+    target_group_id: int | None = None,
+) -> None:
+    click.secho(f"\nThe plan: {source.site_string} to {target.site_string}", fg="cyan", bold=True)
+    for number, release in enumerate(releases, 1):
+        data, torrent = release.data, release.torrent
+        artists = ", ".join(data["artists[]"][:3]) + (" ..." if len(data["artists[]"]) > 3 else "")
+        formats = [
+            *([] if target_group_id else [f"{data['format']} {data['bitrate']}"]),
+            *(t["name"] for t in release.tasks),
+        ]
+        # The dupe check finds the group on the group's year: say it when the edition's differs.
+        years = data["remaster_year"]
+        if str(data["year"]) != str(data["remaster_year"]):
+            years = f"group {data['year']}, edition {data['remaster_year']}"
+        click.echo(f"{number}. {artists} - {data['title']} ({years}), {data['media']}")
+        click.echo(f"   from {source.base_url}/torrents.php?torrentid={torrent['id']}")
+        click.echo(f"   files: {release.path}")
+        into = f" (only these, into {target.base_url}/torrents.php?id={target_group_id})" if target_group_id else ""
+        click.echo(f"   uploads: {', '.join(formats)}{into}")
+        gets, posts, source_gets = most_requests(
+            release, source, target, group_id, conversions_only=bool(target_group_id)
+        )
+        images = len({url for _, url in release.rehost})
+        if images:
+            click.echo(f"   images to rehost: {images}, each fetched once from {source.site_string}")
+        for note in release.notes:
+            click.echo(f"   {note}")
+        # The reads of SOURCE done so far are not counted: only the images still to fetch, and the index call
+        # for its image host's cookies, are.
+        if not source_gets:
+            source_line = f"no more GET to {source.site_string}"
+        elif source_gets > images:
+            source_line = f"{images} image GET and {source_gets - images} index GET to {source.site_string}"
+        else:
+            source_line = f"{images} image GET to {source.site_string}"
+        click.echo(f"   at most {gets} GET and {posts} POST to {target.site_string}, {source_line}")
+    if cfg.upload.torrent_name_normalization not in ("", "none"):
+        click.secho(
+            "torrent_name_normalization is not applied: each new torrent names the files as they are on disk, so it "
+            "seeds from them.",
+            fg="yellow",
+        )
+
+
+# Phase D: TARGET.
+
+
+async def _upload(
+    release: Release,
+    source: "BaseGazelleApi",
+    target: "BaseGazelleApi",
+    seedbox: UploadManager,
+    uploaded: list[str],
+    *,
+    group_id: int | None,
+    target_group_id: int | None = None,
+) -> None:
+    """Dupe-check one release on TARGET, upload it, then its conversions. Adds each URL to uploaded.
+
+    Raises:
+        RequestError, UploadError, click.Abort, CrossUploadRefused: To stop the run.
+    """
+    if target_group_id is not None:
+        await _upload_into_group(release, target, target_group_id, seedbox, uploaded)
+        return
+    data = dict(release.data)
+    click.secho(f"\nCross-uploading {data['title']} to {target.site_string}", fg="cyan", bold=True)
+    edition = _edition(release)
+    if group_id is not None:
+        group_id = (
+            group_id if await _confirm_group_id(target, group_id, [], offer_deletion=False, release=edition) else None
+        )
+    else:
+        group_id = await check_existing_group(target, _searchstrs(data), offer_deletion=False, release=edition)
+    existing_group = group_id is not None
+
+    await _rehost_images(data, release.rehost, source, target)
+    _refuse_secrets(data, source)
+    if group_id is not None:
+        data["groupid"] = group_id
+
+    await target.ensure_authenticated()
+    torrent_path, torrent = generate_torrent(target, str(release.path), normalize=False)
+    files = await compile_files(str(release.path), torrent, {"source": release.torrent["media"]})
+    if not dryrun.active():
+        click.secho(f"Uploading {release.path.name} to {target.site_string}...", fg="yellow")
+    torrent_id, group_id = await target.upload(dict(data), files)
+    if release.lossy_report is not None:
+        # Sent once; a report TARGET does not take is printed for reporting by hand, and the upload stands.
+        await report_lossy_master(target, torrent_id, None, None, data["media"], release.lossy_report)
+    url = finish_upload(
+        target, str(release.path), torrent_id, torrent_path, torrent, data["format"], seedbox, copy_folder=False
+    )
+    uploaded.append(url)
+    if seedbox.tasks and release.path.parent != Path(cfg.directory.download_directory).resolve():
+        click.secho(
+            f"The files are in {release.path.parent}: check that the seedbox's torrent client seeds from there.",
+            fg="yellow",
+        )
+
+    if not release.tasks:
+        return
+    if not group_id:
+        # Conversions with no group id would each start a new group beside this one, as in up.
+        click.secho(f"\nNo group id came back for {url}: its conversions are not uploaded.", fg="yellow")
+        return
+    await _upload_conversions(release, target, group_id, torrent_id, url, existing_group, seedbox, uploaded)
+
+
+async def _upload_into_group(
+    release: Release, target: "BaseGazelleApi", group_id: int, seedbox: UploadManager, uploaded: list[str]
+) -> None:
+    """Upload only the conversions into TARGET's group, from its FLAC of the edition; refused if it has none."""
+    click.secho(f"\nAdding conversions of {release.data['title']} to {target.site_string}", fg="cyan", bold=True)
+    group = await target.torrentgroup(group_id)
+    flac = await choose_source_flac(group, _edition(release))
+    if flac is None:
+        raise CrossUploadRefused(
+            f"no FLAC of this edition in group {group_id} on {target.site_string} was picked to convert from"
+        )
+    url = f"{target.base_url}/torrents.php?torrentid={flac['id']}"
+    await _upload_conversions(release, target, group_id, int(flac["id"]), url, True, seedbox, uploaded)
+
+
+def _edition(release: Release) -> dict[str, Any]:
+    """The release as master's dupe check and converters take it: artists with roles, edition, media, format."""
+    data = release.data
+    roles = {importance: role for role, importance in ARTIST_IMPORTANCES.items()}
+    return {
+        "artists": [
+            (name, roles[importance]) for name, importance in zip(data["artists[]"], data["importance[]"], strict=True)
+        ],
+        "title": data["title"],
+        # The edition's year, as up's metadata has it; group_year is the original release's.
+        "year": data["remaster_year"],
+        "group_year": data["year"],
+        "edition_title": data["remaster_title"] or None,
+        "label": data["remaster_record_label"],
+        "catno": data["remaster_catalogue_number"],
+        "source": data["media"],
+        "format": data["format"],
+        "encoding": data["bitrate"],
+        "encoding_vbr": data["vbr"],
+        "scene": bool(data.get("scene")),
+        "urls": [],
+    }
+
+
+async def _rehost_images(
+    data: dict[str, Any], rehost: list[tuple[str, str]], source: "BaseGazelleApi", target: "BaseGazelleApi"
+) -> None:
+    """Fetch each SOURCE image TARGET cannot show through SOURCE's client, upload it to TARGET's host, swap the URL.
+
+    Each URL is fetched once, even when it is both the cover and a description image going to two hosts.
+
+    Raises:
+        CrossUploadRefused: If a fetch or an upload fails, or a host gives no usable URL.
+    """
+    images: dict[str, tuple[bytes, str]] = {}
+    new_urls: dict[tuple[str, str], str] = {}
+    # Every image to rehost is on SOURCE's own site (_images_to_rehost).
+    cookies = await _source_image_cookies(source) if rehost else {}
+    for field_name, url in rehost:
+        host = (
+            cfg.image.resolve(target.site_code, "cover_uploader")
+            if field_name == "image"
+            else image_host_for_tracker(target.site_code)
+        )
+        if url not in images:
+            images[url] = await _fetch_source_image(url, source, cookies)
+        key = (host, url)
+        if key not in new_urls:
+            new_urls[key] = await _upload_image(*images[url], _bare(url), target, host)
+        data[field_name] = data[field_name].replace(url, new_urls[key])
+
+
+async def _source_image_cookies(source: "BaseGazelleApi") -> dict[str, str]:
+    """The cookies SOURCE's image host takes besides the session cookie, {} if none; CrossUploadRefused if not given."""
+    try:
+        return await source.image_cookies()
+    except RequestError as error:
+        raise CrossUploadRefused(
+            f"could not fetch its images from {source.site_string}: {str(error) or type(error).__name__}"
+        ) from None
+
+
+async def _fetch_source_image(url: str, source: "BaseGazelleApi", cookies: dict[str, str]) -> tuple[bytes, str]:
+    """Fetch an image from SOURCE's own site through SOURCE's client, with its image cookies: content and suffix.
+
+    Raises:
+        CrossUploadRefused: If it is not on SOURCE's site, cannot be fetched, or is not an image.
+    """
+    shown = _bare(url)
+    if not _same_origin(url, source.base_url):
+        raise CrossUploadRefused(f"{shown} is not on {source.site_string}'s own site")
+    click.secho(f"Fetching {shown} from {source.site_string}...", fg="yellow")
+    try:
+        # Through SOURCE's client: its rate limit, retries and redirect rules, and its credentials only ever
+        # go to its own site. Image cookies go with the session cookie, never the API key.
+        response = await source._request(
+            "GET",
+            url,
+            timeout_secs=30,
+            prefer_api_key=not cookies and not source.has_session_cookie,
+            needs_authkey=False,
+            binary=True,
+            cookies=cookies,
+        )
+    except RequestError as error:
+        raise CrossUploadRefused(f"could not fetch {shown} ({type(error).__name__})") from None
+    suffix = next((ext for magic, ext in _IMAGE_MAGIC.items() if response.content.startswith(magic)), None)
+    if suffix is None and response.content[:4] == b"RIFF" and response.content[8:12] == b"WEBP":
+        suffix = ".webp"
+    if suffix is None:
+        raise CrossUploadRefused(f"{shown} is not an image")
+    return response.content, suffix
+
+
+async def _upload_image(content: bytes, suffix: str, shown: str, target: "BaseGazelleApi", host: str) -> str:
+    """Upload an image fetched from SOURCE (shown as its bare URL) to one of TARGET's hosts, and give its URL.
+
+    Raises:
+        CrossUploadRefused: If the upload fails or the host gives no usable URL.
+    """
+    click.secho(f"Rehosting {shown} to {host}...", fg="yellow")
+    with TemporaryDirectory() as directory:
+        image_path = Path(directory) / f"image{suffix}"
+        await anyio.Path(image_path).write_bytes(content)
+        if dryrun.active():
+            dryrun.say(f"not uploading {shown} to {host}.")
+            return dryrun.image_url(str(image_path), host)
+        try:
+            new_url, _ = await HOSTS[host].ImageUploader().upload_file(str(image_path))
+        except (ImageUploadFailed, ValueError) as error:
+            raise CrossUploadRefused(f"could not upload {shown} to {host}: {error}") from None
+    parsed = urlparse(new_url or "")
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise CrossUploadRefused(f"{host} gave no usable URL for {shown}")
+    return new_url
+
+
+def _refuse_secrets(data: dict[str, Any], source: "BaseGazelleApi") -> None:
+    """Make sure nothing in the form carries one of SOURCE's secrets (session, API key, authkey, passkey).
+
+    Raises:
+        CrossUploadRefused: Without naming the secret.
+    """
+    secrets = [secret for secret in source._secrets() if secret and len(secret) >= 8]
+    for name, value in data.items():
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, str) and any(secret in item for secret in secrets):
+                raise CrossUploadRefused(f"the {name} field would carry a {source.site_string} credential")
+
+
+async def _upload_conversions(
+    release: Release,
+    target: "BaseGazelleApi",
+    group_id: int,
+    torrent_id: int,
+    url: str,
+    existing_group: bool,
+    seedbox: UploadManager,
+    uploaded: list[str],
+) -> None:
+    """Upload the conversions asked for that the group does not have yet, with master's converters and forms."""
+    edition = _edition(release)
+    tasks = release.tasks
+    if existing_group:
+        group = await target.torrentgroup(group_id)
+        formats = {task["name"]: downconversion_format(task) for task in tasks}
+        held = held_formats(group, edition, {"id": torrent_id}, formats)
+        for name in sorted(held):
+            click.secho(f"Not uploading {name}: the group already has it in this edition.", fg="yellow")
+        tasks = [task for task in tasks if task["name"] not in held]
+    if not tasks:
+        return
+    await execute_downconversion_tasks(
+        tasks,
+        str(release.path),
+        target,
+        group_id,
+        edition,
+        cover_url=None,
+        track_data=_track_data(release),
+        hybrid=False,
+        # As `up` does, each conversion of a torrent reported as lossy is reported too, quoting that report.
+        lossy_master=release.lossy_report is not None,
+        spectral_urls=None,
+        spectral_ids=None,
+        lossy_comment=release.lossy_report,
+        request_id=None,
+        source_url=None,
+        seedbox_uploader=seedbox,
+        source=release.torrent["media"],
+        base_url=url,
+        uploaded=uploaded,
+    )

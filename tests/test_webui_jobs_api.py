@@ -10,20 +10,22 @@ hosts) is stubbed at the router-module seam; no network, no binaries.
 
 import asyncio
 import contextlib
+import io
 import os
 import pathlib
 
 import asyncclick as click
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 from starlette.websockets import WebSocketDisconnect
+from webui_client import web_client  # pyright: ignore[reportMissingImports]
 
 from salmon import cfg
 from salmon.checks.integrity import IntegrityResult
 from salmon.common.progress import report_progress
 from salmon.uploader.frequency import SpectrumResult
 from salmon.uploader.spectrals import get_spectrals_path
-from salmon.webui.app import create_app
 from salmon.webui.jobs import (
     MAX_FINISHED_JOBS,
     SUBSCRIBER_QUEUE_SIZE,
@@ -32,6 +34,19 @@ from salmon.webui.jobs import (
     JobManager,
     manager,
 )
+
+# The bind address under test: nothing is served on it.
+LAN_BIND = "0.0.0.0"  # nosec B104
+
+
+def _png(shade: int) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("L", (2, 2), shade).save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+# Real images: nothing else may go to an image host.
+PNG1, PNG2, PNGF = _png(1), _png(2), _png(3)
 
 
 def task_of(job) -> asyncio.Task:
@@ -61,7 +76,7 @@ def client():
     # base_url localhost passes TrustedHostMiddleware; the context manager
     # keeps one portal event loop alive so background job tasks survive
     # across requests.
-    with TestClient(create_app(), base_url="http://localhost") as c:
+    with web_client() as c:
         yield c
 
 
@@ -114,13 +129,13 @@ def spectral_stubs(monkeypatch, tmp_path, specs_requests):
         return str(specs_dir)
 
     async def fake_generate_spectrals_all(path, spectrals_path, audio_info):
-        (specs_dir / "01-intro.png").write_bytes(b"PNG1")
-        (specs_dir / "02-mittelteil.png").write_bytes(b"PNG2")
+        (specs_dir / "01-intro.png").write_bytes(PNG1)
+        (specs_dir / "02-mittelteil.png").write_bytes(PNG2)
         (specs_dir / "notes.txt").write_text("not an image")
         return {1: "01-intro.png", 2: "02-mittelteil.png"}
 
     async def fake_generate_frequency_plots(path, files, out_dir):
-        (specs_dir / "01 Frequency.png").write_bytes(b"PNGF")
+        (specs_dir / "01 Frequency.png").write_bytes(PNGF)
         return [
             SpectrumResult(
                 file="01. Intro.flac", image="01 Frequency.png", sample_rate=44100, cutoff_hz=21800.0, windows=9
@@ -418,7 +433,7 @@ async def test_prune_finished_evicts_oldest_beyond_max_finished_jobs():
 
 
 def test_default_loopback_bind_rejects_testserver_host_header():
-    c = TestClient(create_app())  # base_url http://testserver
+    c = web_client(base_url="http://testserver")
     resp = c.get("/api/jobs")
     assert resp.status_code == 400
     assert resp.text == "Invalid host header"
@@ -431,7 +446,7 @@ def test_loopback_bind_rejects_evil_host_header(client):
 
 
 def test_non_loopback_bind_skips_trusted_host_check():
-    c = TestClient(create_app(host="0.0.0.0"))
+    c = web_client(base_url="http://testserver", host=LAN_BIND)
     resp = c.get("/api/jobs")
     assert resp.status_code == 200
 
@@ -540,13 +555,14 @@ def test_spectrals_generate_allowed_for_a_library_album(client, library_album, s
     assert not cfg.directory.is_library_path(specs_requests[0])
 
 
-def test_spectrals_generate_refused_when_it_would_write_into_the_library(client, library_album, monkeypatch):
-    # No tmp_dir means get_spectrals_path falls back to <album>/Spectrals.
+def test_spectrals_of_a_library_album_never_go_inside_it(library_album, monkeypatch):
+    from salmon.uploader.spectrals import get_spectrals_path
+
+    # No tmp_dir: an ordinary album would get <album>/Spectrals, a library album a folder in download_directory.
     monkeypatch.setattr(cfg.directory, "tmp_dir", "")
-    resp = client.post("/api/spectrals/generate", json={"path": str(library_album)})
-    assert resp.status_code == 403
-    assert "read-only library directory" in resp.json()["detail"]
-    assert not (library_album / "Spectrals").exists()
+    spectrals_path = pathlib.Path(get_spectrals_path(str(library_album)))
+    assert not spectrals_path.is_relative_to(library_album)
+    assert spectrals_path.parent == pathlib.Path(cfg.directory.download_directory)
 
 
 def test_spectrals_generate_happy_path(client, album_dir, spectral_stubs):
@@ -592,7 +608,7 @@ def test_a_frequency_plot_is_still_served_even_though_it_is_not_uploaded(client,
     resp = client.get(f"/api/spectrals/{job_id}/image/01%20Frequency.png")
 
     assert resp.status_code == 200
-    assert resp.content == b"PNGF"
+    assert resp.content == PNGF
 
 
 def test_spectrals_generate_second_post_on_same_path_conflicts(client, album_dir, hanging_spectral_stubs):
@@ -655,7 +671,7 @@ def test_spectrals_image_serves_png_bytes(client, album_dir, spectral_stubs):
     job_id = run_generate_to_done(client, album_dir)
     resp = client.get(f"/api/spectrals/{job_id}/image/01-intro.png")
     assert resp.status_code == 200
-    assert resp.content == b"PNG1"
+    assert resp.content == PNG1
     assert resp.headers["content-type"] == "image/png"
 
 
@@ -699,6 +715,26 @@ def test_spectrals_upload_happy_path_with_explicit_host(client, album_dir, spect
     assert resp.status_code == 404
 
 
+def test_a_spectral_that_is_not_an_image_is_not_uploaded(client, album_dir, spectral_stubs, monkeypatch):
+    uploaded = []
+
+    async def fake_upload_images(filepaths, image_host):
+        uploaded.extend(filepaths)
+        return ["https://img.example/0" for _ in filepaths]
+
+    monkeypatch.setattr("salmon.webui.routers.spectrals.upload_images", fake_upload_images)
+    gen_id = run_generate_to_done(client, album_dir)
+    # Swapped after the spectrals were made: the upload checks what it sends, not what was made.
+    (spectral_stubs / "02-mittelteil.png").write_bytes(b"d8:announce30:https://tracker.example/announcee")
+
+    resp = client.post("/api/spectrals/upload", json={"job_id": gen_id, "host": "catbox"})
+    data = join_job(client, resp.json()["id"])
+
+    assert data["status"] == "error"
+    assert "Not uploading 02-mittelteil.png" in data["error"]
+    assert uploaded == []
+
+
 def test_spectrals_upload_falls_back_to_configured_host(client, album_dir, spectral_stubs, monkeypatch):
     async def fake_upload_images(filepaths, image_host):
         return ["https://img.example/a"]
@@ -738,7 +774,7 @@ def test_downconvert_nonexistent_dir_returns_404(client):
 def test_transcode_happy_path(client, album_dir, monkeypatch):
     calls = []
 
-    async def fake_transcode_folder(path, bitrate):
+    async def fake_transcode_folder(path, bitrate, output_dir=None):
         calls.append((path, bitrate))
         return f"{path} [MP3 {bitrate}]"
 
@@ -757,10 +793,10 @@ def test_transcode_happy_path(client, album_dir, monkeypatch):
 
 
 def test_transcode_and_downconvert_share_the_path_lock(client, album_dir, monkeypatch):
-    async def hang_transcode(path, bitrate):
+    async def hang_transcode(path, bitrate, output_dir=None):
         await asyncio.Event().wait()
 
-    async def fake_convert_folder(path):
+    async def fake_convert_folder(path, output_dir=None):
         return 44100, f"{path} [16-44]"
 
     monkeypatch.setattr("salmon.webui.routers.convert.transcode_folder", hang_transcode)
@@ -927,6 +963,18 @@ def test_discarding_removes_the_generated_images(tmp_path, monkeypatch):
     specs = _specs_under(tmp_path, "spectrals_x")
     _discard_spectrals(_finished_spectrals_job(specs))
     assert not specs.exists()
+
+
+def test_discarding_drops_salmons_claim_on_the_folder(tmp_path, monkeypatch):
+    from salmon.uploader.spectrals import create_specs_folder, made_by_salmon
+    from salmon.webui.routers.spectrals import _discard_spectrals
+
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_path))
+    specs = pathlib.Path(create_specs_folder("", os.path.join(os.path.realpath(tmp_path), "spectrals_claim")))
+    _discard_spectrals(_finished_spectrals_job(specs))
+    specs.mkdir()
+
+    assert not made_by_salmon(str(specs))
 
 
 def test_discarding_refuses_a_path_outside_the_configured_directories(tmp_path):

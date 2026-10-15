@@ -7,7 +7,7 @@ import asyncclick as click
 import msgspec
 
 from salmon import cfg
-from salmon.common.files import process_files
+from salmon.common.files import process_files, rewrite_refusal
 
 FLAC_IMPORTANT_REGEXES = [
     re.compile(r"(.+\.flac: testing,.*)\x08ok"),
@@ -151,6 +151,8 @@ async def handle_integrity_check(path: str) -> None:
     Raises:
         click.Abort: If the path is neither a file nor a directory.
     """
+    # Sanitizing rewrites the files in place.
+    refusal = rewrite_refusal(path)
     if os.path.isfile(path):
         if not any(path.lower().endswith(ext) for ext in [".flac", ".mp3"]):
             click.secho(f"File '{path}' is not a FLAC or MP3 file.", fg="red", bold=True)
@@ -159,7 +161,9 @@ async def handle_integrity_check(path: str) -> None:
         result = await check_integrity(path)
         click.echo(format_integrity(result))
 
-        if (
+        if not result.passed and refusal is not None:
+            _no_sanitize(path, refusal)
+        elif (
             not result.passed
             and path.lower().endswith(".flac")
             and click.confirm(click.style(f"\n{sanitize_prompt(result)}", fg="magenta"), default=True)
@@ -169,10 +173,21 @@ async def handle_integrity_check(path: str) -> None:
         result = await check_integrity(path)
         click.echo(format_integrity(result))
 
-        if not result.passed and click.confirm(click.style(f"\n{sanitize_prompt(result)}", fg="magenta"), default=True):
+        if not result.passed and refusal is not None:
+            _no_sanitize(path, refusal)
+        elif not result.passed and click.confirm(
+            click.style(f"\n{sanitize_prompt(result)}", fg="magenta"), default=True
+        ):
             await sanitize_and_verify(path)
     else:
         raise click.Abort
+
+
+def _no_sanitize(path: str, refusal: str) -> None:
+    click.secho(
+        f"\nNot offering to sanitize {path}: {refusal}, and sanitizing rewrites files. salmon up sanitizes a copy.",
+        fg="yellow",
+    )
 
 
 async def resolve_integrity_for_upload(path: str, *, scene: bool, assume_yes: bool) -> IntegrityResult:

@@ -7,6 +7,7 @@ import anyio
 from salmon.common import is_http_url
 from salmon.constants import UAGENTS
 from salmon.errors import ImageUploadFailed
+from salmon.images import base as images_base
 from salmon.images.base import BaseImageUploader
 
 HEADERS = {
@@ -36,7 +37,7 @@ class ImageUploader(BaseImageUploader):
         data.add_field("fileToUpload", file_data, filename=Path(filename).name)
         url = "https://catbox.moe/user/api.php"
         try:
-            async with aiohttp.ClientSession() as session, session.post(url, headers=HEADERS, data=data) as resp:
+            async with self._http_session() as session, session.post(url, headers=HEADERS, data=data) as resp:
                 resp.raise_for_status()
                 body = (await resp.text()).strip()
                 # A 200 with no/garbage body has been observed; catbox's own failure text is never a URL.
@@ -45,5 +46,7 @@ class ImageUploader(BaseImageUploader):
                 return body, None
         except ValueError as e:
             raise ImageUploadFailed(f"Failed decoding body: {e}") from e
+        except TimeoutError as e:
+            raise ImageUploadFailed(images_base.describe_upload_timeout(e)) from e
         except aiohttp.ClientError as e:
             raise ImageUploadFailed(f"Network error: {e}") from e

@@ -13,11 +13,12 @@ from salmon import cfg
 from salmon.checks.provenance import gather_provenance
 from salmon.checks.report import build_report
 from salmon.common.files import get_audio_files
-from salmon.config.validations import ARTWORK_ONLY_HOSTS
+from salmon.config.validations import spectrals_refusal
 from salmon.images import HOSTS, upload_images
+from salmon.images.files import NotAnImage, check_image
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.uploader.frequency import assess, generate_frequency_plots
-from salmon.uploader.spectrals import create_specs_folder, generate_spectrals_all, get_spectrals_path
+from salmon.uploader.spectrals import create_specs_folder, drop_specs_claim, generate_spectrals_all, get_spectrals_path
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
 from salmon.webui.validation import allowed_roots, is_within_roots, refuse_library_output, validate_album_dir
 
@@ -45,16 +46,17 @@ def _discard_spectrals(job: Job) -> None:
         return
     real = os.path.realpath(path)
     roots = allowed_roots()
-    if not is_within_roots(real, roots) or real in roots or cfg.directory.is_library_path(real):
+    if not is_within_roots(real, roots) or real in roots or cfg.directory.protects(real):
         return
     shutil.rmtree(real, ignore_errors=True)
+    if not os.path.isdir(real):
+        drop_specs_claim(real)
 
 
 @router.post("/spectrals/generate")
 async def generate(req: GenerateRequest) -> dict:
     path = validate_album_dir(req.path)
-    # Spectrals go to tmp_dir, so a library album is fine; only the no-tmp_dir
-    # fallback writes into the album, and that is what must be refused.
+    # tmp_dir, else the album's Spectrals, or download_directory for a library album or one with its own Spectrals.
     spectrals_path = get_spectrals_path(path)
     refuse_library_output(spectrals_path, "Spectrals")
 
@@ -124,13 +126,19 @@ async def upload(req: UploadRequest) -> dict:
         raise HTTPException(status_code=422, detail=f"Unknown image host: {host_name}")
     # The config refuses to load with this host set for spectrals; a request must
     # not be able to reach around that, whatever the UI happens to send today.
-    if host_name in ARTWORK_ONLY_HOSTS:
-        raise HTTPException(status_code=422, detail=f"{host_name} does not allow spectral uploads")
+    if (reason := spectrals_refusal(host_name)) is not None:
+        raise HTTPException(status_code=422, detail=f"{host_name} does not allow spectral uploads: {reason}")
 
     spectrals_path = source_job.result["spectrals_path"]
     files = [os.path.join(spectrals_path, f) for f in source_job.result["files"]]
 
     async def run(job: Job) -> dict:
+        # The files salmon made, checked anyway: nothing but an image goes to a public host.
+        for path in files:
+            try:
+                check_image(path)
+            except NotAnImage as e:
+                raise NotAnImage(f"Not uploading {os.path.basename(path)}: {e}") from None
         urls = await upload_images(files, host)
         return {"host": host_name, "urls": urls}
 

@@ -5,26 +5,30 @@
 browser questions the same way an upload job does.
 """
 
+import asyncio
 import os
 from typing import Any, cast
 
+import asyncclick as click
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 import salmon.trackers
 from salmon import cfg
+from salmon.config.validations import ARTWORK_ONLY_HOSTS
 from salmon.constants import SOURCES as SOURCE_CODES
 from salmon.constants import TAG_ENCODINGS
 from salmon.cross_upload import cross_upload as cross_upload_command
 from salmon.cross_upload import is_torrent_reference
 from salmon.images import HOSTS, upload_images
+from salmon.images.files import NotAnImage, check_image
 from salmon.tagger import tag as tag_command
 from salmon.uploader.description import build_tracklist_description
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
 from salmon.webui.validation import (
     assert_public_url,
     validate_confined_path,
-    validate_writable_album_dir,
+    validate_source_album_dir,
 )
 
 MAX_DESCGEN_URLS = 20
@@ -64,9 +68,11 @@ class CrossUploadRequest(BaseModel):
     source: str
     target: str
     downconvert: bool = False
-    target_group_id: int | None = None
+    # As the CLI's IntRange: a 0 would slip past the option checks and send conversions into group 0.
+    target_group_id: int | None = Field(default=None, ge=1)
     all_formats: bool = False
     transcodes: list[str] = Field(default_factory=list)
+    dry_run: bool = False
 
 
 def _queue(kind: str, title: str, run, meta: dict, lock_key: str | None = None) -> dict:
@@ -85,7 +91,8 @@ async def options() -> dict:
         "trackers": salmon.trackers.tracker_list,
         "sources": list(SOURCE_CODES.values()),
         "encodings": list(TAG_ENCODINGS),
-        "image_hosts": sorted(HOSTS),
+        # An artwork-only host needs a tracker, which the Tools upload has no way to name.
+        "image_hosts": sorted(host for host in HOSTS if host not in ARTWORK_ONLY_HOSTS),
         "transcodes": ["320", "V0"],
     }
 
@@ -108,6 +115,11 @@ async def images_upload(req: ImageUploadRequest) -> dict:
     host_name = req.host or cfg.image.image_uploader
     if host_name not in HOSTS:
         raise HTTPException(status_code=422, detail=f"Unknown image host: {host_name}")
+    if host_name in ARTWORK_ONLY_HOSTS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{host_name} is only for a tracker's own album artwork: use salmon images up -t from a terminal.",
+        )
 
     resolved = []
     for raw in req.paths:
@@ -115,6 +127,13 @@ async def images_upload(req: ImageUploadRequest) -> dict:
         path = validate_confined_path(raw)
         if not os.path.isfile(path):
             raise HTTPException(status_code=404, detail=f"Not a file: {raw}")
+        # Image hosts are public: a .torrent carries the passkey, and any file can be named cover.jpg.
+        try:
+            await asyncio.to_thread(check_image, path)
+        except NotAnImage as e:
+            raise HTTPException(status_code=422, detail=f"Not uploading {raw}: {e}.") from None
+        except OSError:
+            raise HTTPException(status_code=422, detail=f"Not uploading {raw}: it cannot be read.") from None
         resolved.append(path)
 
     try:
@@ -127,9 +146,8 @@ async def images_upload(req: ImageUploadRequest) -> dict:
 @router.post("/tag")
 async def tag(req: TagRequest) -> dict:
     """Interactively retag an album; prompts surface as browser questions."""
-    # standardize_tags() saves over the source files and rename_folder() renames
-    # it, so a read-only library source must be refused.
-    path = validate_writable_album_dir(req.path)
+    # salmon tag works on a copy of a library album, so only a folder holding a library is refused.
+    path = validate_source_album_dir(req.path)
     if req.source not in SOURCE_CODES.values():
         raise HTTPException(status_code=422, detail=f"Unknown source: {req.source}")
     if req.encoding is not None and req.encoding not in TAG_ENCODINGS:
@@ -169,15 +187,25 @@ async def cross_upload(req: CrossUploadRequest) -> dict:
     async def run(job: Job) -> dict:
         # The job runs later: re-confine so a path swapped since the request cannot be read.
         source_input = req.path if is_torrent_reference(req.path) else validate_confined_path(req.path)
-        await _CROSS_UPLOAD(
-            torrent_or_directory=source_input,
-            source=req.source,
-            target=req.target,
-            downconvert=req.downconvert,
-            target_group_id=req.target_group_id,
-            all_formats=req.all_formats,
-            transcodes=tuple(req.transcodes),
-        )
+        try:
+            await _CROSS_UPLOAD(
+                inputs=(source_input,),
+                source=req.source,
+                target=req.target,
+                path=None,
+                group_id=None,
+                target_group_id=req.target_group_id,
+                transcodes=tuple(req.transcodes),
+                downconvert=req.downconvert,
+                all_formats=req.all_formats,
+                # Never -yyy here: it sets yes_all for the rest of the process. The job asks instead.
+                yyy=False,
+                dry_run=req.dry_run,
+            )
+        except click.exceptions.Exit as stopped:
+            if stopped.exit_code:
+                # Its own output says why; "Exit: 1" alone would not.
+                raise click.ClickException("the cross-upload stopped: its output above says why") from None
         return {"source": req.source, "target": req.target}
 
     title = f"Cross-upload {req.source} -> {req.target}"

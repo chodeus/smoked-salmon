@@ -6,7 +6,6 @@ from urllib import parse
 
 import anyio
 import asyncclick as click
-import pyperclip
 
 import salmon.checks
 import salmon.converter
@@ -18,12 +17,14 @@ import salmon.trackers
 import salmon.uploader
 from salmon import cfg
 from salmon.checks.connection import check_tracker_connection
-from salmon.common import commandgroup
-from salmon.common import compress as recompress
+from salmon.common import AlbumPath, commandgroup, copy_to_clipboard, get_flac_files
+from salmon.common.files import rewrite_refusal
 from salmon.common.redaction import redact_secrets
 from salmon.config import find_config_path, get_default_config_path, get_user_cfg_path
+from salmon.errors import UploadError
 from salmon.sources.tidal import credentials_configured as tidal_credentials_configured
-from salmon.tagger.audio_info import gather_audio_info
+from salmon.tagger.audio_info import gather_audio_info, recompress_path
+from salmon.tagger.sources import METASOURCES
 from salmon.uploader.description import build_tracklist_description
 from salmon.uploader.seedbox import seedbox_secrets
 from salmon.uploader.spectrals import (
@@ -36,7 +37,7 @@ from salmon.uploader.torrent_client import TorrentClientGenerator
 
 
 @commandgroup.command()
-@click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True), nargs=1)
+@click.argument("path", type=AlbumPath(exists=True, file_okay=False), nargs=1)
 @click.option("--no-delete-specs", "-nd", is_flag=True)
 @click.option("--format-output", "-f", is_flag=True)
 async def specs(path: str, no_delete_specs: bool, format_output: bool) -> None:
@@ -57,10 +58,18 @@ async def specs(path: str, no_delete_specs: bool, format_output: bool) -> None:
         output = "\n".join(output_lines)
         click.secho(output)
         if cfg.upload.description.copy_uploaded_url_to_clipboard:
-            pyperclip.copy(output)
+            copy_to_clipboard(output)
 
     if no_delete_specs:
         click.secho(f"Spectrals saved to {spath}", fg="green")
+
+
+def _url_host(url: str) -> str:
+    """Only the host of an argument: an unsupported URL may hold a passkey or an authkey."""
+    try:
+        return parse.urlsplit(url).hostname or "not a URL"
+    except ValueError:
+        return "not a URL"
 
 
 @commandgroup.command()
@@ -71,23 +80,50 @@ async def descgen(urls: tuple[str, ...]) -> None:
         click.secho("You must specify at least one URL", fg="red")
         return
 
+    # Checked before any scrape starts, so a bad argument sends no request and ends without a traceback.
+    supported = [any(source.Scraper.regex.match(url) for source in METASOURCES.values()) for url in urls]
+    if not all(supported):
+        sources = ", ".join(METASOURCES)
+        for position, (url, ok) in enumerate(zip(urls, supported, strict=True), 1):
+            if ok:
+                continue
+            if os.path.isdir(url):
+                click.secho(
+                    f"{url} is a folder; descgen takes release URLs from {sources}. `salmon up` writes the "
+                    "description itself.",
+                    fg="red",
+                )
+            else:
+                click.secho(
+                    f"Argument {position} ({_url_host(url)}) is not a release URL descgen supports. It takes URLs "
+                    f"from {sources}.",
+                    fg="red",
+                )
+        raise click.exceptions.Exit(1)
+
     description = await build_tracklist_description(urls)
     click.secho("\nDescription:\n", fg="yellow", bold=True)
     click.echo(description)
     if cfg.upload.description.copy_uploaded_url_to_clipboard:
-        pyperclip.copy(description)
+        copy_to_clipboard(description)
 
 
 @commandgroup.command()
-@click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True))
+@click.argument("path", type=AlbumPath(exists=True, file_okay=False))
 async def compress(path: str) -> None:
-    """Recompress a directory of FLACs to level 8."""
-    for root, _, files in os.walk(path):
-        for f in sorted(files):
-            if os.path.splitext(f)[1].lower() == ".flac":
-                filepath = os.path.join(root, f)
-                click.secho(f"Recompressing {filepath[len(path) + 1 :]}...")
-                await recompress(filepath)
+    """Recompress a directory of FLACs to the configured level; exits 1 if any file fails."""
+    if (reason := rewrite_refusal(path)) is not None:
+        click.secho(f"Not recompressing {path}: {reason}.", fg="red")
+        raise click.Abort
+    flac_files = get_flac_files(path)
+    if not flac_files:
+        click.secho("No flacs found to recompress. Skipping...", fg="red")
+        return
+    try:
+        await recompress_path(path, files=flac_files)
+    except UploadError as e:
+        click.secho(str(e), fg="red")
+        raise click.exceptions.Exit(1) from e
 
 
 @commandgroup.command()
@@ -104,7 +140,7 @@ async def compress(path: str) -> None:
 )
 @click.argument(
     "path",
-    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    type=AlbumPath(exists=True, file_okay=False),
     nargs=1,
     default=".",
 )
@@ -200,6 +236,8 @@ async def checkconf(tracker: str | None, metadata: bool, seedbox: bool, reset: b
     Use the -m flag to test metadata sources connections.
     Use the -s flag to test seedbox connections.
     """
+    click.echo(f"Config file: {find_config_path()}")
+
     if reset:
         click.secho("Resetting new config.toml file", fg="cyan", bold=True)
 
@@ -298,7 +336,7 @@ async def _test_metadata_sources() -> None:
         "Qobuz": {
             "class": salmon.sources.QobuzBase,
             "test_url": "https://www.qobuz.com/album/-/0886446576442",
-            "config_check": lambda: bool(cfg.metadata.qobuz.app_id and cfg.metadata.qobuz.user_auth_token),
+            "config_check": salmon.sources.QobuzBase.configured,
         },
     }
 

@@ -47,3 +47,28 @@ def test_red_refused_everywhere_else(kwargs, section):
     with pytest.raises(ValueError, match="artwork") as excinfo:
         ImageUploader(**kwargs)
     assert str(excinfo.value).startswith(f"{section} ")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "section"),
+    [
+        ({"specs_uploader": "ra"}, "[image]"),
+        ({"red": ImageHostOverride(specs_uploader="ra")}, "[image.red]"),
+        ({"ops": ImageHostOverride(specs_uploader="ra")}, "[image.ops]"),
+    ],
+)
+def test_ra_refused_for_spectrals(kwargs, section):
+    with pytest.raises(ValueError, match="Ra's owner asks not to use it for spectrals") as excinfo:
+        ImageUploader(ra_key="key", **kwargs)
+    assert str(excinfo.value).startswith(f"{section} specs_uploader")
+
+
+def test_ra_allowed_for_covers_and_description_images():
+    i = ImageUploader(ra_key="key", cover_uploader="ra", ops=ImageHostOverride(image_uploader="ra"))
+    assert i.resolve("RED", "cover_uploader") == "ra"
+    assert i.resolve("OPS", "image_uploader") == "ra"
+
+
+def test_ra_needs_its_key():
+    with pytest.raises(ValueError, match="ra key not specified"):
+        ImageUploader(dic=ImageHostOverride(cover_uploader="ra"))

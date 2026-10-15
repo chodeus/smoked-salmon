@@ -82,6 +82,10 @@ class UnknownOutcomeError(RequestError):
     pass
 
 
+class RateLimitedError(RequestError):
+    """The tracker rate limited a request and asks for a longer wait than salmon gives one request."""
+
+
 class EditedLogError(Exception):
     """Raised when a log file has been edited."""
 
@@ -100,11 +104,13 @@ class LogCheckSkipped(Exception):
     pass
 
 
-class DryRunComplete(BaseException):
-    """Raised after a --dry-run validation to stop cleanly before any real upload.
+class DryRunRefused(Exception):
+    """A step that would send something ran in a dry run and was stopped; not a RequestError, so no "failed upload"."""
 
-    BaseException so ordinary ``except Exception`` handlers in the upload flow can't
-    swallow it; only the up() command catches it.
-    """
+    pass
+
+
+class UploadRefusedError(RequestError):
+    """The tracker's form has no value for this torrent: raised before its upload request, other trackers unaffected."""
 
     pass

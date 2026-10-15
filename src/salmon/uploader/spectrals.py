@@ -1,25 +1,34 @@
+import contextlib
 import errno
+import hashlib
 import os
 import platform
 import random
 import re
 import shutil
+import textwrap
 from functools import partial
-from os.path import dirname, join
-from pathlib import Path
+from subprocess import DEVNULL
 from typing import TYPE_CHECKING, Any
 
 import anyio
 import anyio.to_thread
 import asyncclick as click
-import oxipng
 
-from salmon import cfg
+# pyproject.toml installs pyoxipng below Python 3.14 only (no wheel for 3.14, and a build needs Rust). Where it is
+# not installed, the oxipng program compresses spectrals if it is.
+try:
+    import oxipng
+except ImportError:
+    oxipng = None
+
+from salmon import cfg, dryrun
 from salmon.common import flush_stdin, get_audio_files, prompt_async
 from salmon.common.files import process_files
 from salmon.errors import (
     AbortAndDeleteFolder,
     ImageUploadFailed,
+    RequestError,
     UnknownOutcomeError,
     UploadError,
 )
@@ -39,6 +48,7 @@ async def check_spectrals(
     check_lma: bool = True,
     force_prompt_lossy_master: bool = False,
     format: str = "FLAC",
+    offer_deletion: bool = True,
 ) -> tuple[bool | None, dict[int, str] | None]:
     """Run spectral checker functions.
 
@@ -53,6 +63,7 @@ async def check_spectrals(
         check_lma: Whether to check for lossy master.
         force_prompt_lossy_master: Force lossy master prompt.
         format: Audio format.
+        offer_deletion: Whether the lossy master prompt offers to delete the music folder.
 
     Returns:
         Tuple of (lossy_master, spectral_ids).
@@ -77,6 +88,7 @@ async def check_spectrals(
                 lossy_master = await prompt_lossy_master(
                     force_prompt_lossy_master or measured == "suspect",
                     suggested="y" if measured == "suspect" else "n",
+                    offer_deletion=offer_deletion,
                 )
                 if lossy_master is not None:
                     break
@@ -95,6 +107,7 @@ async def check_spectrals(
             lossy_master = await prompt_lossy_master(
                 force_prompt_lossy_master or measured == "suspect",
                 suggested="y" if measured == "suspect" else "n",
+                offer_deletion=offer_deletion,
             )
 
     return lossy_master, spectral_ids
@@ -139,6 +152,8 @@ async def handle_spectrals_upload_and_deletion(
         if os.path.isdir(spectrals_path):
             shutil.rmtree(spectrals_path)
             await anyio.sleep(0.5)
+    if delete_spectrals and not os.path.isdir(spectrals_path):
+        drop_specs_claim(spectrals_path)
     return spectral_urls
 
 
@@ -293,45 +308,156 @@ async def _generate_spectrals(
     return sorted_spectrals
 
 
-async def _compress_single_spectral(filepath: str, _idx: int) -> None:
-    """Compress a single spectral PNG image using oxipng in a thread.
+def _spectral_images(spectrals_path: str) -> list[str]:
+    """The folder's PNGs by name, without hidden files such as a compression's leftover copy."""
+    return sorted(f for f in os.listdir(spectrals_path) if f.lower().endswith(".png") and not f.startswith("."))
 
-    Args:
-        filepath: Path to the PNG file to compress.
-        _idx: Unused index parameter for process_files compatibility.
-    """
+
+_not_compressed_notice_shown = False
+
+
+def _notify_spectrals_not_compressed() -> None:
+    """Say once per run that spectrals go up uncompressed: neither pyoxipng nor the oxipng program is installed."""
+    global _not_compressed_notice_shown
+    if _not_compressed_notice_shown:
+        return
+    _not_compressed_notice_shown = True
+    click.secho(
+        "Spectrals are not compressed: neither pyoxipng nor the oxipng program is installed. Installing salmon with "
+        '"uv tool install --python 3.13 git+https://github.com/chodeus/smoked-salmon" compresses them, '
+        "and so does installing the oxipng program (winget, scoop, brew, apt, or its GitHub releases).",
+        fg="yellow",
+    )
+
+
+OXIPNG_PROGRAM_TIMEOUT = 60
+
+
+async def _compress_with_oxipng_program(program: str, filepath: str) -> bool:
+    """Compress a spectral with the oxipng program on a copy, replacing it on success; False, with a line, if not."""
+    # Hidden: a copy a crash leaves behind must not make the folder look like someone else's (made_by_salmon).
+    tmp_path = os.path.join(os.path.dirname(filepath), f".{os.path.basename(filepath)}.tmp.png")
+    try:
+        shutil.copyfile(filepath, tmp_path)
+        with anyio.fail_after(OXIPNG_PROGRAM_TIMEOUT):
+            result = await anyio.run_process(
+                [program, "-o", "2", "--strip", "all", tmp_path], check=False, stdout=DEVNULL, stderr=DEVNULL
+            )
+        if result.returncode == 0:
+            os.replace(tmp_path, filepath)
+            return True
+    except (TimeoutError, OSError):
+        pass
+    finally:
+        # Best effort: a copy something still holds open must not stop the spectrals that follow.
+        with contextlib.suppress(OSError):
+            os.remove(tmp_path)
+    click.secho(f"Could not compress {os.path.basename(filepath)} with oxipng; it is uploaded as it is.", fg="yellow")
+    return False
+
+
+async def _compress_single_spectral(filepath: str, _idx: int, program: str | None = None) -> bool | None:
+    """Compress one spectral with pyoxipng in a thread, or else with the oxipng `program`; False if left as it was."""
+    if oxipng is None:
+        assert program is not None
+        return await _compress_with_oxipng_program(program, filepath)
     func = partial(oxipng.optimize, filepath, level=2, strip=oxipng.StripChunks.all())
     return await anyio.to_thread.run_sync(func)
 
 
 async def _compress_spectrals(spectrals_path: str) -> None:
-    """Compress all spectral PNG images in a directory using oxipng.
-
-    Args:
-        spectrals_path: Path to the directory containing spectral PNG files.
-    """
-    files = [f for f in os.listdir(spectrals_path) if f.endswith(".png")]
+    """Compress every spectral PNG in `spectrals_path`, with pyoxipng or else the oxipng program."""
+    files = _spectral_images(spectrals_path)
     if not files:
         return
+    program = None
+    if oxipng is None:
+        program = shutil.which("oxipng")
+        if program is None:
+            _notify_spectrals_not_compressed()
+            return
 
     filepaths = [os.path.join(spectrals_path, f) for f in files]
 
-    await process_files(
+    results = await process_files(
         filepaths,
-        _compress_single_spectral,
+        partial(_compress_single_spectral, program=program) if program else _compress_single_spectral,
         "Compressing spectral images",
     )
 
-    click.secho("Finished compressing spectrals.", fg="green")
+    if any(result is False for result in results):
+        click.secho("Some spectrals could not be compressed.", fg="yellow")
+    else:
+        click.secho("Finished compressing spectrals.", fg="green")
+
+
+def spectrals_dir() -> str | None:
+    """The folder spectrals go in beside albums: tmp_dir, or a dry run's own run directory; None without tmp_dir."""
+    if not (cfg.directory.tmp_dir and os.path.isdir(cfg.directory.tmp_dir)):
+        return None
+    # A dry run leaves nothing outside its run directory, nor replaces another album's spectrals_<name> there.
+    return dryrun.scratch_dir() if dryrun.active() else cfg.directory.tmp_dir
 
 
 def get_spectrals_path(path):
-    """Get the path to the spectrals folder for an album."""
-    if cfg.directory.tmp_dir and os.path.isdir(cfg.directory.tmp_dir):
+    """The spectrals folder salmon makes for an album: never one of the user's own, which salmon would replace."""
+    base_name = os.path.basename(path.rstrip("/"))
+    if (beside := spectrals_dir()) is not None:
         # Create a unique subfolder for this album
-        base_name = os.path.basename(path.rstrip("/"))
-        return os.path.join(cfg.directory.tmp_dir, f"spectrals_{base_name}")
-    return os.path.join(path, "Spectrals")
+        return os.path.join(beside, f"spectrals_{base_name}")
+    in_album = os.path.join(path, "Spectrals")
+    if cfg.directory.protects(path) or (os.path.lexists(in_album) and not made_by_salmon(in_album)):
+        # Never inside a library album, nor over the album's own Spectrals. The digest keeps same-named albums apart.
+        digest = hashlib.sha1(os.path.realpath(path).encode(), usedforsecurity=False).hexdigest()[:8]
+        outside = dryrun.scratch_dir() if dryrun.active() else cfg.directory.download_directory
+        return os.path.join(outside, f"spectrals_{base_name} {digest}")
+    return in_album
+
+
+# Spectrals folders salmon made in this process, by real path: an empty folder is salmon's only if it is one of these.
+_made_specs_folders: set[str] = set()
+# The images salmon writes into a spectrals folder, and what a file browser leaves beside them.
+_SALMON_SPECTRAL = re.compile(r"\d{2,} (?:Full|Zoom|Frequency)\.png")
+_BROWSER_LITTER = {"Thumbs.db", "desktop.ini"}
+
+
+def made_by_salmon(spectrals_path: str) -> bool:
+    """Whether a spectrals folder is salmon's: only salmon's spectral images in it, or empty and made by salmon."""
+    if os.path.islink(spectrals_path):
+        return False
+    try:
+        with os.scandir(spectrals_path) as entries:
+            is_file = {entry.name: entry.is_file(follow_symlinks=False) for entry in entries}
+    except OSError:
+        return False
+    images = [name for name in is_file if not name.startswith(".") and name not in _BROWSER_LITTER]
+    if not all(_SALMON_SPECTRAL.fullmatch(name) and is_file[name] for name in images):
+        return False
+    # By content too: spectrals an earlier run left (salmon specs -nd, an interrupted check) are still salmon's.
+    return bool(images) or os.path.realpath(spectrals_path) in _made_specs_folders
+
+
+def carry_specs_claim(old_real: str, new_path: str) -> None:
+    """After a move, salmon's claim on the folder at old_real (a real path) moves to new_path."""
+    if old_real in _made_specs_folders:
+        _made_specs_folders.discard(old_real)
+        _made_specs_folders.add(os.path.realpath(new_path))
+
+
+def drop_specs_claim(spectrals_path: str) -> None:
+    """Forget salmon's claim on a spectrals folder that is gone, so a folder made there later is the user's."""
+    _made_specs_folders.discard(os.path.realpath(spectrals_path))
+
+
+def make_way_for_spectrals(spectrals_path: str) -> None:
+    """Clear spectrals_path for salmon's folder: remove salmon's own or an empty folder, refuse anything else."""
+    if not os.path.lexists(spectrals_path):
+        return
+    empty = not os.path.islink(spectrals_path) and os.path.isdir(spectrals_path) and not os.listdir(spectrals_path)
+    if not (empty or made_by_salmon(spectrals_path)):
+        # Chosen earlier (a web job) or outside the album: whatever is there now is not known to be salmon's.
+        raise click.ClickException(f"Not replacing {spectrals_path}: it holds files salmon did not make. Move them.")
+    shutil.rmtree(spectrals_path)
 
 
 def create_specs_folder(path, spectrals_path=None):
@@ -343,9 +469,9 @@ def create_specs_folder(path, spectrals_path=None):
     """
     if spectrals_path is None:
         spectrals_path = get_spectrals_path(path)
-    if os.path.isdir(spectrals_path):
-        shutil.rmtree(spectrals_path)
+    make_way_for_spectrals(spectrals_path)
     os.mkdir(spectrals_path)
+    _made_specs_folders.add(os.path.realpath(spectrals_path))
     return spectrals_path
 
 
@@ -382,10 +508,10 @@ async def _open_specs_in_preview(spectrals_path: str) -> None:
     Args:
         spectrals_path: Path to the spectrals directory.
     """
-    files = sorted(Path(spectrals_path).glob("*"))
+    files = _spectral_images(spectrals_path)
     if not files:
         return
-    args = ["qlmanage", "-p", *(str(f) for f in files)]
+    args = ["qlmanage", "-p", *(os.path.join(spectrals_path, f) for f in files)]
     await anyio.run_process(args, check=False)
 
 
@@ -412,28 +538,21 @@ async def _open_specs_in_feh(spectrals_path: str) -> None:
 
 
 def _open_specs_in_windows(spectrals_path):
-    png_files = [os.path.join(spectrals_path, f) for f in os.listdir(spectrals_path) if f.lower().endswith(".png")]
+    png_files = [os.path.join(spectrals_path, f) for f in _spectral_images(spectrals_path)]
 
     if not png_files:
         click.secho("No PNG files found to display.", fg="yellow")
         return
-    png_files.sort()
     os.startfile(png_files[0])
 
 
 async def _open_specs_in_web_server(specs_path, all_spectral_ids):
     spectrals.set_active_spectrals(all_spectral_ids)
-    symlink_path = join(dirname(dirname(__file__)), "web", "static", "specs")
 
     runner = None
     try:
         try:
-            os.symlink(specs_path, symlink_path)
-        except FileExistsError:
-            os.unlink(symlink_path)
-            os.symlink(specs_path, symlink_path)
-        try:
-            runner = await create_app_async()
+            runner = await create_app_async(specs_path)
         except OSError as e:
             port = cfg.upload.web_interface.port
             if e.errno == errno.EADDRINUSE:
@@ -476,7 +595,6 @@ async def _open_specs_in_web_server(specs_path, all_spectral_ids):
     finally:
         if runner is not None:
             await runner.cleanup()
-        os.unlink(symlink_path)
 
 
 async def upload_spectrals(
@@ -508,6 +626,10 @@ async def upload_spectrals(
             )
         )
 
+    if dryrun.active():
+        host = cfg.image.resolve(None, "specs_uploader")
+        dryrun.say(f"not uploading the spectrals of {len(spectrals_list)} track(s) to {host}.")
+        return {sid: [dryrun.image_url(path, host) for path in paths] for sid, _filename, paths in spectrals_list}
     try:
         return await upload_spectral_imgs(spectrals_list)
     except ImageUploadFailed as e:
@@ -556,8 +678,8 @@ async def prompt_spectrals(spectral_ids, lossy_master, check_lma, force_prompt_l
         )
 
 
-async def prompt_lossy_master(force_prompt_lossy_master=False, suggested: str = "n"):
-    """Ask the lossy-master question; `suggested` is the pre-typed answer from the frequency analysis."""
+async def prompt_lossy_master(force_prompt_lossy_master=False, suggested: str = "n", offer_deletion: bool = True):
+    """Ask the lossy-master question; `suggested` is the analysis's pre-typed answer, `offer_deletion` adds [d]."""
     while True:
         flush_stdin()
         r = (
@@ -566,8 +688,8 @@ async def prompt_lossy_master(force_prompt_lossy_master=False, suggested: str = 
             else (
                 await click.prompt(
                     click.style(
-                        "\nIs this release lossy mastered? "
-                        "[y]es, [N]o, [r]eopen spectrals, [a]bort, [d]elete music folder",
+                        "\nIs this release lossy mastered? [y]es, [N]o, [r]eopen spectrals, [a]bort"
+                        + (", [d]elete music folder" if offer_deletion else ""),
                         fg="magenta",
                     ),
                     type=click.STRING,
@@ -583,7 +705,7 @@ async def prompt_lossy_master(force_prompt_lossy_master=False, suggested: str = 
             return None
         elif r == "a":
             raise click.Abort
-        elif r == "d":
+        elif r == "d" and offer_deletion:
             raise AbortAndDeleteFolder
 
 
@@ -611,6 +733,10 @@ async def report_lossy_master(
     if source is None:
         click.secho("Cannot report lossy master without source.", fg="red")
         return
+    if dryrun.active():
+        dryrun.say(f"not reporting the torrent to {gazelle_site.site_string} for lossy master approval. The report:")
+        click.echo(textwrap.indent(comment, "  "))
+        return
     try:
         await gazelle_site.report_lossy_master(torrent_id, comment, source)
     except UnknownOutcomeError:
@@ -620,6 +746,16 @@ async def report_lossy_master(
             f"{gazelle_site.base_url}/torrents.php?torrentid={torrent_id} before reporting again.",
             fg="yellow",
         )
+        return
+    except RequestError as err:
+        # Not a failed upload: the torrent is up, and the rest of the flow goes on.
+        click.secho(
+            f"\n{gazelle_site.site_string} did not take the lossy master report for "
+            f"{gazelle_site.base_url}/torrents.php?torrentid={torrent_id} ({err}). Report it by hand with this text:",
+            fg="red",
+            bold=True,
+        )
+        click.echo(comment)
         return
     click.secho("\nReported upload for Lossy Master/WEB Approval Request.", fg="cyan")
 
@@ -696,10 +832,14 @@ async def post_upload_spectral_check(
     Returns:
         Tuple of (lossy_master, lossy_comment, spectral_urls, spectral_ids).
     """
+    # The uploaded torrent seeds from path: the check must not offer to delete it.
     lossy_master, spectral_ids = await check_spectrals(
-        path, track_data, None, spectral_ids, force_prompt_lossy_master=True, format=format
+        path, track_data, None, spectral_ids, force_prompt_lossy_master=True, format=format, offer_deletion=False
     )
     if not lossy_master and not spectral_ids:
+        # Nothing to upload: the spectrals made for the check go before a later torrent can take them.
+        if made_by_salmon(spectrals_path := get_spectrals_path(path)):
+            await handle_spectrals_upload_and_deletion(spectrals_path, None)
         return False, None, None, None
 
     lossy_comment = None
@@ -714,7 +854,25 @@ async def post_upload_spectral_check(
 
     if spectral_urls:
         spectrals_bbcode = make_spectral_bbcode(spectral_ids, spectral_urls)
-        await gazelle_site.append_to_torrent_description(torrent_id, spectrals_bbcode)
+        permalink = f"{gazelle_site.base_url}/torrents.php?torrentid={torrent_id}"
+        try:
+            await gazelle_site.append_to_torrent_description(torrent_id, spectrals_bbcode)
+        except UnknownOutcomeError as err:
+            click.secho(
+                f"\nCould not tell whether {gazelle_site.site_string} took the description edit for {permalink} "
+                f"({err}): check the description before pasting this in by hand:",
+                fg="red",
+                bold=True,
+            )
+            click.echo(spectrals_bbcode)
+        except RequestError as err:
+            click.secho(
+                f"\nThe description for {permalink} was not updated on {gazelle_site.site_string} ({err}). "
+                "Paste this in by hand:",
+                fg="red",
+                bold=True,
+            )
+            click.echo(spectrals_bbcode)
 
     if lossy_master:
         await report_lossy_master(

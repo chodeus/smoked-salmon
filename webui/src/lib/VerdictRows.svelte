@@ -28,6 +28,16 @@
           Acknowledge
         </label>
       {/if}
+      {#if r.notes?.length}
+        <details class="row-detail notes">
+          <summary>{r.notes.length} line{r.notes.length === 1 ? '' : 's'}</summary>
+          <ul>
+            {#each r.notes as note}
+              <li class="mono">{note}</li>
+            {/each}
+          </ul>
+        </details>
+      {/if}
       {#if rowDetail}
         <div class="row-detail">{@render rowDetail(r)}</div>
       {/if}
@@ -70,6 +80,18 @@
   }
   .row-detail {
     grid-column: 1 / -1;
+  }
+  .notes summary {
+    cursor: pointer;
+    color: var(--text-dim);
+  }
+  .notes ul {
+    margin: 0.25rem 0 0;
+    padding-left: 1.25rem;
+    display: block;
+  }
+  .notes li {
+    display: list-item;
   }
   /* A snippet that covers no row renders nothing; don't leave a grid gap behind. */
   .row-detail:empty {

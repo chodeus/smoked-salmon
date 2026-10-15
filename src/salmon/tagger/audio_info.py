@@ -2,8 +2,10 @@ import os
 
 import asyncclick as click
 from mutagen import File as MutagenFile
+from mutagen.mp4 import MP4Info
 
-from salmon.common import compress, get_audio_files
+from salmon.common import get_audio_files
+from salmon.common.files import CompressResult, compress, process_files
 from salmon.errors import UploadError
 
 
@@ -16,18 +18,16 @@ def gather_audio_info(path, sort_by_tracknumber=False):
     if not files:
         raise UploadError("No audio files found.")
 
-    audio_info = {}
-    for filename in files:
-        mut = MutagenFile(os.path.join(path, filename))
-        if mut is None:
-            raise UploadError(f"Could not read audio file: {filename}")
-        filepath = os.path.join(path, filename)
-        audio_info[filename] = {
-            **_parse_audio_info(mut.info),
-            "tag size": metadata_size(mut),
-            "id3": has_id3_tag(filepath),
-        }
-    return audio_info
+    return {filename: audio_file_info(path, filename) for filename in files}
+
+
+def audio_file_info(path: str, filename: str) -> dict:
+    """One audio file's technical information; UploadError if mutagen cannot read it."""
+    filepath = os.path.join(path, filename)
+    mut = MutagenFile(filepath)
+    if mut is None:
+        raise UploadError(f"Could not read audio file: {filename}")
+    return {**_parse_audio_info(mut.info), "tag size": metadata_size(mut), "id3": has_id3_tag(filepath)}
 
 
 def has_id3_tag(filepath: str) -> bool:
@@ -47,17 +47,24 @@ def metadata_size(mut) -> int | None:
     pictures = getattr(mut, "pictures", None)
     blocks = getattr(mut, "metadata_blocks", None)
     if pictures is not None and blocks is not None:
-        return sum(len(picture.data) for picture in pictures) + sum(block.length for block in blocks if block.code == 1)
+        # Each PICTURE block whole: its own fields (MIME type, dimensions, lengths) count against the limit too.
+        return sum(len(picture.write()) for picture in pictures) + sum(
+            block.length for block in blocks if block.code == 1
+        )
     size = getattr(getattr(mut, "tags", None), "size", None)
     return size if isinstance(size, int) else None
 
 
 def _parse_audio_info(streaminfo):
+    precision = getattr(streaminfo, "bits_per_sample", None)
+    if isinstance(streaminfo, MP4Info) and streaminfo.codec != "alac":
+        # mutagen gives AAC the sample entry's 16 bits: a lossy file has no bit depth.
+        precision = None
     return {
         "channels": streaminfo.channels,
         "sample rate": streaminfo.sample_rate,
         "bit rate": streaminfo.bitrate,
-        "precision": getattr(streaminfo, "bits_per_sample", None),
+        "precision": precision,
         "duration": int(streaminfo.length),
     }
 
@@ -76,15 +83,20 @@ def check_hybrid(tags):
     return False
 
 
-async def recompress_path(path: str) -> None:
-    """Recompress all flacs in the directory to the configured compression level.
+async def recompress_path(path: str, files: list[str] | None = None) -> None:
+    """Recompress FLACs in parallel (`files` relative to path, else all if all are FLAC); UploadError on any failure."""
+    if files is None:
+        files = get_audio_files(path)
+        if not files or not all(f.lower().endswith(".flac") for f in files):
+            return click.secho("No flacs found to recompress. Skipping...", fg="red")
+    filepaths = [os.path.join(path, filename) for filename in files]
 
-    Args:
-        path: Path to the directory containing FLAC files.
-    """
-    files = get_audio_files(path)
-    if not files or not all(".flac" in f for f in files):
-        return click.secho("No flacs found to recompress. Skipping...", fg="red")
-    for filename in files:
-        filepath = os.path.join(path, filename)
-        await compress(filepath)
+    async def _compress_one(filepath: str, _idx: int) -> CompressResult:
+        return await compress(filepath)
+
+    results = await process_files(filepaths, _compress_one, "Recompressing")
+    failures = [result for result in results if not result.success]
+    if failures:
+        for failure in failures:
+            click.secho(f"Failed to recompress {failure.filepath}: {failure.error}", fg="red")
+        raise UploadError(f"Failed to recompress {len(failures)} file(s).")

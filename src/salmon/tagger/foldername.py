@@ -7,8 +7,9 @@ from string import Formatter
 
 import asyncclick as click
 
-from salmon import cfg
-from salmon.common import strip_template_keys
+from salmon import cfg, dryrun
+from salmon.common import clean_name, has_visible_chars, strip_template_keys
+from salmon.common.files import rewrite_refusal
 from salmon.common.strings import plain_spaces
 from salmon.constants import (
     BLACKLISTED_CHARS,
@@ -19,19 +20,7 @@ from salmon.errors import UploadError
 from salmon.tagger.audio_info import gather_audio_info
 
 
-def resolution(path: str) -> str:
-    """Bit depth and sample rate of the folder's first track, like "24-96"; empty for lossy files and for 16/44.1."""
-    first = next(iter(gather_audio_info(path, sort_by_tracknumber=True).values()), None)
-    if not first:
-        return ""
-    bits, rate = first.get("precision"), first.get("sample rate")
-    # Lossy files report no bit depth, and a zero one is not a depth a folder name should claim.
-    if not bits or not rate or (bits == 16 and rate == 44100):
-        return ""
-    return f"{bits}-{rate / 1000:g}"
-
-
-def rename_folder(path, metadata, auto_rename, check=True):
+def rename_folder(path, metadata, auto_rename, check=True, parent=None, original=None):
     """
     Create a revised folder name from the new metadata and present it to the
     user. Have them decide whether or not to accept the folder name.
@@ -39,11 +28,13 @@ def rename_folder(path, metadata, auto_rename, check=True):
     before the renaming occurs.
     For scene releases, the name of the original folder is kept untouched, and
     the folder is copied to the download folder.
+    `parent` replaces the download folder as the directory the renamed folder goes into.
+    `original` is the folder the user gave, when `path` is the run's copy of it: that one is kept, and the run says why.
     """
     old_base = os.path.basename(path)
     template_fields = {name for _, name, _, _ in Formatter().parse(cfg.upload.formatting.folder_template) if name}
     if "resolution" in template_fields:
-        metadata = {**metadata, "resolution": resolution(path)}
+        metadata = {**metadata, "resolution": _resolution(path)}
     new_base = generate_folder_name(metadata)
     if metadata["scene"]:
         new_base = old_base
@@ -62,11 +53,19 @@ def rename_folder(path, metadata, auto_rename, check=True):
 
     # A name with a path separator or . / .. would escape the download dir and, via the
     # rmtree below, delete something outside it — reject before building new_path.
-    if os.sep in new_base or (os.altsep and os.altsep in new_base) or new_base in {"", ".", ".."}:
+    invalid = new_base in {"", ".", ".."} or not has_visible_chars(new_base)
+    if os.sep in new_base or (os.altsep and os.altsep in new_base) or invalid:
         raise UploadError(f"Invalid folder name: {new_base!r}")
 
-    new_path = os.path.join(cfg.directory.download_directory, new_base)
-    if os.path.isdir(new_path) and not os.path.samefile(path, new_path):
+    new_path = os.path.join(parent or cfg.directory.download_directory, new_base)
+    same_location = os.path.isdir(new_path) and os.path.samefile(path, new_path)
+    # Checked whether or not new_path exists yet: a symlinked folder on the way can lead into a library.
+    if not same_location and cfg.directory.protects(new_path):
+        raise UploadError(f"Not renaming into {new_path}: it is in library_dirs, or holds one.")
+    if os.path.isdir(new_path) and not same_location:
+        # Often the very album this copy was made from: replacing it would break what seeds from it.
+        if (reason := rewrite_refusal(new_path)) is not None:
+            raise UploadError(f"Not replacing {new_path}: {reason}. Rename it, or give the upload another folder name.")
         if not check or click.confirm(
             click.style(
                 f"A folder already exists with the new folder name '{new_path}', would you like to replace it?",
@@ -82,58 +81,145 @@ def rename_folder(path, metadata, auto_rename, check=True):
     if not os.path.exists(new_path_dirname):
         os.makedirs(new_path_dirname)
 
+    # Imported here: the uploader package imports this module.
+    from salmon.uploader.spectrals import get_spectrals_path, made_by_salmon
+
     # Check if hardlinks can be used
     same_volume = os.stat(path).st_dev == os.stat(cfg.directory.download_directory).st_dev
-    use_hardlinks = same_volume and cfg.directory.hardlinks
+    # A hardlink shares the inode, so a later tag write on the new folder would reach a library album.
+    in_library = cfg.directory.protects(path)
+    use_hardlinks = same_volume and cfg.directory.hardlinks and not in_library
 
-    if os.path.exists(path) and os.path.exists(new_path) and os.path.samefile(path, new_path):
+    # Spectrals salmon made before this rename follow the album, wherever they are and whatever remove_source_dir
+    # says. get_spectrals_path never names a Spectrals folder of the album's own: that is copied like any other.
+    specs_path = get_spectrals_path(path)
+    carry_specs = made_by_salmon(specs_path)
+    in_source = carry_specs and _is_direct_child(specs_path, path)
+    ignore = _ignoring_top_level(path, os.path.basename(specs_path)) if in_source else None
+
+    same_folder = os.path.exists(path) and os.path.exists(new_path) and os.path.samefile(path, new_path)
+    if same_folder:
         click.secho(f"Skipping copy, same location already for '{new_path}'", fg="yellow")
     else:
         if use_hardlinks:
             try:
-                shutil.copytree(path, new_path, copy_function=os.link, dirs_exist_ok=True)
+                shutil.copytree(path, new_path, copy_function=os.link, dirs_exist_ok=True, ignore=ignore)
                 click.secho(f"Hardlinked folder to '{new_path}'.", fg="yellow")
             except shutil.Error as _:
                 click.secho("Hardlinking didn't work, falling back to non-hardlink copy...", fg="red")
                 # A partially hardlinked tree makes the plain copy raise SameFileError (#356)
                 shutil.rmtree(new_path, ignore_errors=True)
-                shutil.copytree(path, new_path, dirs_exist_ok=True)
+                shutil.copytree(path, new_path, dirs_exist_ok=True, ignore=ignore)
                 click.secho(f"Copied folder to '{new_path}'.", fg="yellow")
         else:
-            shutil.copytree(path, new_path, dirs_exist_ok=True)
+            shutil.copytree(path, new_path, dirs_exist_ok=True, ignore=ignore)
             click.secho(f"Copied folder to '{new_path}'.", fg="yellow")
 
-        if cfg.upload.formatting.remove_source_dir:
-            shutil.rmtree(path)
-    carry_conversion(path, new_path)
+    if carry_specs:
+        # Moved, not copied: the source must not keep a Spectrals folder the upload never deletes. Also for the same
+        # folder, as a case-only rename still renames salmon's folder outside it.
+        _move_specs_folder(specs_path, get_spectrals_path(new_path))
 
-    # Also rename spectrals folder in TMP_DIR if it exists
-    if cfg.directory.tmp_dir and os.path.exists(cfg.directory.tmp_dir):
-        tmp_old_specs_path = os.path.join(cfg.directory.tmp_dir, f"spectrals_{old_base}")
-        tmp_new_specs_path = os.path.join(cfg.directory.tmp_dir, f"spectrals_{new_base}")
-
-        if not os.path.exists(tmp_old_specs_path):
-            pass  # No spectrals folder exists, nothing to rename
-        elif os.path.exists(tmp_new_specs_path) and os.path.samefile(tmp_old_specs_path, tmp_new_specs_path):
-            click.secho(f"Skipping copy, same location already for '{tmp_new_specs_path}'", fg="yellow")
+    if (not same_folder or original is not None) and cfg.upload.formatting.remove_source_dir:
+        if original is not None:
+            # path is the run's copy, removed with its run directory.
+            click.secho(f"remove_source_dir is on, but {original} is kept: {_kept_reason(original)}.", fg="yellow")
+        elif in_library:
+            click.secho(f"Not removing {path}: it is in library_dirs, or holds one.", fg="yellow")
         else:
-            if use_hardlinks:
-                try:
-                    shutil.copytree(tmp_old_specs_path, tmp_new_specs_path, copy_function=os.link, dirs_exist_ok=True)
-                    click.secho(f"Hardlinked temporary spectrals folder to '{tmp_new_specs_path}'.", fg="yellow")
-                except shutil.Error as _:
-                    click.secho("Hardlinking didn't work, falling back to non-hardlink copy...", fg="red")
-                    shutil.rmtree(tmp_new_specs_path, ignore_errors=True)
-                    shutil.copytree(tmp_old_specs_path, tmp_new_specs_path, dirs_exist_ok=True)
-                    click.secho(f"Copied temporary spectrals folder to '{tmp_new_specs_path}'.", fg="yellow")
-            else:
-                shutil.copytree(tmp_old_specs_path, tmp_new_specs_path, dirs_exist_ok=True)
-                click.secho(f"Copied temporary spectrals folder to '{tmp_new_specs_path}'.", fg="yellow")
-
-            if cfg.upload.formatting.remove_source_dir:
-                shutil.rmtree(tmp_old_specs_path)
-
+            shutil.rmtree(path)
+            click.secho(f"Removed the source folder {path} (remove_source_dir).", fg="yellow")
+    carry_conversion(path, new_path)
     return new_path
+
+
+def _kept_reason(original: str) -> str:
+    """Why a run that worked on a copy of `original` leaves it where it is."""
+    if (reason := rewrite_refusal(original)) is not None:
+        return f"{reason}, and salmon never changes such a folder"
+    if dryrun.active():
+        return "a dry run works on a copy and changes nothing"
+    return "--skip-flac-upload works on a copy"
+
+
+def _is_direct_child(child: str, parent: str) -> bool:
+    """Whether `child` is an entry directly inside `parent`."""
+    return os.path.dirname(os.path.abspath(child)) == os.path.abspath(parent)
+
+
+def _ignoring_top_level(top: str, name: str):
+    """A copytree `ignore` that skips the entry `name` of `top` only, not one of that name further down."""
+    top = os.path.abspath(top)
+
+    def ignore(directory, names):
+        return {name} & set(names) if os.path.abspath(directory) == top else set()
+
+    return ignore
+
+
+def _move_specs_folder(src: str, dst: str) -> None:
+    """Move a spectrals folder to `dst`, replacing a stale one there, and carry salmon's claim on it."""
+    # Imported here: the uploader package imports this module.
+    from salmon.uploader.spectrals import carry_specs_claim, make_way_for_spectrals
+
+    if os.path.exists(dst) and os.path.samefile(src, dst):
+        # A scene release keeps its name, so its folder outside the album is already in place.
+        return
+    old_real = os.path.realpath(src)
+    make_way_for_spectrals(dst)
+    shutil.move(src, dst)
+    carry_specs_claim(old_real, dst)
+
+
+def _resolution(path):
+    """Bit depth and sample rate of the folder's tracks, like "24-96"; blank for lossy, 16/44.1, zero or mixed."""
+    return resolution_token(gather_audio_info(path))
+
+
+def resolution_token(audio_info):
+    """_resolution from a gather_audio_info mapping, so the converters know a name's exact token."""
+    bits = {info["precision"] for info in audio_info.values()}
+    rates = {info["sample rate"] for info in audio_info.values()}
+    if len(bits) != 1 or len(rates) != 1:
+        return ""
+    (bit_depth,), (sample_rate,) = bits, rates
+    if not bit_depth or not sample_rate or (bit_depth == 16 and sample_rate == 44100):
+        return ""
+    return f"{bit_depth}-{sample_rate / 1000:g}"
+
+
+def _token_span(foldername, token):
+    """Where the name's last standalone token is, or None: "1924-48" in a title holds "24-48" but not as a token."""
+    # Anywhere in the name, as a template may put {resolution} outside brackets; the last match wins.
+    matches = list(re.finditer(r"(?<![\w.-])" + re.escape(token) + r"(?![\w.-])", foldername)) if token else []
+    return matches[-1].span() if matches else None
+
+
+def holds_resolution_token(foldername, token) -> bool:
+    """Whether the folder name carries token as its own word."""
+    return _token_span(foldername, token) is not None
+
+
+def swap_resolution_token(foldername, token, new):
+    """Replace the name's standalone resolution token with new; a name without one is left as it is."""
+    span = _token_span(foldername, token)
+    return foldername if span is None else foldername[: span[0]] + new + foldername[span[1] :]
+
+
+def drop_resolution_token(foldername, token):
+    """Remove the name's standalone resolution token, one space beside it, and a bracket pair it leaves empty."""
+    span = _token_span(foldername, token)
+    if span is None:
+        return foldername
+    start, end = span
+    if start > 0 and foldername[start - 1] == " ":
+        start -= 1
+    elif end < len(foldername) and foldername[end] == " ":
+        end += 1
+    name = foldername[:start] + foldername[end:]
+    if 0 < start < len(name) and name[start - 1] in "[({" and name[start] in "])}":
+        name = name[: start - 1].rstrip(" ") + name[start + 1 :]
+    return name.strip()
 
 
 def generate_folder_name(metadata):
@@ -146,10 +232,31 @@ def generate_folder_name(metadata):
     keys = [fn for _, fn, _, _ in Formatter().parse(template) if fn]
     for k in keys.copy():
         if not metadata.get(k):
-            template = strip_template_keys(template, k)
+            template = _strip_blank_resolution(template) if k == "resolution" else strip_template_keys(template, k)
             keys.remove(k)
     sub_metadata = _fix_format(metadata, keys)
-    return template.format(**{k: _sub_illegal_characters(sub_metadata[k]) for k in keys})
+    return clean_name(template.format(**{k: _sub_illegal_characters(sub_metadata[k]) for k in keys}))
+
+
+def _strip_blank_resolution(template):
+    """Drop a blank {resolution} field (any conversion or spec), and the bracket around it if that empties it."""
+    pieces = list(Formatter().parse(template))
+    literals = [literal for literal, *_ in pieces]
+    for i, (_literal, field, _spec, _conversion) in enumerate(pieces):
+        if field != "resolution":
+            continue
+        literals[i] = literals[i].rstrip()
+        after = literals[i + 1].lstrip() if i + 1 < len(literals) else ""
+        if literals[i][-1:] in ("[", "(", "{") and after[:1] == {"[": "]", "(": ")", "{": "}"}[literals[i][-1]]:
+            literals[i] = literals[i][:-1].rstrip()
+            literals[i + 1] = after[1:]
+    parts = []
+    for literal, (_literal, field, spec, conversion) in zip(literals, pieces, strict=True):
+        parts.append(literal.replace("{", "{{").replace("}", "}}"))
+        if field is not None and field != "resolution":
+            parts.append("{" + field + (f"!{conversion}" if conversion else "") + (f":{spec}" if spec else "") + "}")
+    template = re.sub(r"\s+", " ", "".join(parts)).strip()
+    return re.sub(r" *- *$", "", template)
 
 
 def _compile_artist_str(artist_data):
@@ -216,6 +323,6 @@ def _edit_folder_interactive(foldername, auto_rename):
                 ):
                     sys.exit(1)
             else:
-                return newname.strip().replace("\n", "")
+                return clean_name(newname.replace("\n", ""))
             newname = click.edit(foldername, editor=cfg.upload.default_editor)
     return foldername

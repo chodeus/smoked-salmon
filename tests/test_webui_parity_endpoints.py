@@ -8,11 +8,10 @@ import os
 import time
 
 import pytest
-from fastapi.testclient import TestClient
+from webui_client import web_client  # pyright: ignore[reportMissingImports]
 
 import salmon.trackers
 from salmon import cfg
-from salmon.webui.app import create_app
 from salmon.webui.jobs import manager
 
 
@@ -25,7 +24,7 @@ def _clean():
 
 @pytest.fixture
 def client():
-    with TestClient(create_app(), base_url="http://localhost") as c:
+    with web_client() as c:
         yield c
 
 
@@ -92,6 +91,15 @@ def test_image_upload_refuses_files_outside_the_roots(client):
     assert r.status_code == 403
 
 
+def test_the_tools_upload_neither_offers_nor_takes_an_artwork_only_host(client, album):
+    offered = client.get("/api/tools/options").json()["image_hosts"]
+    resp = client.post("/api/images/upload", json={"paths": [album], "host": "red"})
+
+    assert "red" not in offered
+    assert resp.status_code == 422
+    assert "album artwork" in resp.json()["detail"]
+
+
 def test_image_upload_rejects_unknown_host(client, album):
     r = client.post("/api/images/upload", json={"paths": [album], "host": "nosuchhost"})
     assert r.status_code == 422
@@ -138,7 +146,7 @@ def test_every_cli_command_has_a_web_equivalent() -> None:
     Reads the OpenAPI schema rather than probing HTTP: the SPA catch-all serves
     index.html for unknown /api paths, so a 404 probe cannot detect a missing route.
     """
-    with TestClient(create_app(dev=True), base_url="http://localhost") as dev:
+    with web_client(dev=True) as dev:
         paths = set(dev.get("/api/openapi.json").json()["paths"])
 
     for path in (
@@ -170,6 +178,46 @@ def test_compress_refuses_a_read_only_library_source(client, tmp_path, monkeypat
     monkeypatch.setattr(cfg.directory, "library_dirs", [lib])
 
     assert client.post("/api/convert/compress", json={"path": album}).status_code == 403
+
+
+def test_compress_refuses_an_album_with_a_hardlinked_file(client, tmp_path, monkeypatch) -> None:
+    base = os.path.realpath(cfg.directory.download_directory)
+    album = os.path.join(base, tmp_path.name, "Artist - Album")
+    os.makedirs(album, exist_ok=True)
+    with open(os.path.join(album, "01.flac"), "wb") as flac:
+        flac.write(b"fLaC")
+    os.link(os.path.join(album, "01.flac"), tmp_path / "seeding.flac")
+
+    resp = client.post("/api/convert/compress", json={"path": album})
+    assert resp.status_code == 403
+    assert "hardlink or symlink" in resp.json()["detail"]
+
+
+def test_an_album_folder_that_is_a_symlink_is_refused(client, tmp_path) -> None:
+    base = os.path.realpath(cfg.directory.download_directory)
+    album = os.path.join(base, tmp_path.name, "Artist - Album")
+    os.makedirs(album, exist_ok=True)
+    os.symlink(album, os.path.join(base, tmp_path.name, "Linked"))
+
+    resp = client.post("/api/convert/compress", json={"path": os.path.join(base, tmp_path.name, "Linked")})
+    assert resp.status_code == 403
+    assert "is a symlink" in resp.json()["detail"]
+
+
+def test_an_album_symlinked_into_a_library_from_outside_it_is_refused(client, tmp_path, monkeypatch) -> None:
+    base = os.path.realpath(cfg.directory.download_directory)
+    album = os.path.join(base, tmp_path.name, "Artist", "Album")
+    lib = os.path.join(base, tmp_path.name, "library")
+    os.makedirs(album, exist_ok=True)
+    os.makedirs(lib, exist_ok=True)
+    os.symlink(os.path.dirname(album), os.path.join(lib, "Linked"))
+    monkeypatch.setattr(cfg.directory, "library_dirs", [lib])
+
+    resp = client.post("/api/convert/compress", json={"path": os.path.join(lib, "Linked", "Album")})
+    assert resp.status_code == 403
+    assert "symlinked into a library" in resp.json()["detail"]
+    control = client.post("/api/convert/compress", json={"path": album})
+    assert control.status_code == 200
 
 
 def test_offered_sources_match_the_canonical_set(client) -> None:
@@ -257,6 +305,97 @@ def test_cross_upload_reconfines_the_path_when_the_job_starts(client, two_tracke
     assert body["status"] == "error"
     assert "Refusing" in (body.get("error") or "")
     assert calls == [], "the command must not run once the path fails confinement"
+
+
+def _cross_upload_job(client, two_trackers, monkeypatch, body: dict, run=None) -> tuple[dict, list[dict]]:
+    """Post a cross-upload of torrent 12345 with body, run by run (or a stub), and wait for its job."""
+    source, target = two_trackers
+    calls: list[dict] = []
+
+    async def fake_cross_upload(**kwargs):
+        calls.append(kwargs)
+        if run is not None:
+            run()
+
+    monkeypatch.setattr("salmon.webui.routers.tools._CROSS_UPLOAD", fake_cross_upload)
+    r = client.post("/api/cross-upload", json={"path": "12345", "source": source, "target": target, **body})
+    assert r.status_code == 200, r.text
+    return _wait(client, r.json()["id"]), calls
+
+
+def test_cross_upload_runs_the_command_with_the_forms_options(client, two_trackers, monkeypatch) -> None:
+    body = {"target_group_id": 9, "all_formats": True, "transcodes": ["V0"], "dry_run": True}
+    job, calls = _cross_upload_job(client, two_trackers, monkeypatch, body)
+    assert job["status"] == "done", job
+    assert calls == [
+        {
+            "inputs": ("12345",),
+            "source": "RED",
+            "target": "OPS",
+            "path": None,
+            "group_id": None,
+            "target_group_id": 9,
+            "transcodes": ("V0",),
+            "downconvert": False,
+            "all_formats": True,
+            "yyy": False,
+            "dry_run": True,
+        }
+    ]
+
+
+@pytest.mark.parametrize("group_id", [0, -1])
+def test_cross_upload_refuses_a_target_group_id_below_one(client, two_trackers, group_id) -> None:
+    source, target = two_trackers
+    body = {"path": "12345", "source": source, "target": target, "target_group_id": group_id, "all_formats": True}
+    response = client.post("/api/cross-upload", json=body)
+    assert response.status_code == 422
+
+
+def test_a_cross_upload_that_stops_fails_its_job_saying_so(client, two_trackers, monkeypatch) -> None:
+    import asyncclick as click
+
+    def stop() -> None:
+        raise click.exceptions.Exit(1)
+
+    job, _ = _cross_upload_job(client, two_trackers, monkeypatch, {}, stop)
+    assert job["status"] == "error"
+    assert "the cross-upload stopped: its output above says why" in job["error"]
+
+
+def test_a_cross_upload_that_exits_cleanly_finishes_its_job(client, two_trackers, monkeypatch) -> None:
+    import asyncclick as click
+
+    def done() -> None:
+        raise click.exceptions.Exit(0)
+
+    job, _ = _cross_upload_job(client, two_trackers, monkeypatch, {}, done)
+    assert job["status"] == "done", job
+
+
+def test_a_cross_upload_job_shows_its_link_without_secrets_but_runs_with_it(client, two_trackers, monkeypatch) -> None:
+    source, target = two_trackers
+    calls: list[dict] = []
+
+    async def fake_cross_upload(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("salmon.webui.routers.tools._CROSS_UPLOAD", fake_cross_upload)
+    link = "https://tracker.example/torrents.php?torrentid=7&torrent_pass=test-pass-0001"
+    created = client.post("/api/cross-upload", json={"path": link, "source": source, "target": target})
+    assert created.status_code == 200, created.text
+    job_id = created.json()["id"]
+
+    finished = _wait(client, job_id)
+    listed = client.get("/api/jobs").json()
+
+    shown = "https://tracker.example/torrents.php?torrentid=7&torrent_pass=[REDACTED]"
+    assert finished["status"] == "done", finished
+    assert created.json()["params"]["path"] == shown
+    assert finished["params"]["path"] == shown
+    assert [job["params"]["path"] for job in listed if job["id"] == job_id] == [shown]
+    assert "test-pass-0001" not in str(listed)
+    assert link in repr(calls), "the job runs with the link as it was given"
 
 
 @pytest.mark.parametrize("bad", [0, -1])
@@ -366,6 +505,38 @@ def test_empty_check_selection_is_not_reported_as_running_everything(client, alb
     assert "integrity" in omitted.json()["title"]
 
 
+def test_compress_recompresses_only_the_flacs(client, album, monkeypatch) -> None:
+    for name in ("01.flac", "02.mp3", "cover.jpg"):
+        open(os.path.join(album, name), "wb").close()
+    seen: list[list[str] | None] = []
+
+    async def fake_recompress_path(path, files=None):
+        seen.append(files)
+
+    monkeypatch.setattr("salmon.webui.routers.convert.recompress_path", fake_recompress_path)
+    r = client.post("/api/convert/compress", json={"path": album})
+    assert r.status_code == 200, r.text
+    body = _wait(client, r.json()["id"])
+    assert body["status"] == "done", body
+    assert seen == [["01.flac"]]
+
+
+def test_compress_reports_a_failed_recompress_as_an_error(client, album, monkeypatch) -> None:
+    from salmon.errors import UploadError
+
+    open(os.path.join(album, "01.flac"), "wb").close()
+
+    async def failing_recompress_path(path, files=None):
+        raise UploadError("Failed to recompress 1 file(s).")
+
+    monkeypatch.setattr("salmon.webui.routers.convert.recompress_path", failing_recompress_path)
+    r = client.post("/api/convert/compress", json={"path": album})
+    assert r.status_code == 200, r.text
+    body = _wait(client, r.json()["id"])
+    assert body["status"] == "error"
+    assert "Failed to recompress 1 file(s)." in (body.get("error") or "")
+
+
 def _wait(client, job_id, tries=200):
     for _ in range(tries):
         body = client.get(f"/api/jobs/{job_id}").json()
@@ -403,6 +574,34 @@ def test_upload_forwards_the_selected_trackers(client, album_dir, monkeypatch) -
     assert seen["trackers"] == ["RED", "OPS"]
 
 
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_a_web_upload_runs_as_a_dry_run_only_when_asked(client, album_dir, monkeypatch, dry_run: bool) -> None:
+    from salmon import dryrun
+    from salmon.webui.routers import upload as upload_router
+
+    seen: dict = {}
+
+    async def fake_upload(*_args, **_kwargs):
+        seen["dry_run"] = dryrun.active()
+
+    monkeypatch.setattr(upload_router, "run_upload", fake_upload)
+    payload = {"path": str(album_dir), "tracker": "RED", "source": "WEB", "dry_run": dry_run}
+    resp = client.post("/api/upload", json=payload)
+    assert resp.status_code == 200
+    body = _wait(client, resp.json()["id"])
+    assert body["status"] == "done", body
+    assert seen == {"dry_run": dry_run}
+
+
+def test_a_web_dry_run_refuses_spectrals_after(client, album_dir) -> None:
+    resp = client.post(
+        "/api/upload",
+        json={"path": str(album_dir), "tracker": "RED", "source": "WEB", "dry_run": True, "spectrals_after": True},
+    )
+    assert resp.status_code == 422
+    assert "spectrals_after" in resp.json()["detail"]
+
+
 def test_upload_omitting_trackers_keeps_the_cli_behaviour(client, album_dir, monkeypatch) -> None:
     seen = _capture_upload(monkeypatch)
     resp = client.post("/api/upload", json={"path": str(album_dir), "tracker": "RED", "source": "WEB"})
@@ -419,3 +618,19 @@ def test_upload_rejects_an_unknown_tracker_in_the_list(client, album_dir, monkey
     )
     assert resp.status_code == 422
     assert "NOPE" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({}, "requires --group-id"),
+        ({"group_id": 5, "request": "7"}, "--request"),
+        ({"group_id": 5, "spectrals_after": True}, "--spectrals-after"),
+        ({"group_id": 5, "trackers": ["RED", "OPS"]}, "single --tracker"),
+    ],
+)
+def test_upload_rejects_skip_flac_upload_where_the_cli_does(client, album, monkeypatch, extra, message):
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
+    r = client.post("/api/upload", json={"path": album, "tracker": "RED", "skip_flac_upload": True, **extra})
+    assert r.status_code == 422
+    assert message in r.json()["detail"]

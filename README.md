@@ -16,8 +16,8 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 > **What this fork adds on top of upstream master**
 > - A full browser interface (`salmon web`) behind a shared-secret token, with inline spectrals and interactive prompts.
 > - Per-tracker image hosts, per-tracker seedbox destinations, and site-aware upload rules (path limits, bit-depth/sample-rate policy).
-> - A RED do-not-upload blacklist that blocks matching releases before anything is sent to RED.
-> - `--dry-run`, RED↔OPS cross-upload, and a single-mount (`/config` + `/data`) container layout.
+> - RED's and OPS's Do-Not-Upload lists, which stop a listed release before anything is made or sent for that tracker.
+> - `--dry-run`, cross-upload from a folder of `.torrent` files or into a group the target already has, and a single-mount (`/config` + `/data`) container layout.
 > - Fixes for upstream issues #353, #356, #358, #429, #430, #432, #433, plus Apple Music / Tidal repairs and multi-disc log handling.
 >
 > **Defaults that differ from upstream:** the recent-uploads check is **off** (#432 — it could flood `login.php` and get an IP firewalled), and RED's own image host is available for RED covers as an opt-in.
@@ -30,11 +30,11 @@ A simple tool to take the work out of uploading on Gazelle-based trackers. It ge
 - **Upconvert Detection** – Checks 24-bit flac files for potential upconverts. 16-bit files are reported as out of scope rather than as a failed test, since wasted-bit analysis only says anything above 16-bit.
 - **MQA Detection** – Checks files for common MQA markers.
 - **Duplicate Upload Detection** – Prevents redundant uploads. Every match is listed with each existing torrent's format, encoding, media, edition and log score, so you can see what a group already holds without leaving the page.  
-- **Blacklist Enforcement** – A release on RED's do-not-upload list is blocked before anything is sent to RED; other trackers in the same run continue.  
+- **Do-Not-Upload Lists** – salmon ships a copy of RED's and OPS's Do-Not-Upload lists (fakes, unreleased albums, bootlegs, some whole discographies and labels; some entries only for one media, such as WEB), and never uploads a listed release to that tracker, with or without `-yyy`: it says which entry matched and why, and the run goes on to the other trackers. A legitimate copy needs that tracker's staff approval first. The maintainers update the lists with salmon's releases; `cross-upload` checks the target's list too.  
 - **Dry Run** – `--dry-run` builds and validates a complete upload without posting it.  
 - **Spectral Analysis** – Generates, compresses, and verifies spectrals, shown inline in the web interface, alongside an averaged frequency plot per track.  
 - **Frequency Analysis** – One averaged-spectrum curve per track, plus the two measurements that tell a lossy encoder from a master: a brick-wall lowpass in the band where MP3 and AAC encoders cut (12.8–20.6 kHz), and highs that flip between content and the bit-depth floor while the music plays, which is an encoder running short of bits. The cutoff alone raises nothing — honest masters roll off early, and many 44.1 kHz masters have a wall near 21 kHz from sample-rate conversion or an anti-alias filter — so a track is flagged only on the marks, and a compilation whose tracks stop at different frequencies is left alone.  
-- **Provenance** – Reports the FLAC vendor string (`reference libFLAC 1.3.4`, `Lavf61.5.101`, `Mutagen 1.47.0` — who wrote the file's tag block) and any ripper, store or reseller markers left in the tags, and warns when the audio contradicts one of them, such as a `24bit` claim on a 16-bit file. A folder whose files carry different vendor strings did not all come from one place.  
+- **Provenance** – Reports the FLAC vendor string (`reference libFLAC 1.3.4`, `Lavf61.5.101`, `Mutagen 1.47.0` — who wrote the file's tag block) and any ripper, store or reseller markers left in the tags, and warns when the audio contradicts one of them, such as a `24bit` claim on a 16-bit file or a CD ripper's mark on audio a CD cannot hold; `salmon up` prints these before it retags the files. A folder whose files carry different vendor strings did not all come from one place.  
 - **Release Report** – A plain-text summary of what a release is — its claim, encoder, real numbers and per-track measurements — laid out the way tracker help threads ask for it, ready to paste.  
 - **Spectral Upload** – Can generate spectrals for an existing upload (based on local files), and update the release description.  
 - **Lossy Master Report Generation** – Supports lossy master reports during upload.
@@ -110,6 +110,9 @@ Installing with pip is not recommended because uv (and pipx) manage python versi
 	uv tool install git+https://github.com/chodeus/smoked-salmon
 	```
 
+    smoked-salmon has no window or Start menu entry: you type `salmon` in PowerShell (see Initial Setup below).
+    If PowerShell says `salmon` is not recognized, run `uv tool update-shell`, then open a new PowerShell window.
+
 #### macOS
 1. Install Homebrew (if you haven't already):
     ```bash
@@ -133,7 +136,11 @@ Installing with pip is not recommended because uv (and pipx) manage python versi
 	uv tool install git+https://github.com/chodeus/smoked-salmon
 	```
 
+On Python 3.14 (uv may pick it on a fresh install) pyoxipng is not available yet, so salmon compresses spectral images with the oxipng program when it finds it (winget, scoop, brew, apt, or its [GitHub releases](https://github.com/oxipng/oxipng/releases)), and uploads them uncompressed when it does not. Installing with `uv tool install --python 3.13 git+https://github.com/chodeus/smoked-salmon` brings pyoxipng back.
+
 ### 🔹  Initial Setup
+smoked-salmon is a command-line program: run every `salmon` command in a terminal (PowerShell on Windows).
+
 1. Run salmon for the first time and follow the instructions to create a default configuration:
 	```
 	salmon-user@salmon:~$ salmon
@@ -341,23 +348,78 @@ To rehearse an upload without posting anything — everything is gathered, check
 salmon up /data/path/to/album -s WEB --dry-run
 ```
 
-To vet an album before deciding whether to upload it at all — every check in one pass, with a single verdict and a non-zero exit when the release is unfit:
+If the FLAC torrent is already in an existing group, skip re-uploading it and
+select the lower formats to transcode and upload:
 ```bash
-salmon check all /data/path/to/album
-salmon check all /data/path/to/album -s CD -t RED    # also search RED for duplicates
+salmon up /data/path/to/album -s WEB -g GROUP_ID --skip-flac-upload
+```
+This only works from a lossless FLAC (anything else stops before a file is touched), and uploads to that one
+tracker. The usual checks still run, on a scratch copy in `download_directory/.salmon-staging` that is removed when
+the run ends: the source folder is never modified, since it is likely seeding the FLAC. The transcodes land in
+`download_directory` as for any upload. The transcode
+descriptions link to the group's FLAC in this release's edition (same media, encoding, year, catalogue number and
+edition title); if there are several, salmon asks which one (with `-yyy` it stops). Formats the edition already
+has are flagged as a dupe risk and left out unless you pick them by number. In the web interface this is the
+"Transcodes only" option.
+
+After a FLAC upload, salmon offers its conversions: a 24-bit or 16-bit downconversion, MP3 320 and MP3 V0. To
+choose which are selected by default, and made with `-yyy`, name them in the config (`conversions` under
+`[upload]`) or for one run:
+```bash
+salmon up /data/path/to/album -s WEB -yyy --conversions 16bit
+```
+Give `24bit`, `16bit`, `320` or `V0`, comma-separated, or `none` or `all`. Every conversion that is possible is
+still listed and can be picked by number; the setting only changes the default answer.
+
+To upload a torrent that is on RED, OPS or DIC to another of them, from the files you already have:
+```bash
+salmon cross-upload 123456 RED OPS
+```
+Give the source torrent's ID, URL or `.torrent` file, or a folder of `.torrent` files, up to 5 releases per run,
+then the source and target trackers. The files must be exactly the torrent's, in
+`download_directory/<the torrent's folder>` (or give the folder with `--path`). salmon first reads each torrent and
+checks its files, its log and its images, and shows the plan. The files are checked against the source torrent's
+pieces, so an album still downloading (its files already at full size) is not uploaded: for an ID or URL, salmon
+downloads the source `.torrent` once (through the tracker's API with its API key, otherwise with its session cookie;
+never with a freeleech token). When pieces differ, salmon says how many and asks whether to go on (default no;
+`-yyy` stops). From DIC, only a `.torrent` file INPUT gets this check; by ID or URL its files are checked by size
+only, and the plan says so. Then, for each release, it checks the target for duplicates as `up` does and uploads it
+with the source's group and torrent data. `--transcode 320`, `--transcode V0`, `--downconvert` (a 24-bit FLAC's
+lossless downconversions) and `--all` (or `--all-formats`) add the conversions `up` would make. The album folder is
+never changed: the new torrent seeds from the same files, and a seedbox only gets the new torrent, not another copy.
+`--dry-run` reads from both trackers and sends nothing. A cross-upload to DIC is never marked Self-purchased, Self-rip
+or Exclusive, and a 24-bit one gets its sample rate as `up` sends it; DIC's
+rules and answers have not been checked against DIC itself.
+
+To add only the conversions to a group the target already has, made from the group's FLAC of the same edition:
+```bash
+salmon cross-upload 123456 RED OPS --target-group-id 7890 --transcode V0
 ```
 
-`up` already runs all of these as part of an upload. `check all` is for triage: sorting through a library without starting one.
-
-To start the web interface:
+To vet an album before deciding whether to upload it at all — every check in one pass, with a single verdict and a non-zero exit when the release is unfit:
 ```bash
-salmon web --host 0.0.0.0
+salmon check all /data/path/to/album                 # RED's and OPS's rules; no tracker is contacted
+salmon check all /data/path/to/album -s CD -t RED    # RED's rules, and a search of RED for duplicates
+salmon check all /data/path/to/album --report        # also a report to paste into a tracker help thread
+```
+
+`up` already runs all of these as part of an upload. `check all` is for triage: sorting through a library without starting one. `--report` adds what a tracker help thread asks for: the formats, encoder and tag markers, each FLAC's frequency analysis (slow, so only with the report) and every verdict with its notes, naming the album folder and no other path.
+
+To start the web interface on this machine only (it prints a login link):
+```bash
+salmon web
 ```
 
 You can get help directly from the CLI by appending --help to any command. This is especially useful for the up command which has a lot of possible options.
 
 ### 🌐 Web Interface
-`salmon web` serves the whole workflow in a browser on port **55155** by default:
+`salmon web` serves the whole workflow in a browser on port **55155** by default. On loopback, with no token set, it prints a login link for that run:
+
+```bash
+salmon web
+```
+
+To reach it from another machine, first set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`) to a long random string you keep, which the login page asks for:
 
 ```bash
 salmon web --host 0.0.0.0
@@ -370,7 +432,7 @@ Every CLI command has a web equivalent, so nothing is terminal-only:
 | Page | Covers |
 | --- | --- |
 | Upload | `up`, with every flag the CLI takes including `--dry-run`, behind pre-flight verification |
-| Checks | `check all` (provenance, log, integrity, MQA, upconvert) and the individual `log`, `integrity`, `mqa`, `upconv` subcommands |
+| Checks | `check all` (provenance, log, integrity, MQA, upconvert, MP3 tags) and the individual `log`, `integrity`, `mqa`, `upconv` subcommands |
 | Spectrals | `specs`, `checkspecs` |
 | Convert | `transcode`, `downconv`, `compress` |
 | Search | `metas`, `meta` |
@@ -379,9 +441,9 @@ Every CLI command has a web equivalent, so nothing is terminal-only:
 
 #### Pre-flight verification
 
-The Upload page verifies an album before anything is staged. It runs the same checks the upload itself runs — provenance, rip log, file integrity, MQA, upconversion — plus a duplicate search on every tracker you select and, for RED, its Do-Not-Upload list. The duplicate search needs a readable album tag; if the title cannot be read it is reported as skipped rather than passed. Each comes back as a row you can read at a glance, and a duplicate row expands to every match it found rather than naming the first two.
+The Upload page verifies an album before anything is staged. It runs the same checks the upload itself runs — provenance, rip log, file integrity, MQA, upconversion, MP3 tags — plus a duplicate search on every tracker you select and, for RED and OPS, their Do-Not-Upload lists. The duplicate search and the Do-Not-Upload lists need a readable album title: without one, the search is a warning and the lists are reported as not checked, never as passed. A tracker whose list forbids the release is not searched. Each comes back as a row you can read at a glance, and a duplicate row expands to every match it found rather than naming the first two.
 
-A failed integrity check, MQA, upconversion or a blacklisted release **blocks** the upload and cannot be overridden. Softer signals — an imperfect rip log, a missing log, a possible duplicate, a tag whose claim the audio contradicts — need an explicit acknowledgement instead. Ordinary tag markers such as an `EAC` or `QOBUZ` comment are reported without warning: warning on every one of them would teach you to tick the box without reading it. Changing the path, source, trackers or any skip box invalidates the verdict, so a stale green cannot let something through. Dry runs post nothing and skip the gate.
+A failed integrity check, MQA, upconversion, an edited rip log (its checksum fails, in any appended rip), a failure while checking the audio against a log's CRCs, 16bit files above 48 kHz for OPS, or a release on a Do-Not-Upload list **blocks** the upload and cannot be overridden, as `up` stops at each of them. Softer signals — an imperfect or unsigned rip log, a log whose CRCs the audio does not match or that salmon cannot check (no audio beside it, a range rip it cannot rebuild), a missing log, a possible duplicate, a tag whose claim the audio contradicts — need an explicit acknowledgement instead. Ordinary tag markers such as an `EAC` or `QOBUZ` comment are reported without warning: warning on every one of them would teach you to tick the box without reading it. Changing the path, source, trackers or any skip box invalidates the verdict, so a stale green cannot let something through. Dry runs post nothing and skip the gate.
 
 #### Source detection
 
@@ -409,7 +471,7 @@ During an upload the same measurements are printed, and the plots shown, before 
 
 Every page says what it is for under its heading. The Upload page's options carry hover tooltips and an **Explain these options** toggle that shows the same text inline, so the help does not need a mouse. The Dashboard opens with tiles for trackers connected, required tools present and jobs in flight, and shows free space per configured directory — the disk filling up is what stops an upload mid-job.
 
-Because the interface holds your tracker session cookies and can trigger real uploads, protect it with a shared secret whenever it is reachable beyond loopback. Set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`); leaving it unset disables the gate entirely.
+Because the interface holds your tracker session cookies and can trigger real uploads, every request needs a token. Set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`); without one, `salmon web` on loopback makes a token for that run and prints a login link carrying it after the `#`, which the browser never sends, and any other bind refuses to start. A request that changes something must come as JSON from the interface's own host, so a page on another site cannot send one. Everything the interface sends the browser passes one filter that masks every secret the config holds and every authkey and passkey a tracker has sent, and an image upload sends a host only a JPEG, PNG, GIF or WebP image whose first frame decodes, whatever it is named.
 
 > The older standalone spectral viewer still exists for `salmon up`, but it binds loopback inside the process, so publishing port 55110 from a container has no effect — the web interface above supersedes it.
 

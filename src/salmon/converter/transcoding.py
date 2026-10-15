@@ -18,6 +18,7 @@ from salmon.constants import TAG_TRUMP_SIZE
 from salmon.converter.conversions import record_conversion
 from salmon.errors import UploadError
 from salmon.release_notification import upload_footer
+from salmon.tagger.audio_info import gather_audio_info
 
 Bitrate = Literal["V0", "320"]
 
@@ -76,18 +77,29 @@ _TOT_MAP: dict[str, frozenset[str]] = {
 # ---------------------------------------------------------------------------
 
 
-def _build_output_path(path: str, bitrate: Bitrate) -> str:
+def _build_output_path(path: str, bitrate: Bitrate, output_dir: str | None = None) -> str:
     """Generate the output directory path for a transcoded release.
 
     Args:
         path: Source album directory path.
         bitrate: Target MP3 bitrate label (e.g. "V0", "320").
+        output_dir: Directory the output goes into; the source's own directory by default.
 
     Returns:
         The output directory path string.
     """
     to_append: list[str] = []
     foldername = os.path.basename(path)
+    # An MP3 must not keep a FLAC resolution such as "24-96": drop the source's token where the name holds it.
+    # Imported here: foldername imports this package, through salmon.converter.conversions.
+    from salmon.tagger.foldername import drop_resolution_token, resolution_token
+
+    try:
+        audio_info = gather_audio_info(path)
+    except UploadError:
+        # A file it cannot read names the output as before, so an existing one is still found and refused.
+        audio_info = {}
+    foldername = drop_resolution_token(foldername, resolution_token(audio_info))
 
     if FLAC_FOLDER_RE.search(foldername):
         if LOSSLESS_FOLDER_RE.search(foldername):
@@ -104,7 +116,7 @@ def _build_output_path(path: str, bitrate: Bitrate) -> str:
     if to_append:
         foldername += f" [{' '.join(to_append)}]"
 
-    return os.path.join(os.path.dirname(path), foldername)
+    return os.path.join(output_dir or os.path.dirname(path), foldername)
 
 
 def _validate_lossless(path: str) -> None:
@@ -419,7 +431,9 @@ async def _transcode_audio_files(
 # ---------------------------------------------------------------------------
 
 
-async def transcode_folder(path: str, bitrate: Bitrate, essential_only: bool = False) -> str:
+async def transcode_folder(
+    path: str, bitrate: Bitrate, essential_only: bool = False, output_dir: str | None = None
+) -> str:
     """Transcode a lossless folder to MP3 at the specified bitrate.
 
     Args:
@@ -427,12 +441,16 @@ async def transcode_folder(path: str, bitrate: Bitrate, essential_only: bool = F
         bitrate: Target MP3 bitrate (e.g. "V0", "320").
         essential_only: If True, only image files are copied; all other extra
             files (scans, cues, logs, etc.) are skipped.
+        output_dir: Directory the output goes into; the source's own directory by default.
 
     Returns:
         Path to the newly created transcoded directory.
     """
     _validate_lossless(path)
-    new_path = _build_output_path(path, bitrate)
+    new_path = _build_output_path(path, bitrate, output_dir)
+    # Resolved, so a symlink on the way cannot carry the output, or the removal of an incomplete one, into a library.
+    if cfg.directory.protects(new_path):
+        raise UploadError(f"Not transcoding into {new_path}: it is in library_dirs, or holds one.")
     # Collected before the overwrite branch so the channel check can run ahead of
     # the rmtree below: discovering the source cannot be transcoded after a prior
     # output has been deleted costs the thing that was already there.
@@ -488,11 +506,14 @@ def generate_transcode_description(url: str, bitrate: Bitrate) -> str:
     Returns:
         BBCode formatted description string.
     """
-    lame_command = " ".join(LAME_COMMAND_MAP[bitrate])
+    return f"{transcode_note(url, bitrate)}{upload_footer()}"
 
+
+def transcode_note(url: str, bitrate: Bitrate) -> str:
+    """The source and the lame command of a transcode, without the footer."""
+    lame_command = " ".join(LAME_COMMAND_MAP[bitrate])
     return (
         f"[b]Source:[/b] {url}\n"
         f"[b]Transcode process:[/b] "
         f"[code]flac -Vdsc -- input.flac | lame -S {lame_command} --ignore-tag-errors - output.mp3[/code]\n"
-        f"{upload_footer()}"
     )

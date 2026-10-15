@@ -7,7 +7,7 @@ from salmon.checks.integrity import handle_integrity_check
 from salmon.checks.logs import check_log_cambia
 from salmon.checks.mqa import check_mqa
 from salmon.checks.upconverts import test_upconverted
-from salmon.common import commandgroup
+from salmon.common import AlbumPath, commandgroup
 from salmon.constants import SOURCES
 from salmon.errors import CRCMismatchError, EditedLogError, LogCheckSkipped
 
@@ -63,7 +63,7 @@ async def upconv(path: str) -> None:
 
 
 @check.command()
-@click.argument("path", type=click.Path(exists=True, resolve_path=True))
+@click.argument("path", type=AlbumPath(exists=True))
 async def integrity(path: str) -> None:
     """Check the integrity of audio files.
 
@@ -130,13 +130,24 @@ async def mqa_test(path: str) -> None:
 @click.option(
     "--source", "-s", default=None, help=f"Media source ({'/'.join(SOURCES.values())}); inferred when omitted"
 )
-@click.option("--tracker", "-t", "trackers", multiple=True, help="Also search this tracker for duplicates")
-async def all_checks(path: str, source: str | None, trackers: tuple[str, ...]) -> None:
+@click.option(
+    "--tracker",
+    "-t",
+    "trackers",
+    multiple=True,
+    help="Apply this tracker's rules and search it for duplicates; without -t, RED's and OPS's rules, no search",
+)
+@click.option(
+    "--report",
+    is_flag=True,
+    help="Also print a plain-text report for a tracker help thread, with each FLAC's frequency analysis",
+)
+async def all_checks(path: str, source: str | None, trackers: tuple[str, ...], report: bool) -> None:
     """Run every check over an album and print a single verdict.
 
     Exits non-zero when a release is unfit to upload.
     """
-    from salmon.checks.preflight import BLOCK, OK, SKIP, WARN, run_checks
+    from salmon.checks.preflight import BLOCK, OK, RULE_TRACKERS, SKIP, WARN, run_checks
 
     for code in trackers:
         if code.upper() not in salmon.trackers.tracker_list:
@@ -145,7 +156,9 @@ async def all_checks(path: str, source: str | None, trackers: tuple[str, ...]) -
     if source and source not in SOURCES.values():
         raise click.UsageError(f"Unknown source {source}. Valid sources: {', '.join(SOURCES.values())}")
 
-    result = await run_checks(path, None, source, [c.upper() for c in trackers])
+    named = [c.upper() for c in trackers]
+    # No tracker named: their rules still apply, and no request is sent.
+    result = await run_checks(path, None, source, named or list(RULE_TRACKERS), search=bool(named))
     colours = {OK: "green", WARN: "yellow", BLOCK: "red", SKIP: None}
     marks = {OK: "OK  ", WARN: "WARN", BLOCK: "FAIL", SKIP: "--  "}
     click.secho(f"\n{os.path.basename(path)}", bold=True)
@@ -154,14 +167,21 @@ async def all_checks(path: str, source: str | None, trackers: tuple[str, ...]) -
         click.secho(f"  {marks[verdict]}  ", fg=colours[verdict], bold=verdict == BLOCK, nl=False)
         click.secho(f"{row['label']:<18}", bold=True, nl=False)
         click.echo(row["detail"])
+        for note in row["notes"]:
+            click.echo(f"{'':26}- {note}")
 
     # Not picking a source blocks the upload button, but this command is a
     # diagnostic — nothing is being claimed, so only real defects fail it.
     blocking = [b for b in result["blocking"] if source or b != "source"]
     if blocking:
         click.secho(f"\nNot suitable for upload: {len(blocking)} blocking issue(s).", fg="red", bold=True)
-        raise SystemExit(1)
-    if result["warnings"]:
+    elif result["warnings"]:
         click.secho(f"\nUploadable, with {len(result['warnings'])} thing(s) to check first.", fg="yellow")
-        return
-    click.secho("\nAll checks passed.", fg="green", bold=True)
+    else:
+        click.secho("\nAll checks passed.", fg="green", bold=True)
+    if report:
+        from salmon.checks.report import album_report
+
+        click.echo(f"\n{await album_report(path, result['rows'], result['raw'].get('provenance'))}")
+    if blocking:
+        raise SystemExit(1)

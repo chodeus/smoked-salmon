@@ -34,8 +34,9 @@ reviews:
     - path: "src/salmon/webui/**/*.py"
       instructions: |-
         Web UI — it holds the account's tracker cookies and can trigger real uploads and deletes:
-        - The no-token no-op in auth.py is intentional for a loopback/dev bind ONLY. Flag anything that widens reachability without a token: a non-loopback default host, a new 0.0.0.0 bind, a container that exposes the port, or a new entry in EXEMPT_API_PATHS. /api/health is deliberately NOT exempt because it discloses config, directories, binary paths and trackers — keep it that way.
-        - Compare tokens with hmac.compare_digest, never ==. Never log, echo or return the token, the session cookie, or tracker cookies on any read path, including error bodies and tracebacks.
+        - Every /api request and the websocket need the token. With none configured, `salmon web` makes one per run on loopback and refuses any other bind; an app without one refuses every request (503). Flag anything that widens reachability without a token: a non-loopback default host, a new 0.0.0.0 bind, a container that exposes the port, or a new entry in EXEMPT_API_PATHS. /api/health is deliberately NOT exempt because it discloses config, directories, binary paths and trackers — keep it that way.
+        - A request that changes something (any method but GET, HEAD, OPTIONS) must be sent as JSON, and a request whose Origin is another host is refused, both before the token is checked. Flag a route or middleware change that lets a form post, a body-less POST without the JSON header, or another site's Origin through.
+        - Compare tokens with hmac.compare_digest, never ==. Never log, echo or return the token, the session cookie, or tracker cookies on any read path, including error bodies and tracebacks. The one exception is the login link `salmon web` prints to its own terminal at start for a token it made itself; a configured token is never printed.
         - Fail closed: if config or the token cannot be resolved, reject (401/503) — never fall through to the app. An `except: token = None` branch must deny, not disable the gate.
         - A long-lived token must not travel in a URL (query string, EventSource, <img>) — browser history, referrers and proxy logs retain it.
         - Job state mutated from a request handler needs a lock or an atomic DB write; two concurrent job actions must not interleave into a half-applied state.
@@ -104,8 +105,12 @@ reviews:
         - The token is posted once as a JSON body to /api/login and auth then
           rides the session cookie — never put it in a URL, query string,
           WebSocket URL or header on later calls, and never persist it in
-          localStorage.
-        - checkAuth() fails OPEN on a fetch error by design (loopback/dev); the
+          localStorage. The one exception is the login link salmon web prints:
+          its token comes after the #, which the browser never sends, and
+          App.svelte drops it from the address bar before anything else runs.
+        - Every request that changes something goes as JSON (apiPost, apiDelete
+          send the header): the server refuses any other.
+        - checkAuth() falls back to the login screen on a fetch error; the
           SERVER is the gate. Flag a change that hides a destructive action
           behind that client-side flag alone.
         - 0 and "" are falsy: use ?? / Number.isFinite / explicit null checks

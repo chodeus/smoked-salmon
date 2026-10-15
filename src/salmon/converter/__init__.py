@@ -1,14 +1,17 @@
+import os
+from pathlib import Path, PurePath
 from typing import get_args
 
 import asyncclick as click
 
-from salmon.common import commandgroup
+from salmon import cfg
+from salmon.common import AlbumPath, commandgroup
 from salmon.converter.downconverting import convert_folder
 from salmon.converter.transcoding import Bitrate, transcode_folder
 
 
 @commandgroup.command()
-@click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True), nargs=1)
+@click.argument("path", type=AlbumPath(exists=True, file_okay=False), nargs=1)
 @click.option(
     "--bitrate",
     "-b",
@@ -30,11 +33,11 @@ async def transcode(path: str, bitrate: Bitrate, essential_only: bool) -> None:
         bitrate: Target bitrate (V0 or 320).
         essential_only: Only keep music and image files.
     """
-    await transcode_folder(path, bitrate, essential_only=essential_only)
+    await transcode_folder(path, bitrate, essential_only=essential_only, output_dir=conversion_output_dir(path))
 
 
 @commandgroup.command()
-@click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True), nargs=1)
+@click.argument("path", type=AlbumPath(exists=True, file_okay=False), nargs=1)
 @click.option(
     "--essential-only",
     "-eo",
@@ -48,4 +51,30 @@ async def downconv(path: str, essential_only: bool) -> None:
         path: Path to the directory containing 24bit FLAC files.
         essential_only: Only keep music and image files.
     """
-    await convert_folder(path, essential_only=essential_only)
+    await convert_folder(path, essential_only=essential_only, output_dir=conversion_output_dir(path))
+
+
+def conversion_output_dir(path: str) -> str | None:
+    """Where a conversion goes: beside the source (None), or for a library album, under download_directory."""
+    if not cfg.directory.is_library_path(path):
+        return None
+    # The album's resolved parent path is mirrored, so same-named albums in different folders never share an output.
+    output_dir = os.path.join(cfg.directory.download_directory, *_mirror_parts(Path(os.path.realpath(path)).parent))
+    click.secho(f"{path} is in library_dirs: writing the output into {output_dir}.", fg="yellow")
+    return output_dir
+
+
+def _mirror_parts(folder: PurePath) -> list[str]:
+    """Folder names that mirror an absolute path below another, drive or share included ("/" gives none)."""
+    drive = folder.drive
+    if drive.startswith("\\\\?\\"):  # A long path: \\?\C: or \\?\UNC\server\share.
+        drive = drive[4:]
+        if drive.upper().startswith("UNC\\"):
+            drive = "\\\\" + drive[4:]
+    if drive.startswith(("\\\\", "//")):
+        head = ["UNC", *drive.replace("/", "\\").strip("\\").split("\\")]
+    elif drive:
+        head = [drive.rstrip(":")]
+    else:
+        head = []
+    return [*head, *folder.parts[1:]]

@@ -26,6 +26,14 @@ METASOURCES = {
 }
 
 
+def _without_artist_variations(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Drop the Discogs ANVs a scraper keeps for the merge with file tags; a scrape used alone has no tags to match."""
+    for disc in metadata["tracks"].values():
+        for track in disc.values():
+            track.pop("artist_variations", None)
+    return metadata
+
+
 async def run_metadata(
     url: str,
     sources: dict[str, Any] | None = None,
@@ -48,7 +56,6 @@ async def run_metadata(
     for name, source in sources.items():
         if source.Scraper.regex.match(url):
             click.secho(f"Getting metadata from {name}.", fg="cyan")
-            if return_source_name:
-                return await source.Scraper().scrape_release(url), name
-            return await source.Scraper().scrape_release(url)
+            metadata = _without_artist_variations(await source.Scraper().scrape_release(url))
+            return (metadata, name) if return_source_name else metadata
     raise ScrapeError("URL did not match a scraper.")

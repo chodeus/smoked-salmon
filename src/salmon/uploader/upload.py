@@ -1,18 +1,21 @@
 import os
 import re
-from typing import TYPE_CHECKING, Any
+import unicodedata
+from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 import asyncclick as click
 from torf import Torrent
 
-from salmon import cfg
+from salmon import cfg, dryrun
 from salmon.common import UploadFiles, str_to_int_if_int
 from salmon.constants import ARTIST_IMPORTANCES
-from salmon.errors import DryRunComplete
+from salmon.errors import UploadRefusedError
 from salmon.release_notification import upload_footer
 from salmon.sources import SOURCE_ICONS
+from salmon.tagger.pre_data import parse_artists
 from salmon.tagger.sources import METASOURCES
+from salmon.uploader.seedbox import warn_unmatched_normalization
 from salmon.uploader.spectrals import (
     make_spectral_bbcode,
 )
@@ -36,6 +39,7 @@ async def prepare_and_upload(
     request_id: int | str | None,
     source_url: str | None = None,
     override_description: str | None = None,
+    conversion_note: str | None = None,
 ) -> tuple[int, int, str, Torrent]:
     """Compile data and upload torrent to tracker.
 
@@ -54,6 +58,7 @@ async def prepare_and_upload(
         request_id: Request ID to fill.
         source_url: Source URL.
         override_description: Override torrent description.
+        conversion_note: How the folder was converted, added to the generated description.
 
     Returns:
         Tuple of (torrent_id, group_id, torrent_path, torrent_content).
@@ -75,6 +80,8 @@ async def prepare_and_upload(
             lossy_comment,
             request_id,
             source_url=source_url,
+            override_description=override_description,
+            conversion_note=conversion_note,
         )
     else:
         data = compile_data_existing_group(
@@ -90,17 +97,18 @@ async def prepare_and_upload(
             request_id,
             source_url=source_url,
             override_description=override_description,
+            conversion_note=conversion_note,
         )
     await gazelle_site.ensure_authenticated()
     torrent_path, torrent_content = generate_torrent(gazelle_site, path)
     files = await compile_files(path, torrent_content, metadata)
 
-    if getattr(gazelle_site, "dry_run", False):
-        await gazelle_site.dry_run_upload(data, files)
-        raise DryRunComplete(gazelle_site.site_string)
-
-    click.secho("Uploading torrent...", fg="yellow")
+    if not dryrun.active():
+        click.secho("Uploading torrent...", fg="yellow")
     torrent_id, group_id = await gazelle_site.upload(data, files)
+    if dryrun.active():
+        # The group may be dryrun.NEW_GROUP_ID, which int() would turn into a plain -1.
+        return torrent_id, group_id, torrent_path, torrent_content
     # Ensure group_id is int (upload returns tuple[int, int])
     return torrent_id, int(group_id) if group_id else 0, torrent_path, torrent_content
 
@@ -121,6 +129,31 @@ def concat_track_data(tags: dict[str, Any], audio_info: dict[str, Any]) -> dict[
     return track_data
 
 
+def _filter_unsupported_artists(
+    gazelle_site: "BaseGazelleApi", artists: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """Drop artists whose role this tracker's upload form does not offer, warning once per dropped role."""
+    unsupported = gazelle_site.unsupported_artist_roles
+    if not unsupported:
+        return artists
+
+    dropped_by_role: dict[str, list[str]] = {}
+    kept: list[tuple[str, str]] = []
+    for name, role in artists:
+        if role in unsupported:
+            dropped_by_role.setdefault(role, []).append(name)
+        else:
+            kept.append((name, role))
+
+    for role, names in dropped_by_role.items():
+        click.secho(
+            f"{gazelle_site.site_string} has no {role.title()} role: not crediting {', '.join(names)}",
+            fg="yellow",
+        )
+
+    return kept
+
+
 def compile_data_new_group(
     gazelle_site: "BaseGazelleApi",
     path: str,
@@ -133,6 +166,8 @@ def compile_data_new_group(
     lossy_comment: str | None,
     request_id: int | str | None = None,
     source_url: str | None = None,
+    override_description: str | None = None,
+    conversion_note: str | None = None,
 ) -> dict[str, Any]:
     """Compile data for a new torrent group upload.
 
@@ -148,16 +183,20 @@ def compile_data_new_group(
         lossy_comment: Lossy approval comment.
         request_id: Request ID to fill.
         source_url: Source URL.
+        override_description: Override torrent description.
+        conversion_note: How the folder was converted, added to the generated description.
 
     Returns:
         Data dict for upload POST.
     """
+    artists = _filter_unsupported_artists(gazelle_site, metadata["artists"])
+    tracker_fields = gazelle_site.upload_form_fields(metadata, track_data)
     return {
         "submit": True,
         "type": 0,
         "title": metadata["title"],
-        "artists[]": [a[0] for a in metadata["artists"]],
-        "importance[]": [ARTIST_IMPORTANCES[a[1]] for a in metadata["artists"]],
+        "artists[]": [a[0] for a in artists],
+        "importance[]": [ARTIST_IMPORTANCES[a[1]] for a in artists],
         "year": metadata["group_year"],
         "record_label": metadata["label"],
         "catalogue_number": generate_catno(metadata),
@@ -173,11 +212,21 @@ def compile_data_new_group(
         **({"scene": metadata["scene"]} if metadata.get("scene") else {}),
         "vbr": metadata["encoding_vbr"],
         "media": metadata["source"],
+        **tracker_fields,
         "tags": metadata["tags"],
         "image": cover_url,
         "album_desc": generate_description(track_data, metadata),
-        "release_desc": generate_t_description(
-            metadata, track_data, hybrid, metadata["urls"], spectral_urls, spectral_ids, lossy_comment, source_url
+        "release_desc": override_description
+        or generate_t_description(
+            metadata,
+            track_data,
+            hybrid,
+            metadata["urls"],
+            spectral_urls,
+            spectral_ids,
+            lossy_comment,
+            source_url,
+            conversion_note,
         ),
         "requestid": request_id,
     }
@@ -196,6 +245,7 @@ def compile_data_existing_group(
     request_id: int | str | None,
     source_url: str | None = None,
     override_description: str | None = None,
+    conversion_note: str | None = None,
 ) -> dict[str, Any]:
     """Compile data for upload to an existing group.
 
@@ -212,10 +262,12 @@ def compile_data_existing_group(
         request_id: Request ID to fill.
         source_url: Source URL.
         override_description: Override torrent description.
+        conversion_note: How the folder was converted, added to the generated description.
 
     Returns:
         Data dict for upload POST.
     """
+    tracker_fields = gazelle_site.upload_form_fields(metadata, track_data)
     return {
         "submit": True,
         "type": 0,
@@ -231,10 +283,19 @@ def compile_data_existing_group(
         "other_bitrate": None,
         "vbr": metadata["encoding_vbr"],
         "media": metadata["source"],
+        **tracker_fields,
         "release_desc": override_description
         if override_description
         else generate_t_description(
-            metadata, track_data, hybrid, metadata["urls"], spectral_urls, spectral_ids, lossy_comment, source_url
+            metadata,
+            track_data,
+            hybrid,
+            metadata["urls"],
+            spectral_urls,
+            spectral_ids,
+            lossy_comment,
+            source_url,
+            conversion_note,
         ),
         "requestid": request_id,
     }
@@ -287,12 +348,28 @@ def generate_catno(metadata: dict[str, Any]) -> str:
     return ""
 
 
-def generate_torrent(gazelle_site: "BaseGazelleApi", path: str) -> tuple[str, Torrent]:
+def _normalize_torrent_names(t: Torrent, form: Literal["NFC", "NFD"]) -> None:
+    """Unicode-normalize every file path name in the info dict; UploadRefusedError if two paths become one."""
+    info = t.metainfo["info"]
+    info["name"] = unicodedata.normalize(form, info["name"])
+    seen: set[tuple[str, ...]] = set()
+    for fileinfo in info.get("files", []):
+        fileinfo["path"] = [unicodedata.normalize(form, part) for part in fileinfo["path"]]
+        if tuple(fileinfo["path"]) in seen:
+            raise UploadRefusedError(
+                f"Two files are both {'/'.join(fileinfo['path'])} once {form}-normalized: rename one, "
+                'or set torrent_name_normalization to "none".'
+            )
+        seen.add(tuple(fileinfo["path"]))
+
+
+def generate_torrent(gazelle_site: "BaseGazelleApi", path: str, normalize: bool = True) -> tuple[str, Torrent]:
     """Generate torrent file for the album.
 
     Args:
         gazelle_site: The tracker API instance.
         path: Path to the album folder.
+        normalize: Apply torrent_name_normalization; False names the files exactly as on disk.
 
     Returns:
         Tuple of (torrent_path, torrent_object).
@@ -305,13 +382,35 @@ def generate_torrent(gazelle_site: "BaseGazelleApi", path: str) -> tuple[str, To
         source=gazelle_site.site_string,
     )
     t.generate()
+    # dot_torrents_dir is often a torrent client's watch folder: a dry run writes nothing there.
     tpath = os.path.join(
-        gazelle_site.dot_torrents_dir,
+        dryrun.scratch_dir() if dryrun.active() else gazelle_site.dot_torrents_dir,
         f"{os.path.basename(path)} - {gazelle_site.site_string}.torrent",
     )
+    normalization = cfg.upload.torrent_name_normalization if normalize else "none"
+    if normalization not in ("", "none"):
+        form: Literal["NFC", "NFD"] = "NFC" if normalization == "NFC" else "NFD"
+        _normalize_torrent_names(t, form)
+        warn_unmatched_normalization(form, gazelle_site.site_code)
+        # Reloaded in memory, so dumps no longer validate against disk; never from tpath, a watch folder may take it.
+        t = Torrent.read_stream(t.dump(validate=False))
     t.write(tpath, overwrite=True)
     click.secho(" done!", fg="yellow")
     return tpath, t
+
+
+def format_tracklist_artists(artists: list[str]) -> str:
+    """Join a track's artists, each in [artist] tags when artist_tags_in_tracklist is on and it names one artist."""
+    if not cfg.upload.description.artist_tags_in_tracklist:
+        return ", ".join(artists)
+    return ", ".join(_artist_link(artist) for artist in artists)
+
+
+def _artist_link(artist: str) -> str:
+    # A combined value ("A & B (feat. C)") names no one artist, and [ or ] would break the tag: left plain.
+    if "[" in artist or "]" in artist or [name for name, _role in parse_artists(artist)] != [artist]:
+        return artist
+    return f"[artist]{artist}[/artist]"
 
 
 def generate_description(track_data: dict[str, Any], metadata: dict[str, Any]) -> str:
@@ -345,7 +444,7 @@ def generate_description(track_data: dict[str, Any], metadata: dict[str, Any]) -
         else:
             description += f"[b]{str_to_int_if_int(track['t'].tracknumber, zpad=True)}.[/b] "
 
-        description += f"{', '.join(track['t'].artist)} - {track['t'].title} [i]({length})[/i]\n"
+        description += f"{format_tracklist_artists(track['t'].artist)} - {track['t'].title} [i]({length})[/i]\n"
 
     if len(track_data.values()) > 1:
         description += f"\n[b]Total length: [/b]{total_duration // 60}:{total_duration % 60:02d}\n"
@@ -368,6 +467,7 @@ def generate_t_description(
     spectral_ids: dict[int, str] | None,
     lossy_comment: str | None,
     source_url: str | None,
+    conversion_note: str | None = None,
 ) -> str:
     """Generate torrent description with spectrals and file info.
 
@@ -380,6 +480,7 @@ def generate_t_description(
         spectral_ids: Spectral IDs.
         lossy_comment: Lossy approval comment.
         source_url: Source URL.
+        conversion_note: How the folder was converted, appended to the description.
 
     Returns:
         BBCode description string.
@@ -411,7 +512,8 @@ def generate_t_description(
         for filename, track in track_data.items():
             mins, secs = track["duration"] // 60, track["duration"] % 60
             bitrate = f" [{track['bit rate'] / 1000:.01f}kbps]" if cfg.upload.description.bitrates_in_t_desc else ""
-            hybrid_info = f" [{track['precision']} bit / {track['sample rate'] / 1000} kHz]" if hybrid else ""
+            bits = f"{track['precision']} bit / " if track["precision"] is not None else ""
+            hybrid_info = f" [{bits}{track['sample rate'] / 1000} kHz]" if hybrid else ""
             tracklist += f"{os.path.splitext(filename)[0]} [i]({mins}:{secs:02d})[/i]{bitrate}{hybrid_info}\n"
         tracklist += "\n"
 
@@ -441,7 +543,8 @@ def generate_t_description(
 
     footer = upload_footer()
 
-    return f"{spectrals}{encode_specifics}{release_date}{tracklist}{lossy_notes}{source}{more_info}{footer}"
+    conversion = conversion_note or ""
+    return f"{spectrals}{encode_specifics}{release_date}{tracklist}{lossy_notes}{source}{more_info}{conversion}{footer}"
 
 
 def generate_source_links(metadata_urls: list[str], source_url: str | None = None) -> str:

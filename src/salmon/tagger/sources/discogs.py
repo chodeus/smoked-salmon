@@ -1,6 +1,7 @@
 import re
 from collections import defaultdict
 
+from salmon.common.strings import strip_numbered_suffix
 from salmon.sources import DiscogsBase
 from salmon.tagger.sources.base import MetadataMixin
 
@@ -29,7 +30,10 @@ ROLES = {
     "Vocals": "guest",
     "Featuring [Vocals]": "guest",
     "Remix": "remixer",
+    "Arranged By": "arranger",
 }
+
+RE_FEAT_JOIN = re.compile(r"(?:feat|featuring|ft)\.?", flags=re.IGNORECASE)
 
 RELEASE_TYPES = {
     "Album": "Album",
@@ -125,12 +129,15 @@ class Scraper(DiscogsBase, MetadataMixin):
                 disc_str, track_num = _clean_discogs_position(raw_pos, cur_disc)
                 disc_num = int(disc_str)
 
+                artists, variations = parse_credits(soup["artists"], track)
                 tracks[disc_str][track_num] = self.generate_track(
                     trackno=track_num,
                     discno=disc_num,
-                    artists=parse_artists(soup["artists"], track),
+                    artists=artists,
                     title=track["title"],
                 )
+                # Only the merge reads this, to match tag artists spelled the way the release credits them.
+                tracks[disc_str][track_num]["artist_variations"] = variations
         return dict(tracks)
 
 
@@ -139,20 +146,47 @@ def parse_artists(artist_soup, track):
     Generate the artists list from the artist dictionary provided with
     each track.
     """
-    if "artists" in track:
-        artists = [*((sanitize_artist_name(art["name"]), "main") for art in track["artists"])]
-    else:
-        artists = [*((sanitize_artist_name(art["name"]), "main") for art in artist_soup if art["name"] != "Various")]
+    return parse_credits(artist_soup, track)[0]
+
+
+def parse_credits(artist_soup, track):
+    """A track's artists, and the name (ANV) each is credited under here when not its main one, as plain dicts."""
+    credits = track["artists"] if "artists" in track else [art for art in artist_soup if art["name"] != "Various"]
+    artists, variations = _credited_artists(credits)
     if "extraartists" in track:
         for art in track["extraartists"]:
             for role in art["role"].split(","):
                 role = role.strip()
-                if role in ROLES:
-                    artists.append((sanitize_artist_name(art["name"]), ROLES[role]))
+                credit = (sanitize_artist_name(art["name"]), ROLES.get(role))
+                if role in ROLES and credit not in artists:
+                    artists.append(credit)
+                    _note_variation(variations, credit, art)
         for name, role in artists:
-            if role != "main" and (name, "main") in artists:
+            # An artist who also arranged the track stays its main artist.
+            if role != "main" and (name, "main") in artists and (name, "arranger") not in artists:
                 artists.remove((name, "main"))
-    return artists
+    return artists, variations
+
+
+def _credited_artists(credits):
+    """Name the artists of a credit list, making those after a feat. join guests."""
+    artists = []
+    variations = []
+    role = "main"
+    for art in credits:
+        credit = (sanitize_artist_name(art["name"]), role)
+        artists.append(credit)
+        _note_variation(variations, credit, art)
+        if RE_FEAT_JOIN.fullmatch((art.get("join") or "").strip()):
+            role = "guest"
+    return artists, variations
+
+
+def _note_variation(variations, credit, art):
+    """Add the name `art` is credited under on the release to `variations` when it is not the main name."""
+    anv = sanitize_artist_name((art.get("anv") or "").strip())
+    if anv and anv != credit[0]:
+        variations.append({"name": credit[0], "role": credit[1], "anv": anv})
 
 
 def sanitize_artist_name(name):
@@ -160,8 +194,7 @@ def sanitize_artist_name(name):
     Remove parenthentical number disambiguation bullshit from artist names,
     as well as the asterisk stuff.
     """
-    name = re.sub(r" \(\d+\)$", "", name)
-    return re.sub(r"\*+$", "", name)
+    return strip_numbered_suffix(re.sub(r"\*+$", "", name))
 
 
 def parse_source(formats):

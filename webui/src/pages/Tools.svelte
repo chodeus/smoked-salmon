@@ -45,6 +45,7 @@
   let xAllFormats = $state(false)
   let xGroupId = $state('')
   let xTranscodes = $state<string[]>([])
+  let xDryRun = $state(false)
   let xError = $state('')
 
   $effect(() => {
@@ -134,6 +135,7 @@
           all_formats: xAllFormats,
           target_group_id: groupId ? Number(groupId) : null,
           transcodes: xTranscodes,
+          dry_run: xDryRun,
         }),
       )
     } catch (e) {
@@ -209,7 +211,7 @@
       {#each options?.trackers ?? [] as t}<option value={t}>{t}</option>{/each}
     </select>
     <input type="text" bind:value={xGroupId} placeholder="target group ID (optional)" style="width: auto" />
-    <label class="check"><input type="checkbox" bind:checked={xDownconvert} /> Also 16-bit</label>
+    <label class="check"><input type="checkbox" bind:checked={xDownconvert} /> Lossless downconversions</label>
     <label class="check"><input type="checkbox" bind:checked={xAllFormats} /> All formats</label>
     {#each options?.transcodes ?? [] as t}
       <label class="check">
@@ -223,6 +225,7 @@
         /> MP3 {t}
       </label>
     {/each}
+    <label class="check"><input type="checkbox" bind:checked={xDryRun} /> Dry run</label>
     <button class="btn" onclick={startCrossUpload} disabled={!xPath || !xSource || !xTarget}>
       Cross-upload
     </button>

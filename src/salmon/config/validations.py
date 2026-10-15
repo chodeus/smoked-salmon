@@ -1,4 +1,5 @@
 import os
+from collections.abc import Iterable, Iterator
 from typing import Annotated, Literal
 
 import msgspec
@@ -8,17 +9,49 @@ class BaseStruct(msgspec.Struct, forbid_unknown_fields=False):
     pass
 
 
-def _path_contains(root: str, path: str) -> bool:
-    """True when path is root or sits inside it.
+def _real(path: str) -> str:
+    return os.path.realpath(os.path.expanduser(path))
 
-    commonpath, not a prefix test: "root + os.sep" is "//" when root is "/", and a
-    bare startswith would also treat /data/music-old as inside /data/music.
-    """
-    root_real = os.path.realpath(os.path.expanduser(root))
-    path_real = os.path.realpath(os.path.expanduser(path))
+
+def _lexical(path: str) -> str:
+    return os.path.abspath(os.path.expanduser(path))
+
+
+def _holds(folder: str, path: str) -> bool:
+    """Whether path is folder or inside it, resolved or as given (commonpath: /music-old is not in /music)."""
+    # As given too: an album symlinked into a library is in it, wherever the link points.
+    for norm in (_real, _lexical):
+        try:
+            if os.path.commonpath([norm(folder), norm(path)]) == norm(folder):
+                return True
+        except ValueError:  # Different drives on Windows.
+            continue
+    # Strings miss ~/music on a case-insensitive volume when the folder is ~/Music, and a second bind mount.
+    return _same_dir_above(folder, path)
+
+
+def _same_dir_above(folder: str, path: str) -> bool:
+    """Whether path or a parent of it, resolved or as given, is the directory folder (same device and inode)."""
     try:
-        return os.path.commonpath([path_real, root_real]) == root_real
-    except ValueError:  # different drives on Windows
+        target = os.stat(_real(folder))
+    except OSError:
+        return False
+    return any(_same_as(above, target) for norm in (_real, _lexical) for above in _ancestors(norm(path)))
+
+
+def _ancestors(path: str) -> Iterator[str]:
+    while True:
+        yield path
+        parent = os.path.dirname(path)
+        if parent == path:
+            return
+        path = parent
+
+
+def _same_as(path: str, target: os.stat_result) -> bool:
+    try:
+        return os.path.samestat(os.stat(path), target)
+    except OSError:
         return False
 
 
@@ -28,7 +61,7 @@ class Directory(BaseStruct):
     hardlinks: bool = True
     tmp_dir: str | None = None
     clean_tmp_dir: bool = False
-    # Read-only sources: browsable and uploadable, never deleted.
+    # Curated music folders: salmon works on a copy of an album inside one, and never changes or deletes it.
     library_dirs: list[str] = msgspec.field(default_factory=list)
 
     def __post_init__(self):
@@ -38,41 +71,78 @@ class Directory(BaseStruct):
             raise ValueError("download_directory is not a valid directory")
         if self.tmp_dir and not os.path.isdir(self.tmp_dir):
             raise ValueError("tmp_dir is not a valid directory")
-        writable = (
-            ("download_directory", self.download_directory),
-            ("dottorrents_dir", self.dottorrents_dir),
-            ("tmp_dir", self.tmp_dir),
-        )
         for entry in self.library_dirs:
             if not os.path.isdir(entry):
                 raise ValueError(f"library_dirs entry is not a valid directory: {entry}")
-            # An output dir inside a library would be staged into, then treated as
-            # read-only by the webui - fail at load rather than behave strangely.
-            for name, target in writable:
-                if target and _path_contains(entry, target):
-                    raise ValueError(f"library_dirs entry {entry} must not contain {name}")
+            # salmon writes and deletes in these, and a copy of a library album would land in the library.
+            for name, folder in (
+                ("download_directory", self.download_directory),
+                ("dottorrents_dir", self.dottorrents_dir),
+                ("tmp_dir", self.tmp_dir),
+            ):
+                if folder and _holds(entry, folder):
+                    raise ValueError(f"library_dirs entry {entry} must not contain {name} ({folder})")
+            # salmon replaces and deletes folders in these: renamed copies, conversions, spectrals, clean_tmp_dir.
+            for name, folder in (("download_directory", self.download_directory), ("tmp_dir", self.tmp_dir)):
+                if folder and _holds(folder, entry):
+                    raise ValueError(f"library_dirs entry {entry} must not be inside {name} ({folder})")
+
+    def library_of(self, path: str) -> str | None:
+        """The library_dirs entry path is or is inside, compared resolved and as given, or None."""
+        return next((entry for entry in self.library_dirs if _holds(entry, path)), None)
 
     def is_library_path(self, path: str) -> bool:
-        """True if path sits inside a library_dirs entry, which must never be deleted."""
-        return any(_path_contains(entry, path) for entry in self.library_dirs)
+        """Whether path is a library_dirs entry or inside one, compared resolved and as given."""
+        return self.library_of(path) is not None
+
+    def library_inside(self, path: str) -> str | None:
+        """A library_dirs entry that path is or holds, or None."""
+        return next((entry for entry in self.library_dirs if _holds(path, entry)), None)
+
+    def protects(self, path: str) -> bool:
+        """Whether changing or deleting path could change a library album: it is in a library or holds one."""
+        return self.is_library_path(path) or self.library_inside(path) is not None
 
 
-ImgUploaderLiteral = Literal["ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "red"]
+ImgUploaderLiteral = Literal["ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "ra", "red"]
 _HOST_KINDS = ("image_uploader", "cover_uploader", "specs_uploader")
 _TRACKER_CODES = ("red", "ops", "dic")
 # A tracker's own image host is for its album artwork only: opt in under [image.<tracker>], and it
 # is refused in every other slot (description images, spectrals, other trackers' covers).
 _OWN_COVER_HOSTS = {"red": "red"}
 ARTWORK_ONLY_HOSTS = frozenset(_OWN_COVER_HOSTS.values())
+# Hosts never used for spectrals, in any slot or prompt, and why.
+SPECTRALS_REFUSED = {
+    "red": "RED's rules forbid spectrals on its image host",
+    "ra": "Ra's owner asks not to use it for spectrals",
+}
 # Trackers that fetch and cache RED-hosted images themselves, so a BARE RED URL renders there
 # unchanged. Only bare: RED's per-viewer signed URLs 403 once the signature expires.
 RED_IMAGE_PROXY_TARGETS = frozenset({"OPS"})
 SpectralSelectionLiteral = Literal["*", "+", "0"]
 
 
+def spectrals_refusal(host: str) -> str | None:
+    """Why `host` may not take spectrals: its own spectral rule first, else the [image] specs_uploader rule."""
+    return SPECTRALS_REFUSED.get(host) or host_refusal(None, "specs_uploader", host)
+
+
+def host_refusal(code: str | None, kind: str, host: str) -> str | None:
+    """Why `host` may not fill `kind` under [image] (code None) or [image.<code>], or None if it may."""
+    if host in ARTWORK_ONLY_HOSTS and not (kind == "cover_uploader" and _OWN_COVER_HOSTS.get(code or "") == host):
+        owner = next(tracker for tracker, own in _OWN_COVER_HOSTS.items() if own == host)
+        return (
+            f"{owner.upper()}'s image host is for album artwork only, "
+            f"so it is valid solely as cover_uploader under [image.{owner}]"
+        )
+    if kind == "specs_uploader":
+        return SPECTRALS_REFUSED.get(host)
+    return None
+
+
 def host_allowed(code: str | None, kind: str, host: str) -> bool:
     """Whether `host` may fill `kind` under [image] (code None) or [image.<code>]."""
-    return host not in ARTWORK_ONLY_HOSTS or (kind == "cover_uploader" and _OWN_COVER_HOSTS.get(code or "") == host)
+    return host_refusal(code, kind, host) is None
 
 
 class ImageHostOverride(BaseStruct):
@@ -88,6 +158,7 @@ class ImageUploader(BaseStruct):
     ptscreens_key: str | None = None
     oeimg_key: str | None = None
     imgbb_key: str | None = None
+    ra_key: str | None = None
     remove_auto_downloaded_cover_image: bool = False
     auto_compress_cover: bool = False
     default_spectral_ids: SpectralSelectionLiteral | None = None
@@ -126,15 +197,13 @@ class ImageUploader(BaseStruct):
             raise ValueError("oeimage key not specified")
         if "imgbb" in hosts and self.imgbb_key is None:
             raise ValueError("imgbb key not specified")
+        if "ra" in hosts and self.ra_key is None:
+            raise ValueError("ra key not specified")
         for code, kind, host in selections:
-            if host_allowed(code, kind, host):
+            if (reason := host_refusal(code, kind, host)) is None:
                 continue
-            owner = next(tracker for tracker, own in _OWN_COVER_HOSTS.items() if own == host)
             section = f"[image.{code}]" if code else "[image]"
-            raise ValueError(
-                f'{section} {kind} = "{host}": {owner.upper()}\'s image host is for album artwork only, '
-                f"so it is valid solely as cover_uploader under [image.{owner}]. Use a neutral host here."
-            )
+            raise ValueError(f'{section} {kind} = "{host}": {reason}. Use another host here.')
 
 
 class TidalSettings(BaseStruct):
@@ -254,6 +323,7 @@ class UploadDescription(BaseStruct):
     fullwidth_replacements: bool = False
     # TODO: should this be in description?
     empty_track_comment_tag: bool = True
+    artist_tags_in_tracklist: bool = False
 
 
 class UploadWebInterface(BaseStruct):
@@ -307,6 +377,25 @@ class UploadAiReview(BaseStruct):
             raise ValueError("upload.ai_review.api_key must be set when AI review is enabled")
 
 
+# The conversions salmon up offers after a FLAC, by a name that holds whatever the release's rates are.
+CONVERSION_KINDS = ("24bit", "16bit", "320", "V0")
+
+
+def canonical_conversions(values: Iterable[str]) -> tuple[str, ...]:
+    """The conversion kinds named, in canonical case and the order given; ValueError for another, or one twice."""
+    by_lower = {kind.lower(): kind for kind in CONVERSION_KINDS}
+    allowed = ", ".join(f'"{kind}"' for kind in CONVERSION_KINDS)
+    kinds: list[str] = []
+    for value in values:
+        kind = by_lower.get(value.strip().lower()) if isinstance(value, str) else None
+        if kind is None:
+            raise ValueError(f"{value!r} is not a conversion; the choices are {allowed}")
+        if kind in kinds:
+            raise ValueError(f"{kind!r} is named twice")
+        kinds.append(kind)
+    return tuple(kinds)
+
+
 class Upload(BaseStruct):
     simultaneous_threads: int = 3
     user_agent: str = "salmon uploading tools"
@@ -331,7 +420,15 @@ class Upload(BaseStruct):
 
     yes_all: bool = False
 
+    # The conversions salmon up selects by default after a FLAC (and makes under -yyy): "24bit", "16bit", "320",
+    # "V0". [] makes none. Every possible one is still offered at the prompt. Stored in canonical case.
+    conversions: list[str] = msgspec.field(default_factory=lambda: list(CONVERSION_KINDS))
+
     upload_to_seedbox: bool = True
+
+    # Normalize file names in generated .torrent files: "" or "none" (default) keeps them as on disk.
+    # "NFC" / "NFD" must be the form of the files the client seeds, or it cannot find them.
+    torrent_name_normalization: str = ""
 
     # TODO: take these out of the upload struct!
     search: UploadSearch = msgspec.field(default_factory=UploadSearch)
@@ -341,6 +438,18 @@ class Upload(BaseStruct):
     requests: UploadRequests = msgspec.field(default_factory=UploadRequests)
     compression: UploadCompression = msgspec.field(default_factory=UploadCompression)
     ai_review: UploadAiReview = msgspec.field(default_factory=UploadAiReview)
+
+    def __post_init__(self):
+        valid_normalizations = ("", "none", "NFC", "NFD")
+        if self.torrent_name_normalization not in valid_normalizations:
+            raise ValueError(
+                "upload.torrent_name_normalization must be one of "
+                f"{valid_normalizations}, got {self.torrent_name_normalization!r}"
+            )
+        try:
+            self.conversions = list(canonical_conversions(self.conversions))
+        except ValueError as e:
+            raise ValueError(f"upload.conversions: {e}") from None
 
 
 class Cfg(BaseStruct):
@@ -352,3 +461,13 @@ class Cfg(BaseStruct):
     tracker: Tracker = msgspec.field(default_factory=Tracker)
     seedbox: list[Seedbox] = msgspec.field(default_factory=list)
     upload: Upload = msgspec.field(default_factory=Upload)
+
+    def __post_init__(self):
+        # A tracker's own dottorrents_dir gets .torrent files written with overwrite, like the global one.
+        for code in ("red", "ops", "dic"):
+            settings = getattr(self.tracker, code)
+            folder = settings.dottorrents_dir if settings else None
+            if folder and (library := self.directory.library_of(folder)) is not None:
+                raise ValueError(
+                    f"tracker.{code}.dottorrents_dir ({folder}) must not be inside library_dirs entry {library}"
+                )

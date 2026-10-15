@@ -8,8 +8,9 @@ import asyncclick as click
 import pytest
 
 from salmon import cfg
-from salmon.errors import AbortAndDeleteFolder, RequestError
+from salmon.errors import AbortAndDeleteFolder, RequestError, RequestFailedError
 from salmon.uploader.dupe_checker import (
+    _catno_note,
     _confirm_group_id,
     _prompt_for_group_id,
     _prompt_for_recent_upload_results,
@@ -19,10 +20,12 @@ from salmon.uploader.dupe_checker import (
     filter_unnecessary_searchstrs,
     generate_dupe_check_searchstrs,
     get_search_results,
+    held_in_group,
     matching_torrents,
     print_recent_upload_results,
     print_search_results,
     print_torrents,
+    recheck_edition,
 )
 
 # ---------------------------------------------------------------------------
@@ -654,7 +657,7 @@ WEB_FLAC = {"source": "WEB", "format": "FLAC", "encoding": "Lossless", "year": 2
 
 
 def test_matching_torrents_flags_the_same_format_in_the_same_edition():
-    matches = matching_torrents(make_result(100), WEB_FLAC)
+    matches = held_in_group(make_result(100), WEB_FLAC)
 
     assert matches == [{"media": "WEB", "format": "FLAC", "encoding": "Lossless"}]
 
@@ -669,7 +672,8 @@ def test_matching_torrents_flags_the_same_format_in_the_same_edition():
     ],
 )
 def test_matching_torrents_ignores_other_formats_editions_and_no_release(release):
-    assert matching_torrents(make_result(100), release) == []
+    # A search result: its group year is groupYear, which held_in_group reads.
+    assert held_in_group(make_result(100), release) == []
 
 
 def test_matching_torrents_uses_the_remaster_year_when_the_torrent_has_one():
@@ -690,21 +694,33 @@ def _group_with(**edition):
     return rset
 
 
-def test_matching_torrents_skips_another_catalogue_number():
-    """Two releases in one group can share year and format; the catalogue number tells them apart."""
+def test_another_catalogue_number_is_the_same_edition_and_noted():
+    """A catalogue number never tells editions apart, so the DUPE RISK line names ours instead."""
     rset = _group_with(remasterCatalogueNumber="1200214726676")
+    held = rset["torrents"][0]
 
-    other = matching_torrents(rset, {**WEB_FLAC, "catno": "1200214425593"})
-    same = matching_torrents(rset, {**WEB_FLAC, "catno": "12002-14726676"})
-    unknown = matching_torrents(rset, WEB_FLAC)
+    assert matching_torrents(rset, {**WEB_FLAC, "catno": "1200214425593"}) == rset["torrents"]
+    assert _catno_note(held, rset, {**WEB_FLAC, "catno": "1200214425593"}) == (
+        " (catalogue number differs: ours 1200214425593)"
+    )
+    assert _catno_note(held, rset, {**WEB_FLAC, "catno": "12002-14726676"}) == ""
+    assert _catno_note(held, rset, WEB_FLAC) == ""
 
-    assert other == []
-    assert same == rset["torrents"]
-    assert unknown == rset["torrents"]
+
+def test_an_html_escaped_edition_is_the_same_edition():
+    rset = _group_with(remasterTitle="Collector&#39;s Edition", remasterCatalogueNumber="R&amp;B-01")
+    held = rset["torrents"][0]
+    release = {**WEB_FLAC, "edition_title": "Collector's Edition", "catno": "R&B-01"}
+
+    matches = matching_torrents(rset, release)
+    note = _catno_note(held, rset, release)
+
+    assert matches == rset["torrents"]
+    assert note == ""
 
 
 def test_a_remaster_without_its_own_catalogue_number_still_counts():
-    """The group's number belongs to the original release; a remaster that lacks one is unknown, not different."""
+    """A catalogue number never tells editions apart: a remaster without one, beside the group's, still matches."""
     rset = _group_with(remasterCatalogueNumber="")
     rset["group"] = {"catalogueNumber": "ORIG-001"}
 
@@ -713,15 +729,74 @@ def test_a_remaster_without_its_own_catalogue_number_still_counts():
     assert matches == rset["torrents"]
 
 
-def test_an_original_release_uses_the_group_catalogue_number():
+def test_an_original_release_is_noted_against_the_group_catalogue_number():
     rset = make_result(100)
-    rset["group"] = {"catalogueNumber": "ORIG-001"}
+    rset["group"] = {"catalogueNumber": "ORIG-001", "year": 2024}
+    held = rset["torrents"][0]
 
-    other = matching_torrents(rset, {**WEB_FLAC, "catno": "NEW-002"})
-    same = matching_torrents(rset, {**WEB_FLAC, "catno": "ORIG-001"})
+    assert _catno_note(held, rset, {**WEB_FLAC, "catno": "NEW-002"}) == " (catalogue number differs: ours NEW-002)"
+    assert _catno_note(held, rset, {**WEB_FLAC, "catno": "ORIG-001"}) == ""
 
-    assert other == []
-    assert same == rset["torrents"]
+
+async def test_a_dupe_of_another_catalogue_number_is_flagged_and_abort_pre_typed(fake_tracker, install_prompt, capsys):
+    install_prompt(USE_DEFAULT)
+    result = make_result(100)
+    result["torrents"] = [
+        {
+            "media": "WEB",
+            "format": "FLAC",
+            "encoding": "Lossless",
+            "remasterYear": 2024,
+            "remasterRecordLabel": "Label",
+            "remasterCatalogueNumber": "0123456789012",
+        }
+    ]
+
+    with pytest.raises(click.Abort):
+        await _confirm_group_id(fake_tracker, 100, [result], {**WEB_FLAC, "catno": "CAT-100"})
+    out = capsys.readouterr().out
+
+    assert (
+        "DUPE RISK: this edition already has 2024 / Label / 0123456789012 / WEB / FLAC / Lossless "
+        "(catalogue number differs: ours CAT-100); the site removes exact duplicates unless this upload trumps it."
+    ) in out
+
+
+async def test_every_held_torrent_of_the_edition_is_named(fake_tracker, install_prompt, capsys):
+    install_prompt(USE_DEFAULT)
+    result = make_result(100)
+    torrent = {"media": "WEB", "format": "FLAC", "encoding": "Lossless", "remasterYear": 2024}
+    result["torrents"] = [{**torrent, "remasterTitle": "A"}, {**torrent, "remasterTitle": "B"}]
+
+    with pytest.raises(click.Abort):
+        await _confirm_group_id(fake_tracker, 100, [result], WEB_FLAC)
+
+    out = capsys.readouterr().out
+    risks = [line for line in out.splitlines() if line.startswith("DUPE RISK")]
+    assert len(risks) == 2
+    assert any("2024 / A / WEB / FLAC / Lossless" in line for line in risks)
+    assert any("2024 / B / WEB / FLAC / Lossless" in line for line in risks)
+
+
+async def test_another_year_with_another_catalogue_number_is_no_dupe_risk(fake_tracker, install_prompt, capsys):
+    """Regression guard: the year still tells editions apart."""
+    install_prompt(USE_DEFAULT)
+    result = make_result(100)
+    result["torrents"] = [
+        {
+            "media": "WEB",
+            "format": "FLAC",
+            "encoding": "Lossless",
+            "remasterYear": 2015,
+            "remasterCatalogueNumber": "0123456789012",
+        }
+    ]
+
+    confirmed = await _confirm_group_id(fake_tracker, 100, [result], {**WEB_FLAC, "catno": "CAT-100"})
+    out = capsys.readouterr().out
+
+    assert confirmed is True
+    assert "DUPE RISK" not in out
 
 
 def test_matching_torrents_skips_another_edition_title():
@@ -784,11 +859,22 @@ async def test_print_torrents_remaster_prefix(fake_tracker, capsys):
     assert "> 2020 / Deluxe / Label / CAT-1 / CD / FLAC / Lossless" in capsys.readouterr().out
 
 
-async def test_print_torrents_missing_group_raises_abort(fake_tracker, capsys):
-    fake_tracker.api_responses["torrentgroup"] = RequestError("404")
+@pytest.mark.parametrize(
+    "error",
+    [
+        RequestFailedError("bad id parameter"),
+        RequestFailedError("rate limit exceeded"),
+        RequestError("Server error 503"),
+    ],
+)
+async def test_print_torrents_failure_never_claims_the_group_is_gone(fake_tracker, capsys, error):
+    # Gazelle answers an unknown id and a rate limit alike, with status "failure": only its reason tells them apart.
+    fake_tracker.api_responses["torrentgroup"] = error
     with pytest.raises(click.Abort):
         await print_torrents(fake_tracker, 999)
-    assert "999 does not exist." in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert f"Could not fetch group 999 from RED: {error}" in out
+    assert "does not exist" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -941,3 +1027,70 @@ async def test_check_existing_group_yes_all_does_not_skip_prompts(fake_tracker, 
     actual = await check_existing_group(fake_tracker, ["artist album"])
     assert actual is None
     assert queue.calls == 1
+
+
+def _held_group(group_id=555):
+    """A fetched group whose one torrent is a WEB FLAC of the group's own year."""
+    response = make_torrentgroup_response(group_id)
+    response["torrents"] = [{"id": 7, "media": "WEB", "format": "FLAC", "encoding": "Lossless"}]
+    return response
+
+
+async def test_a_given_group_holding_the_reviewed_edition_asks_with_abort_pretyped(
+    fake_tracker, install_prompt, capsys
+):
+    fake_tracker.api_responses["torrentgroup"] = _held_group()
+    install_prompt(USE_DEFAULT)
+
+    with pytest.raises(click.Abort):
+        await recheck_edition(fake_tracker, 555, WEB_FLAC, None)
+    out = capsys.readouterr().out
+    assert "DUPE RISK: this edition already has" in out
+
+
+async def test_a_group_the_review_moved_into_a_held_edition_asks_again(fake_tracker, install_prompt):
+    fake_tracker.api_responses["torrentgroup"] = _held_group()
+    queue = install_prompt("n")
+
+    result = await recheck_edition(fake_tracker, 555, WEB_FLAC, {**WEB_FLAC, "year": 2010})
+
+    assert result is None
+    assert queue.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("release", "weighed_against"),
+    [(WEB_FLAC, WEB_FLAC), ({**WEB_FLAC, "year": 2010}, None)],
+    ids=["already-named", "not-held"],
+)
+async def test_a_group_with_nothing_newly_held_is_kept_without_asking(
+    fake_tracker, install_prompt, release, weighed_against
+):
+    fake_tracker.api_responses["torrentgroup"] = _held_group()
+    queue = install_prompt()
+
+    result = await recheck_edition(fake_tracker, 555, release, weighed_against)
+
+    assert result == 555
+    assert queue.calls == 0
+
+
+async def test_a_failed_recheck_keeps_the_group_and_says_so(fake_tracker, install_prompt, capsys):
+    fake_tracker.api_responses["torrentgroup"] = RequestFailedError("down")
+    install_prompt()
+
+    result = await recheck_edition(fake_tracker, 555, WEB_FLAC, None)
+
+    assert result == 555
+    out = capsys.readouterr().out
+    assert "Could not re-check group 555 on" in out
+
+
+async def test_a_group_id_given_as_text_reuses_the_group_just_fetched(fake_tracker, install_prompt):
+    fake_tracker.api_responses["torrentgroup"] = _held_group()
+    install_prompt("y")
+
+    result = await recheck_edition(fake_tracker, "555", WEB_FLAC, None)  # type: ignore[arg-type]
+
+    assert result == "555"
+    assert fake_tracker.api_calls == [("torrentgroup", {"id": "555"})]

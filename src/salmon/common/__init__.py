@@ -9,13 +9,16 @@ from typing import TypeVar
 import aiohttp
 import asyncclick as click
 import msgspec
+import pyperclip
 
 from salmon.common.aliases import AliasedCommands
-from salmon.common.constants import RE_FEAT
+from salmon.common.constants import RE_FEAT, RE_USELESS_VERSION
 from salmon.common.files import (
+    AlbumPath,
     compress,
     create_relative_path,
     get_audio_files,
+    get_flac_files,
 )
 from salmon.common.regexes import (
     parse_copyright,
@@ -23,11 +26,15 @@ from salmon.common.regexes import (
     re_strip,
 )
 from salmon.common.strings import (
+    clean_name,
     decade_tag,
     fetch_genre,
+    has_visible_chars,
+    invisible_chars,
     less_uppers,
     make_searchstrs,
     normalize_accents,
+    show_invisible,
     split_genre,
     strip_template_keys,
     tagify,
@@ -37,16 +44,23 @@ from salmon.common.urls import http_url_hostname, is_http_url, is_public_ip
 from salmon.errors import ScrapeError
 
 __all__ = [
+    "AlbumPath",
     "AliasedCommands",
     "RE_FEAT",
+    "RE_USELESS_VERSION",
     "UploadFiles",
     "compress",
     "create_relative_path",
     "get_audio_files",
+    "get_flac_files",
     "parse_copyright",
     "re_split",
     "re_strip",
+    "clean_name",
     "decade_tag",
+    "has_visible_chars",
+    "invisible_chars",
+    "show_invisible",
     "fetch_genre",
     "less_uppers",
     "make_searchstrs",
@@ -61,6 +75,7 @@ __all__ = [
     "ScrapeError",
     "commandgroup",
     "prompt_async",
+    "copy_to_clipboard",
     "flush_stdin",
     "str_to_int_if_int",
     "handle_scrape_errors",
@@ -139,6 +154,14 @@ class Prompt:
 
 
 prompt_async = Prompt()
+
+
+def copy_to_clipboard(text: str) -> None:
+    """Copy text to the clipboard, or say why not: a headless server has none, and nothing may fail over it."""
+    try:
+        pyperclip.copy(text)
+    except Exception as err:
+        click.secho(f"Could not copy to the clipboard: {err}", fg="yellow")
 
 
 def flush_stdin():

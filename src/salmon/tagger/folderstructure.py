@@ -4,16 +4,19 @@ from pathlib import Path
 
 import asyncclick as click
 
+from salmon.common import clean_name, invisible_chars, show_invisible
 from salmon.constants import ALLOWED_EXTENSIONS, ESSENTIAL_EXTENSIONS
 from salmon.errors import NoncompliantFolderStructure
 from salmon.tagger.mutation import rename_all_or_none
 
 
-async def check_folder_structure(path: str, scene: bool, *, essential_only: bool = False) -> None:
+async def check_folder_structure(
+    path: str, scene: bool, *, essential_only: bool = False, max_path_length: int | None = None
+) -> None:
     """Run through every filesystem check that causes uploads to violate the rules
     or be rejected on the upload form.
 
-    Verifies that path lengths are <180 characters, that there are no zero length
+    Verifies that path lengths are within the tracker's limit, that there are no zero length
     folders, and that the file extensions are valid. Loops until the user has fixed
     all issues or the upload is aborted.
 
@@ -23,6 +26,7 @@ async def check_folder_structure(path: str, scene: bool, *, essential_only: bool
             automatically fixed and require manual intervention.
         essential_only: If True, only essential extensions are allowed;
             files like nfo, sfv, md5, txt, etc. are flagged for removal.
+        max_path_length: The longest in-torrent path allowed; None for the strictest tracker's.
 
     Raises:
         click.Abort: If the user aborts, or if a scene release has structural issues.
@@ -31,7 +35,8 @@ async def check_folder_structure(path: str, scene: bool, *, essential_only: bool
         click.secho("\nChecking folder structure...", fg="cyan", bold=True)
         try:
             await _check_illegal_folders(path)
-            _check_path_lengths(path, scene)
+            _check_invisible_characters(path, scene)
+            _check_path_lengths(path, scene, max_path_length)
             _check_zero_len_folder(path)
             await _check_extensions(path, scene, essential_only=essential_only)
             return
@@ -88,18 +93,67 @@ async def _check_illegal_folders(path: str) -> None:
                         break
 
 
-def _check_path_lengths(path: str, scene: bool) -> None:
-    """Verify that no in-torrent path exceeds the strictest tracker limit (180).
+def _check_invisible_characters(path: str, scene: bool) -> None:
+    """Rename, once the user agrees, the sub-folders and files whose names hold characters a tracker refuses."""
+    folder_name = os.path.basename(os.path.normpath(path))
+    offending: list[tuple[str, str, list[str]]] = []
+    # Deepest first, so a file is renamed before the folder that holds it.
+    for root, dirs, files in os.walk(path, topdown=False):
+        for name in [*files, *dirs]:
+            if chars := invisible_chars(name):
+                shown = os.path.normpath(os.path.join(folder_name, os.path.relpath(root, path), name))
+                offending.append((os.path.join(root, name), shown, chars))
+    root_chars = invisible_chars(folder_name)
+    if not offending and not root_chars:
+        return
+
+    click.secho("The following names hold invisible or unusual Unicode characters:", fg="red", bold=True)
+    listing = [(shown, chars) for _, shown, chars in offending]
+    if root_chars:
+        listing.append((folder_name, root_chars))
+    for shown, chars in listing:
+        click.echo(f" >> {show_invisible(shown)}")
+        for char in chars:
+            click.echo(f"      {char}")
+    if scene:
+        raise NoncompliantFolderStructure
+    # The release folder's own name is rename_folder's: it cleans the names it builds.
+    if root_chars:
+        click.secho(
+            "The release folder's own name cannot be renamed here. Run again and accept the proposed folder name.",
+            fg="red",
+            bold=True,
+        )
+        raise click.Abort
+
+    renames = [(old, os.path.join(os.path.dirname(old), clean_name(os.path.basename(old)))) for old, _, _ in offending]
+    taken: set[str] = set()
+    for old, new in renames:
+        if new == old:
+            click.secho(f"Cannot rename {old}: nothing would be left of its name.", fg="red", bold=True)
+            raise NoncompliantFolderStructure
+        if os.path.lexists(new) or new in taken:
+            click.secho(f"Cannot rename {old}: {new} already exists.", fg="red", bold=True)
+            raise NoncompliantFolderStructure
+        taken.add(new)
+    if not click.confirm(click.style("Rename them to the names without those characters?", fg="magenta"), default=True):
+        raise NoncompliantFolderStructure
+    rename_all_or_none(renames)
+
+
+def _check_path_lengths(path: str, scene: bool, max_path_length: int | None = None) -> None:
+    """Verify that no in-torrent path exceeds max_path_length, or the strictest tracker's limit (180).
 
     Paths are measured as the tracker counts them — the torrent's top-level folder
     plus what sits under it — not against the download directory, which only matches
-    when the album happens to live there. Files up to 70 characters over are
-    truncated; beyond that they cannot be safely shortened and raise immediately.
+    when the album happens to live there. A file name that can be shortened enough is
+    truncated; one that cannot raises immediately.
 
     Args:
         path: Absolute path to the release folder being checked.
         scene: Whether the release is a scene release. Scene releases are never
             auto-truncated; any offending path raises instead.
+        max_path_length: The run's limit; the strictest tracker's when not given.
 
     Raises:
         NoncompliantFolderStructure: If any path exceeds the limit and cannot be
@@ -107,7 +161,7 @@ def _check_path_lengths(path: str, scene: bool) -> None:
     """
     from salmon.checks.tag_rules import STRICTEST_PATH_LENGTH, in_torrent_path
 
-    limit = STRICTEST_PATH_LENGTH
+    limit = max_path_length or STRICTEST_PATH_LENGTH
     offending_files, really_offending_files = [], []
     # basename of a path with a trailing slash is "", which would drop the folder out
     # of every measurement below.
@@ -123,7 +177,8 @@ def _check_path_lengths(path: str, scene: bool) -> None:
                 # Room to trim is the basename's, not the whole path's: a long folder
                 # with a short filename cannot be fixed by shortening the filename.
                 stem = os.path.splitext(os.path.basename(filepath))[0]
-                if filepathlen - limit + 2 <= len(stem):
+                # At least one character of the name stays: "...flac" has no extension, and the track is lost.
+                if filepathlen - limit + 2 < len(stem):
                     offending_files.append((filepath, filepathlen))
                 else:
                     really_offending_files.append((filepath, filepathlen))
