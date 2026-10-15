@@ -142,7 +142,7 @@ def create_track_changes(tags, metadata):
         if not _is_aac(tagset):
             old_artists = list(getattr(tagset, "artists", None) or [])
             new_artists = create_artists_list(trackmeta["artists"])
-            if new_artists and old_artists != new_artists:
+            if old_artists != new_artists:
                 changes[filename].append(Change("artists", old_artists or None, new_artists))
 
         old_composer = getattr(tagset, "composer", None) or "None"
@@ -394,9 +394,9 @@ def _values(value):
 
 
 def _shown(old, new):
-    """Both sides of a change as text: values joined with "; ", or each quoted when two lists would read the same."""
-    if isinstance(old, list) and isinstance(new, list) and old != new and _joined(old) == _joined(new):
-        return _quoted(old), _quoted(new)
+    """Both sides of a change as text: values joined with "; ", or each quoted when they differ but read the same."""
+    if _values(old) != _values(new) and _joined(old) == _joined(new):
+        return _quoted(_values(old)), _quoted(_values(new))
     return _joined(old), _joined(new)
 
 
