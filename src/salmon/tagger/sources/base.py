@@ -151,7 +151,7 @@ class MetadataMixin(ABC):
 
         # --- Title-based overrides ---
         if re.search(r"\bE\.?P\.?\b", title, re.IGNORECASE):
-            return re.sub(r"\bE\.?P\.?\b", "", title, flags=re.IGNORECASE).strip(), "EP"
+            return strip_ep_suffix(title), "EP"
         if re.search(r"-? *Single$", title, re.IGNORECASE):
             return re.sub(r"-? *Single$", "", title, flags=re.IGNORECASE).strip(), "Single"
         elif re.search(r"original.*soundtrack", data["title"], flags=re.IGNORECASE):
@@ -267,6 +267,28 @@ class MetadataMixin(ABC):
             if version.lower() not in strip_set and version.lower() not in base.lower():
                 base += f" ({version})"
         return base
+
+
+# What a store appends to a title to say the release is an EP: "Title - EP" (any dash, with a space before it, so
+# "MAX-EP" stays a name), "Title (EP)", "Title [EP]".
+RE_EP_STORE_SUFFIX = re.compile(
+    r"(?:\s+[-‐-―]\s*E\.?P\.?|\s*\(\s*E\.?P\.?\s*\)|\s*\[\s*E\.?P\.?\s*\])\s*$", re.IGNORECASE
+)
+# "EP" ending the title itself: "Title EP".
+RE_EP_TITLE_SUFFIX = re.compile(r"\s+E\.?P\.?\s*$", re.IGNORECASE)
+
+
+def ends_with_ep(title):
+    """Whether an EP marker ends the title, a store's or a bare "EP", whatever strip_ep_from_title says."""
+    return bool(RE_EP_STORE_SUFFIX.search(title) or RE_EP_TITLE_SUFFIX.search(title))
+
+
+def strip_ep_suffix(title):
+    """The title without the EP marker ending it: a store's always, a bare "EP" only with strip_ep_from_title."""
+    stripped = RE_EP_STORE_SUFFIX.sub("", title)
+    if stripped == title and cfg.upload.formatting.strip_ep_from_title:
+        stripped = RE_EP_TITLE_SUFFIX.sub("", title)
+    return stripped.strip() or title
 
 
 def determine_label_type(label, artists):
