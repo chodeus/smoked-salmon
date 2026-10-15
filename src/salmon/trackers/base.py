@@ -117,7 +117,7 @@ def scrub_secrets(text: str, secrets: Iterable[str | None], shortest: int = 8) -
     return text
 
 
-# The authkeys and passkeys trackers have sent this process, for salmon web to mask in all it sends out.
+# The authkeys, passkeys and image host keys trackers have sent this process, for salmon web to mask in all it sends.
 _learned_secrets: set[str] = set()
 _learned_secrets_lock = threading.Lock()
 
@@ -335,6 +335,11 @@ _MAX_REDIRECTS = 3
 # The most a binary answer (an image on the tracker's own host) may hold. Reading stops there.
 _MAX_BINARY_BODY = 25 * 1024 * 1024
 _BINARY_READ_CHUNK = 64 * 1024
+# Image host credentials are got again this many seconds before they expire: more than a release's images take.
+_IMAGE_AUTH_MARGIN = 60
+_IMAGE_AUTH_ACTION = "imgauth"
+# A signed image URL's query values, however encoded: its expiry and user id are numbers, masked only here.
+_SIGNED_IMAGE_QUERY = re.compile(r"((?:[?&]|&amp;)(?:h|e|u)=)[^&#\s\"'<>\[\]]*")
 # The site log pages a recent-uploads check reads; cross-upload's request budget counts them.
 SITE_LOG_PAGES = 10
 # Seconds before the first and the last lookup of an upload whose answer was lost: the tracker may still be on it.
@@ -417,8 +422,6 @@ class HttpResponse(msgspec.Struct, frozen=True):
     status: int
     # The body as bytes, for a request made with binary=True (its text is then empty).
     content: bytes = b""
-    # The cookies the answer sets, by name, each value as set: the session keeps none, so nothing resends them.
-    cookies: dict[str, str] = msgspec.field(default_factory=dict)
 
 
 class BaseGazelleApi:
@@ -431,9 +434,9 @@ class BaseGazelleApi:
     site_code: str
     site_string: str
     api_key: str = ""  # Optional, only for API key upload
-    # The cookies this tracker's own image host checks besides the session cookie, which its ajax.php sets on an
-    # answer to a request made with the session cookie. Empty when its images need no more than its pages.
-    IMAGE_COOKIES: tuple[str, ...] = ()
+    # Whether its own image host serves an image only on a URL signed with what ajax.php?action=imgauth gives
+    # (image_auth). False when its images need no more than its pages.
+    SIGNED_IMAGES: bool = False
 
     # Artist roles (from ARTIST_IMPORTANCES) that this tracker's upload form does not offer.
     # Uploads drop artists with these roles rather than send an unrecognised importance value.
@@ -459,8 +462,8 @@ class BaseGazelleApi:
         self._authentication_waiters = 0
         self._session: aiohttp.ClientSession | None = None
         self._pool_owner: set[aiohttp.ClientSession] | None = None
-        # The signatures of the image cookies image_cookies() got, masked as the session cookie is.
-        self._image_cookie_secrets: list[str] = []
+        # The image host's credentials image_auth() got, as query parameters, until they expire.
+        self._image_auth: dict[str, str] = {}
 
     @property
     def _rate_limiter(self) -> SharedLimiter:
@@ -591,7 +594,6 @@ class BaseGazelleApi:
         idempotent: bool | None = None,
         needs_authkey: bool = True,
         binary: bool = False,
-        cookies: dict[str, str] | None = None,
     ) -> HttpResponse:
         """Authenticated HTTP request, returns response data.
 
@@ -608,8 +610,6 @@ class BaseGazelleApi:
                 once. Defaults to True for everything but POST.
             binary: Read a successful answer as bytes, into the response's content, streamed and
                 capped at 25 MiB; its text is then empty.
-            cookies: Cookies sent with the session cookie, on every hop; refused (ValueError, nothing sent)
-                for a request that would use the API key.
 
         Returns:
             HttpResponse with text, url, status, and headers.
@@ -620,9 +620,6 @@ class BaseGazelleApi:
             RateLimitedError: The tracker rate limits it and asks for more than 60 s of waits in all.
             RequestFailedError: With binary, if the answer holds more than 25 MiB. Not retried.
         """
-        if cookies and prefer_api_key and self.api_key:
-            # A request authenticates with the session cookie or the API key, never both.
-            raise ValueError("cookies are only sent with the session cookie, not with the API key")
         # A dry run only reads from the tracker; each sending step skips itself, and this stops any that was missed.
         if method != "GET" and dryrun.active():
             dryrun.refuse(f"send {method} {self._scrub(url)} to {self.site_string}")
@@ -631,9 +628,7 @@ class BaseGazelleApi:
         if needs_authkey and not (params and params.get("action") == "index"):
             await self.ensure_authenticated()
         # One list for every attempt, so the rate limit waits add up across the retries.
-        return await self._send(
-            method, url, params, data, timeout_secs, prefer_api_key, idempotent, binary, [], extra_cookies=cookies
-        )
+        return await self._send(method, url, params, data, timeout_secs, prefer_api_key, idempotent, binary, [])
 
     @retry(
         retry=retry_if_exception_type(RetryableError),
@@ -653,7 +648,6 @@ class BaseGazelleApi:
         idempotent: bool | None = None,
         binary: bool = False,
         rate_limit_waits: list[int] | None = None,
-        extra_cookies: dict[str, str] | None = None,
     ) -> HttpResponse:
         """Send one authenticated request with the retry policy; rate_limit_waits gains each attempt's wait."""
         if rate_limit_waits is None:
@@ -672,14 +666,12 @@ class BaseGazelleApi:
         use_api_key = prefer_api_key and bool(self.api_key)
         headers = {**self.headers, **({"Authorization": f"{self.api_key_prefix}{self.api_key}"} if use_api_key else {})}
         cookies = {} if use_api_key else self._get_cookies()
-        if extra_cookies and not use_api_key:
-            # One Cookie header, each value as the tracker set it: aiohttp would quote a value holding / or =.
-            headers["Cookie"] = "; ".join(f"{name}={value}" for name, value in {**cookies, **extra_cookies}.items())
-            cookies = {}
+        signed = self._signs(params)
 
         if cfg.upload.debug_tracker_connection:
-            click.secho(f"[DEBUG] {method} {url}", fg="cyan")
-            click.secho(f"[DEBUG] params: {_redact(msgspec.json.encode(params).decode())}", fg="cyan")
+            click.secho(f"[DEBUG] {method} {self._scrub(url)}", fg="cyan")
+            shown_params = dict.fromkeys(params or {}, "[REDACTED]") if signed else params
+            click.secho(f"[DEBUG] params: {_redact(msgspec.json.encode(shown_params).decode())}", fg="cyan")
             click.secho(f"[DEBUG] use_api_key: {use_api_key}", fg="cyan")
 
         try:
@@ -710,17 +702,20 @@ class BaseGazelleApi:
                             else:
                                 text = await resp.text()
                         if cfg.upload.debug_tracker_connection:
-                            self._debug_response(resp, text if text or not binary else f"<{len(content)} bytes>")
+                            shown = text if text or not binary else f"<{len(content)} bytes>"
+                            if resp.ok and params and params.get("action") == _IMAGE_AUTH_ACTION:
+                                # Its key is not known as a secret until this answer is read.
+                                shown = "<the image host's credentials>"
+                            self._debug_response(resp, shown)
                         if not resp.ok:
                             await self._raise_for_status(resp, self._scrub(text), failure, idempotent, rate_limit_waits)
                         location = resp.headers.get(aiohttp.hdrs.LOCATION)
                         if resp.status not in _REDIRECT_STATUSES or not location:
                             return HttpResponse(
                                 text=text,
-                                url=str(resp.url),
+                                url=str(resp.url.with_query(None) if signed else resp.url),
                                 status=resp.status,
                                 content=content,
-                                cookies={name: morsel.coded_value for name, morsel in resp.cookies.items()},
                             )
                         try:
                             method, data, url = self._next_hop(
@@ -760,33 +755,48 @@ class BaseGazelleApi:
             self.passkey,
             self.cookie,
             *self._get_cookies().values(),
-            *self._image_cookie_secrets,
+            self._image_auth.get("h"),
         }
 
-    async def image_cookies(self) -> dict[str, str]:
-        """IMAGE_COOKIES' values from an index call with the session cookie; {} if none, RequestError if not all set."""
-        if not self.IMAGE_COOKIES:
+    def _signs(self, params: dict[str, Any] | None) -> bool:
+        """Whether a request's query carries this client's image host credentials."""
+        return bool(params and self._image_auth and params.get("h") == self._image_auth["h"])
+
+    async def image_auth(self) -> dict[str, str]:
+        """Its image host's credentials (h, e, u) from one imgauth call, kept until near expiry; {} if it signs none."""
+        if not self.SIGNED_IMAGES:
             return {}
-        if not self.has_session_cookie:
-            raise RequestFailedError(
-                f"{self.site_string}'s image host needs tracker.{self.site_code.lower()}.session, not the API key"
-            )
+        if self._image_auth and int(self._image_auth["e"]) - _IMAGE_AUTH_MARGIN > time.time():
+            return self._image_auth
         answer = await self._request(
-            "GET", f"{self.base_url}/ajax.php", params={"action": "index"}, timeout_secs=5, needs_authkey=False
+            "GET",
+            f"{self.base_url}/ajax.php",
+            params={"action": _IMAGE_AUTH_ACTION},
+            timeout_secs=10,
+            prefer_api_key=True,
+            needs_authkey=False,
         )
-        cookies = {name: answer.cookies[name] for name in self.IMAGE_COOKIES if answer.cookies.get(name)}
-        if len(cookies) < len(self.IMAGE_COOKIES):
+        try:
+            decoded = msgspec.json.decode(answer.text)
+            if decoded.get("status") != "success":
+                raise RequestFailedError(f"{self.site_string} refused its image host's credentials")
+            given = decoded["response"]
+            auth = {"h": str(given["h"]), "e": str(int(given["e"])), "u": str(int(given["u"]))}
+        except (msgspec.DecodeError, KeyError, TypeError, ValueError, AttributeError):
+            # Not chained: a parse error can quote the answer.
             raise RequestFailedError(
-                f"{self.site_string} set none of the cookies its image host takes, or not all: it may have changed "
-                f"how it serves its images, or the session cookie is logged out"
-            )
-        # The signature is the credential, masked wherever salmon prints; the user id and expiry are numbers, which
-        # masking by value would cut out of every other number (their names mask them in _redact).
-        signatures = [value for value in cookies.values() if not value.isdigit()]
-        self._image_cookie_secrets = signatures
+                f"{self.site_string} gave no usable credentials for its image host: it may have changed how it "
+                "serves its images"
+            ) from None
+        if len(auth["h"]) < 8:
+            # scrub_secrets, which salmon web's filter also uses, masks a value only from 8 characters on.
+            raise RequestFailedError(f"{self.site_string} gave no usable key for its image host")
+        # The key is the credential, masked by value wherever salmon prints; the expiry and user id are masked
+        # only in a URL's query (_scrub), as masking numbers by value would cut them out of every other number.
+        self._image_auth = auth
         with _learned_secrets_lock:
-            _learned_secrets.update(signatures)
-        return cookies
+            _learned_secrets.add(auth["h"])
+        return auth
 
     async def _read_capped(self, resp: aiohttp.ClientResponse) -> bytes:
         """Read an answer's body as bytes, as it comes, and stop once it holds more than _MAX_BINARY_BODY.
@@ -808,7 +818,9 @@ class BaseGazelleApi:
 
     def _scrub(self, text: str) -> str:
         """_redact, plus this client's own credentials wherever a tracker answer repeats them."""
-        return scrub_secrets(text, self._secrets())
+        text = scrub_secrets(text, self._secrets())
+        # Its answers carry image URLs signed for this account, not only the ones image_auth() gives.
+        return _SIGNED_IMAGE_QUERY.sub(r"\1[REDACTED]", text) if self.SIGNED_IMAGES else text
 
     def _debug_response(self, resp: aiohttp.ClientResponse, text: str) -> None:
         """Print a tracker answer, redacted, for debug_tracker_connection."""
