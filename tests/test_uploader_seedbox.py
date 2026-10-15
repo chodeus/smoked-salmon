@@ -82,7 +82,7 @@ def test_rclone_upload_folder_treats_a_launch_failure_as_a_failed_copy(monkeypat
 
 
 def _rclone_commands(monkeypatch, box: Seedbox, folder: str) -> list[str]:
-    """The command _rclone_upload_folder runs to copy /tmp/<folder> into /music."""
+    """The command _rclone_upload_folder runs to copy /downloads/<folder> into /music."""
     calls: list[list[str]] = []
 
     async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
@@ -91,7 +91,7 @@ def _rclone_commands(monkeypatch, box: Seedbox, folder: str) -> list[str]:
 
     monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
     monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: None)
-    anyio.run(seedbox._rclone_upload_folder, box, "/music", f"/tmp/{folder}")
+    anyio.run(seedbox._rclone_upload_folder, box, "/music", f"/downloads/{folder}")
     return calls[0]
 
 
@@ -101,7 +101,7 @@ def test_rclone_destination_folder_is_nfc_with_the_unicode_flag(monkeypatch, fla
 
     commands = _rclone_commands(monkeypatch, Seedbox(url="box", extra_args=[flag]), nfd)
 
-    assert commands[2:4] == [f"/tmp/{nfd}", f"box:/music/{unicodedata.normalize('NFC', 'Café')}"]
+    assert commands[2:4] == [f"/downloads/{nfd}", f"box:/music/{unicodedata.normalize('NFC', 'Café')}"]
 
 
 def test_rclone_destination_folder_keeps_its_name_without_the_unicode_flag(monkeypatch) -> None:
@@ -109,7 +109,7 @@ def test_rclone_destination_folder_keeps_its_name_without_the_unicode_flag(monke
 
     commands = _rclone_commands(monkeypatch, Seedbox(url="box", extra_args=["--checksum"]), nfd)
 
-    assert commands[2:4] == [f"/tmp/{nfd}", f"box:/music/{nfd}"]
+    assert commands[2:4] == [f"/downloads/{nfd}", f"box:/music/{nfd}"]
 
 
 def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkeypatch) -> None:
