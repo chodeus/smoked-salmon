@@ -1,3 +1,5 @@
+"""Apple Music's token is found in its JS bundle whatever the order of its JWT header."""
+
 import sys
 from pathlib import Path
 

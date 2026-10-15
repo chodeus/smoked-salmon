@@ -1,3 +1,5 @@
+"""imgbb and ptscreens show the host's error body on a 400, and still return the URL on success."""
+
 import aiohttp
 import anyio
 import pytest
@@ -7,7 +9,7 @@ from salmon import cfg
 from salmon.errors import ImageUploadFailed
 from salmon.images import imgbb, ptscreens
 
-# Never contact the real hosts: redirect their hardcoded URLs to a local fake server instead.
+# Never contact the real hosts: their URLs go to a local fake server, and any other URL fails the test.
 REAL_HOSTS = {
     "imgbb": "https://api.imgbb.com",
     "ptscreens": "https://ptscreens.com",
@@ -34,9 +36,9 @@ def _redirect_to_local(monkeypatch, host_key: str, local_base: str) -> None:
     real_prefix = REAL_HOSTS[host_key]
 
     def local_post(self: aiohttp.ClientSession, url: str, *args: object, **kwargs: object):
-        if url.startswith(real_prefix):
-            url = url.replace(real_prefix, local_base, 1)
-        return real_post(self, url, *args, **kwargs)
+        if not url.startswith(real_prefix):
+            raise AssertionError(f"{host_key} posted to {url}, not to {real_prefix}")
+        return real_post(self, url.replace(real_prefix, local_base, 1), *args, **kwargs)
 
     monkeypatch.setattr(aiohttp.ClientSession, "post", local_post)
 

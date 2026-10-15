@@ -1,3 +1,5 @@
+"""rename_folder falls back to a plain copy when hardlinking fails partway through the tree."""
+
 import os
 from pathlib import Path
 
@@ -6,8 +8,7 @@ from salmon.tagger import foldername
 
 
 def test_hardlink_fallback_survives_a_partial_tree(tmp_path, monkeypatch) -> None:
-    # Regression for upstream #356: when os.link fails partway through copytree, the plain-copy
-    # fallback used to hit SameFileError on the files that were already hardlinked.
+    # os.link fails after the first file: the plain copy must cope with the file already linked.
     source = tmp_path / "source_folder"
     source.mkdir()
     file_names = ["a.flac", "b.flac", "c.flac"]
