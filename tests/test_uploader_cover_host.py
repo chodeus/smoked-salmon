@@ -1,7 +1,7 @@
 """_cover_host_for_new_group: whether a tracker reuses a cached RED cover or uploads its own."""
 
 from salmon import cfg
-from salmon.uploader import _cover_host_for_new_group
+from salmon.uploader.cover import _cover_host_for_new_group
 
 
 def test_reuses_the_cached_red_cover_for_a_proxy_target() -> None:

@@ -291,8 +291,8 @@ def upload_world(monkeypatch, tmp_path):
         "salmon.uploader.rename_folder", lambda path, metadata, auto_rename, parent=None, original=None: path
     )
     monkeypatch.setattr("salmon.uploader.check_folder_structure", fake_check_folder_structure)
-    monkeypatch.setattr("salmon.uploader.download_cover_if_nonexistent", fake_download_cover)
-    monkeypatch.setattr("salmon.uploader.upload_cover", fake_upload_cover)
+    monkeypatch.setattr("salmon.uploader.cover.download_cover_if_nonexistent", fake_download_cover)
+    monkeypatch.setattr("salmon.uploader.cover.upload_cover", fake_upload_cover)
     monkeypatch.setattr("salmon.uploader.spectrals.generate_spectrals_all", fake_generate_spectrals_all)
     monkeypatch.setattr("salmon.uploader.handle_spectrals_upload_and_deletion", fake_handle_spectrals)
 

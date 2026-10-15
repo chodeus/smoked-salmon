@@ -27,7 +27,7 @@ from salmon.checks.tag_rules import (
 )
 from salmon.checks.upconverts import upload_upconvert_test
 from salmon.common import AlbumPath, commandgroup, copy_to_clipboard, decade_tag, tagify
-from salmon.config.validations import CONVERSION_KINDS, RED_IMAGE_PROXY_TARGETS, canonical_conversions
+from salmon.config.validations import CONVERSION_KINDS, canonical_conversions
 from salmon.constants import ENCODINGS, FORMATS, SOURCES, TAG_ENCODINGS
 from salmon.converter.conversions import conversion_of
 from salmon.converter.downconverting import (
@@ -52,7 +52,6 @@ from salmon.errors import (
     RequestError,
     UploadError,
 )
-from salmon.images import upload_cover
 from salmon.tagger import (
     metadata_validator_base,
     validate_encoding,
@@ -64,7 +63,7 @@ from salmon.tagger.audio_info import (
     gather_audio_info,
     recompress_path,
 )
-from salmon.tagger.cover import compress_pictures, download_cover_if_nonexistent, strip_oversized_pictures
+from salmon.tagger.cover import compress_pictures, strip_oversized_pictures
 from salmon.tagger.foldername import rename_folder
 from salmon.tagger.folderstructure import check_folder_structure
 from salmon.tagger.metadata import get_metadata
@@ -72,6 +71,7 @@ from salmon.tagger.pre_data import construct_rls_data
 from salmon.tagger.retagger import rename_files, tag_files
 from salmon.tagger.review import release_type_from_folder, review_metadata, suggest_release_type
 from salmon.tagger.tags import check_tags, gather_tags, standardize_tags
+from salmon.uploader.cover import resolve_cover_url
 from salmon.uploader.dupe_checker import (
     check_existing_group,
     choose_source_flac,
@@ -416,82 +416,6 @@ async def next_tracker(preselected: bool, remaining: list[str]) -> str | None:
         return remaining[0]
     click.secho("\nWould you like to upload to another tracker? ", fg="magenta", nl=False)
     return await salmon.trackers.choose_tracker(remaining)
-
-
-def _cover_host_for_new_group(site_code: str, stored_cover_urls: dict[str, str]) -> str:
-    """Image host for this tracker's new-group cover: a cached RED cover if the tracker proxies it."""
-    if site_code in RED_IMAGE_PROXY_TARGETS and "red" in stored_cover_urls:
-        return "red"
-    return cfg.image.resolve(site_code, "cover_uploader")
-
-
-async def _new_group_cover_url(
-    site_code: str, stored_cover_urls: dict[str, str], path: str, cover_source: str | None, remove_downloaded: bool
-) -> str | None:
-    """Cover URL for a new group on this tracker, uploading it unless its host already has it."""
-    cover_host = _cover_host_for_new_group(site_code, stored_cover_urls)
-    if cover_host not in stored_cover_urls:
-        cover_path, is_downloaded = await download_cover_if_nonexistent(path, cover_source)
-        if dryrun.active() and cover_path:
-            dryrun.say(f"not uploading the cover {os.path.basename(cover_path)} to {cover_host}.")
-            uploaded = dryrun.image_url(cover_path, cover_host)
-        else:
-            uploaded = await upload_cover(cover_path, site_code)
-        if uploaded:
-            stored_cover_urls[cover_host] = uploaded
-        if is_downloaded and remove_downloaded and cover_path:
-            click.secho("Removing downloaded Cover Image File", fg="yellow")
-            os.remove(cover_path)
-    return stored_cover_urls.get(cover_host)
-
-
-async def resolve_cover_url(
-    site_code: str,
-    group_id: int | None,
-    stored_cover_urls: dict[str, str],
-    path: str,
-    cover_source: str | None,
-    remove_downloaded: bool,
-) -> tuple[bool, str | None]:
-    """Whether to upload to this tracker, and the cover URL; asks before a new group goes up without one."""
-    if group_id:
-        if not remove_downloaded:
-            await download_cover_if_nonexistent(path, cover_source)
-        return True, None
-
-    cover_url = await _new_group_cover_url(site_code, stored_cover_urls, path, cover_source, remove_downloaded)
-    if cover_url:
-        return True, cover_url
-
-    host = _cover_host_for_new_group(site_code, stored_cover_urls)
-    click.secho(
-        f"\nNo cover image for this new group on {site_code}: none was found, its download failed, or the upload to "
-        f"{host} failed.",
-        fg="yellow",
-        bold=True,
-    )
-    if cfg.upload.yes_all:
-        click.secho("Not uploading a new group without a cover image with -yyy (upload.yes_all).", fg="red", bold=True)
-        return False, None
-
-    while True:
-        raw_choice = await click.prompt(
-            click.style("Continue upload without a cover image? [y/N/reload]", fg="magenta"),
-            default="n",
-            show_default=False,
-        )
-        choice = raw_choice.strip().lower()
-        if choice in ("y", "yes"):
-            return True, None
-        if choice not in ("r", "reload"):
-            return False, None
-
-        click.secho("Checking for cover image again...", fg="cyan")
-        cover_url = await _new_group_cover_url(site_code, stored_cover_urls, path, cover_source, remove_downloaded)
-        if cover_url:
-            click.secho("Cover image found and uploaded.", fg="green")
-            return True, cover_url
-        click.secho("Still no cover image found. Add a cover.jpg to the release folder and try again.", fg="yellow")
 
 
 def follow_up_trackers(trackers: list[str] | None, current: str) -> list[str]:
