@@ -117,6 +117,15 @@ def test_only_the_bracketed_token_goes_beside_a_title_that_reads_like_it(monkeyp
     assert new_path == "/downloads/Artist - 24-96 (2024) [WEB MP3 V0]"
 
 
+def test_a_title_token_after_a_closed_bracket_stays(monkeypatch) -> None:
+    _stub_24_96(monkeypatch)
+    _template(monkeypatch, "{artists} - {title} ({year}) [{source} {format}]")
+
+    new_path = transcoding._build_output_path("/downloads/Artist - Title (Live) 24-96 [WEB FLAC]", "V0")
+
+    assert new_path == "/downloads/Artist - Title (Live) 24-96 [WEB MP3 V0]"
+
+
 def test_an_unbracketed_token_is_dropped_when_the_template_places_resolution(monkeypatch) -> None:
     _stub_24_96(monkeypatch)
     _template(monkeypatch, "{artists} - {title} {resolution}")
