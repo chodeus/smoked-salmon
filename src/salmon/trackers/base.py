@@ -291,12 +291,43 @@ _limiters: dict[str, SharedLimiter] = {}
 _limiters_lock = threading.Lock()
 
 
+# 0.5 s over the tracker's 10 s: requests arrive with jitter, and 6 entered a period apart could land within 10 s.
+_RATE_PERIOD = 10.5
+
+
 def _tracker_limiter(site_code: str) -> SharedLimiter:
-    """5 requests per 10 seconds for one tracker, process-wide."""
+    """5 requests per 10 seconds for one tracker, with a margin, process-wide."""
     with _limiters_lock:
         if site_code not in _limiters:
-            _limiters[site_code] = SharedLimiter(5, 10)
+            _limiters[site_code] = SharedLimiter(5, _RATE_PERIOD)
         return _limiters[site_code]
+
+
+# How often a request waiting for its account's lock tries it again.
+_ACCOUNT_LOCK_POLL = 0.05
+
+
+class _AccountLock:
+    """One upload or edit at a time for a tracker account, across every thread and event loop."""
+
+    def __init__(self) -> None:
+        # A thread lock, polled: web UI jobs each run their own event loop, which an asyncio lock is bound to.
+        self._lock = threading.Lock()
+
+    async def __aenter__(self) -> None:
+        while not self._lock.acquire(blocking=False):
+            await asyncio.sleep(_ACCOUNT_LOCK_POLL)
+
+    async def __aexit__(self, *_exc: object) -> None:
+        self._lock.release()
+
+
+_account_locks: dict[str, _AccountLock] = {}
+
+
+def _account_lock(site_code: str) -> _AccountLock:
+    with _limiters_lock:
+        return _account_locks.setdefault(site_code, _AccountLock())
 
 
 # An upload that fills a request takes two hops; one spare.
@@ -465,11 +496,14 @@ class BaseGazelleApi:
             yield self._http_session()
             return
         # A pooled connection may be one the tracker is closing as idle, and a failure on it
-        # can't be told from a request the tracker acted on.
-        async with aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(force_close=True),
-            cookie_jar=aiohttp.DummyCookieJar(),
-        ) as session:
+        # can't be told from a request the tracker acted on. Two jobs' uploads or edits never overlap.
+        async with (
+            _account_lock(self.site_code),
+            aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(force_close=True),
+                cookie_jar=aiohttp.DummyCookieJar(),
+            ) as session,
+        ):
             yield session
 
     @asynccontextmanager
@@ -1354,19 +1388,24 @@ class BaseGazelleApi:
     async def append_to_torrent_description(self, torrent_id: int, description_addition: str) -> None:
         """Prepend text to a torrent's description; RequestError if the form is unreadable or the edit refused."""
         url = self.base_url + "/torrents.php"
-        # Send the tracker's own edit form back with only the description changed (a rebuilt one loses fields).
-        # Authenticated first: the page holds the authkey, and _scrub masks only a known one.
-        page = await self._request("GET", url, params={"action": "edit", "id": torrent_id})
-        try:
-            fields = _torrent_edit_fields(page.text, torrent_id)
-        except RequestError as err:
-            raise RequestError(
-                f"Could not read the edit form of torrent {torrent_id} on {self.site_string} ({err}). "
-                "Nothing was sent: its description is unchanged."
-            ) from err
-        new_data = [(name, description_addition + value if name == "release_desc" else value) for name, value in fields]
-        # Every field is the one the form showed, or the description above, so sending it twice is harmless.
-        resp = await self._request("POST", url, data=new_data, idempotent=True, needs_authkey=False)
+        # Held from the read to the write, or another job's edit in between is lost. Both requests are
+        # idempotent: _session_for must not take this lock again, as it isn't re-entrant.
+        async with _account_lock(self.site_code):
+            # Send the tracker's own edit form back with only the description changed (a rebuilt one loses fields).
+            # Authenticated first: the page holds the authkey, and _scrub masks only a known one.
+            page = await self._request("GET", url, params={"action": "edit", "id": torrent_id})
+            try:
+                fields = _torrent_edit_fields(page.text, torrent_id)
+            except RequestError as err:
+                raise RequestError(
+                    f"Could not read the edit form of torrent {torrent_id} on {self.site_string} ({err}). "
+                    "Nothing was sent: its description is unchanged."
+                ) from err
+            new_data = [
+                (name, description_addition + value if name == "release_desc" else value) for name, value in fields
+            ]
+            # Every field is the one the form showed, or the description above, so sending it twice is harmless.
+            resp = await self._request("POST", url, data=new_data, idempotent=True, needs_authkey=False)
         resp_text = resp.text
 
         soup = BeautifulSoup(resp_text, "lxml")
