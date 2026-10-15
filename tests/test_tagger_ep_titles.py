@@ -25,6 +25,7 @@ def title_and_type(title: str) -> tuple[str, str]:
         ("The EP Sessions Vol. 2", "The EP Sessions Vol. 2"),
         ("EP 1", "EP 1"),
         ("EP", "EP"),
+        ("(EP)", "(EP)"),
     ],
 )
 def test_only_the_ep_ending_the_title_is_dropped(title: str, expected: str) -> None:
