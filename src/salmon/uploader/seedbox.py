@@ -1,4 +1,3 @@
-import argparse
 import collections
 import os
 import posixpath
@@ -16,6 +15,16 @@ from salmon.errors import DryRunRefused
 from salmon.uploader.torrent_client import TorrentClient, TorrentClientGenerator
 
 
+def _path_override(extra_args: list[str]) -> str | None:
+    """The last --sftp-path-override value in extra_args, as rclone reads it; None without one."""
+    override = None
+    for arg, following in zip(extra_args, [*extra_args[1:], None], strict=False):
+        name, equals, value = arg.partition("=")
+        if name == "--sftp-path-override":
+            override = value if equals else following
+    return override
+
+
 def _resolve_shell_path(remote_folder: str, extra_args: list[str]) -> str:
     """Resolve the effective download path, respecting --sftp-path-override.
 
@@ -26,10 +35,7 @@ def _resolve_shell_path(remote_folder: str, extra_args: list[str]) -> str:
     Returns:
         Effective shell path for the torrent client.
     """
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--sftp-path-override", type=str, default=None)
-    known_args, _ = parser.parse_known_args(extra_args)
-    override = known_args.sftp_path_override
+    override = _path_override(extra_args)
     if not override:
         return remote_folder
     if override.startswith("@"):
@@ -47,6 +53,9 @@ def seedbox_secrets(seedbox: Seedbox) -> list[str]:
     if password:
         # Written percent-encoded in the URL, and decoded by the time a client error repeats it.
         secrets += [password, unquote(password)]
+    if override := _path_override(seedbox.extra_args):
+        # A home folder names the account; the client gets the path without its "@", and an error can repeat it.
+        secrets.append(override.removeprefix("@"))
     return secrets
 
 

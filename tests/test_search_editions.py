@@ -76,6 +76,30 @@ def test_discogs_result_with_a_label_but_no_catalogue_number_shows_no_none(monke
     assert shown == "Test Artist - Test Album {CD} 2020 CD Test Label"
 
 
+def test_discogs_search_without_a_token_still_lists_its_results(monkeypatch) -> None:
+    rls = {"id": 1, "title": "Test Artist - Test Album", "year": "2020", "format": ["CD"], "label": ["Test Label"]}
+    monkeypatch.setattr(discogs.Searcher, "get_json", _answer({"results": [rls]}))
+
+    shown = _shown(anyio.run(discogs.Searcher().search_releases, "test album", 5))
+
+    assert shown == "Test Artist - Test Album {CD} 2020 CD Test Label"
+
+
+@pytest.mark.parametrize(("in_collection", "marked"), [(True, True), (False, False)])
+def test_discogs_result_in_the_users_collection_is_marked(monkeypatch, in_collection, marked) -> None:
+    rls = {
+        "id": 1,
+        "title": "Test Artist - Test Album",
+        "format": ["CD"],
+        "user_data": {"in_collection": in_collection},
+    }
+    monkeypatch.setattr(discogs.Searcher, "get_json", _answer({"results": [rls]}))
+
+    shown = _shown(anyio.run(discogs.Searcher().search_releases, "test album", 5))
+
+    assert shown.endswith(" IN COLLECTION") is marked
+
+
 def test_qobuz_result_without_a_year_shows_no_none(monkeypatch) -> None:
     monkeypatch.setattr(cfg.metadata.qobuz, "app_id", "test-app")
     monkeypatch.setattr(cfg.metadata.qobuz, "user_auth_token", "test-user")

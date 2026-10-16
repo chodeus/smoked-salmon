@@ -10,7 +10,7 @@ import pytest
 from salmon.common.redaction import redact_command, redact_secrets, secret_values
 from salmon.config.validations import Seedbox
 from salmon.uploader import seedbox
-from salmon.uploader.torrent_client import DelugeClient, QBittorrentClient, TransmissionClient
+from salmon.uploader.torrent_client import DelugeClient, QBittorrentClient, TorrentClient, TransmissionClient
 
 
 def test_rclone_upload_folder_reports_success(monkeypatch) -> None:
@@ -476,8 +476,57 @@ def test_the_rclone_command_salmon_prints_keeps_harmless_values(monkeypatch, tmp
 
     assert (
         "Executing: rclone copy '/tmp/Artist - Album' 'sbox:/music/Artist - Album' "
-        "--checksum -P --sftp-path-override @/volume3 --transfers 4 --bwlimit=8M"
+        "--checksum -P --sftp-path-override '[REDACTED]' --transfers 4 --bwlimit=8M"
     ) in capfd.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [["--sftp-path-override", "@/home/UNIQUEBOXUSER"], ["--sftp-path-override=@/home/UNIQUEBOXUSER"]],
+)
+def test_the_rclone_command_salmon_prints_hides_the_seedbox_home_folder(extra_args) -> None:
+    shown = redact_command(["rclone", "copy", "a", "sbox:b", *extra_args])
+
+    assert "UNIQUEBOXUSER" not in shown
+    assert "--sftp-path-override" in shown
+
+
+def test_a_path_override_with_no_value_is_no_override() -> None:
+    box = _box(url="sbox", directory="/music", extra_args=["-P", "--sftp-path-override"])
+
+    assert seedbox._resolve_shell_path(box.directory, box.extra_args) == "/music"
+    assert seedbox.seedbox_secrets(box) is not None
+
+
+@pytest.mark.parametrize("override", ["@/home/UNIQUEBOXUSER", "/home/UNIQUEBOXUSER/music"])
+def test_a_client_error_repeating_the_seed_path_hides_the_seedbox_home_folder(monkeypatch, tmp_path, override) -> None:
+    box = _box(url="sbox", directory="/music", extra_args=["--sftp-path-override", override])
+    shell_path = seedbox._resolve_shell_path(box.directory, box.extra_args)
+    torrent = tmp_path / "Album.torrent"
+    torrent.write_bytes(b"d4:infod4:name5:Albumee")
+    messages: list[str] = []
+    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
+
+    class RefusingClient(TorrentClient):
+        def login(self) -> None:
+            return None
+
+        def add_to_downloader(self, remote_folder, torrent, is_paused, label) -> bool:
+            raise RuntimeError(f"cannot create {remote_folder}/Album")
+
+    added = anyio.run(
+        seedbox._add_to_downloader,
+        RefusingClient(),
+        shell_path,
+        str(torrent),
+        "salmon",
+        False,
+        seedbox.seedbox_secrets(box),
+        "sbox",
+    )
+
+    assert added is False
+    assert messages and "UNIQUEBOXUSER" not in "\n".join(messages)
 
 
 @needs_posix
