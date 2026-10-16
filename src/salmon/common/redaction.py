@@ -102,10 +102,11 @@ def redact_secrets(text: str, known: Iterable[str | None] = ()) -> str:
 
 def redact_tracker_fields(text: str) -> str:
     """Redact sensitive values (quoted fields and assignments, URL query params, form inputs, announce passkeys)."""
-    text = _SENSITIVE_KEYS.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]{m.group(3)}", text)
     text = _SENSITIVE_INPUTS.sub(lambda m: f"{m.group(1) or m.group(2)}[REDACTED]", text)
     text = _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
-    return _ANNOUNCE_PASSKEY.sub("/[REDACTED]", text)
+    text = _ANNOUNCE_PASSKEY.sub("/[REDACTED]", text)
+    # Last: a value with no closing quote runs to the next quote, which can open another pattern's match.
+    return _SENSITIVE_KEYS.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]{m.group(3)}", text)
 
 
 def safe_response_excerpt(text: str, limit: int = 500) -> str:

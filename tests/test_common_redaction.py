@@ -43,3 +43,9 @@ def test_redact_tracker_fields_ends_a_quoted_value_with_its_line() -> None:
     shown = redact_tracker_fields("session: 'open\nthe next line's words stay")
 
     assert shown == "session: '[REDACTED]\nthe next line's words stay"
+
+
+def test_redact_tracker_fields_masks_an_input_a_cut_off_value_runs_into() -> None:
+    shown = redact_tracker_fields("{'authkey': 'FAKEKEYEIGHT <input value='FAKEKEYNINE' name='auth'>")
+
+    assert "FAKEKEY" not in shown
