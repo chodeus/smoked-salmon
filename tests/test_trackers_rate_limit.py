@@ -214,14 +214,17 @@ def test_rate_limited_upload_waits_before_it_is_sent_again(waits: list[float]) -
 
 
 @pytest.mark.parametrize("status", [400, 500])
+@pytest.mark.parametrize(("retry_after", "paused"), [(None, 20), ("30", 30), ("3600", 60)])
 def test_upload_answered_another_status_naming_the_rate_limit_is_an_unknown_outcome(
-    waits: list[float], status: int
+    waits: list[float], capsys: pytest.CaptureFixture[str], status: int, retry_after: str | None, paused: int
 ) -> None:
-    hits, err = anyio.run(_rate_limited, lambda: "0", "POST", status)
-    # Only a 429 says the tracker did not act: another error may come after it took the upload.
-    assert waits == []
+    hits, err = anyio.run(_rate_limited, lambda: retry_after, "POST", status)
+    # Only a 429 says the tracker did not act: another error may come after it took the upload. It is not sent
+    # again, but the request after it (the upload's lookup) waits, as long as one request may at most.
+    assert waits == [paused]
     assert hits == ["POST"]
     assert isinstance(err, UnknownOutcomeError)
+    assert f"the next request waits {paused} seconds" in capsys.readouterr().out
 
 
 def test_get_answered_another_status_naming_the_rate_limit_is_waited_for(waits: list[float]) -> None:

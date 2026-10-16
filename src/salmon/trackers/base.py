@@ -820,9 +820,15 @@ class BaseGazelleApi:
             error = failure(
                 f"Rate limit exceeded ({resp.status})", not_acted_on=resp.status == HTTPStatus.TOO_MANY_REQUESTS
             )
-            if not isinstance(error, RetryableError):
-                raise error
             wait = _rate_limit_wait(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
+            if not isinstance(error, RetryableError):
+                # Not sent again, but the account is still limited: the next request (the lost upload's lookup) waits.
+                paused = min(wait, _MAX_RATE_LIMIT_WAITS)
+                click.secho(
+                    f"{self.site_string} named its rate limit: the next request waits {paused} seconds.", fg="yellow"
+                )
+                self._rate_limiter.pause(paused)
+                raise error
             waited = sum(rate_limit_waits)
             if waited + wait > _MAX_RATE_LIMIT_WAITS:
                 already = f" more (after {waited} s already)" if waited else ""
@@ -1151,16 +1157,17 @@ class BaseGazelleApi:
             group_id = 0
             if "torrentid" in resp["response"]:
                 torrent_id = resp["response"]["torrentid"]
-                group_id = resp["response"]["groupid"]
+                group_id = resp["response"].get("groupid")
             elif "torrentId" in resp["response"]:
                 torrent_id = resp["response"]["torrentId"]
-                group_id = resp["response"]["groupId"]
+                group_id = resp["response"].get("groupId")
             elif "requestid" not in resp["response"] and "fillRequest" not in resp["response"]:
                 raise UploadError(
                     "API upload succeeded but returned no torrent id, response: "
                     f"{safe_response_excerpt(self._scrub(str(resp)))}"
                 )
-            return torrent_id, group_id
+            # Sent into a known group, the torrent is there whether or not the answer says so.
+            return torrent_id, group_id or int(data.get("groupid") or 0)
         except TypeError as err:
             raise RequestError(f"API upload failed, response: {safe_response_excerpt(self._scrub(str(resp)))}") from err
 

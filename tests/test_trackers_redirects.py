@@ -471,7 +471,7 @@ async def test_a_failed_source_image_fetch_never_carries_the_signed_url(monkeypa
 
 
 @pytest.mark.parametrize(
-    ("status", "error", "sends", "waits"), [(500, UnknownOutcomeError, 1, []), (429, RetryableError, 2, [2, 2])]
+    ("status", "error", "sends", "waits"), [(500, UnknownOutcomeError, 1, [2]), (429, RetryableError, 2, [2, 2])]
 )
 async def test_only_a_429_lets_a_post_naming_the_rate_limit_be_sent_again(
     serve, api_for, monkeypatch, status, error, sends, waits
@@ -490,7 +490,7 @@ async def test_only_a_429_lets_a_post_naming_the_rate_limit_be_sent_again(
     with pytest.raises(error, match=f"Rate limit exceeded \\({status}\\)"):
         await twice(api_for(url), "POST", f"{url}/upload.php", data={"a": "b"})
     assert len(posts) == sends
-    # Only a POST that may be sent again waits, and never less than the limiter's spacing.
+    # The limiter waits before a resend, or before the next request when not resent; never less than its spacing.
     assert pauses == waits
 
 
