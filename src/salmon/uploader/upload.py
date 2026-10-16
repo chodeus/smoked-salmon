@@ -349,7 +349,7 @@ def generate_catno(metadata: dict[str, Any]) -> str:
 
 
 def _normalize_torrent_names(t: Torrent, form: Literal["NFC", "NFD"]) -> None:
-    """Unicode-normalize every file path name in the info dict; UploadRefusedError if two paths become one."""
+    """Unicode-normalize every file path name in the info dict; UploadRefusedError if two names become one."""
     info = t.metainfo["info"]
     info["name"] = unicodedata.normalize(form, info["name"])
     seen: set[tuple[str, ...]] = set()
@@ -361,6 +361,14 @@ def _normalize_torrent_names(t: Torrent, form: Literal["NFC", "NFD"]) -> None:
                 'or set torrent_name_normalization to "none".'
             )
         seen.add(tuple(fileinfo["path"]))
+    # A file whose path is also another file's folder cannot be laid out either.
+    for path in seen:
+        for end in range(1, len(path)):
+            if path[:end] in seen:
+                raise UploadRefusedError(
+                    f"A file and a folder are both {'/'.join(path[:end])} once {form}-normalized: rename one, "
+                    'or set torrent_name_normalization to "none".'
+                )
 
 
 def generate_torrent(gazelle_site: "BaseGazelleApi", path: str, normalize: bool = True) -> tuple[str, Torrent]:
