@@ -121,6 +121,17 @@ def test_same_named_albums_get_their_own_tmp_dir_spectrals(monkeypatch, dirs, tm
     assert _files(first) == SPECTRAL_FILES
 
 
+def test_an_album_reached_through_a_link_has_one_tmp_dir_spectrals_folder(monkeypatch, dirs, tmp_path) -> None:
+    downloads, seeding = dirs
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
+    album = _album(downloads / "Album")
+    (seeding / "Album").symlink_to(album)
+
+    assert get_spectrals_path(str(seeding / "Album")) == get_spectrals_path(str(album))
+
+
 @pytest.mark.parametrize("hardlinks", [True, False])
 @pytest.mark.parametrize("scene", [False, True])
 def test_the_source_spectrals_move_into_the_renamed_copy(monkeypatch, dirs, hardlinks: bool, scene: bool) -> None:
