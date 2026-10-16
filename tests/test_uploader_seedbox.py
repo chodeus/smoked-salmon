@@ -127,11 +127,15 @@ def test_rclone_destination_folder_is_nfc_with_the_unicode_variable(monkeypatch,
 
 @pytest.mark.parametrize(
     ("extra_args", "variable"),
-    [(["--checksum"], "false"), (["--local-unicode-normalization=false"], "true")],
-    ids=["variable-false", "flag-false-beats-variable"],
+    [
+        (["--checksum"], "false"),
+        (["--local-unicode-normalization=false"], "true"),
+        (["--local-unicode-normalization", "--local-unicode-normalization=false"], None),
+    ],
+    ids=["variable-false", "flag-false-beats-variable", "last-flag-wins"],
 )
 def test_rclone_destination_folder_keeps_its_name_when_rclone_does_not_normalize(
-    monkeypatch, extra_args: list[str], variable: str
+    monkeypatch, extra_args: list[str], variable: str | None
 ) -> None:
     nfd = unicodedata.normalize("NFD", "Café")
 
