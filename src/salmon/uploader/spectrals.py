@@ -146,15 +146,25 @@ async def handle_spectrals_upload_and_deletion(
         Dict mapping spectral IDs to uploaded URLs.
     """
     spectral_urls = await upload_spectrals(spectrals_path, spectral_ids)
-    if delete_spectrals and os.path.isdir(spectrals_path):
-        shutil.rmtree(spectrals_path, ignore_errors=True)
-        await anyio.sleep(0.5)
-        if os.path.isdir(spectrals_path):
-            shutil.rmtree(spectrals_path)
-            await anyio.sleep(0.5)
-    if delete_spectrals and not os.path.isdir(spectrals_path):
-        drop_specs_claim(spectrals_path)
+    if delete_spectrals:
+        await _delete_spectrals(spectrals_path)
     return spectral_urls
+
+
+async def _delete_spectrals(spectrals_path: str) -> None:
+    """Delete salmon's spectrals folder, twice if a viewer still holds a file; leave any other folder where it is."""
+    if not os.path.lexists(spectrals_path):
+        drop_specs_claim(spectrals_path)
+        return
+    if not made_by_salmon(spectrals_path):
+        click.secho(f"Not deleting {spectrals_path}: it is not a spectrals folder salmon made.", fg="yellow")
+        return
+    shutil.rmtree(spectrals_path, ignore_errors=True)
+    await anyio.sleep(0.5)
+    if os.path.isdir(spectrals_path):
+        shutil.rmtree(spectrals_path)
+        await anyio.sleep(0.5)
+    drop_specs_claim(spectrals_path)
 
 
 async def generate_spectrals_all(path: str, spectrals_path: str, audio_info: dict[str, Any]) -> dict[int, str]:
@@ -401,17 +411,17 @@ def spectrals_dir() -> str | None:
 
 def get_spectrals_path(path):
     """The spectrals folder salmon makes for an album: never one of the user's own, which salmon would replace."""
-    base_name = os.path.basename(path.rstrip("/"))
-    if (beside := spectrals_dir()) is not None:
-        # Create a unique subfolder for this album
-        return os.path.join(beside, f"spectrals_{base_name}")
     in_album = os.path.join(path, "Spectrals")
-    if cfg.directory.protects(path) or (os.path.lexists(in_album) and not made_by_salmon(in_album)):
-        # Never inside a library album, nor over the album's own Spectrals. The digest keeps same-named albums apart.
-        digest = hashlib.sha1(os.path.realpath(path).encode(), usedforsecurity=False).hexdigest()[:8]
+    outside = spectrals_dir()
+    if outside is None:
+        if not cfg.directory.protects(path) and not (os.path.lexists(in_album) and not made_by_salmon(in_album)):
+            return in_album
+        # Never inside a library album, nor over the album's own Spectrals.
         outside = dryrun.scratch_dir() if dryrun.active() else cfg.directory.download_directory
-        return os.path.join(outside, f"spectrals_{base_name} {digest}")
-    return in_album
+    # Every album's spectrals share this folder, and web jobs run at once: the digest keeps same-named albums apart.
+    base_name = os.path.basename(path.rstrip("/"))
+    digest = hashlib.sha1(os.path.realpath(path).encode(), usedforsecurity=False).hexdigest()[:8]
+    return os.path.join(outside, f"spectrals_{base_name} {digest}")
 
 
 # Spectrals folders salmon made in this process, by real path: an empty folder is salmon's only if it is one of these.
@@ -430,8 +440,11 @@ def made_by_salmon(spectrals_path: str) -> bool:
             is_file = {entry.name: entry.is_file(follow_symlinks=False) for entry in entries}
     except OSError:
         return False
+    # A folder or link inside, hidden or not, is not salmon's: deleting salmon's folder would take it too.
+    if not all(is_file.values()):
+        return False
     images = [name for name in is_file if not name.startswith(".") and name not in _BROWSER_LITTER]
-    if not all(_SALMON_SPECTRAL.fullmatch(name) and is_file[name] for name in images):
+    if not all(_SALMON_SPECTRAL.fullmatch(name) for name in images):
         return False
     # By content too: spectrals an earlier run left (salmon specs -nd, an interrupted check) are still salmon's.
     return bool(images) or os.path.realpath(spectrals_path) in _made_specs_folders

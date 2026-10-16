@@ -985,6 +985,16 @@ def test_discarding_refuses_a_path_outside_the_configured_directories(tmp_path):
     assert outside.exists(), "rmtree must not follow a result path that has left the roots"
 
 
+def test_discarding_leaves_a_folder_holding_another_file(tmp_path, monkeypatch):
+    from salmon.webui.routers.spectrals import _discard_spectrals
+
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_path))
+    specs = _specs_under(tmp_path, "spectrals_x")
+    (specs / "notes.txt").write_bytes(b"theirs")
+    _discard_spectrals(_finished_spectrals_job(specs))
+    assert (specs / "notes.txt").read_bytes() == b"theirs"
+
+
 def test_discard_endpoint_empties_the_job_result(client, tmp_path, monkeypatch):
     monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_path))
     specs = _specs_under(tmp_path, "spectrals_ep")

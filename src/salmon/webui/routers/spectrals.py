@@ -18,7 +18,13 @@ from salmon.images import HOSTS, upload_images
 from salmon.images.files import NotAnImage, check_image
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.uploader.frequency import assess, generate_frequency_plots
-from salmon.uploader.spectrals import create_specs_folder, drop_specs_claim, generate_spectrals_all, get_spectrals_path
+from salmon.uploader.spectrals import (
+    create_specs_folder,
+    drop_specs_claim,
+    generate_spectrals_all,
+    get_spectrals_path,
+    made_by_salmon,
+)
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
 from salmon.webui.validation import allowed_roots, is_within_roots, refuse_library_output, validate_album_dir
 
@@ -46,7 +52,7 @@ def _discard_spectrals(job: Job) -> None:
         return
     real = os.path.realpath(path)
     roots = allowed_roots()
-    if not is_within_roots(real, roots) or real in roots or cfg.directory.protects(real):
+    if not is_within_roots(real, roots) or real in roots or cfg.directory.protects(real) or not made_by_salmon(real):
         return
     shutil.rmtree(real, ignore_errors=True)
     if not os.path.isdir(real):
