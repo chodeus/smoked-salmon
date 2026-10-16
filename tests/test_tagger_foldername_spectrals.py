@@ -127,9 +127,9 @@ def test_an_album_reached_through_a_link_has_one_tmp_dir_spectrals_folder(monkey
     tmp_dir.mkdir()
     monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
     album = _album(downloads / "Album")
-    (seeding / "Album").symlink_to(album)
+    (seeding / "Linked").symlink_to(album)
 
-    assert get_spectrals_path(str(seeding / "Album")) == get_spectrals_path(str(album))
+    assert get_spectrals_path(str(seeding / "Linked")) == get_spectrals_path(str(album))
 
 
 @pytest.mark.parametrize("hardlinks", [True, False])
@@ -285,6 +285,44 @@ def test_salmons_spectrals_given_another_file_are_not_deleted(monkeypatch, tmp_p
     anyio.run(spectrals.handle_spectrals_upload_and_deletion, str(specs), None)
 
     assert (specs / "notes.txt").read_bytes() == b"theirs"
+    assert "Not deleting" in capsys.readouterr().out
+
+
+def test_a_folder_given_another_file_before_the_second_try_is_not_deleted(monkeypatch, tmp_path, capsys) -> None:
+    import shutil
+
+    import anyio
+
+    from salmon.uploader import spectrals
+
+    specs = tmp_path / "Album" / "Spectrals"
+    specs.parent.mkdir()
+    _write_spectrals(specs)
+    rmtree = shutil.rmtree
+    tries: list[str] = []
+    slept: list[float] = []
+
+    def held_on_the_first_try(path: str, ignore_errors: bool = False) -> None:
+        # As on Windows, where a viewer holding a file stops the first try.
+        tries.append(path)
+        if len(tries) > 1:
+            rmtree(path, ignore_errors=ignore_errors)
+
+    async def a_file_arrives(seconds: float) -> None:
+        if not slept:
+            (specs / "notes.txt").write_bytes(b"theirs")
+        slept.append(seconds)
+
+    async def no_upload(*_args: Any) -> dict:
+        return {}
+
+    monkeypatch.setattr(spectrals, "upload_spectrals", no_upload)
+    monkeypatch.setattr(spectrals.shutil, "rmtree", held_on_the_first_try)
+    monkeypatch.setattr(spectrals.anyio, "sleep", a_file_arrives)
+    anyio.run(spectrals.handle_spectrals_upload_and_deletion, str(specs), None)
+
+    assert (specs / "notes.txt").read_bytes() == b"theirs"
+    assert len(tries) == 1
     assert "Not deleting" in capsys.readouterr().out
 
 

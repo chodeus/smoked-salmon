@@ -153,16 +153,14 @@ async def handle_spectrals_upload_and_deletion(
 
 async def _delete_spectrals(spectrals_path: str) -> None:
     """Delete salmon's spectrals folder, twice if a viewer still holds a file; leave any other folder where it is."""
-    if not os.path.lexists(spectrals_path):
-        drop_specs_claim(spectrals_path)
-        return
-    if not made_by_salmon(spectrals_path):
-        click.secho(f"Not deleting {spectrals_path}: it is not a spectrals folder salmon made.", fg="yellow")
-        return
-    shutil.rmtree(spectrals_path, ignore_errors=True)
-    await anyio.sleep(0.5)
-    if os.path.isdir(spectrals_path):
-        shutil.rmtree(spectrals_path)
+    for last in (False, True):
+        # Checked before each try: in the half second between, the folder may be replaced or given another file.
+        if not os.path.lexists(spectrals_path):
+            break
+        if not made_by_salmon(spectrals_path):
+            click.secho(f"Not deleting {spectrals_path}: it is not a spectrals folder salmon made.", fg="yellow")
+            return
+        shutil.rmtree(spectrals_path, ignore_errors=not last)
         await anyio.sleep(0.5)
     drop_specs_claim(spectrals_path)
 
@@ -419,9 +417,10 @@ def get_spectrals_path(path):
         # Never inside a library album, nor over the album's own Spectrals.
         outside = dryrun.scratch_dir() if dryrun.active() else cfg.directory.download_directory
     # Every album's spectrals share this folder, and web jobs run at once: the digest keeps same-named albums apart.
-    base_name = os.path.basename(path.rstrip("/"))
-    digest = hashlib.sha1(os.path.realpath(path).encode(), usedforsecurity=False).hexdigest()[:8]
-    return os.path.join(outside, f"spectrals_{base_name} {digest}")
+    # Both from the real path, so the album and a link to it, whatever its name, find one folder.
+    real = os.path.realpath(path)
+    digest = hashlib.sha1(real.encode(), usedforsecurity=False).hexdigest()[:8]
+    return os.path.join(outside, f"spectrals_{os.path.basename(real)} {digest}")
 
 
 # Spectrals folders salmon made in this process, by real path: an empty folder is salmon's only if it is one of these.

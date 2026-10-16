@@ -995,6 +995,17 @@ def test_discarding_leaves_a_folder_holding_another_file(tmp_path, monkeypatch):
     assert (specs / "notes.txt").read_bytes() == b"theirs"
 
 
+def test_discarding_leaves_another_folder_the_jobs_path_now_links_to(tmp_path, monkeypatch):
+    from salmon.webui.routers.spectrals import _discard_spectrals
+
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_path))
+    other = _specs_under(tmp_path, "spectrals_other")
+    link = pathlib.Path(os.path.realpath(tmp_path)) / "spectrals_x"
+    link.symlink_to(other)
+    _discard_spectrals(_finished_spectrals_job(link))
+    assert (other / "01 Full.png").exists()
+
+
 def test_discard_endpoint_empties_the_job_result(client, tmp_path, monkeypatch):
     monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_path))
     specs = _specs_under(tmp_path, "spectrals_ep")

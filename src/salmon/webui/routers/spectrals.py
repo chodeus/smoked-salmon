@@ -52,7 +52,10 @@ def _discard_spectrals(job: Job) -> None:
         return
     real = os.path.realpath(path)
     roots = allowed_roots()
-    if not is_within_roots(real, roots) or real in roots or cfg.directory.protects(real) or not made_by_salmon(real):
+    if not is_within_roots(real, roots) or real in roots or cfg.directory.protects(real):
+        return
+    # The job's own path, not real: made_by_salmon refuses a link there, which resolving it would hide.
+    if not made_by_salmon(path):
         return
     shutil.rmtree(real, ignore_errors=True)
     if not os.path.isdir(real):
