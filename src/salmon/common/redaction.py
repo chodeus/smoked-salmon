@@ -63,14 +63,14 @@ _CONNECTION_SECRET = re.compile(
 
 # The names a secret goes by, in a JSON field, a URL query, a cookie header or a form input: one list for all three.
 _SECRET_NAMES = "authkey|passkey|torrent_pass|auth|api_key|session|keeplogged|imgauth_[hue]"
-# "authkey": "..." in JSON or a Python repr of it, authkey = "..." in a page's script. A backslash escapes the
-# next character, so an escaped quote does not end the value.
+# "authkey": "..." in JSON or a Python repr of it, authkey = "..." in a page's script. A value ends at its closing
+# quote, or at its line's end when an excerpt cut it off; a backslash escapes the next character.
 _SENSITIVE_KEYS = re.compile(
-    rf"""(["']?\b(?:{_SECRET_NAMES}|Authorization)["']?\s*[:=]\s*)(["'])(?:(?!\2)[^\\\n]|\\.)*\2""", re.IGNORECASE
+    rf"""(["']?\b(?:{_SECRET_NAMES}|Authorization)["']?\s*[:=]\s*)(["'])(?:(?!\2)[^\\\n]|\\.)*(\2?)""", re.IGNORECASE
 )
 _SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=[^&\"'\s<>]+", re.IGNORECASE)
-# The passkey in an announce URL, wherever the text holds one: https://tracker/<passkey>/announce.
-_ANNOUNCE_PASSKEY = re.compile(r"/[A-Za-z0-9]{16,}(?=/announce)")
+# The passkey in an announce URL, wherever the text holds one and however short, as in redact_url.
+_ANNOUNCE_PASSKEY = re.compile(r"/[A-Za-z0-9]+(?=/announce)")
 
 _SECRET_INPUT_NAME = rf"""\bname=["'](?:{_SECRET_NAMES})["']"""
 # A form's hidden inputs, value before or after the name: <input name="auth" value="...">.
@@ -102,7 +102,7 @@ def redact_secrets(text: str, known: Iterable[str | None] = ()) -> str:
 
 def redact_tracker_fields(text: str) -> str:
     """Redact sensitive values (quoted fields and assignments, URL query params, form inputs, announce passkeys)."""
-    text = _SENSITIVE_KEYS.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]{m.group(2)}", text)
+    text = _SENSITIVE_KEYS.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]{m.group(3)}", text)
     text = _SENSITIVE_INPUTS.sub(lambda m: f"{m.group(1) or m.group(2)}[REDACTED]", text)
     text = _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
     return _ANNOUNCE_PASSKEY.sub("/[REDACTED]", text)
