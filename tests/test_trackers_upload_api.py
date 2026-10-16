@@ -472,6 +472,16 @@ async def test_api_key_upload_success_with_camelcase_ids(api):
     assert result == (11, 22)
 
 
+@pytest.mark.parametrize("answer", ['{"torrentid": 123}', '{"torrentId": 123}'])
+@pytest.mark.parametrize(("data", "group_id"), [({"groupid": "456"}, 456), ({}, 0)])
+async def test_api_key_upload_answer_without_a_group_id_is_still_an_upload(api, answer, data, group_id):
+    script_requests(api, [http(text=f'{{"status": "success", "response": {answer}}}')])
+
+    result = await api.api_key_upload(data, UploadFiles(torrent_data=b"torrent"))
+
+    assert result == (123, group_id)
+
+
 async def test_api_key_upload_failure_json_raises_request_error_with_message(api):
     script_requests(
         api,
