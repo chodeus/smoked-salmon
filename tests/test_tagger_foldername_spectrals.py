@@ -326,6 +326,45 @@ def test_a_folder_given_another_file_before_the_second_try_is_not_deleted(monkey
     assert "Not deleting" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("put_there", ["a folder", "a link to another of salmon's"])
+def test_what_takes_the_place_of_salmons_folder_during_the_delete_is_not_salmons(
+    monkeypatch, tmp_path, put_there: str
+) -> None:
+    import anyio
+
+    from salmon.uploader import spectrals
+
+    specs = tmp_path / "Album" / "Spectrals"
+    specs.parent.mkdir()
+    _write_spectrals(specs)
+    other = Path(create_specs_folder("", str(tmp_path / "spectrals_Other")))
+    slept: list[float] = []
+
+    async def put_in_its_place(seconds: float) -> None:
+        if not slept:
+            if put_there == "a folder":
+                specs.mkdir()
+                (specs / ".theirs").write_bytes(b"theirs")
+                (specs / "notes.txt").write_bytes(b"theirs")
+            else:
+                specs.symlink_to(other)
+        slept.append(seconds)
+
+    async def no_upload(*_args: Any) -> dict:
+        return {}
+
+    monkeypatch.setattr(spectrals, "upload_spectrals", no_upload)
+    monkeypatch.setattr(spectrals.anyio, "sleep", put_in_its_place)
+    anyio.run(spectrals.handle_spectrals_upload_and_deletion, str(specs), None)
+
+    if put_there == "a folder":
+        # Left with only a hidden file of the user's, it must not pass for salmon's empty folder.
+        (specs / "notes.txt").unlink()
+        assert not spectrals.made_by_salmon(str(specs))
+    else:
+        assert spectrals.made_by_salmon(str(other))
+
+
 def test_a_library_albums_spectrals_follow_it_to_the_renamed_copy(monkeypatch, dirs) -> None:
     downloads, _seeding = dirs
     library = downloads.parent / "library"

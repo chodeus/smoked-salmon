@@ -159,7 +159,7 @@ async def _delete_spectrals(spectrals_path: str) -> None:
             break
         if not made_by_salmon(spectrals_path):
             click.secho(f"Not deleting {spectrals_path}: it is not a spectrals folder salmon made.", fg="yellow")
-            return
+            break
         shutil.rmtree(spectrals_path, ignore_errors=not last)
         await anyio.sleep(0.5)
     drop_specs_claim(spectrals_path)
@@ -457,8 +457,10 @@ def carry_specs_claim(old_real: str, new_path: str) -> None:
 
 
 def drop_specs_claim(spectrals_path: str) -> None:
-    """Forget salmon's claim on a spectrals folder that is gone, so a folder made there later is the user's."""
-    _made_specs_folders.discard(os.path.realpath(spectrals_path))
+    """Forget salmon's claim on a spectrals folder gone or no longer salmon's: a folder there later is the user's."""
+    # The last part unresolved: a link put in place of salmon's folder must not clear the claim of the one it names.
+    parent, name = os.path.split(os.path.abspath(spectrals_path))
+    _made_specs_folders.discard(os.path.join(os.path.realpath(parent), name))
 
 
 def make_way_for_spectrals(spectrals_path: str) -> None:
