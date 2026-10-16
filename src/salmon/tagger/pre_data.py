@@ -11,6 +11,7 @@ from salmon.common import RE_USELESS_VERSION, re_split, split_genre
 from salmon.common.files import _tracknumber_sort_key
 from salmon.common.strings import strip_numbered_suffixes
 from salmon.constants import FORMATS, TAG_ENCODINGS
+from salmon.tagger.tags import is_classical
 
 _RE_FEAT_START = re.compile(r" [\(\[\{]?(?:f(?:ea)?t(?:uring)?\.?|with\.) ", flags=re.IGNORECASE)
 
@@ -210,8 +211,11 @@ def _extract_feat(artist):
 
 
 def construct_track_artists(track):
-    """Build track artists from artist plus classical role tags when present."""
+    """Build track artists from the artist tag, plus the composer and conductor tags on a classical track."""
     artists = parse_artists(track.artist)
+    if not is_classical(track):
+        # Elsewhere COMPOSER lists the songwriters, often the main artist too.
+        return list(dict.fromkeys(artists))
     conductors = _parse_role_names(getattr(track, "conductor", None))
     composers = _parse_role_names(getattr(track, "composer", None))
     excluded = {name.lower() for name in [*conductors, *composers]}
