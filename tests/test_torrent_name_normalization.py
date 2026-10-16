@@ -142,6 +142,14 @@ def test_two_files_that_normalize_to_one_path_are_refused() -> None:
         _normalize_torrent_names(cast("Torrent", cast("object", t)), "NFC")
 
 
+def test_a_file_and_a_folder_that_normalize_to_one_path_are_refused() -> None:
+    files = [{"length": 1, "path": [COMPOSED_NAME]}, {"length": 1, "path": [DECOMPOSED_NAME, "track.flac"]}]
+    t = SimpleNamespace(metainfo={"info": {"name": "Album", "files": files}})
+
+    with pytest.raises(UploadRefusedError, match="folder are both Café.flac once NFC-normalized"):
+        _normalize_torrent_names(cast("Torrent", cast("object", t)), "NFC")
+
+
 def test_torrent_name_normalization_rejects_invalid_value() -> None:
     with pytest.raises(ValueError, match="torrent_name_normalization"):
         Upload(torrent_name_normalization="nfc")
@@ -151,6 +159,7 @@ def test_torrent_name_normalization_rejects_invalid_value() -> None:
 def seedboxes(monkeypatch: pytest.MonkeyPatch):
     """Configure these seedboxes, on Linux, with none warned about yet."""
     monkeypatch.setattr(seedbox_module, "_warned_normalization", set())
+    monkeypatch.delenv(seedbox_module._UNICODE_ENV, raising=False)
     monkeypatch.setattr(seedbox_module.sys, "platform", "linux")
     monkeypatch.setattr(cfg.upload, "upload_to_seedbox", True)
 
@@ -167,7 +176,7 @@ def _box(**fields) -> Seedbox:
 @pytest.mark.parametrize(
     ("box", "form", "said"),
     [
-        (_box(), "NFC", "without --local-unicode-normalization in its extra_args"),
+        (_box(), "NFC", "while --local-unicode-normalization is off"),
         (_box(extra_args=["--local-unicode-normalization"]), "NFD", "rclone cannot copy names as NFD"),
         (_box(type="local"), "NFC", "Linux keeps their names as they are"),
     ],
@@ -196,6 +205,14 @@ def test_a_seedbox_that_matches_nfc_or_gets_no_torrent_is_not_warned_about(seedb
     warn_unmatched_normalization("NFC", "RED")
     printed = capsys.readouterr().out
     assert "torrent_name_normalization" not in printed
+
+
+def test_an_rclone_seedbox_normalizing_by_its_variable_is_not_warned_about(seedboxes, capsys, monkeypatch) -> None:
+    monkeypatch.setenv(seedbox_module._UNICODE_ENV, "true")
+    seedboxes(_box())
+    warn_unmatched_normalization("NFC", "RED")
+
+    assert "torrent_name_normalization" not in capsys.readouterr().out
 
 
 def test_a_local_seedbox_on_macos_finds_any_form(seedboxes, capsys, monkeypatch) -> None:

@@ -3,6 +3,7 @@ import collections
 import os
 import posixpath
 import sys
+import unicodedata
 from urllib.parse import unquote, urlparse
 
 import anyio
@@ -51,7 +52,11 @@ def seedbox_secrets(seedbox: Seedbox) -> list[str]:
 
 async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str) -> bool:
     """Upload a local folder to the rclone remote and return whether rclone succeeded."""
-    remote_path = posixpath.join(remote_folder, os.path.basename(path))
+    folder_name = os.path.basename(path)
+    if _normalizes_to_nfc(seedbox):
+        # rclone makes every name it copies NFC with the flag, but not this explicit destination name.
+        folder_name = unicodedata.normalize("NFC", folder_name)
+    remote_path = posixpath.join(remote_folder, folder_name)
     commands = ["rclone", "copy", path, f"{seedbox.url}:{remote_path}", *seedbox.extra_args]
     secrets = seedbox_secrets(seedbox)
     click.secho(redact_secrets(f"Starting Rclone upload to {seedbox.url}:{remote_folder}", secrets), fg="cyan")
@@ -129,8 +134,21 @@ def _enabled_seedboxes() -> list[Seedbox]:
 
 
 _UNICODE_FLAG = "--local-unicode-normalization"
+# rclone reads every flag from its RCLONE_* variable too; a flag on the command line wins over it.
+_UNICODE_ENV = "RCLONE_LOCAL_UNICODE_NORMALIZATION"
+# The true spellings of Go's strconv.ParseBool, which rclone reads both with.
+_GO_TRUE = {"1", "t", "T", "true", "TRUE", "True"}
 # Seedboxes already warned about in this process: once is enough for a config problem.
 _warned_normalization: set[int] = set()
+
+
+def _normalizes_to_nfc(seedbox: Seedbox) -> bool:
+    """Whether rclone makes the names it copies NFC: the last such flag in extra_args, else its variable."""
+    flags = [arg.partition("=") for arg in seedbox.extra_args if arg.partition("=")[0] == _UNICODE_FLAG]
+    if not flags:
+        return os.environ.get(_UNICODE_ENV, "") in _GO_TRUE
+    _, has_value, value = flags[-1]
+    return not has_value or value in _GO_TRUE
 
 
 def _unmatched_normalization(seedbox: Seedbox, form: str) -> str | None:
@@ -138,8 +156,8 @@ def _unmatched_normalization(seedbox: Seedbox, form: str) -> str | None:
     if seedbox.type == "rclone":
         if form == "NFD":
             return "rclone cannot copy names as NFD"
-        if not any(arg in (_UNICODE_FLAG, f"{_UNICODE_FLAG}=true") for arg in seedbox.extra_args):
-            return f"rclone copies names as they are, without {_UNICODE_FLAG} in its extra_args"
+        if not _normalizes_to_nfc(seedbox):
+            return f"rclone copies names as they are while {_UNICODE_FLAG} is off (extra_args, else {_UNICODE_ENV})"
         return None
     # macOS finds a file whatever the form of its name; Linux compares the bytes.
     if sys.platform.startswith("linux"):

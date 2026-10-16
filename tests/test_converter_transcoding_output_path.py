@@ -95,6 +95,46 @@ def test_digits_in_the_title_are_not_taken_for_the_token(monkeypatch) -> None:
     assert new_path == "/downloads/Artist - Complete Recordings 1924-48 (2021) [WEB MP3 320]"
 
 
+def _template(monkeypatch, template: str) -> None:
+    monkeypatch.setattr(transcoding.cfg.upload.formatting, "folder_template", template)
+
+
+def test_a_title_reading_like_the_token_is_kept_when_the_template_has_no_resolution(monkeypatch) -> None:
+    _stub_24_96(monkeypatch)
+    _template(monkeypatch, "{artists} - {title} ({year}) [{source} {format}]")
+
+    new_path = transcoding._build_output_path("/downloads/Artist - 24-96 (2024) [WEB FLAC]", "V0")
+
+    assert new_path == "/downloads/Artist - 24-96 (2024) [WEB MP3 V0]"
+
+
+def test_only_the_bracketed_token_goes_beside_a_title_that_reads_like_it(monkeypatch) -> None:
+    _stub_24_96(monkeypatch)
+    _template(monkeypatch, "[{source} FLAC {resolution}]")
+
+    new_path = transcoding._build_output_path("/downloads/Artist - 24-96 (2024) [WEB FLAC 24-96]", "V0")
+
+    assert new_path == "/downloads/Artist - 24-96 (2024) [WEB MP3 V0]"
+
+
+def test_a_title_token_after_a_closed_bracket_stays(monkeypatch) -> None:
+    _stub_24_96(monkeypatch)
+    _template(monkeypatch, "{artists} - {title} ({year}) [{source} {format}]")
+
+    new_path = transcoding._build_output_path("/downloads/Artist - Title (Live) 24-96 [WEB FLAC]", "V0")
+
+    assert new_path == "/downloads/Artist - Title (Live) 24-96 [WEB MP3 V0]"
+
+
+def test_an_unbracketed_token_is_dropped_when_the_template_places_resolution(monkeypatch) -> None:
+    _stub_24_96(monkeypatch)
+    _template(monkeypatch, "{artists} - {title} {resolution}")
+
+    new_path = transcoding._build_output_path("/downloads/Artist - Title 24-96", "V0")
+
+    assert new_path == "/downloads/Artist - Title [MP3 V0]"
+
+
 def test_a_token_first_in_its_brackets_leaves_no_stray_space(monkeypatch) -> None:
     _stub_24_96(monkeypatch)
 
