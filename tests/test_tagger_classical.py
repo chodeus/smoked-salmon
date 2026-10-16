@@ -75,6 +75,7 @@ def test_construct_track_artists_recovers_conductor_and_composer_roles_from_tags
     track = SimpleNamespace(
         artist=["Ensemble Carminé, Claire Chevalier"],
         conductor="Claire Chevalier",
+        genre="Classical",
         composer="Alfonso X el Sabio",
     )
 
@@ -90,11 +91,13 @@ def test_construct_artists_li_preserves_first_seen_role_order() -> None:
         "01. Example.flac": SimpleNamespace(
             artist=["Ensemble Carminé, Claire Chevalier"],
             conductor="Claire Chevalier",
+            genre="Classical",
             composer="Alfonso X el Sabio",
         ),
         "02. Example.flac": SimpleNamespace(
             artist=["Ensemble Carminé, Claire Chevalier"],
             conductor="Claire Chevalier",
+            genre="Classical",
             composer="Guillaume de Machaut",
         ),
     }
@@ -125,3 +128,17 @@ def test_check_required_tags_flags_missing_composer_for_classical_release(capsys
 
     captured = capsys.readouterr()
     assert "composer" in captured.out
+
+
+def test_a_songwriter_credit_leaves_a_pop_tracks_artists_alone() -> None:
+    track = SimpleNamespace(
+        artist=["Main Act"], composer=["Main Act", "Song Writer"], conductor="Some Conductor", genre=["Dance", "Pop"]
+    )
+
+    assert construct_track_artists(track) == [("Main Act", "main")]
+
+
+def test_a_track_with_no_genre_takes_no_composer_credit() -> None:
+    track = SimpleNamespace(artist=["Main Act"], composer="Main Act", conductor=None, genre=None)
+
+    assert construct_track_artists(track) == [("Main Act", "main")]

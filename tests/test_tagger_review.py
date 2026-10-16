@@ -129,3 +129,46 @@ def test_edit_genres_standardizes_what_the_editor_returns(monkeypatch) -> None:
     monkeypatch.setattr(review_module.click, "edit", lambda *_a, **_k: "Dance / Pop\nDrum & Bass")
     anyio.run(review_module._edit_genres, metadata)
     assert sorted(metadata["genres"]) == ["Dance", "Drum & Bass", "Pop"]
+
+
+def _collab_metadata() -> dict:
+    return {
+        "artists": [("Lead Act", "main"), ("Guest Act", "main")],
+        "tracks": {
+            "1": {
+                "1": {"title": "Solo", "artists": [("Lead Act", "main")]},
+                "2": {"title": "Duet", "artists": [("Guest Act", "main"), ("Lead Act", "main")]},
+            }
+        },
+    }
+
+
+def test_editing_the_release_artists_leaves_each_tracks_credits_alone(monkeypatch) -> None:
+    metadata = _collab_metadata()
+    monkeypatch.setattr(review_module.click, "edit", lambda *_a, **_k: "Lead Act (main)\nGuest Act (guest)")
+
+    anyio.run(review_module._edit_artists, metadata)
+
+    assert metadata["artists"] == [("Lead Act", "main"), ("Guest Act", "guest")]
+    assert metadata["tracks"]["1"]["2"]["artists"] == [("Guest Act", "main"), ("Lead Act", "main")]
+
+
+def test_editing_the_tracks_rebuilds_the_release_artists_and_says_so(monkeypatch, capsys) -> None:
+    metadata = _collab_metadata()
+    metadata["artists"] = [("Lead Act", "main"), ("Guest Act", "guest")]
+    monkeypatch.setattr(review_module.click, "edit", lambda text, **_k: text)
+
+    anyio.run(review_module._edit_tracks, metadata)
+
+    assert ("Guest Act", "main") in metadata["artists"]
+    assert "set them again" in capsys.readouterr().out
+
+
+def test_editing_the_tracks_without_a_change_to_the_release_artists_says_nothing(monkeypatch, capsys) -> None:
+    metadata = _collab_metadata()
+    monkeypatch.setattr(review_module.click, "edit", lambda text, **_k: text)
+
+    anyio.run(review_module._edit_tracks, metadata)
+
+    assert metadata["artists"] == [("Lead Act", "main"), ("Guest Act", "main")]
+    assert "set them again" not in capsys.readouterr().out
