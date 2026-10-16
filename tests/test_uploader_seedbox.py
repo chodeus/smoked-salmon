@@ -81,9 +81,13 @@ def test_rclone_upload_folder_treats_a_launch_failure_as_a_failed_copy(monkeypat
     assert any("rclone could not start" in message for message in messages)
 
 
-def _rclone_commands(monkeypatch, box: Seedbox, folder: str) -> list[str]:
-    """The command _rclone_upload_folder runs to copy /downloads/<folder> into /music."""
+def _rclone_commands(monkeypatch, box: Seedbox, folder: str, variable: str | None = None) -> list[str]:
+    """The command _rclone_upload_folder runs to copy /downloads/<folder> into /music, with rclone's variable set."""
     calls: list[list[str]] = []
+    if variable is None:
+        monkeypatch.delenv(seedbox._UNICODE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(seedbox._UNICODE_ENV, variable)
 
     async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         calls.append(commands)
@@ -110,6 +114,30 @@ def test_rclone_destination_folder_keeps_its_name_without_the_unicode_flag(monke
     commands = _rclone_commands(monkeypatch, Seedbox(url="box", extra_args=["--checksum"]), nfd)
 
     assert commands[2:4] == [f"/downloads/{nfd}", f"box:/music/{nfd}"]
+
+
+@pytest.mark.parametrize("variable", ["true", "1"])
+def test_rclone_destination_folder_is_nfc_with_the_unicode_variable(monkeypatch, variable: str) -> None:
+    nfd = unicodedata.normalize("NFD", "Café")
+
+    commands = _rclone_commands(monkeypatch, Seedbox(url="box", extra_args=["--checksum"]), nfd, variable)
+
+    assert commands[3] == f"box:/music/{unicodedata.normalize('NFC', 'Café')}"
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "variable"),
+    [(["--checksum"], "false"), (["--local-unicode-normalization=false"], "true")],
+    ids=["variable-false", "flag-false-beats-variable"],
+)
+def test_rclone_destination_folder_keeps_its_name_when_rclone_does_not_normalize(
+    monkeypatch, extra_args: list[str], variable: str
+) -> None:
+    nfd = unicodedata.normalize("NFD", "Café")
+
+    commands = _rclone_commands(monkeypatch, Seedbox(url="box", extra_args=extra_args), nfd, variable)
+
+    assert commands[3] == f"box:/music/{nfd}"
 
 
 def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkeypatch) -> None:
