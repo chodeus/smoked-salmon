@@ -63,8 +63,14 @@ _CONNECTION_SECRET = re.compile(
 
 # The names a secret goes by, in a JSON field, a URL query, a cookie header or a form input: one list for all three.
 _SECRET_NAMES = "authkey|passkey|torrent_pass|auth|api_key|session|keeplogged|imgauth_[hue]"
-_SENSITIVE_KEYS = re.compile(rf'("(?:{_SECRET_NAMES}|Authorization)"\s*:\s*")(?:[^"\\]|\\.)*(")', re.IGNORECASE)
+# "authkey": "..." in JSON or a Python repr of it, authkey = "..." in a page's script. A value ends at its closing
+# quote, or at its line's end when an excerpt cut it off; a backslash escapes the next character.
+_SENSITIVE_KEYS = re.compile(
+    rf"""(["']?\b(?:{_SECRET_NAMES}|Authorization)["']?\s*[:=]\s*)(["'])(?:(?!\2)[^\\\n]|\\.)*(\2?)""", re.IGNORECASE
+)
 _SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=[^&\"'\s<>]+", re.IGNORECASE)
+# The passkey in an announce URL, wherever the text holds one and however short, as in redact_url.
+_ANNOUNCE_PASSKEY = re.compile(r"/[A-Za-z0-9]+(?=/announce)")
 
 _SECRET_INPUT_NAME = rf"""\bname=["'](?:{_SECRET_NAMES})["']"""
 # A form's hidden inputs, value before or after the name: <input name="auth" value="...">.
@@ -95,10 +101,12 @@ def redact_secrets(text: str, known: Iterable[str | None] = ()) -> str:
 
 
 def redact_tracker_fields(text: str) -> str:
-    """Redact sensitive values (JSON fields, URL query params, form inputs) from a string."""
-    text = _SENSITIVE_KEYS.sub(lambda m: f"{m.group(1)}[REDACTED]{m.group(2)}", text)
+    """Redact sensitive values (quoted fields and assignments, URL query params, form inputs, announce passkeys)."""
     text = _SENSITIVE_INPUTS.sub(lambda m: f"{m.group(1) or m.group(2)}[REDACTED]", text)
-    return _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
+    text = _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
+    text = _ANNOUNCE_PASSKEY.sub("/[REDACTED]", text)
+    # Last: a value with no closing quote runs to the next quote, which can open another pattern's match.
+    return _SENSITIVE_KEYS.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]{m.group(3)}", text)
 
 
 def safe_response_excerpt(text: str, limit: int = 500) -> str:
