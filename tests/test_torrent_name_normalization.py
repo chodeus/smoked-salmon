@@ -176,7 +176,7 @@ def _box(**fields) -> Seedbox:
 @pytest.mark.parametrize(
     ("box", "form", "said"),
     [
-        (_box(), "NFC", "without --local-unicode-normalization in its extra_args"),
+        (_box(), "NFC", "while --local-unicode-normalization is off"),
         (_box(extra_args=["--local-unicode-normalization"]), "NFD", "rclone cannot copy names as NFD"),
         (_box(type="local"), "NFC", "Linux keeps their names as they are"),
     ],

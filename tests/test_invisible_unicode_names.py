@@ -257,7 +257,9 @@ def test_edit_folder_offers_a_retry_for_a_name_that_would_be_refused(monkeypatch
     monkeypatch.setattr(click, "edit", lambda *_args, **_kwargs: next(names))
     monkeypatch.setattr(click, "confirm", lambda text, default=False, **_kwargs: "acceptable" not in text)
 
-    assert _edit_folder_interactive("Old", auto_rename=False) == "Fixed Name"
+    name = _edit_folder_interactive("Old", auto_rename=False)
+
+    assert name == "Fixed Name"
 
 
 def test_rename_folder_still_renames_a_normal_name(tmp_path, monkeypatch) -> None:

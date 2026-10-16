@@ -157,7 +157,7 @@ def _unmatched_normalization(seedbox: Seedbox, form: str) -> str | None:
         if form == "NFD":
             return "rclone cannot copy names as NFD"
         if not _normalizes_to_nfc(seedbox):
-            return f"rclone copies names as they are, without {_UNICODE_FLAG} in its extra_args or {_UNICODE_ENV} set"
+            return f"rclone copies names as they are while {_UNICODE_FLAG} is off (extra_args, else {_UNICODE_ENV})"
         return None
     # macOS finds a file whatever the form of its name; Linux compares the bytes.
     if sys.platform.startswith("linux"):
