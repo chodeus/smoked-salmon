@@ -16,6 +16,7 @@ import pytest
 import qbittorrentapi
 
 from salmon import cfg
+from salmon.common.redaction import redact_client_url, url_secrets
 from salmon.config.validations import Seedbox
 from salmon.uploader import seedbox as seedbox_module
 from salmon.uploader import torrent_client as tc
@@ -247,7 +248,102 @@ def test_parse_libtc_url_does_not_log_credentials(no_login, click_messages) -> N
     joined = "\n".join(click_messages)
     assert "hunter2" not in joined
     assert "admin:" not in joined
-    assert "****" in joined
+    assert "127.0.0.1:8080" in joined
+
+
+# A proxy's key can take any shape, not only a token's.
+PROXY_KEYS = ["PROXYKEY0123UNIQUE", "PROXYKEYONLYLETTERS", "9876543210987654", "correct-horse-battery-staple"]
+
+
+@pytest.mark.parametrize("key", PROXY_KEYS)
+def test_parse_libtc_url_does_not_log_a_proxy_key_in_the_path(no_login, click_messages, key) -> None:
+    client = TorrentClientGenerator.parse_libtc_url(f"qbittorrent+http://proxy.local:7476/proxy/{key}")
+
+    joined = "\n".join(click_messages)
+    assert key not in joined
+    assert "proxy.local:7476" in joined
+    assert client.url == f"http://proxy.local:7476/proxy/{key}"
+
+
+@pytest.mark.parametrize("rest", ["/proxy?key=PROXYKEY0123UNIQUE", "/proxy#PROXYKEY0123UNIQUE"])
+def test_parse_libtc_url_does_not_log_a_key_in_the_query_or_fragment(no_login, click_messages, rest) -> None:
+    TorrentClientGenerator.parse_libtc_url(f"qbittorrent+http://proxy.local:7476{rest}")
+
+    joined = "\n".join(click_messages)
+    assert "PROXYKEY0123UNIQUE" not in joined
+    assert "proxy.local:7476" in joined
+
+
+@pytest.mark.parametrize(
+    ("key", "echoed"),
+    [
+        *((key, key) for key in PROXY_KEYS),
+        # The HTTP client re-escapes the path before its error repeats it.
+        ("PROXY%2fKEY", "PROXY%2FKEY"),
+        ("PROXY%41%2fKEY", "PROXYA%2FKEY"),
+        ("KEYéONLYLETTERS", "KEY%C3%A9ONLYLETTERS"),
+    ],
+)
+def test_a_login_error_repeating_the_url_hides_its_proxy_key(monkeypatch, click_messages, key, echoed) -> None:
+    class FakeQbt:
+        def __init__(self, host, username, password):
+            raise qbittorrentapi.APIConnectionError(f"Max retries exceeded with url: /proxy/{echoed}/api/v2/auth/login")
+
+    monkeypatch.setattr(tc.qbittorrentapi, "Client", FakeQbt)
+    client = QBittorrentClient(url=f"http://proxy.local:7476/proxy/{key}")
+
+    assert client.client is None
+    assert any("Max retries exceeded" in m for m in click_messages)
+    assert echoed not in "\n".join(click_messages)
+
+
+@pytest.mark.parametrize("key", ["PROXYKEY0123UNIQUE", "PROXYKEYONLYLETTERS", "PROXY%2fKEY"])
+def test_a_real_qbittorrent_login_error_hides_the_proxy_key(click_messages, key) -> None:
+    # Nothing listens on port 1: the real client library fails and words the error itself.
+    client = TorrentClientGenerator.parse_libtc_url(f"qbittorrent+http://127.0.0.1:1/proxy/{key}")
+
+    joined = "\n".join(click_messages)
+    assert client.client is None
+    assert "APIConnectionError" in joined
+    assert "KEY" not in joined.replace("[REDACTED]", "")
+
+
+def test_a_client_url_that_does_not_parse_is_never_quoted(no_login) -> None:
+    with pytest.raises(ValueError) as refused:
+        TorrentClientGenerator.parse_libtc_url("qbittorrent+http://admin:PASS／UNIQUE@proxy.local:7476")
+
+    assert "PASS" not in str(refused.value)
+    assert refused.value.__suppress_context__
+
+
+def test_url_secrets_leave_a_plain_client_endpoint_in_one_piece() -> None:
+    secrets = url_secrets("rutorrent+http://rutorrent.example:9380/plugins/rpc/rpc.php")
+
+    assert "/plugins/rpc/rpc.php" in secrets
+    assert {"plugins", "rpc", "rpc.php"}.isdisjoint(secrets)
+
+
+@pytest.mark.parametrize(
+    ("url", "shown"),
+    [
+        ("qbittorrent+http://admin:hunter2@127.0.0.1:8080", "qbittorrent+http://[REDACTED]@127.0.0.1:8080"),
+        ("qbittorrent+http://proxy.local:7476/proxy/KEY", "qbittorrent+http://proxy.local:7476/[REDACTED]"),
+        (
+            "qbittorrent+http://proxy.local:7476/?key=KEY#KEY",
+            "qbittorrent+http://proxy.local:7476?[REDACTED]#[REDACTED]",
+        ),
+        ("qbittorrent+http://[::1]:7476/", "qbittorrent+http://[::1]:7476"),
+        ("transmission+http://127.0.0.1:9091", "transmission+http://127.0.0.1:9091"),
+        ("qbittorrent+http://[proxy.local/proxy/KEY", "[REDACTED]"),
+    ],
+)
+def test_a_client_url_shows_only_its_scheme_host_and_port(url, shown) -> None:
+    assert redact_client_url(url) == shown
+
+
+def test_url_secrets_take_no_root_path() -> None:
+    # "/" would mask every slash an error holds.
+    assert url_secrets("qbittorrent+http://127.0.0.1:8080/") == []
 
 
 def test_parse_libtc_url_constructor_logs_in_immediately(no_login) -> None:

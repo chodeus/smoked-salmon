@@ -920,10 +920,28 @@ def test_a_seed_task_without_its_folder_is_refused(monkeypatch) -> None:
         manager.add_upload_task("/torrents/Album.torrent", task_type="seed", is_flac=True)
 
 
-def test_a_percent_encoded_client_password_is_masked_decoded_too() -> None:
-    box = _box(torrent_client="qbittorrent+http://user:pa%40ss-UNIQUE@b:1")
+@pytest.mark.parametrize(
+    ("written", "decoded"), [("pa%40ss-UNIQUE", "pa@ss-UNIQUE"), ("pa%20ss-UNIQUE", "pa ss-UNIQUE")]
+)
+def test_a_percent_encoded_client_password_is_masked_decoded_too(written, decoded) -> None:
+    box = _box(torrent_client=f"qbittorrent+http://user:{written}@b:1")
 
-    assert {"pa%40ss-UNIQUE", "pa@ss-UNIQUE"} <= set(seedbox.seedbox_secrets(box))
+    assert {written, decoded} <= set(seedbox.seedbox_secrets(box))
+
+
+@pytest.mark.parametrize(
+    ("key", "error"),
+    [
+        ("PROXYKEY0123UNIQUE", "Max retries exceeded with url: /proxy/{key}/api/v2/torrents/add"),
+        ("PROXYKEYONLYLETTERS", "Max retries exceeded with url: /proxy/{key}/api/v2/torrents/add"),
+        # Without its path: a key shaped like a token is still masked.
+        ("PROXYKEY0123UNIQUE", "403: unknown key {key}"),
+    ],
+)
+def test_a_client_error_repeating_a_proxy_key_in_the_client_url_hides_it(key, error) -> None:
+    box = _box(torrent_client=f"qbittorrent+http://proxy.local:7476/proxy/{key}")
+
+    assert key not in redact_secrets(error.format(key=key), seedbox.seedbox_secrets(box))
 
 
 def _queue_one_release(tmp_path) -> "seedbox.UploadManager":

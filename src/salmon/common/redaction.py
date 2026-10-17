@@ -1,8 +1,9 @@
 import ipaddress
 import re
 import shlex
+import string
 from collections.abc import Iterable
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 _URL_USERINFO = re.compile(r"(://)[^/\s@]+@")
 _USERINFO_PASSWORD = re.compile(r"://[^/\s@:]*:([^/\s@']+)@")
@@ -212,6 +213,55 @@ def redact_url(url: str) -> str:
     return (
         f"{parts.scheme}://{netloc}{path}" + (f"?{query}" if query else "") + ("#[REDACTED]" if parts.fragment else "")
     )
+
+
+_ESCAPE = re.compile(r"%[0-9a-fA-F]{2}")
+_UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
+# What requests leaves unescaped when it re-quotes a URL before sending it.
+_URI_SAFE = "!#$%&'()*+,/:;=?@[]~"
+
+
+def _requoted(text: str) -> str:
+    """As requests re-quotes a URL and urllib3 repeats it: unreserved escapes decoded, the rest uppercased."""
+
+    def escape(match: re.Match[str]) -> str:
+        char = chr(int(match[0][1:], 16))
+        return char if char in _UNRESERVED else match[0].upper()
+
+    return quote(_ESCAPE.sub(escape, text), safe=_URI_SAFE)
+
+
+def _echoed_forms(secret: str) -> list[str]:
+    """A URL part as written, decoded, and re-escaped the ways an HTTP client does before an error repeats it."""
+    return [secret, unquote(secret), _ESCAPE.sub(lambda match: match[0].upper(), secret), _requoted(secret)]
+
+
+def redact_client_url(url: str) -> str:
+    """A torrent client URL to show: its scheme, host and port, with any userinfo, path, query and fragment masked."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "[REDACTED]"
+    _, at, host = parts.netloc.rpartition("@")
+    return (
+        f"{parts.scheme}://{'[REDACTED]@' if at else ''}{host}"
+        + ("/[REDACTED]" if parts.path.strip("/") else "")
+        + ("?[REDACTED]" if parts.query else "")
+        + ("#[REDACTED]" if parts.fragment else "")
+    )
+
+
+def url_secrets(url: str) -> list[str]:
+    """A URL's password, whole path, token-like path segments, query and fragment, in the forms an error repeats."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return [url]
+    # A proxy can take its key in the path in any shape: the path goes whole, a token-like part on its own too.
+    path = parts.path.rstrip("/")
+    tokens = (segment for segment in path.split("/") if _segment(segment) != segment)
+    found = [parts.password or "", path, *tokens, parts.query, parts.fragment]
+    return list(dict.fromkeys(form for secret in found if secret for form in _echoed_forms(secret)))
 
 
 def redact_command(args: list[str], known: Iterable[str | None] = ()) -> str:

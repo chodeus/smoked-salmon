@@ -3,13 +3,12 @@ import os
 import posixpath
 import sys
 import unicodedata
-from urllib.parse import unquote, urlparse
 
 import anyio
 import asyncclick as click
 
 from salmon import cfg, dryrun
-from salmon.common.redaction import redact_command, redact_secrets, secret_values
+from salmon.common.redaction import redact_command, redact_secrets, secret_values, url_secrets
 from salmon.config.validations import Seedbox
 from salmon.errors import DryRunRefused
 from salmon.uploader.torrent_client import TorrentClient, TorrentClientGenerator
@@ -45,14 +44,7 @@ def _resolve_shell_path(remote_folder: str, extra_args: list[str]) -> str:
 
 def seedbox_secrets(seedbox: Seedbox) -> list[str]:
     """The secrets a seedbox's rclone remote, extra_args and torrent client URL carry, to mask wherever echoed."""
-    secrets = secret_values(seedbox.extra_args, seedbox.url)
-    try:
-        password = urlparse(seedbox.torrent_client).password
-    except ValueError:
-        password = None
-    if password:
-        # Written percent-encoded in the URL, and decoded by the time a client error repeats it.
-        secrets += [password, unquote(password)]
+    secrets = [*secret_values(seedbox.extra_args, seedbox.url), *url_secrets(seedbox.torrent_client)]
     if override := _path_override(seedbox.extra_args):
         # A home folder names the account; the client gets the path without its "@", and an error can repeat it.
         secrets.append(override.removeprefix("@"))
