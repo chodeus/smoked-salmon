@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 import qbittorrentapi
+import urllib3.util.connection
 
 from salmon import cfg
 from salmon.common.redaction import redact_client_url, url_secrets
@@ -281,6 +282,8 @@ def test_parse_libtc_url_does_not_log_a_key_in_the_query_or_fragment(no_login, c
         # The HTTP client re-escapes the path before its error repeats it.
         ("PROXY%2fKEY", "PROXY%2FKEY"),
         ("PROXY%41%2fKEY", "PROXYA%2FKEY"),
+        # A bad escape makes requests escape every "%".
+        ("KEY%ZZONLYLETTERS", "KEY%25ZZONLYLETTERS"),
         ("KEYéONLYLETTERS", "KEY%C3%A9ONLYLETTERS"),
     ],
 )
@@ -297,14 +300,19 @@ def test_a_login_error_repeating_the_url_hides_its_proxy_key(monkeypatch, click_
     assert echoed not in "\n".join(click_messages)
 
 
-@pytest.mark.parametrize("key", ["PROXYKEY0123UNIQUE", "PROXYKEYONLYLETTERS", "PROXY%2fKEY"])
-def test_a_real_qbittorrent_login_error_hides_the_proxy_key(click_messages, key) -> None:
-    # Nothing listens on port 1: the real client library fails and words the error itself.
-    client = TorrentClientGenerator.parse_libtc_url(f"qbittorrent+http://127.0.0.1:1/proxy/{key}")
+@pytest.mark.parametrize("key", ["PROXYKEY0123UNIQUE", "PROXYKEYONLYLETTERS", "PROXY%2fKEY", "PROXY%ZZKEY"])
+def test_a_real_qbittorrent_login_error_hides_the_proxy_key(monkeypatch, click_messages, key) -> None:
+    def refuse(*_args, **_kwargs):
+        raise ConnectionRefusedError(61, "Connection refused")
+
+    # Only the socket is stubbed: the client library and its HTTP stack word the error, and nothing is sent.
+    monkeypatch.setenv("NO_PROXY", "*")
+    monkeypatch.setattr(urllib3.util.connection, "create_connection", refuse)
+    client = TorrentClientGenerator.parse_libtc_url(f"qbittorrent+http://proxy.local:7476/proxy/{key}")
 
     joined = "\n".join(click_messages)
     assert client.client is None
-    assert "APIConnectionError" in joined
+    assert "Max retries exceeded" in joined
     assert "KEY" not in joined.replace("[REDACTED]", "")
 
 
@@ -316,11 +324,23 @@ def test_a_client_url_that_does_not_parse_is_never_quoted(no_login) -> None:
     assert refused.value.__suppress_context__
 
 
-def test_url_secrets_leave_a_plain_client_endpoint_in_one_piece() -> None:
-    secrets = url_secrets("rutorrent+http://rutorrent.example:9380/plugins/rpc/rpc.php")
+@pytest.mark.parametrize(
+    ("url", "path", "words"),
+    [
+        (
+            "rutorrent+http://rutorrent.example:9380/plugins/rpc/rpc.php",
+            "/plugins/rpc/rpc.php",
+            {"plugins", "rpc", "rpc.php"},
+        ),
+        ("rutorrent+http://rutorrent.example/RPC2", "/RPC2", {"RPC2"}),
+        ("qbittorrent+http://proxy.local:7476/proxy/KEY", "/proxy/KEY", {"proxy"}),
+    ],
+)
+def test_url_secrets_leave_a_client_endpoints_own_words_alone(url, path, words) -> None:
+    secrets = url_secrets(url)
 
-    assert "/plugins/rpc/rpc.php" in secrets
-    assert {"plugins", "rpc", "rpc.php"}.isdisjoint(secrets)
+    assert path in secrets
+    assert words.isdisjoint(secrets)
 
 
 @pytest.mark.parametrize(

@@ -934,8 +934,9 @@ def test_a_percent_encoded_client_password_is_masked_decoded_too(written, decode
     [
         ("PROXYKEY0123UNIQUE", "Max retries exceeded with url: /proxy/{key}/api/v2/torrents/add"),
         ("PROXYKEYONLYLETTERS", "Max retries exceeded with url: /proxy/{key}/api/v2/torrents/add"),
-        # Without its path: a key shaped like a token is still masked.
+        # Without its path: any segment but a client endpoint's own word is masked.
         ("PROXYKEY0123UNIQUE", "403: unknown key {key}"),
+        ("PROXYKEYONLYLETTERS", "403: unknown key {key}"),
     ],
 )
 def test_a_client_error_repeating_a_proxy_key_in_the_client_url_hides_it(key, error) -> None:

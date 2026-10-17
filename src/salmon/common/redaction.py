@@ -217,8 +217,14 @@ def redact_url(url: str) -> str:
 
 _ESCAPE = re.compile(r"%[0-9a-fA-F]{2}")
 _UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
-# What requests leaves unescaped when it re-quotes a URL before sending it.
+# What requests leaves unescaped when it re-quotes a URL before sending it; with a bad escape anywhere in the
+# URL ("%ZZ"), it escapes every "%" instead.
 _URI_SAFE = "!#$%&'()*+,/:;=?@[]~"
+_URI_SAFE_NO_PERCENT = _URI_SAFE.replace("%", "")
+# Path segments a client's own endpoint is made of; any other segment could be a proxy's key, whatever its shape.
+_CLIENT_PATH_WORDS = frozenset(
+    {"api", "v2", "json", "proxy", "plugins", "rpc", "rpc.php", "rpc2", "httprpc", "action.php", "rutorrent"}
+) | {"deluge", "transmission", "qbittorrent"}
 
 
 def _requoted(text: str) -> str:
@@ -233,7 +239,8 @@ def _requoted(text: str) -> str:
 
 def _echoed_forms(secret: str) -> list[str]:
     """A URL part as written, decoded, and re-escaped the ways an HTTP client does before an error repeats it."""
-    return [secret, unquote(secret), _ESCAPE.sub(lambda match: match[0].upper(), secret), _requoted(secret)]
+    upper = _ESCAPE.sub(lambda match: match[0].upper(), secret)
+    return [secret, unquote(secret), upper, _requoted(secret), quote(secret, safe=_URI_SAFE_NO_PERCENT)]
 
 
 def redact_client_url(url: str) -> str:
@@ -252,15 +259,14 @@ def redact_client_url(url: str) -> str:
 
 
 def url_secrets(url: str) -> list[str]:
-    """A URL's password, whole path, token-like path segments, query and fragment, in the forms an error repeats."""
+    """A URL's password, path, path segments but endpoint words, query and fragment, in the forms an error repeats."""
     try:
         parts = urlsplit(url)
     except ValueError:
         return [url]
-    # A proxy can take its key in the path in any shape: the path goes whole, a token-like part on its own too.
     path = parts.path.rstrip("/")
-    tokens = (segment for segment in path.split("/") if _segment(segment) != segment)
-    found = [parts.password or "", path, *tokens, parts.query, parts.fragment]
+    keys = (segment for segment in path.split("/") if unquote(segment).casefold() not in _CLIENT_PATH_WORDS)
+    found = [parts.password or "", path, *keys, parts.query, parts.fragment]
     return list(dict.fromkeys(form for secret in found if secret for form in _echoed_forms(secret)))
 
 
