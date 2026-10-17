@@ -1247,7 +1247,9 @@ async def _upload(
         # Conversions with no group id would each start a new group beside this one, as in up.
         click.secho(f"\nNo group id came back for {url}: its conversions are not uploaded.", fg="yellow")
         return
-    await _upload_conversions(release, target, group_id, torrent_id, url, existing_group, seedbox, uploaded)
+    await _upload_conversions(
+        release, target, group_id, torrent_id, url, existing_group, seedbox, uploaded, flac_uploaded=True
+    )
 
 
 async def _upload_into_group(
@@ -1262,7 +1264,9 @@ async def _upload_into_group(
             f"no FLAC of this edition in group {group_id} on {target.site_string} was picked to convert from"
         )
     url = f"{target.base_url}/torrents.php?torrentid={flac['id']}"
-    await _upload_conversions(release, target, group_id, int(flac["id"]), url, True, seedbox, uploaded)
+    await _upload_conversions(
+        release, target, group_id, int(flac["id"]), url, True, seedbox, uploaded, flac_uploaded=False
+    )
 
 
 def _edition(release: Release) -> dict[str, Any]:
@@ -1404,14 +1408,16 @@ async def _upload_conversions(
     existing_group: bool,
     seedbox: UploadManager,
     uploaded: list[str],
+    *,
+    flac_uploaded: bool,
 ) -> None:
-    """Upload the conversions asked for that the group does not have yet, with master's converters and forms."""
+    """Upload the conversions asked for that the group does not have yet; `flac_uploaded`: this run sent the FLAC."""
     edition = _edition(release)
     tasks = release.tasks
     if existing_group:
         group = await target.torrentgroup(group_id)
         formats = {task["name"]: downconversion_format(task) for task in tasks}
-        held = held_formats(group, edition, {"id": torrent_id}, formats)
+        held = held_formats(group, edition, {"id": torrent_id}, formats, uploaded=flac_uploaded)
         for name in sorted(held):
             click.secho(f"Not uploading {name}: the group already has it in this edition.", fg="yellow")
         tasks = [task for task in tasks if task["name"] not in held]

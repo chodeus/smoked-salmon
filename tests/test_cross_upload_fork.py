@@ -17,6 +17,7 @@ from test_cross_upload import (  # pyright: ignore[reportMissingImports]
     _album,
     _cross_upload,
     _red_answer,
+    _result,
     _source_has,
     _source_has_unfinished,
     _success,
@@ -208,6 +209,52 @@ def test_conversions_only_leave_out_a_format_the_group_already_has(monkeypatch, 
     assert run.result.exit_code == 0, run.output
     assert "Not uploading MP3 V0: the group already has it in this edition." in run.output
     assert run.target.posts() == []
+
+
+def test_conversions_only_still_leave_out_a_format_held_under_another_catalogue_number(monkeypatch, dirs) -> None:  # noqa: F811
+    # Its conversions go up with the source's edition, which needn't be the edition TARGET filed its FLAC under.
+    other = {
+        **_web_flac(id=TARGET_FLAC_ID + 1),
+        "format": "MP3",
+        "encoding": "V0 (VBR)",
+        "remasterCatalogueNumber": "CAT-2",
+    }
+    run = _conversions_only(monkeypatch, dirs, _target_group(_web_flac(remasterCatalogueNumber="CAT-1"), other))
+
+    assert run.result.exit_code == 0, run.output
+    assert "Not uploading MP3 V0: the group already has it in this edition." in run.output
+    assert run.target.posts() == []
+
+
+def test_a_flac_sent_into_a_group_gets_a_format_held_only_under_another_catalogue_number(monkeypatch, dirs) -> None:  # noqa: F811
+    album = _album(dirs.downloads / FOLDER)
+    # The group as fetched once the FLAC is up: the site filed it (700001) under its form's catalogue number.
+    filed = _web_flac(id=700001, remasterCatalogueNumber="CAT-1")
+    other = {
+        **_web_flac(id=TARGET_FLAC_ID + 1),
+        "format": "MP3",
+        "encoding": "V0 (VBR)",
+        "remasterCatalogueNumber": "CAT-2",
+    }
+
+    def prepare(source: FakeTracker, target: FakeTracker) -> None:
+        _source_has(album)(source, target)
+        target.results = [_result([])]
+        target.groups[TARGET_GROUP_ID] = _target_group(filed, other)
+
+    run = _cross_upload(
+        monkeypatch,
+        dirs,
+        [str(TORRENT_ID), "-yyy", "--transcode", "V0"],
+        input="1\n\n",
+        prepare=prepare,
+        transcode=_transcode,
+    )
+
+    assert run.result.exit_code == 0, run.output
+    assert "Not uploading MP3 V0" not in run.output
+    formats = [(post.fields["format"][0], post.fields["bitrate"][0]) for post in run.target.posts()]
+    assert formats == [("FLAC", "Lossless"), ("MP3", "V0 (VBR)")]
 
 
 def test_a_release_on_the_targets_list_gets_no_conversions_either(monkeypatch, dirs, tmp_path) -> None:  # noqa: F811

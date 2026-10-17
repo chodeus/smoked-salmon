@@ -10,6 +10,7 @@ import anyio
 import asyncclick as click
 import msgspec
 import pytest
+import test_uploader_dry_run as dry_run_fakes  # pyright: ignore[reportMissingImports]
 from asyncclick.testing import CliRunner
 from test_uploader_dry_run import (  # pyright: ignore[reportMissingImports]
     _album,
@@ -397,6 +398,24 @@ def test_yyy_with_the_default_sends_the_flac_and_every_conversion_the_edition_la
     # The fake group already holds a 16-bit FLAC of this edition: that conversion is a dupe risk, left out.
     assert "DUPE RISK: this edition already has 16bit 48.0 kHz" in run.result.output
     assert _formats(run)[1:] == ["MP3 320", "MP3 V0 (VBR)"]
+
+
+def test_yyy_converts_a_format_the_group_holds_only_under_another_catalogue_number(monkeypatch, torrents: Path) -> None:
+    fake_group = dry_run_fakes._group
+
+    def group() -> dict[str, Any]:
+        held = fake_group()
+        flac = held["torrents"][0]
+        # The site files the uploaded FLAC under the form's edition; the 16-bit sits in another.
+        uploaded = {**flac, "id": dry_run_fakes.FIRST_TORRENT_ID, "encoding": "24bit Lossless"}
+        return {**held, "torrents": [uploaded, {**flac, "remasterCatalogueNumber": "CAT2"}]}
+
+    monkeypatch.setattr(dry_run_fakes, "_group", group)
+    run = _run_conversion_up(monkeypatch, torrents, ())
+
+    assert run.result.exit_code == 0, run.result.output
+    assert "DUPE RISK" not in run.result.output
+    assert _formats(run)[1:] == ["FLAC Lossless", "MP3 320", "MP3 V0 (VBR)"]
 
 
 def test_yyy_with_a_lossy_conversion_only_converts_no_flac(monkeypatch, torrents: Path) -> None:

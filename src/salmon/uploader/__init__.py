@@ -958,7 +958,7 @@ async def _upload_staged(
                     elif not dryrun.active():
                         group = await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
                         options = get_downconversion_options(rls_data, track_data, quiet=True)
-                        held = _held_options(group, metadata, {"id": torrent_id}, options)
+                        held = _held_options(group, metadata, {"id": torrent_id}, options, uploaded=True)
 
                 if (
                     group_id
@@ -1270,11 +1270,16 @@ def _existing_flac_result(
 
 
 def _held_options(
-    group: dict[str, Any], release: dict[str, Any], source_flac: dict[str, Any], options: list[dict[str, Any]]
+    group: dict[str, Any],
+    release: dict[str, Any],
+    source_flac: dict[str, Any],
+    options: list[dict[str, Any]],
+    *,
+    uploaded: bool = False,
 ) -> set[str]:
     """The options the release's edition already holds, the source FLAC aside, each named as a dupe risk."""
     formats = {option["name"]: downconversion_format(option) for option in options}
-    held = held_formats(group, release, source_flac, formats)
+    held = held_formats(group, release, source_flac, formats, uploaded=uploaded)
     for name in sorted(held):
         click.secho(
             f"\nDUPE RISK: this edition already has {name}; the site removes exact duplicates.", fg="red", bold=True

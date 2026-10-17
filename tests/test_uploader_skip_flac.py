@@ -477,6 +477,16 @@ def test_a_held_format_of_another_edition_is_offered(monkeypatch) -> None:
     assert transcoded == [(["MP3 320", "MP3 V0"], "https://tracker.test/torrents.php?torrentid=11")]
 
 
+def test_a_format_held_in_the_forms_edition_is_left_out_beside_a_flac_of_another(monkeypatch) -> None:
+    # The transcodes go up with the form's catalogue number (CAT1), not the existing FLAC's.
+    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
+    group = _group(_torrent(11, catno="CAT-2"), _torrent(12, format_="MP3", encoding="320", catno="CAT1"))
+
+    _calls, transcoded = _flow(monkeypatch, group)
+
+    assert transcoded == [(["MP3 V0"], "https://tracker.test/torrents.php?torrentid=11")]
+
+
 def _default_answer(asked: list[str]):
     async def fake_prompt(text: str, *_args, default: str = "", **_kwargs) -> str:
         asked.append(text)
