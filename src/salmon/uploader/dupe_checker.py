@@ -533,6 +533,16 @@ def _is_remaster(torrent: dict) -> bool:
     )
 
 
+def _site_edition(torrent: dict, group: dict) -> tuple[str, ...]:
+    """A torrent's edition as year, title, label and catalogue number; an original release has the group's."""
+    if not _is_remaster(torrent):
+        info = group.get("group") or {}
+        return tuple(comparable(info.get(field) or "") for field in ("year", "", "recordLabel", "catalogueNumber"))
+    # comparable(): "CAT-2" and "CAT2" name one release, however each was typed.
+    fields = ("remasterYear", "remasterTitle", "remasterRecordLabel", "remasterCatalogueNumber")
+    return tuple(comparable(torrent.get(field) or "") for field in fields)
+
+
 def _edition_catno(torrent: dict, rset: dict) -> str:
     """Catalogue number of the torrent's edition; only an original release falls back to the group's."""
     if _is_remaster(torrent):
@@ -669,11 +679,22 @@ async def choose_source_flac(group: dict, release: dict) -> dict | None:
         click.secho(f"Enter a number from 1 to {len(flacs)}, or a to abort.", fg="red")
 
 
-def held_formats(group: dict, release: dict, source_flac: dict, formats: dict[str, tuple[str, str]]) -> set[str]:
+def held_formats(
+    group: dict, release: dict, source_flac: dict, formats: dict[str, tuple[str, str]], *, uploaded: bool = False
+) -> set[str]:
     """Names in `formats` (name: format, encoding) this release's edition already holds, the source FLAC aside."""
+    # `uploaded`: this run sent the FLAC with the transcodes' own form, so the edition the site filed it under is
+    # theirs, catalogue number included, and only torrents filed with it are held.
+    source_id = str(source_flac.get("id"))
+    torrents = group.get("torrents") or []
+    placed = next((t for t in torrents if str(t.get("id")) == source_id), None) if uploaded else None
     held = set()
     for name, (fmt, encoding) in formats.items():
         in_edition = matching_torrents(group, {**release, "format": fmt, "encoding": encoding})
-        if any(t.get("id") != source_flac.get("id") for t in in_edition):
+        if any(
+            str(t.get("id")) != source_id
+            and (placed is None or _site_edition(t, group) == _site_edition(placed, group))
+            for t in in_edition
+        ):
             held.add(name)
     return held
