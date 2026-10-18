@@ -15,7 +15,7 @@ dependencies = [
     "beautifulsoup4[lxml]>=4.15.0",
     "brotli>=1.2.0 ; platform_python_implementation == 'CPython'",
     "deluge-client>=1.10.2",
-    "fastapi>=0.143.3",
+    "fastapi>=0.143.5",
     "humanfriendly>=10.0",
     "jinja2>=3.1.6",
     "msgspec[toml]>=0.22.0",
