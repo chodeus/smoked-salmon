@@ -147,7 +147,11 @@ async def handle_spectrals_upload_and_deletion(
     """
     spectral_urls = await upload_spectrals(spectrals_path, spectral_ids)
     if delete_spectrals:
-        await _delete_spectrals(spectrals_path)
+        try:
+            await _delete_spectrals(spectrals_path)
+        except OSError as e:
+            # The images are up already: a local cleanup must not lose their URLs, which the description needs.
+            click.secho(f"Could not delete {spectrals_path} ({e}); delete it by hand.", fg="yellow")
     return spectral_urls
 
 

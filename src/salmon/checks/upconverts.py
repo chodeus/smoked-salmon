@@ -82,7 +82,11 @@ async def test_upconverted(path: str) -> bool | None:
         valid_results = [r for r in results if r is not None]
         _say_if_all_skipped(skipped, len(flac_files))
         _display_results(valid_results)
-        return any(r.is_upconverted for r in valid_results) if valid_results else None
+        if any(r.is_upconverted for r in valid_results):
+            return True
+        # A file neither checked nor skipped as 16bit failed: no claim that the release is clean.
+        unchecked = len(flac_files) - len(skipped) - len(valid_results)
+        return False if valid_results and not unchecked else None
     return None
 
 

@@ -391,6 +391,8 @@ def remix_title(title: str, remixers: tuple[str, ...] = ("X",)) -> str:
         "Song [Club Dub]",
         "Song (Feather Edit)",
         "Song (Edit) ",
+        # The remixer named in the brackets is the version too.
+        "Song (X Tribute)",
     ],
 )
 def test_remixer_is_not_appended_to_a_title_that_ends_in_a_version(title):
@@ -412,6 +414,10 @@ def test_remixed_is_not_appended_to_a_title_that_ends_in_a_version():
         ("Song (Edit) Part 2", "Song (Edit) Part 2 (X Remix)"),
         ("Song (X Remix)", "Song (X Remix)"),
         ("Song (X Mix)", "Song (X Mix)"),
+        # Brackets that name no version keep the credit.
+        ("Song (with Y)", "Song (with Y) (X Remix)"),
+        ("Song [Bonus Track]", "Song [Bonus Track] (X Remix)"),
+        ("Song (Explicit)", "Song (Explicit) (X Remix)"),
     ],
 )
 def test_remixer_is_still_appended_unless_the_title_names_its_version(title, expected):
