@@ -365,6 +365,33 @@ def test_what_takes_the_place_of_salmons_folder_during_the_delete_is_not_salmons
         assert spectrals.made_by_salmon(str(other))
 
 
+def test_the_claim_goes_when_the_last_delete_try_raises(monkeypatch, tmp_path) -> None:
+    import anyio
+
+    from salmon.uploader import spectrals
+
+    specs = tmp_path / "Album" / "Spectrals"
+    specs.parent.mkdir()
+    _write_spectrals(specs)
+
+    def held(_path: str, ignore_errors: bool = False) -> None:
+        if not ignore_errors:
+            raise PermissionError("held by a viewer")
+
+    async def no_sleep(_seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr(spectrals.shutil, "rmtree", held)
+    monkeypatch.setattr(spectrals.anyio, "sleep", no_sleep)
+    with pytest.raises(PermissionError):
+        anyio.run(spectrals._delete_spectrals, str(specs))
+
+    for entry in specs.iterdir():
+        entry.unlink()
+    # Empty, and no longer claimed: the user's.
+    assert not spectrals.made_by_salmon(str(specs))
+
+
 def test_a_library_albums_spectrals_follow_it_to_the_renamed_copy(monkeypatch, dirs) -> None:
     downloads, _seeding = dirs
     library = downloads.parent / "library"

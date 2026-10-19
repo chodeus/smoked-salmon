@@ -216,6 +216,18 @@ def test_a_cover_pil_refuses_as_a_decompression_bomb_is_skipped(tmp_path, monkey
     assert "Could not read cover file" in output
 
 
+def test_a_cover_file_that_cannot_be_opened_is_skipped(tmp_path, capsys) -> None:
+    # A directory named cover.jpg stands in for any cover file that can't be read: opening it raises an OSError.
+    (tmp_path / "cover.jpg").mkdir()
+    _write_flac(tmp_path / "01.flac")
+
+    cover.compress_pictures(str(tmp_path))
+
+    audio = FLAC(tmp_path / "01.flac")
+    assert audio.pictures == []
+    assert "Could not read cover file" in capsys.readouterr().out
+
+
 def test_auto_compress_cover_embeds_within_the_limit_counting_the_picture_block(tmp_path) -> None:
     # The image alone fits beside 8 KiB of padding; with the PICTURE block's own fields it would not.
     (tmp_path / "cover.jpg").write_bytes(_image("jpeg", MIB - 8 * KIB - 1))
