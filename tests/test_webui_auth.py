@@ -1,6 +1,7 @@
 """App-level token auth, and the same-host and JSON rules every /api request and the websocket meet first."""
 
 import re
+import time
 
 import pytest
 from asyncclick.testing import CliRunner
@@ -14,6 +15,7 @@ from salmon.webui import web
 from salmon.webui.app import create_app
 from salmon.webui.auth import COOKIE_NAME, OLD_COOKIE_NAME
 from salmon.webui.jobs import manager
+from salmon.webui.routers import jobs as jobs_router
 
 # The bind address under test: nothing is served on it.
 LAN_BIND = "0.0.0.0"  # nosec B104
@@ -433,6 +435,30 @@ def test_a_job_stream_gets_nothing_once_its_session_logged_out():
                 ws_ended.receive_json()
     assert out.status_code == 200
     assert received == {"event": "log", "job_id": "x", "line": "after logout"}
+
+
+def test_an_idle_job_stream_frees_its_place_once_its_session_logged_out(monkeypatch):
+    # No event comes: the ended stream must still leave, or enough of them fill MAX_SUBSCRIBERS.
+    monkeypatch.setattr(jobs_router, "SESSION_RECHECK_SECONDS", 0.02)
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        ended, kept = _session(c), _session(c)
+        with (
+            c.websocket_connect("/api/ws", headers={"host": "localhost", "cookie": ended}) as ws_ended,
+            c.websocket_connect("/api/ws", headers={"host": "localhost", "cookie": kept}) as ws_kept,
+        ):
+            c.post("/api/logout", json={}, headers={"cookie": ended})
+            deadline = time.monotonic() + 5
+            while len(manager._subscribers) > 1 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            # Checked here: without the recheck, the ended stream's receive below would wait forever.
+            assert len(manager._subscribers) == 1
+            with pytest.raises(WebSocketDisconnect) as closed:
+                ws_ended.receive_json()
+            ws_kept.portal.call(manager._broadcast, {"event": "log", "job_id": "x", "line": "still here"})
+            received = ws_kept.receive_json()
+    assert closed.value.code == 1008
+    assert received == {"event": "log", "job_id": "x", "line": "still here"}
 
 
 def test_two_session_cookies_are_read_the_same_way_by_every_check():

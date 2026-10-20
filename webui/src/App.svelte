@@ -74,6 +74,7 @@
 
   $effect(() => {
     if (authed) jobStore.init()
+    else jobStore.stop()
   })
 </script>
 
