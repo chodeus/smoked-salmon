@@ -7,6 +7,7 @@ import pytest
 
 from salmon import cfg
 from salmon.errors import UploadError
+from salmon.tagger import renames
 from salmon.tagger.retagger import (
     Change,
     _get_tag_number,
@@ -1027,6 +1028,21 @@ def test_rename_files_renames_nothing_when_two_files_swap_names(tmp_path, monkey
     assert _tree(tmp_path) == before
 
 
+def test_rename_files_renames_nothing_when_two_names_differ_only_by_case_where_the_volume_ignores_it(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(renames, "_folds_case", lambda _path: True)
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting(one_album_artist_file_template="{title}"))
+    tags, metadata = _release(tmp_path, {"a.flac": (1, 1), "b.flac": (1, 2)})
+    tags["a.flac"].title, tags["b.flac"].title = "Intro", "intro"
+    before = _tree(tmp_path)
+
+    with pytest.raises(UploadError, match="overwrite"):
+        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert _tree(tmp_path) == before
+
+
 def test_rename_files_stops_when_a_new_name_is_taken_after_the_check(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cfg.upload, "formatting", _formatting())
     tags, metadata = _release(tmp_path, {"a.flac": (1, 1), "b.flac": (1, 2)})
@@ -1178,3 +1194,33 @@ def test_delete_empty_folders_does_not_follow_the_album_folder_given_as_a_symlin
     delete_empty_folders(str(link))
 
     assert (target / "empty").is_dir()
+
+
+def test_rename_files_puts_the_renames_back_when_the_run_is_interrupted(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
+    tags, metadata = _release(tmp_path, {"a.flac": (1, 1), "b.flac": (1, 2), "c.flac": (1, 3)})
+    link = os.link
+
+    def interrupted_link(src, dst):
+        if os.path.basename(src) == "b.flac":
+            raise KeyboardInterrupt
+        link(src, dst)
+
+    monkeypatch.setattr(os, "link", interrupted_link)
+
+    with pytest.raises(KeyboardInterrupt):
+        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert [name for name, _ in _tree(tmp_path)] == ["a.flac", "b.flac", "c.flac"]
+    assert "undone" in capsys.readouterr().out
+
+
+def test_rename_files_renames_nothing_onto_a_second_hard_link_to_the_track(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
+    tags, metadata = _release(tmp_path, {"a.flac": (1, 1)})
+    os.link(tmp_path / "a.flac", tmp_path / "01. Title 1-1.flac")
+
+    with pytest.raises(UploadError, match="overwrite"):
+        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert [name for name, _ in _tree(tmp_path)] == ["01. Title 1-1.flac", "a.flac"]

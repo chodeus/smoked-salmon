@@ -12,7 +12,7 @@ import asyncclick as click
 import pytest
 
 from salmon import cfg
-from salmon.common import clean_name, invisible_chars
+from salmon.common import clean_name, invisible_chars, show_invisible
 from salmon.errors import NoncompliantFolderStructure, UploadError
 from salmon.tagger.foldername import _edit_folder_interactive, generate_folder_name, rename_folder
 from salmon.tagger.folderstructure import _check_invisible_characters, check_folder_structure
@@ -460,5 +460,5 @@ def test_check_stops_at_the_first_failed_rename_and_names_the_names_left(tmp_pat
 
     out = capsys.readouterr().out
     assert "Permission denied" in out
-    assert "Not renamed" in out
-    assert f"Disc{WORD_JOINER} 1" in out
+    # The fork marks the invisible characters in the report too.
+    assert f"Not renamed: {show_invisible(f'Disc{WORD_JOINER} 1')}" in out

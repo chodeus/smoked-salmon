@@ -36,8 +36,16 @@ class RenameStopped(Exception):
         return "\n".join(lines)
 
 
+def _folded(path: str) -> str:
+    """``path`` as a volume that ignores case and Unicode form compares it."""
+    return unicodedata.normalize("NFC", os.path.normpath(path)).casefold()
+
+
 def _same_entry(a: str, b: str) -> bool:
     """Whether the two paths name one directory entry (a name given in another case, on a volume that ignores it)."""
+    # A second hard link is another entry for the file: os.rename onto it does nothing and leaves both names.
+    if _folded(a) != _folded(b):
+        return False
     try:
         return os.path.samestat(os.lstat(a), os.lstat(b))
     except OSError:
@@ -57,7 +65,7 @@ def name_key(paths: Iterable[str]) -> Callable[[str], str]:
     Case-insensitive when a volume holding one of them is.
     """
     if any(_folds_case(path) for path in paths):
-        return lambda path: unicodedata.normalize("NFC", os.path.normpath(path)).casefold()
+        return _folded
     return os.path.normpath
 
 
@@ -113,9 +121,12 @@ def _rename_no_clobber(old: str, new: str) -> None:
         raise OSError(errno.EPERM, "The file changed during its rename; both names are left", old)
     try:
         os.unlink(old)
-    except OSError:
+    except OSError as e:
         # One file under both names would be uploaded twice.
-        os.unlink(new)
+        try:
+            os.unlink(new)
+        except OSError:
+            raise OSError(e.errno, f"{e.strerror}; the file is left under both names", old) from e
         raise
 
 

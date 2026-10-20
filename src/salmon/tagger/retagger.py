@@ -488,10 +488,7 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
                 if old_dir != path:
                     # lowercase: move_non_audio_files compares against file.lower()
                     directory_move_pairs.add((os.path.splitext(filename)[1].lower(), old_dir, new_dir))
-            try:
-                rename_all(renames)
-            except RenameStopped as e:
-                raise UploadError(f"{e.report(path)}\n{_undo_renames(path, e)}") from e
+            _rename_or_undo(path, renames)
 
             # Update spectral_ids with new filenames, if spectrals were generated
             if spectral_ids:
@@ -508,10 +505,31 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
         click.secho("\nNo file renaming is recommended.", fg="green")
 
 
-def _undo_renames(path: str, stopped: RenameStopped) -> str:
+def _rename_or_undo(path: str, renames: list[tuple[str, str]]) -> None:
+    """``rename_all``, putting back the renames made when one fails or the run is interrupted.
+
+    Raises:
+        UploadError: A rename failed.
+    """
+    done: list[tuple[str, str]] = []
+    try:
+        # One at a time, so an interrupt knows what to put back too.
+        for rename in renames:
+            rename_all([rename])
+            done.append(rename)
+    except BaseException as e:
+        undone = _undo_renames(path, done)
+        if not isinstance(e, RenameStopped):
+            click.secho(undone, fg="red", bold=True)
+            raise
+        stopped = RenameStopped(e.error, done, e.failed, renames[len(done) + 1 :])
+        raise UploadError(f"{stopped.report(path)}\n{undone}") from e
+
+
+def _undo_renames(path: str, done: list[tuple[str, str]]) -> str:
     """Put back the renames a stopped batch made, and say what names the album's files are left with."""
     try:
-        rename_all([(new, old) for old, new in reversed(stopped.done)])
+        rename_all([(new, old) for old, new in reversed(done)])
     except RenameStopped as e:
         return f"Undoing them stopped too. {e.report(path)}\nThe album's files are only partly renamed."
     return "Those renames were undone: the album's files keep their old names."

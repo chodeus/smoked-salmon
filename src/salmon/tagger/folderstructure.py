@@ -243,7 +243,8 @@ def _rename_or_stop(path: str, renames: list[tuple[str, str]]) -> None:
     try:
         rename_all(renames)
     except RenameStopped as e:
-        click.secho(e.report(path), fg="red", bold=True)
+        # Marked as the listing above marks them, line by line: show_invisible would mark a newline too.
+        click.secho("\n".join(show_invisible(line) for line in e.report(path).splitlines()), fg="red", bold=True)
         raise NoncompliantFolderStructure from e
     for _, new in renames:
         click.echo(f" >> {new}")

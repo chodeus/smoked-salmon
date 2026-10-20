@@ -165,3 +165,28 @@ def test_rename_all_changes_only_the_case_of_a_name_on_a_volume_that_ignores_it(
     rename_all([(a, str(tmp_path / "a.flac"))])
 
     assert [path.name for path in tmp_path.iterdir()] == ["a.flac"]
+
+
+def test_a_second_hard_link_to_the_file_is_not_the_file_itself(tmp_path) -> None:
+    # os.rename onto another link to the same file does nothing and leaves both names.
+    (a,) = _files(tmp_path, "a")
+    b = str(tmp_path / "b")
+    renames.os.link(a, b)
+
+    assert plan_renames([(a, b)])[1] == [b]
+    with pytest.raises(RenameStopped):
+        rename_all([(a, b)])
+
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["a", "b"]
+
+
+def test_a_file_left_under_both_names_is_reported_so(tmp_path, monkeypatch) -> None:
+    (a,) = _files(tmp_path, "a")
+
+    def no_unlink(path):
+        raise PermissionError(13, "Permission denied", path)
+
+    monkeypatch.setattr(renames.os, "unlink", no_unlink)
+
+    with pytest.raises(RenameStopped, match="left under both names"):
+        rename_all([(a, str(tmp_path / "b"))])
