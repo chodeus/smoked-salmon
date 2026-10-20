@@ -12,6 +12,7 @@ from salmon.tagger.retagger import (
     _natural_key,
     _remap_spectral_ids,
     create_track_changes,
+    delete_empty_folders,
     move_non_audio_files,
     rename_files,
     tag_files,
@@ -1096,3 +1097,56 @@ def test_names_without_a_number_are_not_an_order():
 
     with pytest.raises(UploadError, match="DISCNUMBER and TRACKNUMBER"):
         create_track_changes(tags, metadata)
+
+
+def test_delete_empty_folders_removes_an_emptied_chain_and_keeps_the_rest(tmp_path) -> None:
+    (tmp_path / "a" / "b" / "c").mkdir(parents=True)
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "keep.txt").write_text("x")
+
+    delete_empty_folders(str(tmp_path))
+
+    assert not (tmp_path / "a").exists()
+    assert (tmp_path / "d" / "keep.txt").exists()
+    assert tmp_path.exists()
+
+
+def test_delete_empty_folders_keeps_the_album_folder_itself(tmp_path) -> None:
+    (tmp_path / "a").mkdir()
+    delete_empty_folders(str(tmp_path))
+    emptied = tmp_path.is_dir()
+    delete_empty_folders(str(tmp_path))
+
+    assert emptied
+    assert not (tmp_path / "a").exists()
+    assert tmp_path.is_dir()
+
+
+def test_delete_empty_folders_does_not_follow_or_remove_a_symlink(tmp_path) -> None:
+    album = tmp_path / "album"
+    outside = tmp_path / "outside"
+    album.mkdir()
+    (outside / "inner").mkdir(parents=True)
+    try:
+        (album / "link").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks need privileges here")
+
+    delete_empty_folders(str(album))
+
+    assert (album / "link").is_symlink()
+    assert (outside / "inner").is_dir()
+
+
+def test_delete_empty_folders_does_not_follow_the_album_folder_given_as_a_symlink(tmp_path) -> None:
+    target = tmp_path / "target"
+    (target / "empty").mkdir(parents=True)
+    link = tmp_path / "album"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks need privileges here")
+
+    delete_empty_folders(str(link))
+
+    assert (target / "empty").is_dir()

@@ -7,6 +7,7 @@ from salmon import cfg
 from salmon.common import get_audio_files
 from salmon.errors import RequestError, UploadError
 from salmon.tagger.pre_data import parse_format
+from salmon.uploader.dupe_checker import describe_torrent
 
 if TYPE_CHECKING:
     from salmon.trackers.base import BaseGazelleApi
@@ -134,20 +135,6 @@ async def print_group_info(gazelle_site: "BaseGazelleApi", group_id: int, source
 
     for t in group["torrents"]:
         if t["media"] == source:
-            if t["remastered"]:
-                click.echo(
-                    unescape(
-                        f"> {t['remasterYear']} / {t['remasterRecordLabel']} / "
-                        f"{t['remasterCatalogueNumber']} / {t['format']} / "
-                        f"{t['encoding']}"
-                    )
-                )
-            if not t["remastered"]:
-                click.echo(
-                    unescape(
-                        f"> OR / {group['group']['recordLabel']} / "
-                        f"{group['group']['catalogueNumber']} / {t['format']} / "
-                        f"{t['encoding']}"
-                    )
-                )
+            # OPS sends no "remastered" key: describe_torrent reads the edition fields instead.
+            click.echo(unescape(f"> {describe_torrent(t, group)}"))
     return group

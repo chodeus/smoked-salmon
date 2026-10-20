@@ -152,6 +152,21 @@ def test_store_url_in_any_tag_proves_web(album_dir, tagged, tags):
     assert result["confidence"] == "confirmed"
 
 
+@pytest.mark.parametrize(
+    ("url", "web"),
+    [
+        ("https://www.hdtracks.com/#/album/123", True),
+        ("https://www.hdtracks.com/?ref=x#/album/123", True),
+        ("https://www.hdtracks.com/#/artist/a?ref=/album/y", False),
+    ],
+    ids=["hdtracks-fragment", "hdtracks-query", "album-path-only-in-the-fragments-query"],
+)
+def test_only_a_store_urls_own_path_proves_web(album_dir, tagged, url, web):
+    tagged({"url": [url], "album": "Y", "tracknumber": "1"})
+    result = src.detect_source(str(album_dir))
+    assert (result["source"] == "WEB") is web
+
+
 def test_database_links_do_not_prove_web(album_dir, tagged):
     """A MusicBrainz purchase link describes the release, not where these files came from."""
     link = "https://artist.bandcamp.com/album/y"
