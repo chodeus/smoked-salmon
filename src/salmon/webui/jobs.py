@@ -12,7 +12,6 @@ subscribers (websocket connections) receive every state change as an event.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import contextlib
 import itertools
 import os
@@ -27,7 +26,8 @@ import asyncclick as click
 
 from salmon.common.progress import reset_progress_callback, set_progress_callback
 from salmon.common.redaction import redact_url
-from salmon.errors import AbortAndDeleteFolder, NoAnswerError
+from salmon.errors import AbortAndDeleteFolder, NoAnswerError, UnknownOutcomeError
+from salmon.uploader.record import recording
 from salmon.webui import egress, output
 from salmon.webui.interaction import WebInteraction, no_answer, set_interaction
 
@@ -36,6 +36,8 @@ if TYPE_CHECKING:
 
 _id_counter = itertools.count(1)
 
+FINISHED = frozenset({"done", "failed", "cancelled", "unknown_outcome"})
+UNKNOWN_OUTCOME = "The request may have reached the tracker: check the site before trying again."
 MAX_FINISHED_JOBS = 200
 SUBSCRIBER_QUEUE_SIZE = 500
 MAX_LOG_LINES = 1000
@@ -78,6 +80,29 @@ class FolderChangedError(Exception):
     """A job's album folder is no longer the one its request named, where it was."""
 
 
+def _unknown(noted: list[UnknownOutcomeError], raised: BaseException | None = None) -> UnknownOutcomeError:
+    """One error for every request the run could not tell about: those it noted, then the one it stopped on."""
+    stopped_on = None if raised is None else _unknown_outcome(raised)
+    if stopped_on is not None and all(stopped_on is not each for each in noted):
+        noted = [*noted, stopped_on]
+    return UnknownOutcomeError("; ".join(str(error) for error in noted))
+
+
+async def _recorded(coro: Coroutine[Any, Any, Any]) -> Any:
+    """The job's run, ending as an unknown outcome when it went on past a request whose outcome it could not tell."""
+    with recording() as record:
+        try:
+            result = await coro
+        except BaseException as err:
+            # Also when the run stops later (an abort, a cancel): what may be on the tracker is what the job says.
+            if record.unknown_outcomes:
+                raise _unknown(record.unknown_outcomes, err) from err
+            raise
+    if record.unknown_outcomes:
+        raise _unknown(record.unknown_outcomes)
+    return result
+
+
 async def _in_click_context(coro: Coroutine[Any, Any, Any]) -> Any:
     # Click's context stack is per thread; tracker pools close when this context exits.
     async with click.Context(click.Command("job")):
@@ -88,21 +113,41 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _flatten_exception(e: BaseException) -> list[BaseException]:
-    """Flatten (nested) exception groups into their leaf exceptions."""
-    if isinstance(e, BaseExceptionGroup):
-        leaves: list[BaseException] = []
-        for sub in e.exceptions:
-            leaves.extend(_flatten_exception(sub))
-        return leaves
-    return [e]
+def _leaves(error: BaseException) -> list[BaseException]:
+    """An exception group's exceptions, nested ones included; or the exception itself."""
+    if isinstance(error, BaseExceptionGroup):
+        return [leaf for each in error.exceptions for leaf in _leaves(each)]
+    return [error]
+
+
+def _unknown_outcome(error: BaseException) -> UnknownOutcomeError | None:
+    """The first UnknownOutcomeError behind `error`: itself, in a group, or anywhere among its causes and contexts."""
+    pending: list[BaseException] = [error]
+    walked: set[int] = set()
+    while pending:
+        seen = pending.pop()
+        if id(seen) in walked:
+            continue
+        walked.add(id(seen))
+        if isinstance(seen, UnknownOutcomeError):
+            return seen
+        members = seen.exceptions if isinstance(seen, BaseExceptionGroup) else ()
+        linked = [*members, seen.__cause__, seen.__context__]
+        # Reversed onto the stack: a group's members in order, each one's cause before its context.
+        pending.extend(reversed([each for each in linked if each is not None]))
+    return None
+
+
+def _write_traceback(e: BaseException) -> None:
+    """`e`'s traceback, its whole chain, on the server's own stderr."""
+    # Never to the job's log, and masked: a chained error may repeat a request's URL.
+    output.real_stderr().write(egress.masked_text("".join(traceback.format_exception(e))))
 
 
 def _failure(e: BaseException) -> str:
     """What a failed job's error says; its traceback goes to the server's own stderr."""
-    leaves = _flatten_exception(e)
-    # The traceback never goes to the job's log, and is masked: a chained error may repeat a request's URL.
-    output.real_stderr().write(egress.masked_text("".join(traceback.format_exception(e))))
+    leaves = _leaves(e)
+    _write_traceback(e)
     if any(isinstance(leaf, AbortAndDeleteFolder) for leaf in leaves):
         return "Aborted — the album folder was deleted as requested."
     if any(isinstance(leaf, NoAnswerError) for leaf in leaves):
@@ -121,6 +166,17 @@ def _check_folder(job: Job) -> None:
         return
     if os.path.realpath(job.folder_path) != job.folder_path or _folder_key(job.folder_path) != job.folder:
         raise FolderChangedError(f"{job.folder_path} changed or moved while the job waited: start it again.")
+
+
+def _outcome(e: BaseException, cancelled: bool) -> tuple[str, str | None]:
+    """A job's status and error once it raised `e`: an unknown outcome first, whether or not it was cancelled."""
+    unknown = _unknown_outcome(e)
+    if unknown is not None:
+        _write_traceback(e)
+        return "unknown_outcome", f"{UNKNOWN_OUTCOME} ({unknown})"
+    if cancelled or all(isinstance(leaf, asyncio.CancelledError) for leaf in _leaves(e)):
+        return "cancelled", None
+    return "failed", _failure(e)
 
 
 def _folder_key(folder: str) -> tuple[int, int] | str:
@@ -260,7 +316,7 @@ class JobManager:
                 thread.start()
             except RuntimeError:
                 # No thread to be had for this job: it ends, and its slot goes to the next.
-                job.status = "error"
+                job.status = "failed"
                 job.error = "Failed to start the worker thread."
                 self._running.discard(job)
                 self._finish(job)
@@ -285,7 +341,7 @@ class JobManager:
         loop = cast("asyncio.BaseEventLoop", asyncio.new_event_loop())
         job._thread_loop = loop
         # Set on the server's loop once the workers the job left have ended, as the job holds its slot till then.
-        status, error, result = "error", None, None
+        status, error, result = "failed", None, None
         try:
             _check_folder(job)
             with job._lock:
@@ -293,17 +349,12 @@ class JobManager:
                     raise asyncio.CancelledError()
                 # Before the task is made: it takes the context, and with it where its output goes.
                 with output.to(interaction.lines.write):
-                    task = loop.create_task(_in_click_context(factory(job)))
+                    task = loop.create_task(_in_click_context(_recorded(factory(job))))
                 job._thread_task = task
             result = loop.run_until_complete(task)
             status = "done"
-        except (asyncio.CancelledError, concurrent.futures.CancelledError):
-            status = "cancelled"
         except BaseException as e:  # noqa: BLE001 - single funnel for job errors
-            if interaction.cancel_requested.is_set():
-                status = "cancelled"
-            else:
-                error = _failure(e)
+            status, error = _outcome(e, interaction.cancel_requested.is_set())
         finally:
             reset_progress_callback(progress_token)
             set_interaction(None)
@@ -401,7 +452,7 @@ class JobManager:
 
     def cancel(self, job_id: str) -> bool:
         job = self.jobs.get(job_id)
-        if job is None or job.status not in {"queued", "running"}:
+        if job is None or job.status in FINISHED:
             return False
         if job in self._queue:
             del self._queue[job]
@@ -442,7 +493,7 @@ class JobManager:
                     queue.put_nowait(event)
 
     def _prune_finished(self) -> None:
-        finished = [j for j in self.jobs.values() if j.status in {"done", "error", "cancelled"}]
+        finished = [j for j in self.jobs.values() if j.status in FINISHED]
         if len(finished) <= MAX_FINISHED_JOBS:
             return
         for job in finished[: len(finished) - MAX_FINISHED_JOBS]:

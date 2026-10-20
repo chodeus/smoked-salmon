@@ -12,6 +12,7 @@ from webui_client import reset_manager, web_client  # pyright: ignore[reportMiss
 
 import salmon.trackers
 from salmon import cfg
+from salmon.webui.jobs import FINISHED
 
 
 @pytest.fixture(autouse=True)
@@ -303,7 +304,7 @@ def test_cross_upload_reconfines_the_path_when_the_job_starts(client, two_tracke
     r = client.post("/api/cross-upload", json={"path": album, "source": source, "target": target})
     assert r.status_code == 200, r.text
     body = _wait(client, r.json()["id"])
-    assert body["status"] == "error"
+    assert body["status"] == "failed"
     assert "Refusing" in (body.get("error") or "")
     assert calls == [], "the command must not run once the path fails confinement"
 
@@ -360,7 +361,7 @@ def test_a_cross_upload_that_stops_fails_its_job_saying_so(client, two_trackers,
         raise click.exceptions.Exit(1)
 
     job, _ = _cross_upload_job(client, two_trackers, monkeypatch, {}, stop)
-    assert job["status"] == "error"
+    assert job["status"] == "failed"
     assert "the cross-upload stopped: its output above says why" in job["error"]
 
 
@@ -534,14 +535,14 @@ def test_compress_reports_a_failed_recompress_as_an_error(client, album, monkeyp
     r = client.post("/api/convert/compress", json={"path": album})
     assert r.status_code == 200, r.text
     body = _wait(client, r.json()["id"])
-    assert body["status"] == "error"
+    assert body["status"] == "failed"
     assert "Failed to recompress 1 file(s)." in (body.get("error") or "")
 
 
 def _wait(client, job_id, tries=200):
     for _ in range(tries):
         body = client.get(f"/api/jobs/{job_id}").json()
-        if body["status"] in {"done", "error", "cancelled"}:
+        if body["status"] in FINISHED:
             return body
         time.sleep(0.01)
     raise AssertionError("job did not finish")

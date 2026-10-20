@@ -483,7 +483,7 @@ async def test_abort_at_source_prompt_errors_job_and_releases_lock(jm, tracker, 
     await drive(job, [("What is the source of this release?", "a")])
     await join_job(job)
 
-    assert job.status == "error"
+    assert job.status == "failed"
     assert job.error == "Aborted."
     assert job.result is None
     assert job.question is None
@@ -495,7 +495,7 @@ async def test_abort_at_dupe_choice_is_swallowed_by_the_pipeline(jm, tracker, al
     """Deviation from the wishlist: upload() catches click.Abort raised at the
     dupe-choice prompt internally and returns after logging "Aborting
     upload..." — so at job level this is a clean 'done', not an error. The
-    'Aborted.' error status is only reachable from prompts outside upload()'s
+    'Aborted.' failed status is only reachable from prompts outside upload()'s
     try block (see the source-prompt test above)."""
     m = jm()
     path = str(album_dir)
@@ -668,7 +668,7 @@ async def test_an_unanswered_question_stops_the_job_and_frees_its_lock(jm, monke
     job = m.create_threaded("demo", "Demo", factory, lock_key="/albums/z")
     await join_job(job)
 
-    assert job.status == "error"
+    assert job.status == "failed"
     assert job.error == interaction_mod.no_answer()
     assert job.question is None
     assert "/albums/z" not in m._active_lock_keys
@@ -1125,7 +1125,7 @@ async def test_skip_flac_upload_removes_the_copy_on_an_error(skip_flac_run):
 
     job = await skip_flac_run.start(source, _rename_script(False))
 
-    assert job.status == "error"
+    assert job.status == "failed"
     assert "decoder crashed" in job.error
     assert _staged_copies(skip_flac_run.downloads) == []
     assert _snapshot(source) == before
@@ -1187,5 +1187,5 @@ async def test_an_unanswered_question_inside_the_upload_stops_the_job_as_unanswe
     # The next question (the existing group) is left unanswered.
     await join_job(job)
 
-    assert (job.status, job.error) == ("error", interaction_mod.no_answer())
+    assert (job.status, job.error) == ("failed", interaction_mod.no_answer())
     assert path not in m._active_lock_keys

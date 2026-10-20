@@ -33,6 +33,7 @@ from salmon.errors import (
     UploadError,
 )
 from salmon.images import upload_spectrals as upload_spectral_imgs
+from salmon.uploader import record
 from salmon.uploader.frequency import assess, generate_frequency_plots
 from salmon.web import create_app_async, spectrals
 
@@ -763,7 +764,8 @@ async def report_lossy_master(
         return
     try:
         await gazelle_site.report_lossy_master(torrent_id, comment, source)
-    except UnknownOutcomeError:
+    except UnknownOutcomeError as err:
+        record.note_unknown_outcome(err)
         # A report has no tracker-side dedupe, so it is never sent twice.
         click.secho(
             "\nCould not tell whether the Lossy Master/WEB report was filed. Check "
@@ -882,6 +884,7 @@ async def post_upload_spectral_check(
         try:
             await gazelle_site.append_to_torrent_description(torrent_id, spectrals_bbcode)
         except UnknownOutcomeError as err:
+            record.note_unknown_outcome(err)
             click.secho(
                 f"\nCould not tell whether {gazelle_site.site_string} took the description edit for {permalink} "
                 f"({err}): check the description before pasting this in by hand:",

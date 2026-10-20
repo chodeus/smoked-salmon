@@ -34,12 +34,13 @@ from torf import Torrent
 
 import salmon.trackers
 from salmon import cfg
+from salmon.trackers import base as tracker_base
 from salmon.trackers.red import RedApi
 from salmon.uploader import upload as run_upload
 from salmon.uploader.upload import concat_track_data, prepare_and_upload
 from salmon.webui import output
 from salmon.webui.interaction import install_interaction_patches
-from salmon.webui.jobs import JobManager
+from salmon.webui.jobs import UNKNOWN_OUTCOME, JobManager
 
 POLL = 0.005
 DEADLINE = 15.0
@@ -450,7 +451,7 @@ async def test_happy_path_uploads_over_real_http(jm, album_dir, upload_world, st
 async def test_upload_rejection_propagates_request_error_to_job(jm, album_dir, start_gazelle, dot_torrents_dir):
     """action=upload answered with {"status": "failure", ...} -> the real HTTP
     layer (api_key_upload) raises RequestError with the site's message and
-    the job ends status='error' mentioning 'already uploaded'.
+    the job ends status='failed' mentioning 'already uploaded'.
 
     Deviation note: the full upload() wizard deliberately catches RequestError
     per tracker (`except RequestError` in salmon/uploader/__init__.py) so its
@@ -501,7 +502,7 @@ async def test_upload_rejection_propagates_request_error_to_job(jm, album_dir, s
     job = m.create_threaded("upload", "Upload to RED", factory, lock_key=path)
     await join_job(job)
 
-    assert job.status == "error"
+    assert job.status == "failed"
     assert job.error is not None
     assert job.error.startswith("RequestError")
     assert "already uploaded" in job.error
@@ -509,6 +510,48 @@ async def test_upload_rejection_propagates_request_error_to_job(jm, album_dir, s
     assert rejections["count"] == 1  # the POST really went over the wire
     assert app[UPLOADS] == []  # and the site recorded nothing
     assert path not in m._active_lock_keys
+
+
+async def test_an_upload_whose_answer_is_lost_ends_the_job_as_an_unknown_outcome(
+    jm, album_dir, upload_world, start_gazelle, dot_torrents_dir, monkeypatch
+):
+    """The upload POST is answered 502 and both lookups by infohash find nothing: the run goes on, as salmon up does,
+    and the job ends saying the upload may be on the tracker."""
+    monkeypatch.setattr(tracker_base, "_LOST_UPLOAD_FIRST_WAIT", 0)
+    monkeypatch.setattr(tracker_base, "_LOST_UPLOAD_SECOND_WAIT", 0)
+    app = make_fake_gazelle(browse_results=[dict(SEARCH_RESULT)])
+    sent = {"uploads": 0, "lookups": 0}
+
+    @web.middleware
+    async def lose_the_answer(request, handler):
+        if request.method == "POST" and request.query.get("action") == "upload":
+            sent["uploads"] += 1
+            return web.Response(status=502, text="Bad gateway")
+        if request.query.get("action") == "torrent":
+            sent["lookups"] += 1
+        return await handler(request)
+
+    app.middlewares.append(lose_the_answer)
+    base_url = await start_gazelle(app)
+    m = jm()
+    path = str(album_dir)
+    job = m.create_threaded(
+        "upload", "Upload to RED", http_wizard_factory(base_url, dot_torrents_dir, path), lock_key=path
+    )
+
+    await drive(job, HAPPY_PATH_SCRIPT[:5] + HAPPY_PATH_SCRIPT[6:])
+    await join_job(job)
+
+    assert job.status == "unknown_outcome", (job.error, job.log_lines)
+    assert job.error is not None
+    assert job.error.startswith(UNKNOWN_OUTCOME)
+    assert "check your uploads on RED before uploading it again" in job.error
+    assert job.result is None
+    assert any(
+        line.startswith("Upload to RED failed: Could not tell whether RED took the upload") for line in job.log_lines
+    )
+    # Sent once, never again: looked up by its infohash twice.
+    assert sent == {"uploads": 1, "lookups": 2}
 
 
 # ---------------------------------------------------------------------------
