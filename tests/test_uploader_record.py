@@ -3,6 +3,7 @@
 from typing import Any, cast
 
 from salmon.errors import UnknownOutcomeError
+from salmon.uploader import record as record_module
 from salmon.uploader import spectrals
 from salmon.uploader.record import recording
 
@@ -47,7 +48,8 @@ async def test_a_description_edit_whose_answer_is_lost_is_recorded(monkeypatch, 
 
 
 async def test_nothing_is_kept_outside_a_recording():
-    await spectrals.report_lossy_master(cast("Any", Site(UnknownOutcomeError("lost"))), 77, None, None, "WEB", "x")
-    with recording() as record:
+    with recording() as earlier:
         pass
-    assert record.unknown_outcomes == []
+    await spectrals.report_lossy_master(cast("Any", Site(UnknownOutcomeError("lost"))), 77, None, None, "WEB", "x")
+    assert earlier.unknown_outcomes == []
+    assert record_module._record.get() is None
