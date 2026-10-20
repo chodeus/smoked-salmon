@@ -103,7 +103,8 @@ def test_image_upload_rejects_unknown_host(client, album):
 
 
 def test_descgen_requires_at_least_one_url(client):
-    assert client.post("/api/descgen", json={"urls": []}).status_code == 422
+    refused = client.post("/api/descgen", json={"urls": []})
+    assert refused.status_code == 422
 
 
 def test_compress_refuses_a_path_outside_the_roots(client):
@@ -174,7 +175,8 @@ def test_compress_refuses_a_read_only_library_source(client, tmp_path, monkeypat
     os.makedirs(album, exist_ok=True)
     monkeypatch.setattr(cfg.directory, "library_dirs", [lib])
 
-    assert client.post("/api/convert/compress", json={"path": album}).status_code == 403
+    refused = client.post("/api/convert/compress", json={"path": album})
+    assert refused.status_code == 403
 
 
 def test_compress_refuses_an_album_with_a_hardlinked_file(client, tmp_path, monkeypatch) -> None:
@@ -231,14 +233,16 @@ def test_offered_sources_match_the_canonical_set(client) -> None:
 
 
 def test_upload_rejects_a_source_the_tagger_would_reject(client, album) -> None:
-    assert client.post("/api/upload", json={"path": album, "tracker": "RED", "source": "Blu-Ray"}).status_code == 422
+    refused = client.post("/api/upload", json={"path": album, "tracker": "RED", "source": "Blu-Ray"})
+    assert refused.status_code == 422
 
 
 def test_descgen_caps_the_number_of_urls(client) -> None:
     from salmon.webui.routers.tools import MAX_DESCGEN_URLS
 
     too_many = [f"https://example.com/{i}" for i in range(MAX_DESCGEN_URLS + 1)]
-    assert client.post("/api/descgen", json={"urls": too_many}).status_code == 422
+    refused = client.post("/api/descgen", json={"urls": too_many})
+    assert refused.status_code == 422
 
 
 def test_descgen_refuses_internal_addresses(client) -> None:

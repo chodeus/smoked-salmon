@@ -89,7 +89,8 @@ async def drive(job, script, timeout=DEADLINE):
             )
         seen.append(question)
         last_id = question["id"]
-        assert job.interaction.answer(question["id"], answer) is True
+        answered = job.interaction.answer(question["id"], answer)
+        assert answered is True
         idx += 1
     else:
         raise AssertionError(

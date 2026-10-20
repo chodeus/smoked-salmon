@@ -9,6 +9,8 @@ def test_subscriber_cap_returns_none(monkeypatch):
     m = JobManager()
     first = m.subscribe()
     assert first is not None
-    assert m.subscribe() is None  # over the cap
+    over_cap = m.subscribe()
+    assert over_cap is None  # over the cap
     m.unsubscribe(first)
-    assert m.subscribe() is not None  # freed up again
+    freed = m.subscribe()
+    assert freed is not None  # freed up again

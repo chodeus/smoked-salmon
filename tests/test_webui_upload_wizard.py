@@ -101,7 +101,8 @@ async def drive(job, script, timeout=DEADLINE):
             )
         seen.append(question)
         last_id = question["id"]
-        assert job.interaction.answer(question["id"], answer) is True
+        answered = job.interaction.answer(question["id"], answer)
+        assert answered is True
         idx += 1
     else:
         raise AssertionError(
@@ -578,16 +579,20 @@ async def test_answer_validation_wrong_id_rejected_right_id_accepted(jm):
     job = m.create_threaded("demo", "Demo", factory)
     question = await wait_for(lambda: job.question, "question to appear")
 
-    assert m.answer("job-does-not-exist", question["id"], "x") is False
-    assert job.interaction.answer("q-bogus", "x") is False
+    answered = m.answer("job-does-not-exist", question["id"], "x")
+    assert answered is False
+    answered = job.interaction.answer("q-bogus", "x")
+    assert answered is False
     assert job.question is not None  # still pending after bad answers
-    assert job.interaction.answer(question["id"], "the answer") is True
+    answered = job.interaction.answer(question["id"], "the answer")
+    assert answered is True
 
     await join_job(job)
     assert job.status == "done"
     assert job.result == "the answer"
     # Stale answers after the question was consumed are rejected too.
-    assert job.interaction.answer(question["id"], "late") is False
+    answered = job.interaction.answer(question["id"], "late")
+    assert answered is False
 
 
 async def test_confirm_questions_accept_boolean_and_string_answers(jm):
@@ -632,7 +637,8 @@ async def test_cancel_while_async_prompt_pending_cancels_job_and_frees_lock(jm):
     job = m.create_threaded("demo", "Demo", factory, lock_key="/albums/x")
     await wait_for(lambda: job.question, "question to appear")
 
-    assert m.cancel(job.id) is True
+    cancelled = m.cancel(job.id)
+    assert cancelled is True
     await join_job(job)
 
     assert job.status == "cancelled"
@@ -687,7 +693,8 @@ async def test_cancel_while_sync_confirm_pending_clears_question_and_lock(jm):
     job = m.create_threaded("demo", "Demo", factory, lock_key="/albums/y")
     await wait_for(lambda: job.question, "question to appear")
 
-    assert m.cancel(job.id) is True
+    cancelled = m.cancel(job.id)
+    assert cancelled is True
     await join_job(job)
 
     assert job.status in {"cancelled", "error"}  # currently: "error" (see docstring)
@@ -732,10 +739,13 @@ async def test_same_path_conflicts_and_distinct_paths_run_concurrently(jm):
     assert "Alpha question" in job_a.question["text"]
     assert "Beta question" in job_b.question["text"]
     # Answers are scoped: job B rejects job A's question id.
-    assert job_b.interaction.answer(job_a.question["id"], "x") is False
+    answered = job_b.interaction.answer(job_a.question["id"], "x")
+    assert answered is False
 
-    assert job_a.interaction.answer(job_a.question["id"], "from a") is True
-    assert job_b.interaction.answer(job_b.question["id"], "from b") is True
+    answered = job_a.interaction.answer(job_a.question["id"], "from a")
+    assert answered is True
+    answered = job_b.interaction.answer(job_b.question["id"], "from b")
+    assert answered is True
     await join_job(job_a)
     await join_job(job_b)
 
@@ -846,8 +856,10 @@ def test_http_answer_endpoint_and_spectral_serving(client, tmp_path):
     assert resp.status_code == 200
     assert resp.content == b"PNG-FULL"
     assert resp.headers["content-type"] == "image/png"
-    assert client.get(f"/api/jobs/{job.id}/spectral/nope.png").status_code == 404
-    assert client.get("/api/jobs/job-unknown/spectral/01-full.png").status_code == 404
+    refused = client.get(f"/api/jobs/{job.id}/spectral/nope.png")
+    assert refused.status_code == 404
+    refused = client.get("/api/jobs/job-unknown/spectral/01-full.png")
+    assert refused.status_code == 404
 
     unknown_job = client.post("/api/jobs/job-unknown/answer", json={"question_id": question["id"], "value": True})
     assert unknown_job.status_code == 404

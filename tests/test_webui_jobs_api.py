@@ -809,7 +809,8 @@ def test_cancel_finished_job_returns_409(client, album_dir, integrity_stub):
     resp = client.post("/api/checks/run", json={"path": str(album_dir), "checks": ["integrity"]})
     assert resp.status_code == 200
     job_id = resp.json()["id"]
-    assert join_job(client, job_id)["status"] == "done"
+    ended = join_job(client, job_id)
+    assert ended["status"] == "done"
 
     resp = client.post(f"/api/jobs/{job_id}/cancel")
     assert resp.status_code == 409
@@ -880,7 +881,8 @@ def test_spectrals_generate_allowed_for_a_library_album(client, library_album, s
     # The images go to tmp_dir, so the album being read-only is irrelevant.
     resp = client.post("/api/spectrals/generate", json={"path": str(library_album)})
     assert resp.status_code == 200
-    assert join_job(client, resp.json()["id"])["status"] == "done"
+    ended = join_job(client, resp.json()["id"])
+    assert ended["status"] == "done"
     # The vetted destination is the one handed to create_specs_folder, and it is outside the library.
     assert specs_requests == [get_spectrals_path(str(library_album))]
     assert not cfg.directory.is_library_path(specs_requests[0])
@@ -957,11 +959,13 @@ def test_spectrals_generate_second_post_on_same_path_waits_its_turn(client, albu
     cancelled = client.post(f"/api/jobs/{job_id}/cancel")
     assert cancelled.status_code == 200
     assert cancelled.json() == {"cancelled": job_id}
-    assert join_job(client, job_id)["status"] == "cancelled"
+    ended = join_job(client, job_id)
+    assert ended["status"] == "cancelled"
     wait_task(new_id)
     assert manager.jobs[new_id].status == "running"
     client.post(f"/api/jobs/{new_id}/cancel")
-    assert join_job(client, new_id)["status"] == "cancelled"
+    ended = join_job(client, new_id)
+    assert ended["status"] == "cancelled"
 
 
 def test_spectrals_endpoints_on_unfinished_job_return_404(client, album_dir, hanging_spectral_stubs):
@@ -1142,7 +1146,8 @@ def test_transcode_and_downconvert_on_one_folder_take_turns(client, album_dir, m
 
     wait_task(job_id)
     client.post(f"/api/jobs/{job_id}/cancel")
-    assert join_job(client, job_id)["status"] == "cancelled"
+    ended = join_job(client, job_id)
+    assert ended["status"] == "cancelled"
     data = join_job(client, after.json()["id"])
     assert data["status"] == "done"
     assert data["result"] == {"output_path": f"{album_dir} [16-44]"}
@@ -1346,7 +1351,8 @@ def test_discard_endpoint_empties_the_job_result(client, tmp_path, monkeypatch):
 
 
 def test_discard_endpoint_404s_for_an_unknown_job(client):
-    assert client.delete("/api/spectrals/job-does-not-exist").status_code == 404
+    refused = client.delete("/api/spectrals/job-does-not-exist")
+    assert refused.status_code == 404
 
 
 def test_evicting_a_finished_job_runs_its_cleanup(monkeypatch, tmp_path):
