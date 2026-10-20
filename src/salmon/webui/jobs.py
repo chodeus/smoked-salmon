@@ -97,15 +97,20 @@ def _leaves(error: BaseException) -> list[BaseException]:
 
 
 def _unknown_outcome(error: BaseException) -> UnknownOutcomeError | None:
-    """The UnknownOutcomeError behind `error`, raised as it is, in a group or as the cause of another."""
-    for leaf in _leaves(error):
-        seen: BaseException | None = leaf
-        walked: set[int] = set()
-        while seen is not None and id(seen) not in walked:
-            if isinstance(seen, UnknownOutcomeError):
-                return seen
-            walked.add(id(seen))
-            seen = seen.__cause__ or seen.__context__
+    """The first UnknownOutcomeError behind `error`: itself, in a group, or anywhere among its causes and contexts."""
+    pending: list[BaseException] = [error]
+    walked: set[int] = set()
+    while pending:
+        seen = pending.pop()
+        if id(seen) in walked:
+            continue
+        walked.add(id(seen))
+        if isinstance(seen, UnknownOutcomeError):
+            return seen
+        members = seen.exceptions if isinstance(seen, BaseExceptionGroup) else ()
+        linked = [*members, seen.__cause__, seen.__context__]
+        # Reversed onto the stack: a group's members in order, each one's cause before its context.
+        pending.extend(reversed([each for each in linked if each is not None]))
     return None
 
 

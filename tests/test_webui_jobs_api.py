@@ -855,6 +855,35 @@ async def test_an_unknown_outcome_gets_a_status_of_its_own(error):
     assert job.error.startswith(UNKNOWN_OUTCOME)
 
 
+@pytest.mark.parametrize("behind", ["the context, under a cause", "a group, as the cause", "the first of two"])
+async def test_the_first_unknown_outcome_anywhere_behind_the_error_is_found(behind):
+    async def run(job):
+        lost = UnknownOutcomeError("Network error: timed out")
+        if behind == "a group, as the cause":
+            raise RuntimeError("upload failed") from ExceptionGroup("tasks", [lost])
+        if behind == "the first of two":
+            first = RuntimeError("upload failed")
+            first.__cause__ = lost
+            raise ExceptionGroup("tasks", [first, UnknownOutcomeError("Server error 502")])
+        try:
+            raise lost
+        except UnknownOutcomeError:
+            raise RuntimeError("upload failed") from ValueError("its answer was not JSON")
+
+    job = await finished(JobManager().create_threaded("unknown", "Unknown", run))
+    assert (job.status, job.error) == ("unknown_outcome", f"{UNKNOWN_OUTCOME} (Network error: timed out)")
+
+
+async def test_an_error_chain_that_loops_back_ends_failed():
+    async def run(job):
+        first, second = RuntimeError("first"), ValueError("second")
+        first.__cause__, second.__context__ = second, first
+        raise first
+
+    job = await finished(JobManager().create_threaded("demo", "Demo", run))
+    assert job.status == "failed"
+
+
 async def test_a_job_whose_awaited_task_was_cancelled_ends_cancelled_with_no_cancel_asked():
     async def run(job):
         inner = asyncio.create_task(asyncio.sleep(15))
