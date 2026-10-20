@@ -18,6 +18,8 @@ tests for the answer endpoint and spectral image serving).
 """
 
 import asyncio
+import contextlib
+import io
 import os
 import shutil
 import time
@@ -27,7 +29,7 @@ from types import SimpleNamespace
 import asyncclick as click
 import pytest
 from torf import Torrent
-from webui_client import web_client  # pyright: ignore[reportMissingImports]
+from webui_client import reset_manager, web_client  # pyright: ignore[reportMissingImports]
 
 import salmon.tagger.pre_data
 import salmon.trackers
@@ -36,6 +38,7 @@ from salmon import cfg
 from salmon.constants import RELEASE_TYPES
 from salmon.uploader import upload as run_upload
 from salmon.webui import interaction as interaction_mod
+from salmon.webui import output
 from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.jobs import JobConflictError, JobManager
 from salmon.webui.jobs import manager as global_manager
@@ -98,7 +101,8 @@ async def drive(job, script, timeout=DEADLINE):
             )
         seen.append(question)
         last_id = question["id"]
-        assert job.interaction.answer(question["id"], answer) is True
+        answered = job.interaction.answer(question["id"], answer)
+        assert answered is True
         idx += 1
     else:
         raise AssertionError(
@@ -135,22 +139,26 @@ def _interaction_patches():
 
 @pytest.fixture
 def jm():
-    """Factory for isolated JobManagers; cancels/joins leftover jobs on teardown."""
+    """Factory for isolated JobManagers whose jobs print to their logs; cancels/joins leftover jobs on teardown."""
     managers = []
+    with contextlib.ExitStack() as capture:
 
-    def make() -> JobManager:
-        m = JobManager()
-        managers.append(m)
-        return m
+        def make() -> JobManager:
+            if not managers:
+                # As salmon web does while it serves; from the test itself, as pytest resets sys.stdout per phase.
+                capture.enter_context(output.capturing())
+            m = JobManager()
+            managers.append(m)
+            return m
 
-    yield make
-    for m in managers:
-        for job in list(m.jobs.values()):
-            if job.finished_at is None:
-                m.cancel(job.id)
-        for job in m.jobs.values():
-            if job.thread is not None:
-                job.thread.join(timeout=5)
+        yield make
+        for m in managers:
+            for job in list(m.jobs.values()):
+                if job.finished_at is None:
+                    m.cancel(job.id)
+            for job in m.jobs.values():
+                if job.thread is not None:
+                    job.thread.join(timeout=5)
 
 
 TRACK_FILES = ["01. Intro.flac", "02. Mittelteil.flac", "03. Outro.flac"]
@@ -571,16 +579,20 @@ async def test_answer_validation_wrong_id_rejected_right_id_accepted(jm):
     job = m.create_threaded("demo", "Demo", factory)
     question = await wait_for(lambda: job.question, "question to appear")
 
-    assert m.answer("job-does-not-exist", question["id"], "x") is False
-    assert job.interaction.answer("q-bogus", "x") is False
+    answered = m.answer("job-does-not-exist", question["id"], "x")
+    assert answered is False
+    answered = job.interaction.answer("q-bogus", "x")
+    assert answered is False
     assert job.question is not None  # still pending after bad answers
-    assert job.interaction.answer(question["id"], "the answer") is True
+    answered = job.interaction.answer(question["id"], "the answer")
+    assert answered is True
 
     await join_job(job)
     assert job.status == "done"
     assert job.result == "the answer"
     # Stale answers after the question was consumed are rejected too.
-    assert job.interaction.answer(question["id"], "late") is False
+    answered = job.interaction.answer(question["id"], "late")
+    assert answered is False
 
 
 async def test_confirm_questions_accept_boolean_and_string_answers(jm):
@@ -625,7 +637,8 @@ async def test_cancel_while_async_prompt_pending_cancels_job_and_frees_lock(jm):
     job = m.create_threaded("demo", "Demo", factory, lock_key="/albums/x")
     await wait_for(lambda: job.question, "question to appear")
 
-    assert m.cancel(job.id) is True
+    cancelled = m.cancel(job.id)
+    assert cancelled is True
     await join_job(job)
 
     assert job.status == "cancelled"
@@ -662,15 +675,7 @@ async def test_an_unanswered_question_stops_the_job_and_frees_its_lock(jm, monke
 
 
 async def test_cancel_while_sync_confirm_pending_clears_question_and_lock(jm):
-    """BUG (pinned): cancelling while a *sync* question (confirm/edit) is
-    pending currently ends the job in status 'error' ("CancelledError: ")
-    rather than 'cancelled': WebInteraction.cancel_pending() cancels a
-    concurrent.futures.Future, and on this Python
-    concurrent.futures.CancelledError is a plain Exception subclass — NOT
-    asyncio.CancelledError — so _thread_main's `except asyncio.CancelledError`
-    misses it and _record_failure runs instead. The important invariants
-    (question cleared, lock released, thread stopped) do hold; this test
-    accepts either status so it stays green once the code is fixed."""
+    """A sync question's future is a concurrent.futures one: its CancelledError still ends the job as cancelled."""
     m = jm()
 
     async def factory(job):
@@ -680,12 +685,11 @@ async def test_cancel_while_sync_confirm_pending_clears_question_and_lock(jm):
     job = m.create_threaded("demo", "Demo", factory, lock_key="/albums/y")
     await wait_for(lambda: job.question, "question to appear")
 
-    assert m.cancel(job.id) is True
+    cancelled = m.cancel(job.id)
     await join_job(job)
 
-    assert job.status in {"cancelled", "error"}  # currently: "error" (see docstring)
-    if job.status == "error":
-        assert job.error.startswith("CancelledError")
+    assert cancelled is True
+    assert job.status == "cancelled"
     assert job.question is None
     assert job.result is None
     assert "/albums/y" not in m._active_lock_keys
@@ -725,10 +729,13 @@ async def test_same_path_conflicts_and_distinct_paths_run_concurrently(jm):
     assert "Alpha question" in job_a.question["text"]
     assert "Beta question" in job_b.question["text"]
     # Answers are scoped: job B rejects job A's question id.
-    assert job_b.interaction.answer(job_a.question["id"], "x") is False
+    answered = job_b.interaction.answer(job_a.question["id"], "x")
+    assert answered is False
 
-    assert job_a.interaction.answer(job_a.question["id"], "from a") is True
-    assert job_b.interaction.answer(job_b.question["id"], "from b") is True
+    answered = job_a.interaction.answer(job_a.question["id"], "from a")
+    assert answered is True
+    answered = job_b.interaction.answer(job_b.question["id"], "from b")
+    assert answered is True
     await join_job(job_a)
     await join_job(job_b)
 
@@ -742,26 +749,20 @@ async def test_same_path_conflicts_and_distinct_paths_run_concurrently(jm):
 # ---------------------------------------------------------------------------
 
 
-async def test_secho_streams_to_job_log_and_cli_context_uses_original(jm, monkeypatch):
-    printed = []
-    monkeypatch.setitem(interaction_mod._originals, "secho", lambda message=None, **kw: printed.append(message))
-
+async def test_secho_goes_to_the_job_log_only_and_the_cli_prints_as_ever():
     async def factory(job):
         click.secho("streamed to the browser", fg="cyan")
         return "ok"
 
-    m = jm()
-    job = m.create_threaded("demo", "Demo", factory)
-    await join_job(job)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), output.capturing():
+        job = JobManager().create_threaded("demo", "Demo", factory)
+        await join_job(job)
+        # Outside any job (CLI context): printed as ever, and no job log.
+        click.secho("plain cli line")
 
-    # Inside a web job: captured in the job log AND still passed to the original.
-    assert "streamed to the browser" in job.log_lines
-    assert printed == ["streamed to the browser"]
-
-    # Outside any job (CLI context): only the original prints, no job log.
-    click.secho("plain cli line")
-    assert printed == ["streamed to the browser", "plain cli line"]
-    assert "plain cli line" not in job.log_lines
+    assert job.log_lines == ["streamed to the browser"]
+    assert out.getvalue() == "plain cli line\n"
 
 
 # ---------------------------------------------------------------------------
@@ -804,9 +805,7 @@ async def test_edit_and_raw_input_seams(jm):
 
 @pytest.fixture
 def client():
-    global_manager.jobs.clear()
-    global_manager._subscribers.clear()
-    global_manager._active_lock_keys.clear()
+    reset_manager()
     with web_client() as c:
         try:
             yield c
@@ -817,9 +816,7 @@ def client():
             for job in global_manager.jobs.values():
                 if job.thread is not None:
                     job.thread.join(timeout=5)
-    global_manager.jobs.clear()
-    global_manager._subscribers.clear()
-    global_manager._active_lock_keys.clear()
+    reset_manager()
 
 
 def test_http_answer_endpoint_and_spectral_serving(client, tmp_path):
@@ -849,8 +846,10 @@ def test_http_answer_endpoint_and_spectral_serving(client, tmp_path):
     assert resp.status_code == 200
     assert resp.content == b"PNG-FULL"
     assert resp.headers["content-type"] == "image/png"
-    assert client.get(f"/api/jobs/{job.id}/spectral/nope.png").status_code == 404
-    assert client.get("/api/jobs/job-unknown/spectral/01-full.png").status_code == 404
+    refused = client.get(f"/api/jobs/{job.id}/spectral/nope.png")
+    assert refused.status_code == 404
+    refused = client.get("/api/jobs/job-unknown/spectral/01-full.png")
+    assert refused.status_code == 404
 
     unknown_job = client.post("/api/jobs/job-unknown/answer", json={"question_id": question["id"], "value": True})
     assert unknown_job.status_code == 404

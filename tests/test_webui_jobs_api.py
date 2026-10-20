@@ -13,27 +13,41 @@ import contextlib
 import io
 import os
 import pathlib
+import threading
+import time
+import unicodedata
+from collections.abc import Callable, Coroutine
+from typing import TYPE_CHECKING, Any, cast
 
 import asyncclick as click
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 from starlette.websockets import WebSocketDisconnect
-from webui_client import web_client  # pyright: ignore[reportMissingImports]
+from webui_client import reset_manager, web_client  # pyright: ignore[reportMissingImports]
 
 from salmon import cfg
 from salmon.checks.integrity import IntegrityResult
 from salmon.common.progress import report_progress
+from salmon.trackers import base as tracker_base
 from salmon.uploader.frequency import SpectrumResult
 from salmon.uploader.spectrals import get_spectrals_path
+from salmon.webui import egress
+from salmon.webui import jobs as jobs_mod
+from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.jobs import (
     MAX_FINISHED_JOBS,
+    MAX_JOBS,
     SUBSCRIBER_QUEUE_SIZE,
     Job,
+    JobCapacityError,
     JobConflictError,
     JobManager,
     manager,
 )
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 # The bind address under test: nothing is served on it.
 LAN_BIND = "0.0.0.0"  # nosec B104
@@ -49,11 +63,6 @@ def _png(shade: int) -> bytes:
 PNG1, PNG2, PNGF = _png(1), _png(2), _png(3)
 
 
-def task_of(job) -> asyncio.Task:
-    assert job.task is not None
-    return job.task
-
-
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
@@ -62,13 +71,9 @@ def task_of(job) -> asyncio.Task:
 @pytest.fixture(autouse=True)
 def clean_manager():
     """Isolate tests from the module-level singleton the routers use."""
-    manager.jobs.clear()
-    manager._subscribers.clear()
-    manager._active_lock_keys.clear()
+    reset_manager()
     yield
-    manager.jobs.clear()
-    manager._subscribers.clear()
-    manager._active_lock_keys.clear()
+    reset_manager()
 
 
 @pytest.fixture
@@ -79,32 +84,60 @@ def client():
 
 
 def join_job(client: TestClient, job_id: str) -> dict:
-    """Wait for a job (loop task or worker thread) to finish; return its dict."""
+    """Wait for a job to finish and its worker thread to end; return its dict."""
     job = manager.jobs[job_id]
+    deadline = time.monotonic() + 15
+    while job.finished_at is None and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert job.finished_at is not None, f"job {job_id} did not finish: {job.status}"
     if job.thread is not None:
         job.thread.join(timeout=15)
         assert not job.thread.is_alive(), f"job {job_id} thread did not finish"
-    else:
-
-        async def _wait() -> None:
-            assert job.task is not None
-            with contextlib.suppress(asyncio.CancelledError):
-                await task_of(job)
-
-        assert client.portal is not None
-        client.portal.call(_wait)
     resp = client.get(f"/api/jobs/{job_id}")
     assert resp.status_code == 200
     return resp.json()
 
 
-async def wait_running(job: Job) -> None:
-    """Yield to the loop (no timed sleeps) until the job reports running."""
-    for _ in range(1000):
-        if job.status == "running":
-            return
-        await asyncio.sleep(0)
-    raise AssertionError(f"job never reached running, status={job.status}")
+def wait_task(job_id: str) -> None:
+    """Until the job's task runs on its thread's loop, so that a cancel reaches it."""
+    deadline = time.monotonic() + 15
+    while manager.jobs[job_id]._thread_task is None:
+        assert time.monotonic() < deadline, f"job {job_id} never started its task"
+        time.sleep(0.005)
+
+
+async def until(condition: Callable[[], object], what: str) -> None:
+    """Yield to the loop until `condition` holds."""
+    deadline = time.monotonic() + 15
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out waiting for {what}")
+        await asyncio.sleep(0.005)
+
+
+async def finished(job: Job) -> Job:
+    """Yield to the loop until the job has finished and its worker thread ended."""
+    await until(
+        lambda: job.finished_at is not None and (job.thread is None or not job.thread.is_alive()),
+        f"{job.id} to finish (status {job.status})",
+    )
+    return job
+
+
+async def task_started(job: Job) -> None:
+    """Until the job's task runs on its thread's loop, so that a cancel reaches it."""
+    await until(lambda: job._thread_task is not None, f"{job.id} to start its task")
+
+
+def gated() -> tuple[threading.Event, Callable[[Job], Coroutine[Any, Any, str]]]:
+    """A job body that waits for the event, off its loop, then returns "through"."""
+    gate = threading.Event()
+
+    async def run(job: Job) -> str:
+        await asyncio.to_thread(gate.wait, 15)
+        return "through"
+
+    return gate, run
 
 
 @pytest.fixture
@@ -197,10 +230,9 @@ async def test_job_success_sets_done_result_and_finished_at():
     async def factory(job):
         return {"answer": 42}
 
-    job = m.create("demo", "Demo", factory, params={"p": 1})
-    assert job.status == "queued"
+    job = m.create_threaded("demo", "Demo", factory, params={"p": 1})
     assert job.finished_at is None
-    await task_of(job)
+    await finished(job)
     assert job.status == "done"
     assert job.result == {"answer": 42}
     assert job.error is None
@@ -214,8 +246,7 @@ async def test_factory_value_error_sets_error_status_and_message():
     async def factory(job):
         raise ValueError("boom")
 
-    job = m.create("demo", "Demo", factory)
-    await task_of(job)
+    job = await finished(m.create_threaded("demo", "Demo", factory))
     assert job.status == "error"
     assert job.error == "ValueError: boom"
     assert job.result is None
@@ -227,8 +258,7 @@ async def test_factory_click_abort_sets_friendly_error():
     async def factory(job):
         raise click.Abort()
 
-    job = m.create("demo", "Demo", factory)
-    await task_of(job)
+    job = await finished(m.create_threaded("demo", "Demo", factory))
     assert job.status == "error"
     assert job.error == "Aborted."
 
@@ -239,8 +269,7 @@ async def test_factory_exception_group_single_leaf_is_unwrapped():
     async def factory(job):
         raise ExceptionGroup("wrapper", [ValueError("boom")])
 
-    job = m.create("demo", "Demo", factory)
-    await task_of(job)
+    job = await finished(m.create_threaded("demo", "Demo", factory))
     assert job.status == "error"
     assert job.error == "ValueError: boom"
 
@@ -251,8 +280,7 @@ async def test_factory_exception_group_multiple_leaves_are_joined():
     async def factory(job):
         raise ExceptionGroup("wrapper", [ValueError("a"), TypeError("b")])
 
-    job = m.create("demo", "Demo", factory)
-    await task_of(job)
+    job = await finished(m.create_threaded("demo", "Demo", factory))
     assert job.status == "error"
     assert job.error == "ValueError: a; TypeError: b"
 
@@ -264,8 +292,7 @@ async def test_factory_nested_exception_group_with_abort_prefers_abort_message()
         inner = ExceptionGroup("inner", [click.Abort()])
         raise ExceptionGroup("outer", [inner, ValueError("ignored")])
 
-    job = m.create("demo", "Demo", factory)
-    await task_of(job)
+    job = await finished(m.create_threaded("demo", "Demo", factory))
     assert job.status == "error"
     assert job.error == "Aborted."
 
@@ -276,11 +303,11 @@ async def test_cancel_running_job_sets_cancelled_and_releases_lock():
     async def factory(job):
         await asyncio.Event().wait()
 
-    job = m.create("demo", "Demo", factory, lock_key="/some/album")
-    await wait_running(job)
-    assert m.cancel(job.id) is True
-    with contextlib.suppress(asyncio.CancelledError):
-        await task_of(job)
+    job = m.create_threaded("demo", "Demo", factory, lock_key="/some/album")
+    await task_started(job)
+    cancelled = m.cancel(job.id)
+    await finished(job)
+    assert cancelled is True
     assert job.status == "cancelled"
     assert job.finished_at is not None
     assert "/some/album" not in m._active_lock_keys
@@ -288,29 +315,27 @@ async def test_cancel_running_job_sets_cancelled_and_releases_lock():
 
 async def test_cancel_unknown_or_finished_job_returns_false():
     m = JobManager()
-    assert m.cancel("job-does-not-exist") is False
+    unknown = m.cancel("job-does-not-exist")
+    assert unknown is False
 
     async def factory(job):
         return "ok"
 
-    job = m.create("demo", "Demo", factory)
-    await task_of(job)
-    assert m.cancel(job.id) is False
+    job = await finished(m.create_threaded("demo", "Demo", factory))
+    again = m.cancel(job.id)
+    assert again is False
 
 
 async def test_lock_key_conflict_raises_and_conflicting_job_is_not_registered():
     m = JobManager()
-    release = asyncio.Event()
+    gate, run = gated()
 
-    async def factory(job):
-        await release.wait()
-
-    first = m.create("demo", "Demo", factory, lock_key="/album")
+    first = m.create_threaded("demo", "Demo", run, lock_key="/album")
     with pytest.raises(JobConflictError, match="already running on: /album"):
-        m.create("demo", "Demo 2", factory, lock_key="/album")
+        m.create_threaded("demo", "Demo 2", run, lock_key="/album")
     assert len(m.jobs) == 1
-    release.set()
-    await task_of(first)
+    gate.set()
+    await finished(first)
 
 
 async def test_lock_released_after_finish_allows_second_job():
@@ -319,32 +344,91 @@ async def test_lock_released_after_finish_allows_second_job():
     async def factory(job):
         return "ok"
 
-    first = m.create("demo", "Demo", factory, lock_key="/album")
-    await task_of(first)
+    await finished(m.create_threaded("demo", "Demo", factory, lock_key="/album"))
     assert "/album" not in m._active_lock_keys
-    second = m.create("demo", "Demo again", factory, lock_key="/album")
-    await task_of(second)
+    second = await finished(m.create_threaded("demo", "Demo again", factory, lock_key="/album"))
     assert second.status == "done"
 
 
-async def test_cancel_before_first_run_finalizes_job_and_releases_lock():
-    # Cancelling a task before its coroutine ever ran skips _run's try/finally;
-    # the done callback must finalize the job and release the lock instead.
+async def test_a_cancel_as_a_jobs_thread_makes_its_task_is_not_lost(monkeypatch):
+    in_window, go = threading.Event(), threading.Event()
+
+    class HeldFlag(threading.Event):
+        def is_set(self) -> bool:
+            seen = super().is_set()
+            # The thread's first check: held there, between reading the flag and making its task.
+            if not in_window.is_set():
+                in_window.set()
+                go.wait(15)
+            return seen
+
+    class HeldInteraction(jobs_mod.WebInteraction):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.cancel_requested = HeldFlag()
+
+    class LingeringLock:
+        """The job's lock, but its thread lingers once it lets go, so a cancel waiting on it reads first."""
+
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        def __enter__(self) -> None:
+            self._lock.acquire()
+
+        def __exit__(self, *_: object) -> None:
+            self._lock.release()
+            if threading.current_thread() is not threading.main_thread():
+                time.sleep(0.2)
+
+    class LingeringJob(jobs_mod.Job):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self._lock = LingeringLock()  # pyright: ignore[reportAttributeAccessIssue]
+
+    monkeypatch.setattr(jobs_mod, "WebInteraction", HeldInteraction)
+    monkeypatch.setattr(jobs_mod, "Job", LingeringJob)
+    ran = []
+
+    async def body(job):
+        ran.append("started")
+        await asyncio.sleep(0)
+        ran.append("went on")
+
     m = JobManager()
+    job = m.create_threaded("demo", "Demo", body)
+    await until(in_window.is_set, "the job's thread to be about to make its task")
+    threading.Timer(0.2, go.set).start()
+    cancelled = m.cancel(job.id)
+    done = await finished(job)
+    assert cancelled is True
+    assert done.status == "cancelled"
+    assert "went on" not in ran
 
-    async def factory(job):
-        return "never runs"
 
-    job = m.create("demo", "Demo", factory, lock_key="/leaky")
-    assert m.cancel(job.id) is True  # cancelled before the loop ran the task
-    with pytest.raises(asyncio.CancelledError):
-        await task_of(job)
+async def test_cancelling_a_queued_job_ends_it_unrun_and_releases_its_lock():
+    m = JobManager()
+    gate, run = gated()
+    ran = []
+
+    async def never(job):
+        ran.append(job.id)
+
+    busy = [m.create_threaded("demo", f"Busy {n}", run) for n in range(MAX_JOBS)]
+    job = m.create_threaded("demo", "Demo", never, lock_key="/leaky")
+    assert job.status == "queued"
+    cancelled = m.cancel(job.id)
+    assert cancelled is True
     assert job.status == "cancelled"
     assert job.finished_at is not None
+    assert job.thread is None
     assert "/leaky" not in m._active_lock_keys
-    second = m.create("demo", "Demo 2", factory, lock_key="/leaky")
-    await task_of(second)
-    assert second.status == "done"
+    again = m.cancel(job.id)
+    assert again is False
+    gate.set()
+    for each in busy:
+        await finished(each)
+    assert ran == []
 
 
 async def test_subscriber_receives_created_status_progress_finished_in_order():
@@ -356,23 +440,22 @@ async def test_subscriber_receives_created_status_progress_finished_in_order():
         report_progress(1, 3, "first file")
         return "ok"
 
-    job = m.create("demo", "Demo", factory)
-    await task_of(job)
+    job = await finished(m.create_threaded("demo", "Demo", factory))
 
     events = []
     while not queue.empty():
         events.append(queue.get_nowait())
     assert [e["event"] for e in events] == ["created", "status", "progress", "finished"]
 
-    created, status, progress, finished = events
+    created, status, progress, finished_event = events
     assert created["job"]["id"] == job.id
     assert created["job"]["status"] == "queued"
     assert status == {"event": "status", "job_id": job.id, "status": "running"}
     expected_progress = {"done": 1, "total": 3, "desc": "first file"}
     assert progress == {"event": "progress", "job_id": job.id, "progress": expected_progress}
     assert job.progress == expected_progress
-    assert finished["job"]["status"] == "done"
-    assert finished["job"]["result"] == "ok"
+    assert finished_event["job"]["status"] == "done"
+    assert finished_event["job"]["result"] == "ok"
 
 
 async def test_unsubscribed_queue_receives_no_events():
@@ -384,8 +467,7 @@ async def test_unsubscribed_queue_receives_no_events():
     async def factory(job):
         return "ok"
 
-    job = m.create("demo", "Demo", factory)
-    await task_of(job)
+    await finished(m.create_threaded("demo", "Demo", factory))
     assert queue.empty()
 
 
@@ -411,18 +493,376 @@ async def test_prune_finished_evicts_oldest_beyond_max_finished_jobs():
     async def factory(job):
         return None
 
-    finished_jobs = []
-    for _ in range(MAX_FINISHED_JOBS + 1):
-        job = m.create("demo", "Demo", factory)
-        await task_of(job)
-        finished_jobs.append(job)
+    finished_jobs = [await finished(m.create_threaded("demo", "Demo", factory)) for _ in range(MAX_FINISHED_JOBS + 1)]
 
     # The next create prunes exactly the oldest finished job.
-    extra = m.create("demo", "One more", factory)
+    extra = m.create_threaded("demo", "One more", factory)
     assert finished_jobs[0].id not in m.jobs
     assert finished_jobs[1].id in m.jobs
     assert len(m.jobs) == MAX_FINISHED_JOBS + 1
-    await task_of(extra)
+    await finished(extra)
+
+
+# ---------------------------------------------------------------------------
+# The queue
+# ---------------------------------------------------------------------------
+
+
+async def test_at_most_max_jobs_run_and_the_rest_wait_in_order():
+    m = JobManager()
+    gates = {name: gated() for name in "abcd"}
+    a, b, c, d = (m.create_threaded("demo", name, gates[name][1]) for name in "abcd")
+
+    assert MAX_JOBS == 2
+    assert [job.status for job in (a, b, c, d)] == ["running", "running", "queued", "queued"]
+    gates["a"][0].set()
+    await finished(a)
+    await until(lambda: c.status == "running", "c to start")
+    assert d.status == "queued"
+    for gate, _run in gates.values():
+        gate.set()
+    for job in (b, c, d):
+        await finished(job)
+    assert [job.result for job in (a, b, c, d)] == ["through"] * 4
+
+
+async def test_a_second_job_on_the_same_folder_waits_and_another_folder_goes_on(tmp_path):
+    album = tmp_path / "album"
+    album.mkdir()
+    # The same folder by another path.
+    (tmp_path / "link").symlink_to(album)
+    other = tmp_path / "other"
+    other.mkdir()
+    m = JobManager()
+    gate, run = gated()
+
+    first = m.create_threaded("demo", "First", run, folder=str(album))
+    same = m.create_threaded("demo", "Same", run, folder=str(tmp_path / "link"))
+    elsewhere = m.create_threaded("demo", "Elsewhere", run, folder=str(other))
+
+    assert (first.status, same.status, elsewhere.status) == ("running", "queued", "running")
+    gate.set()
+    for each in (first, same, elsewhere):
+        done = await finished(each)
+        assert done.status == "done"
+
+
+@pytest.mark.parametrize(
+    "swap", ["a link elsewhere", "another folder", "a parent leading elsewhere", "moved away and linked back", "gone"]
+)
+async def test_a_job_whose_folder_was_swapped_while_it_waited_does_not_start(tmp_path, swap):
+    parent = tmp_path / "downloads"
+    album = parent / "album"
+    album.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    (outside / "album").mkdir(parents=True)
+    gate, run = gated()
+    ran = []
+
+    async def body(job):
+        ran.append(job.id)
+
+    m = JobManager()
+    first = m.create_threaded("demo", "First", run, folder=str(album))
+    waiting = m.create_threaded("demo", "Waiting", body, folder=str(album))
+    assert waiting.status == "queued"
+    if swap == "a link elsewhere":
+        album.rename(parent / "album-old")
+        album.symlink_to(outside / "album")
+    elif swap == "another folder":
+        album.rename(parent / "album-old")
+        album.mkdir()
+    elif swap == "a parent leading elsewhere":
+        parent.rename(tmp_path / "downloads-old")
+        parent.symlink_to(outside)
+    elif swap == "moved away and linked back":
+        album.rename(outside / "moved")
+        album.symlink_to(outside / "moved")
+    else:
+        album.rename(parent / "album-old")
+    gate.set()
+    await finished(first)
+    done = await finished(waiting)
+
+    assert (done.status, ran) == ("error", [])
+    assert done.error == f"FolderChangedError: {album} changed or moved while the job waited: start it again."
+
+
+async def test_the_queue_is_bounded(monkeypatch):
+    monkeypatch.setattr(jobs_mod, "MAX_QUEUED_JOBS", 2)
+    m = JobManager()
+    gate, run = gated()
+
+    started = [m.create_threaded("demo", str(n), run) for n in range(MAX_JOBS + 2)]
+    with pytest.raises(JobCapacityError, match="2 jobs are already waiting"):
+        m.create_threaded("demo", "One too many", run)
+    assert len(m.jobs) == MAX_JOBS + 2
+    gate.set()
+    for each in started:
+        await finished(each)
+
+
+async def test_a_cancelled_jobs_worker_still_in_its_folder_holds_back_the_next_job(tmp_path):
+    album = tmp_path / "album"
+    album.mkdir()
+    in_folder, release = threading.Event(), threading.Event()
+    overlap: list[bool] = []
+
+    def write_tags() -> None:
+        # A to_thread worker: cancelling the task cannot stop it.
+        in_folder.set()
+        release.wait(15)
+
+    async def first_body(job):
+        await asyncio.to_thread(write_tags)
+
+    async def second_body(job):
+        overlap.append(not release.is_set())
+        return "ran"
+
+    m = JobManager()
+    first = m.create_threaded("tag", "First", first_body, folder=str(album))
+    second = m.create_threaded("upload", "Second", second_body, folder=str(album))
+    await task_started(first)
+    await until(in_folder.is_set, "the worker to be in the folder")
+    cancelled = m.cancel(first.id)
+    assert cancelled
+    await asyncio.sleep(0.3)
+    # Still running while its worker holds the folder: neither finished, nor cancelled, nor prunable yet.
+    held = (first.finished_at, first.status, second.status)
+    release.set()
+    await finished(first)
+    await finished(second)
+
+    assert held == (None, "running", "queued")
+    assert (first.status, second.status, overlap) == ("cancelled", "done", [False])
+
+
+async def test_a_worker_a_finished_job_left_cannot_ask_a_question():
+    install_interaction_patches()
+    asked: list[str] = []
+
+    def late_question() -> None:
+        time.sleep(0.1)
+        try:
+            click.confirm("Still there?")
+        except BaseException as e:  # noqa: BLE001 - what the question raised is the result
+            asked.append(type(e).__name__)
+
+    left: list[asyncio.Task] = []
+
+    async def leaves_a_worker(job):
+        # to_thread, as jobs start their workers: it carries the job's context, and so its questions.
+        left.append(asyncio.create_task(asyncio.to_thread(late_question)))
+        return "left"
+
+    job = await finished(JobManager().create_threaded("demo", "Demo", leaves_a_worker))
+
+    assert (job.status, job.question, asked) == ("done", None, ["CancelledError"])
+
+
+async def test_a_thread_that_fails_to_start_hands_its_slot_to_the_next_job():
+    m = JobManager()
+    gates = {name: gated() for name in "abcd"}
+    a, b, c, d = (m.create_threaded("demo", name, gates[name][1]) for name in "abcd")
+
+    def no_thread() -> None:
+        raise RuntimeError("can't start new thread")
+
+    m._queue[c].start = no_thread
+    gates["a"][0].set()
+    await finished(a)
+    await until(lambda: d.status == "running", "d to take the free slot")
+    for gate, _run in gates.values():
+        gate.set()
+    for each in (b, d):
+        await finished(each)
+
+    assert (c.status, c.error, c.finished_at is not None) == ("error", "Failed to start the worker thread.", True)
+    assert c.interaction is not None and c.interaction.closed.is_set()
+    assert d.result == "through"
+
+
+async def test_the_same_folder_by_another_case_or_unicode_form_waits(tmp_path):
+    folder = tmp_path / unicodedata.normalize("NFC", "Café Album")
+    folder.mkdir()
+    spellings = [str(tmp_path / "café album"), str(tmp_path / unicodedata.normalize("NFD", "Café Album"))]
+    others = [each for each in spellings if os.path.isdir(each)]
+    if not others:
+        pytest.skip("this filesystem tells case and Unicode forms apart")
+    m = JobManager()
+    gate, run = gated()
+
+    first = m.create_threaded("demo", "First", run, folder=str(folder))
+    same = [m.create_threaded("demo", each, run, folder=each) for each in others]
+    statuses = [job.status for job in same]
+    gate.set()
+    for job in (first, *same):
+        await finished(job)
+
+    assert statuses == ["queued"] * len(others)
+
+
+def test_a_full_queue_refuses_a_job_with_429(client, album_dir, integrity_stub, monkeypatch):
+    monkeypatch.setattr(jobs_mod, "MAX_QUEUED_JOBS", 0)
+    resp = client.post("/api/checks/run", json={"path": str(album_dir), "checks": ["integrity"]})
+    assert resp.status_code == 429
+    assert resp.json()["detail"] == "0 jobs are already waiting: try again once some have run."
+    assert manager.jobs == {}
+
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+
+def test_what_a_job_prints_goes_to_its_log_and_nothing_else_does():
+    async def run(job):
+        click.echo(f"echo {job.title}")
+        click.secho(f"secho {job.title}", fg="green", bold=True)
+        click.echo(f"err {job.title}", err=True)
+        print(f"print {job.title}")
+        await asyncio.to_thread(click.echo, f"worker {job.title}")
+        click.echo("part, ", nl=False)
+        click.echo("whole")
+        click.echo("10%\r50%\r100%")
+        click.echo("unfinished", nl=False)
+
+    # Streams of the test's own, set here: pytest puts its sys.stdout back after each phase, and closes capsys's.
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), web_client() as c:
+        print("the server's own line")
+        assert c.portal is not None
+        a, b = (c.portal.call(lambda name=name: manager.create_threaded("prints", name, run)) for name in "ab")
+        logs = {name: join_job(c, job.id)["log"] for name, job in (("a", a), ("b", b))}
+
+    for name, log in logs.items():
+        assert log == [
+            f"echo {name}",
+            f"secho {name}",
+            f"err {name}",
+            f"print {name}",
+            f"worker {name}",
+            "part, whole",
+            "100%",
+            "unfinished",
+        ]
+    assert "the server's own line" in out.getvalue()
+    assert "echo a" not in out.getvalue()
+    assert "err a" not in err.getvalue()
+
+
+def test_stopping_the_server_cancels_its_jobs():
+    async def waits(job):
+        await asyncio.Event().wait()
+
+    with web_client() as c:
+        assert c.portal is not None
+        jobs = [c.portal.call(manager.create_threaded, "demo", "Waits", waits) for _ in range(MAX_JOBS + 1)]
+        assert [job.status for job in jobs] == ["running"] * MAX_JOBS + ["queued"]
+
+    # Stopped with the server: the running jobs and the one waiting its turn.
+    assert [job.status for job in jobs] == ["cancelled"] * (MAX_JOBS + 1)
+
+
+def test_what_a_jobs_worker_writes_as_the_server_stops_still_goes_to_its_log():
+    started, release = threading.Event(), threading.Event()
+
+    def worker() -> None:
+        started.set()
+        release.wait(5)
+        print("late line")
+
+    async def body(job):
+        await asyncio.to_thread(worker)
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), web_client() as c:
+        assert c.portal is not None
+        job = c.portal.call(manager.create_threaded, "demo", "Late", body)
+        worker_started = started.wait(5)
+        assert worker_started
+        # The worker writes after the server has begun to stop and cancelled its job.
+        threading.Timer(0.3, release.set).start()
+
+    assert "late line" in job.log_lines
+    assert "late line" not in out.getvalue()
+
+
+def test_a_worker_still_running_once_the_server_has_stopped_writes_nothing_to_the_terminal(monkeypatch):
+    monkeypatch.setattr(jobs_mod, "STOP_TIMEOUT", 0.2)
+    started, release = threading.Event(), threading.Event()
+
+    def worker() -> None:
+        started.set()
+        release.wait(10)
+        print("late line")
+
+    async def body(job):
+        await asyncio.to_thread(worker)
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        with web_client() as c:
+            assert c.portal is not None
+            job = c.portal.call(manager.create_threaded, "demo", "Late", body)
+            worker_started = started.wait(5)
+            assert worker_started
+        # The server stopped without it: its worker writes only now.
+        release.set()
+        assert job.thread is not None
+        job.thread.join(10)
+        ended = not job.thread.is_alive()
+        # As the process ending would: the kept capture must not be undone later, in another test.
+        kept = cast("FastAPI", c.app).state.kept_capture
+        kept.close()
+
+    assert ended
+    assert "late line" in job.log_lines
+    assert "late line" not in out.getvalue()
+
+
+def test_a_failed_job_says_why_and_its_traceback_goes_to_the_servers_stderr():
+    async def run(job):
+        click.echo("working")
+        raise RuntimeError("it broke")
+
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), web_client() as c:
+        assert c.portal is not None
+        job = c.portal.call(lambda: manager.create_threaded("fails", "Fails", run))
+        data = join_job(c, job.id)
+
+    assert data["status"] == "error"
+    assert data["error"] == "RuntimeError: it broke"
+    assert data["log"] == ["working"]
+    assert "Traceback (most recent call last)" in err.getvalue()
+    assert "RuntimeError: it broke" in err.getvalue()
+
+
+def test_a_failed_jobs_traceback_on_the_servers_stderr_is_masked_through_its_chain(monkeypatch):
+    api_key, passkey, authkey = "fake-api-key-0123456789", "fakepasskey0123456789abcdef", "fake-authkey-0123456789"
+    monkeypatch.setattr(egress, "_configured_secrets", lambda: (api_key,))
+    monkeypatch.setattr(tracker_base, "_learned_secrets", {passkey})
+
+    async def run(job):
+        try:
+            raise KeyError(api_key)
+        except KeyError as e:
+            raise RuntimeError(f"GET https://tracker.invalid/ajax.php?authkey={authkey} for {passkey}") from e
+
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), web_client() as c:
+        assert c.portal is not None
+        job = c.portal.call(lambda: manager.create_threaded("fails", "Fails", run))
+        data = join_job(c, job.id)
+
+    assert data["status"] == "error"
+    shown = err.getvalue()
+    assert "KeyError" in shown
+    assert "RuntimeError: GET https://tracker.invalid/ajax.php?authkey=" in shown
+    for secret in (api_key, passkey, authkey):
+        assert secret not in shown
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +924,8 @@ def test_cancel_finished_job_returns_409(client, album_dir, integrity_stub):
     resp = client.post("/api/checks/run", json={"path": str(album_dir), "checks": ["integrity"]})
     assert resp.status_code == 200
     job_id = resp.json()["id"]
-    assert join_job(client, job_id)["status"] == "done"
+    ended = join_job(client, job_id)
+    assert ended["status"] == "done"
 
     resp = client.post(f"/api/jobs/{job_id}/cancel")
     assert resp.status_code == 409
@@ -555,7 +996,8 @@ def test_spectrals_generate_allowed_for_a_library_album(client, library_album, s
     # The images go to tmp_dir, so the album being read-only is irrelevant.
     resp = client.post("/api/spectrals/generate", json={"path": str(library_album)})
     assert resp.status_code == 200
-    assert join_job(client, resp.json()["id"])["status"] == "done"
+    ended = join_job(client, resp.json()["id"])
+    assert ended["status"] == "done"
     # The vetted destination is the one handed to create_specs_folder, and it is outside the library.
     assert specs_requests == [get_spectrals_path(str(library_album))]
     assert not cfg.directory.is_library_path(specs_requests[0])
@@ -617,28 +1059,28 @@ def test_a_frequency_plot_is_still_served_even_though_it_is_not_uploaded(client,
     assert resp.content == PNGF
 
 
-def test_spectrals_generate_second_post_on_same_path_conflicts(client, album_dir, hanging_spectral_stubs):
+def test_spectrals_generate_second_post_on_same_path_waits_its_turn(client, album_dir, hanging_spectral_stubs):
     first = client.post("/api/spectrals/generate", json={"path": str(album_dir)})
     assert first.status_code == 200
     job_id = first.json()["id"]
 
     second = client.post("/api/spectrals/generate", json={"path": str(album_dir)})
-    assert second.status_code == 409
-    assert second.json()["detail"] == f"A job is already running on: {album_dir}"
+    assert second.status_code == 200
+    new_id = second.json()["id"]
+    assert second.json()["status"] == "queued"
 
-    # Cancelling the running job releases the path lock ...
+    # Once the running job ends, the waiting one starts.
+    wait_task(job_id)
     cancelled = client.post(f"/api/jobs/{job_id}/cancel")
     assert cancelled.status_code == 200
     assert cancelled.json() == {"cancelled": job_id}
-    assert join_job(client, job_id)["status"] == "cancelled"
-
-    # ... so a third POST succeeds with a fresh job.
-    third = client.post("/api/spectrals/generate", json={"path": str(album_dir)})
-    assert third.status_code == 200
-    new_id = third.json()["id"]
-    assert new_id != job_id
+    ended = join_job(client, job_id)
+    assert ended["status"] == "cancelled"
+    wait_task(new_id)
+    assert manager.jobs[new_id].status == "running"
     client.post(f"/api/jobs/{new_id}/cancel")
-    join_job(client, new_id)
+    ended = join_job(client, new_id)
+    assert ended["status"] == "cancelled"
 
 
 def test_spectrals_endpoints_on_unfinished_job_return_404(client, album_dir, hanging_spectral_stubs):
@@ -798,7 +1240,7 @@ def test_transcode_happy_path(client, album_dir, monkeypatch):
     assert calls == [(str(album_dir), "V0")]
 
 
-def test_transcode_and_downconvert_share_the_path_lock(client, album_dir, monkeypatch):
+def test_transcode_and_downconvert_on_one_folder_take_turns(client, album_dir, monkeypatch):
     async def hang_transcode(path, bitrate, output_dir=None):
         await asyncio.Event().wait()
 
@@ -812,18 +1254,15 @@ def test_transcode_and_downconvert_share_the_path_lock(client, album_dir, monkey
     assert first.status_code == 200
     job_id = first.json()["id"]
 
-    # Both convert endpoints lock on the album path.
-    conflict = client.post("/api/convert/downconvert", json={"path": str(album_dir)})
-    assert conflict.status_code == 409
-    assert conflict.json()["detail"] == f"A job is already running on: {album_dir}"
-    conflict = client.post("/api/convert/transcode", json={"path": str(album_dir), "bitrate": "V0"})
-    assert conflict.status_code == 409
-
-    client.post(f"/api/jobs/{job_id}/cancel")
-    assert join_job(client, job_id)["status"] == "cancelled"
-
+    # A job on the same album folder waits, whichever endpoint started it.
     after = client.post("/api/convert/downconvert", json={"path": str(album_dir)})
     assert after.status_code == 200
+    assert after.json()["status"] == "queued"
+
+    wait_task(job_id)
+    client.post(f"/api/jobs/{job_id}/cancel")
+    ended = join_job(client, job_id)
+    assert ended["status"] == "cancelled"
     data = join_job(client, after.json()["id"])
     assert data["status"] == "done"
     assert data["result"] == {"output_path": f"{album_dir} [16-44]"}
@@ -1027,7 +1466,8 @@ def test_discard_endpoint_empties_the_job_result(client, tmp_path, monkeypatch):
 
 
 def test_discard_endpoint_404s_for_an_unknown_job(client):
-    assert client.delete("/api/spectrals/job-does-not-exist").status_code == 404
+    refused = client.delete("/api/spectrals/job-does-not-exist")
+    assert refused.status_code == 404
 
 
 def test_evicting_a_finished_job_runs_its_cleanup(monkeypatch, tmp_path):

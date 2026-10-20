@@ -11,7 +11,7 @@ from salmon.converter import conversion_output_dir
 from salmon.converter.downconverting import convert_folder
 from salmon.converter.transcoding import transcode_folder
 from salmon.tagger.audio_info import recompress_path
-from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
+from salmon.webui.jobs import Job, JobCapacityError, manager
 from salmon.webui.validation import validate_source_album_dir, validate_writable_album_dir
 
 router = APIRouter(tags=["convert"])
@@ -41,9 +41,7 @@ async def transcode(req: TranscodeRequest) -> dict:
 
     title = f"Transcode {req.bitrate}: {os.path.basename(path)}"
     try:
-        job = manager.create_threaded("transcode", title, run, {"path": path, "bitrate": req.bitrate}, lock_key=path)
-    except JobConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        job = manager.create_threaded("transcode", title, run, {"path": path, "bitrate": req.bitrate}, folder=path)
     except JobCapacityError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     return job.to_dict()
@@ -59,9 +57,7 @@ async def downconvert(req: DownconvertRequest) -> dict:
 
     title = f"Downconvert: {os.path.basename(path)}"
     try:
-        job = manager.create_threaded("downconvert", title, run, {"path": path}, lock_key=path)
-    except JobConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        job = manager.create_threaded("downconvert", title, run, {"path": path}, folder=path)
     except JobCapacityError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     return job.to_dict()
@@ -81,9 +77,7 @@ async def compress(req: CompressRequest) -> dict:
 
     title = f"Recompress: {os.path.basename(path)}"
     try:
-        job = manager.create_threaded("compress", title, run, {"path": path}, lock_key=path)
-    except JobConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        job = manager.create_threaded("compress", title, run, {"path": path}, folder=path)
     except JobCapacityError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     return job.to_dict()

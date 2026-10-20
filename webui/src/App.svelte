@@ -33,7 +33,7 @@
   })
 
   const route = $derived(routes[current] ?? routes[''])
-  const runningCount = $derived(jobStore.jobs.filter((j) => j.status === 'running').length)
+  const activeCount = $derived(jobStore.jobs.filter((j) => j.status === 'running' || j.status === 'queued').length)
 
   let authState = $state<AuthState | null>(null)
   const authed = $derived(!authState?.required || authState.authenticated)
@@ -91,8 +91,8 @@
     {#each Object.entries(routes) as [path, r]}
       <a href="#/{path}" class:active={route === r}>
         {r.label}
-        {#if path === 'jobs' && runningCount > 0}
-          <span class="chip run">{runningCount}</span>
+        {#if path === 'jobs' && activeCount > 0}
+          <span class="chip run">{activeCount}</span>
         {/if}
       </a>
     {/each}

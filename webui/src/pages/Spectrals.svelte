@@ -8,6 +8,8 @@
   let activeJobId = $state<string | null>(null)
   let uploadJobId = $state<string | null>(null)
   let error = $state('')
+  // A job's POST in flight: a second click would queue a second job.
+  let starting = $state(false)
   let lightbox = $state<string | null>(null)
 
   const activeJob = $derived(activeJobId ? jobStore.get(activeJobId) : undefined)
@@ -25,6 +27,8 @@
   })
 
   async function generate() {
+    if (starting) return
+    starting = true
     error = ''
     uploadJobId = null
     try {
@@ -33,11 +37,14 @@
       activeJobId = job.id
     } catch (e) {
       error = String(e)
+    } finally {
+      starting = false
     }
   }
 
   async function upload() {
-    if (!activeJobId) return
+    if (!activeJobId || starting) return
+    starting = true
     error = ''
     try {
       const job = await apiPost<Job>('/spectrals/upload', { job_id: activeJobId })
@@ -45,6 +52,8 @@
       uploadJobId = job.id
     } catch (e) {
       error = String(e)
+    } finally {
+      starting = false
     }
   }
 
@@ -87,7 +96,7 @@
 <div class="card">
   <FolderPicker bind:value={path} />
   <div style="margin-top: 0.7rem">
-    <button class="btn" onclick={generate} disabled={!path || activeJob?.status === 'running'}>
+    <button class="btn" onclick={generate} disabled={!path || starting || activeJob?.status === 'running' || activeJob?.status === 'queued'}>
       Generate spectrals
     </button>
   </div>
@@ -101,7 +110,7 @@
 
     {#if activeJob.status === 'done' && activeJob.result}
       <div class="row" style="margin: 0.8rem 0">
-        <button class="btn secondary" onclick={upload} disabled={uploadJob?.status === 'running'}>
+        <button class="btn secondary" onclick={upload} disabled={starting || uploadJob?.status === 'running' || uploadJob?.status === 'queued'}>
           Upload to image host
         </button>
         <button class="btn small secondary" onclick={discard}>Delete these spectrals</button>

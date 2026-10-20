@@ -14,7 +14,7 @@ from salmon.constants import SOURCES as SOURCE_CODES
 from salmon.constants import TAG_ENCODINGS
 from salmon.uploader import upload as run_upload
 from salmon.uploader.preassumptions import confirm_group_upload, print_preassumptions, skip_flac_upload_conflict
-from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
+from salmon.webui.jobs import Job, JobCapacityError, manager
 from salmon.webui.validation import validate_album_dir
 
 router = APIRouter(tags=["upload"])
@@ -140,9 +140,7 @@ async def start(req: UploadStartRequest) -> dict:
 
     title = f"Upload to {req.tracker}: {os.path.basename(path)}"
     try:
-        job = manager.create_threaded("upload", title, run, req.model_dump() | {"path": path}, lock_key=path)
-    except JobConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        job = manager.create_threaded("upload", title, run, req.model_dump() | {"path": path}, folder=path)
     except JobCapacityError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     return job.to_dict()

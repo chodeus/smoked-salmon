@@ -314,7 +314,7 @@
   <div class="card">
     <div class="row">
       <h2 class="grow" style="margin: 0">{activeJob.title}</h2>
-      {#if activeJob.status === 'running'}
+      {#if activeJob.status === 'running' || activeJob.status === 'queued'}
         <button class="btn small secondary" onclick={cancel}>Cancel</button>
       {/if}
     </div>

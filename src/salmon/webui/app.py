@@ -1,6 +1,8 @@
 """FastAPI application factory for the salmon web interface."""
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -8,9 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from salmon import cfg
+from salmon.webui import output
 from salmon.webui.auth import Auth, AuthMiddleware, auth_router, resolve_auth_token
 from salmon.webui.egress import EgressMiddleware
 from salmon.webui.interaction import install_interaction_patches
+from salmon.webui.jobs import manager
 from salmon.webui.routers import browse, checks, convert, jobs, search, spectrals, system, tools, upload
 
 logger = logging.getLogger(__name__)
@@ -18,6 +22,20 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+@asynccontextmanager
+async def _jobs_running(app: FastAPI) -> AsyncIterator[None]:
+    """While the server runs: jobs, what each prints going to its log until all have ended."""
+    with ExitStack() as capture:
+        capture.enter_context(output.capturing())
+        try:
+            yield
+        finally:
+            # A job ends once the workers it left have. One still running keeps the capture (the process is
+            # ending), so what it writes never reaches the terminal: held by the app, never closed.
+            if not await manager.stop():
+                app.state.kept_capture = capture.pop_all()
 
 
 def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | None = None) -> FastAPI:
@@ -29,6 +47,7 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
         docs_url="/api/docs" if dev else None,
         redoc_url=None,
         openapi_url="/api/openapi.json" if dev else None,
+        lifespan=_jobs_running,
     )
     app.state.auth_token = token
     app.state.auth = Auth(token) if token else None
