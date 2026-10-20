@@ -14,6 +14,7 @@ from salmon.webui import output
 from salmon.webui.auth import Auth, AuthMiddleware, auth_router, resolve_auth_token
 from salmon.webui.egress import EgressMiddleware
 from salmon.webui.interaction import install_interaction_patches
+from salmon.webui.jobs import manager
 from salmon.webui.routers import browse, checks, convert, jobs, search, spectrals, system, tools, upload
 
 logger = logging.getLogger(__name__)
@@ -24,10 +25,14 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 @asynccontextmanager
-async def _capturing_output(_app: FastAPI) -> AsyncIterator[None]:
-    """While the server runs, what each job prints goes to its log."""
+async def _jobs_running(_app: FastAPI) -> AsyncIterator[None]:
+    """While the server runs: jobs, what each prints going to its log until all have ended."""
     with output.capturing():
-        yield
+        try:
+            yield
+        finally:
+            # A job ends once the workers it left have, so none writes after the capture.
+            await manager.stop()
 
 
 def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | None = None) -> FastAPI:
@@ -39,7 +44,7 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
         docs_url="/api/docs" if dev else None,
         redoc_url=None,
         openapi_url="/api/openapi.json" if dev else None,
-        lifespan=_capturing_output,
+        lifespan=_jobs_running,
     )
     app.state.auth_token = token
     app.state.auth = Auth(token) if token else None

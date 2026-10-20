@@ -384,6 +384,18 @@ class JobManager:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    async def stop(self, timeout: float = 30) -> None:
+        """Cancel every job, and wait for the running ones to end, up to `timeout` seconds."""
+        for job in [*self._queue, *self._running]:
+            self.cancel(job.id)
+        try:
+            async with asyncio.timeout(timeout):
+                while self._running:
+                    await asyncio.sleep(0.05)
+        except TimeoutError:
+            names = ", ".join(sorted(job.id for job in self._running))
+            print(f"salmon web: stopped while jobs were still running: {names}", file=output.real_stderr())
+
     def cancel(self, job_id: str) -> bool:
         job = self.jobs.get(job_id)
         if job is None or job.status not in {"queued", "running"}:

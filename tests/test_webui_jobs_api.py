@@ -749,6 +749,42 @@ def test_what_a_job_prints_goes_to_its_log_and_nothing_else_does():
     assert "err a" not in err.getvalue()
 
 
+def test_stopping_the_server_cancels_its_jobs():
+    async def waits(job):
+        await asyncio.Event().wait()
+
+    with web_client() as c:
+        assert c.portal is not None
+        jobs = [c.portal.call(manager.create_threaded, "demo", "Waits", waits) for _ in range(MAX_JOBS + 1)]
+        assert [job.status for job in jobs] == ["running"] * MAX_JOBS + ["queued"]
+
+    # Stopped with the server: the running jobs and the one waiting its turn.
+    assert [job.status for job in jobs] == ["cancelled"] * (MAX_JOBS + 1)
+
+
+def test_what_a_jobs_worker_writes_as_the_server_stops_still_goes_to_its_log():
+    started, release = threading.Event(), threading.Event()
+
+    def worker() -> None:
+        started.set()
+        release.wait(5)
+        print("late line")
+
+    async def body(job):
+        await asyncio.to_thread(worker)
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), web_client() as c:
+        assert c.portal is not None
+        job = c.portal.call(manager.create_threaded, "demo", "Late", body)
+        assert started.wait(5)
+        # The worker writes after the server has begun to stop and cancelled its job.
+        threading.Timer(0.3, release.set).start()
+
+    assert "late line" in job.log_lines
+    assert "late line" not in out.getvalue()
+
+
 def test_a_failed_job_says_why_and_its_traceback_goes_to_the_servers_stderr():
     async def run(job):
         click.echo("working")
