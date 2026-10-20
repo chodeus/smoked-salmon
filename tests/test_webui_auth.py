@@ -416,3 +416,53 @@ def test_a_bearer_token_still_works_without_a_session():
     with web_client() as c:
         answer = c.get("/api/jobs")
     assert answer.status_code == 200
+
+
+def test_a_job_stream_gets_nothing_once_its_session_logged_out():
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        ended, kept = _session(c), _session(c)
+        with (
+            c.websocket_connect("/api/ws", headers={"host": "localhost", "cookie": ended}) as ws_ended,
+            c.websocket_connect("/api/ws", headers={"host": "localhost", "cookie": kept}) as ws_kept,
+        ):
+            out = c.post("/api/logout", json={}, headers={"cookie": ended})
+            ws_kept.portal.call(manager._broadcast, {"event": "log", "job_id": "x", "line": "after logout"})
+            received = ws_kept.receive_json()
+            with pytest.raises(WebSocketDisconnect):
+                ws_ended.receive_json()
+    assert out.status_code == 200
+    assert received == {"event": "log", "job_id": "x", "line": "after logout"}
+
+
+def test_two_session_cookies_are_read_the_same_way_by_every_check():
+    # A browser can send two of one name (a host-only and a Domain= one): the gate and the routes take the first.
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        first, second = _session(c), _session(c)
+        c.cookies.clear()
+        both = f"{first}; {second.split('=', 1)[1].join([COOKIE_NAME + '=', ''])}"
+        status = c.get("/api/auth", headers={"cookie": both}).json()["authenticated"]
+        out = c.post("/api/logout", json={}, headers={"cookie": both})
+        first_after = c.get("/api/jobs", headers={"cookie": first}).status_code
+        second_after = c.get("/api/jobs", headers={"cookie": second}).status_code
+    assert status is True
+    assert out.status_code == 200
+    assert (first_after, second_after) == (401, 200)
+
+
+def test_logging_out_by_bearer_token_alone_says_it_is_still_logged_in():
+    _clean()
+    with web_client() as c:
+        out = c.post("/api/logout", json={})
+    assert out.status_code == 200
+    assert out.json() == {"required": True, "authenticated": True}
+
+
+def test_the_login_routes_run_on_the_event_loop():
+    # Auth is not thread-safe: a sync route would run in FastAPI's thread pool, two logins at once.
+    import inspect
+
+    from salmon.webui import auth
+
+    assert all(inspect.iscoroutinefunction(route) for route in (auth.auth_status, auth.login, auth.logout))

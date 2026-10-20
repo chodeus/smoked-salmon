@@ -20,6 +20,7 @@ from collections.abc import Iterable
 import asyncclick as click
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
+from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from salmon.config.validations import WEB_TOKEN_MIN_LENGTH
@@ -213,22 +214,30 @@ class LoginRequest(BaseModel):
     token: str
 
 
-def _auth(request: Request) -> Auth | None:
-    return getattr(request.app.state, "auth", None)
+def _auth(connection: HTTPConnection) -> Auth | None:
+    return getattr(connection.app.state, "auth", None)
 
 
+def _session_cookie(connection: HTTPConnection) -> str | None:
+    # The middleware's own parser: with two cookies of the name, every check reads the same one.
+    return _cookie({key.lower(): value for key, value in connection.headers.items()}, COOKIE_NAME)
+
+
+def still_authenticated(connection: HTTPConnection) -> bool:
+    """Whether what a request or websocket logged in with still does: a logout ends its session."""
+    auth = _auth(connection)
+    return auth is not None and auth.authenticated(connection.headers.get("authorization"), _session_cookie(connection))
+
+
+# The routes are coroutines, so they run on the event loop one at a time: Auth is not thread-safe.
 @auth_router.get("/auth")
-def auth_status(request: Request) -> dict:
+async def auth_status(request: Request) -> dict:
     """Report whether a token is required and whether this caller is authenticated."""
-    auth = _auth(request)
-    authenticated = auth is not None and auth.authenticated(
-        request.headers.get("authorization"), request.cookies.get(COOKIE_NAME)
-    )
-    return {"required": True, "authenticated": authenticated}
+    return {"required": True, "authenticated": still_authenticated(request)}
 
 
 @auth_router.post("/login")
-def login(req: LoginRequest, request: Request, response: Response) -> dict:
+async def login(req: LoginRequest, request: Request, response: Response) -> dict:
     """Exchange the token for an httponly cookie holding a new session id."""
     auth = _auth(request)
     if auth is None:
@@ -249,15 +258,18 @@ def login(req: LoginRequest, request: Request, response: Response) -> dict:
 
 
 @auth_router.post("/logout")
-def logout(request: Request, response: Response) -> dict:
-    """End this browser's session; the middleware has already refused one that is not logged in."""
+async def logout(request: Request, response: Response) -> dict:
+    """End this browser's session; the middleware has already refused one that is not logged in.
+
+    A caller logged in by a Bearer token stays so: the answer says whether it still is.
+    """
     auth = _auth(request)
     if auth is not None:
-        auth.close_session(request.cookies.get(COOKIE_NAME))
+        auth.close_session(_session_cookie(request))
     secure = _secure(request)
     response.delete_cookie(COOKIE_NAME, path="/", httponly=True, samesite="strict", secure=secure)
     response.delete_cookie(OLD_COOKIE_NAME, path="/")
-    return {"required": True, "authenticated": False}
+    return {"required": True, "authenticated": still_authenticated(request)}
 
 
 def _secure(request: Request) -> bool:

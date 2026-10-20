@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from salmon.webui.auth import still_authenticated
 from salmon.webui.jobs import manager
 
 router = APIRouter(tags=["jobs"])
@@ -67,6 +68,10 @@ async def events(websocket: WebSocket) -> None:
     try:
         while True:
             event = await queue.get()
+            # A stream opened with a session gets nothing once a logout has ended it.
+            if not still_authenticated(websocket):
+                await websocket.close(code=1008)
+                return
             await websocket.send_json(event)
     except (WebSocketDisconnect, asyncio.CancelledError):
         pass

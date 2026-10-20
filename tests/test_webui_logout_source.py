@@ -14,6 +14,8 @@ def test_log_out_ends_the_session_and_stops_the_job_stream() -> None:
     assert sign_out is not None
     assert "await logout()" in sign_out[1]
     assert "jobStore.stop()" in sign_out[1]
+    # A failed logout (not a 401) leaves the session alive, so the page must not show the login screen.
+    assert "signOutError = `Log out failed: ${e}`\n        return" in sign_out[1]
 
 
 def test_a_stopped_job_stream_does_not_reconnect() -> None:
@@ -23,3 +25,5 @@ def test_a_stopped_job_stream_does_not_reconnect() -> None:
     assert on_close is not None
     assert "if (this.started) this.retry = setTimeout(() => this.connect(), 2000)" in on_close[1]
     assert "this.started = false" in store
+    # A stopped socket's close event, coming after a new login, must not reconnect a second time.
+    assert "this.ws.onclose = null" in store
