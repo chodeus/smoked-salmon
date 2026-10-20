@@ -39,6 +39,7 @@ class JobStore {
   loadError = $state('')
   private ws: WebSocket | null = null
   private started = false
+  private retry: ReturnType<typeof setTimeout> | null = null
   private resyncBuffer: any[] | null = null
   private resyncing = false
   private resyncPending = false
@@ -47,6 +48,16 @@ class JobStore {
     if (this.started) return
     this.started = true
     this.connect()
+  }
+
+  /** On logging out: no more reconnecting. */
+  stop() {
+    this.started = false
+    if (this.retry) clearTimeout(this.retry)
+    this.retry = null
+    this.ws?.close()
+    this.ws = null
+    this.jobs = []
   }
 
   get(id: string): Job | undefined {
@@ -84,7 +95,7 @@ class JobStore {
       this.resyncBuffer = null
       for (const event of buffered) this.apply(event)
       this.loadError = `Failed to load job list: ${e}`
-      setTimeout(() => this.resync(), 2000)
+      if (this.started) this.retry = setTimeout(() => this.resync(), 2000)
     } finally {
       this.resyncing = false
       if (this.resyncPending) {
@@ -104,8 +115,8 @@ class JobStore {
     }
     ws.onclose = () => {
       this.connected = false
-      this.ws = null
-      setTimeout(() => this.connect(), 2000)
+      if (this.ws === ws) this.ws = null
+      if (this.started) this.retry = setTimeout(() => this.connect(), 2000)
     }
     ws.onmessage = (msg) => {
       const event = JSON.parse(msg.data)

@@ -70,6 +70,10 @@ export async function login(token: string): Promise<boolean> {
   return res.ok
 }
 
+export async function logout(): Promise<void> {
+  await apiPost('/logout')
+}
+
 export function wsUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${proto}//${location.host}${BASE}/ws`

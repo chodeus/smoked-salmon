@@ -10,7 +10,7 @@
   import Jobs from './pages/Jobs.svelte'
   import Login from './pages/Login.svelte'
   import { jobStore } from './lib/jobs.svelte'
-  import { checkAuth, login, onUnauthorized, type AuthState } from './lib/api'
+  import { checkAuth, login, logout, onUnauthorized, type AuthState } from './lib/api'
 
   const routes: Record<string, { component: any; label: string }> = {
     '': { component: Dashboard, label: 'Dashboard' },
@@ -40,6 +40,15 @@
 
   async function refreshAuth() {
     authState = await checkAuth()
+  }
+
+  async function signOut() {
+    try {
+      await logout()
+    } finally {
+      jobStore.stop()
+      authState = { required: true, authenticated: false }
+    }
   }
 
   onUnauthorized(() => {
@@ -82,6 +91,7 @@
     <span class="chip {jobStore.connected ? 'ok' : 'err'}">
       {jobStore.connected ? 'connected' : 'disconnected'}
     </span>
+    <button class="btn secondary small" onclick={signOut}>Log out</button>
   </nav>
 
   <main>
