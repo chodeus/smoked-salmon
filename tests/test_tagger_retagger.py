@@ -1136,3 +1136,17 @@ def test_delete_empty_folders_does_not_follow_or_remove_a_symlink(tmp_path) -> N
 
     assert (album / "link").is_symlink()
     assert (outside / "inner").is_dir()
+
+
+def test_delete_empty_folders_does_not_follow_the_album_folder_given_as_a_symlink(tmp_path) -> None:
+    target = tmp_path / "target"
+    (target / "empty").mkdir(parents=True)
+    link = tmp_path / "album"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks need privileges here")
+
+    delete_empty_folders(str(link))
+
+    assert (target / "empty").is_dir()

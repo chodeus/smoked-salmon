@@ -58,6 +58,7 @@ def test_a_corrupt_folder_does_not_claim_the_files_are_16bit(monkeypatch, tmp_pa
 
     output = capsys.readouterr().out
     assert "skips 16bit" not in output
+    assert "corrupt" in output
 
 
 def test_a_single_16bit_file_gets_the_line_too(monkeypatch, tmp_path, capsys):

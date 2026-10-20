@@ -683,6 +683,9 @@ def delete_empty_folders(path):
 
     path itself is kept, and symlinks are neither followed nor removed.
     """
+    # os.walk follows the folder it starts from, though not the links it finds below it.
+    if os.path.islink(path):
+        return
     for root, _dirs, _files in os.walk(path, topdown=False):
         if os.path.samefile(root, path) or os.path.islink(root):
             continue

@@ -56,7 +56,7 @@ async def test_upconverted(path: str) -> bool | None:
         path: Path to a single FLAC file or a directory of FLAC files.
 
     Returns:
-        True if any upconverts detected, False if none, None if not applicable.
+        True if any upconverts detected, False if every file was checked clean, None if none was or some failed.
     """
     skipped: list[str] = []
     if os.path.isfile(path):

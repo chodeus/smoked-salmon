@@ -224,8 +224,9 @@ def test_a_cover_file_that_cannot_be_opened_is_skipped(tmp_path, capsys) -> None
     cover.compress_pictures(str(tmp_path))
 
     audio = FLAC(tmp_path / "01.flac")
+    output = capsys.readouterr().out
     assert audio.pictures == []
-    assert "Could not read cover file" in capsys.readouterr().out
+    assert "Could not read cover file" in output
 
 
 def test_auto_compress_cover_embeds_within_the_limit_counting_the_picture_block(tmp_path) -> None:

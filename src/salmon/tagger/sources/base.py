@@ -435,7 +435,7 @@ def fix_artists_list(original_artists, to_replace):
 
 
 # A whole (...) or [...] ending the title, and the credit a featuring group starts with ("feat" is not "Feather").
-_RE_TRAILING_GROUP = re.compile(r"[(\[](?P<group>[^()\[\]]*)[)\]]\s*$")
+_RE_TRAILING_GROUP = re.compile(r"(?:(\()|\[)(?P<group>[^()\[\]]*)(?(1)\)|\])\s*$")
 _RE_FEATURING_GROUP = re.compile(r"\s*(?:featuring|feat|ft)(?:\.|\s|$)", flags=re.IGNORECASE)
 # What a bracketed version names; "(Explicit)" or "[Bonus Track]" is no version, and keeps the remixer's credit.
 _RE_VERSION_WORD = re.compile(

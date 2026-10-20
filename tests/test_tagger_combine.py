@@ -417,6 +417,8 @@ def test_remixed_is_not_appended_to_a_title_that_ends_in_a_version():
         # Brackets that name no version keep the credit.
         ("Song (with Y)", "Song (with Y) (X Remix)"),
         ("Song [Bonus Track]", "Song [Bonus Track] (X Remix)"),
+        # Mismatched brackets are no group.
+        ("Song (Club Dub]", "Song (Club Dub] (X Remix)"),
         ("Song (Explicit)", "Song (Explicit) (X Remix)"),
     ],
 )
