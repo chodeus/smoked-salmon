@@ -44,6 +44,8 @@ MAX_JOBS = 2
 MAX_QUEUED_JOBS = 100
 # How long a job's end waits for the worker threads it left, as asyncio.run does.
 WORKER_JOIN_TIMEOUT = 300
+# How long stopping salmon web waits for its running jobs.
+STOP_TIMEOUT = 30
 MAX_SUBSCRIBERS = 64  # websocket connections
 PROGRESS_BROADCAST_INTERVAL = 0.2  # seconds; job.progress itself always updates
 
@@ -384,17 +386,18 @@ class JobManager:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def stop(self, timeout: float = 30) -> None:
-        """Cancel every job, and wait for the running ones to end, up to `timeout` seconds."""
+    async def stop(self, timeout: float | None = None) -> bool:
+        """Cancel every job, and wait for the running ones to end, up to STOP_TIMEOUT seconds; False if one did not."""
         for job in [*self._queue, *self._running]:
             self.cancel(job.id)
         try:
-            async with asyncio.timeout(timeout):
+            async with asyncio.timeout(STOP_TIMEOUT if timeout is None else timeout):
                 while self._running:
                     await asyncio.sleep(0.05)
         except TimeoutError:
             names = ", ".join(sorted(job.id for job in self._running))
             print(f"salmon web: stopped while jobs were still running: {names}", file=output.real_stderr())
+        return not self._running
 
     def cancel(self, job_id: str) -> bool:
         job = self.jobs.get(job_id)

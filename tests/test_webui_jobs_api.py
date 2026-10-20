@@ -17,7 +17,7 @@ import threading
 import time
 import unicodedata
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import asyncclick as click
 import pytest
@@ -45,6 +45,9 @@ from salmon.webui.jobs import (
     JobManager,
     manager,
 )
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 # The bind address under test: nothing is served on it.
 LAN_BIND = "0.0.0.0"  # nosec B104
@@ -777,10 +780,44 @@ def test_what_a_jobs_worker_writes_as_the_server_stops_still_goes_to_its_log():
     with contextlib.redirect_stdout(out), web_client() as c:
         assert c.portal is not None
         job = c.portal.call(manager.create_threaded, "demo", "Late", body)
-        assert started.wait(5)
+        worker_started = started.wait(5)
+        assert worker_started
         # The worker writes after the server has begun to stop and cancelled its job.
         threading.Timer(0.3, release.set).start()
 
+    assert "late line" in job.log_lines
+    assert "late line" not in out.getvalue()
+
+
+def test_a_worker_still_running_once_the_server_has_stopped_writes_nothing_to_the_terminal(monkeypatch):
+    monkeypatch.setattr(jobs_mod, "STOP_TIMEOUT", 0.2)
+    started, release = threading.Event(), threading.Event()
+
+    def worker() -> None:
+        started.set()
+        release.wait(10)
+        print("late line")
+
+    async def body(job):
+        await asyncio.to_thread(worker)
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        with web_client() as c:
+            assert c.portal is not None
+            job = c.portal.call(manager.create_threaded, "demo", "Late", body)
+            worker_started = started.wait(5)
+            assert worker_started
+        # The server stopped without it: its worker writes only now.
+        release.set()
+        assert job.thread is not None
+        job.thread.join(10)
+        ended = not job.thread.is_alive()
+        # As the process ending would: the kept capture must not be undone later, in another test.
+        kept = cast("FastAPI", c.app).state.kept_capture
+        kept.close()
+
+    assert ended
     assert "late line" in job.log_lines
     assert "late line" not in out.getvalue()
 

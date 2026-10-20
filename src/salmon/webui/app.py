@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -25,14 +25,17 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 @asynccontextmanager
-async def _jobs_running(_app: FastAPI) -> AsyncIterator[None]:
+async def _jobs_running(app: FastAPI) -> AsyncIterator[None]:
     """While the server runs: jobs, what each prints going to its log until all have ended."""
-    with output.capturing():
+    with ExitStack() as capture:
+        capture.enter_context(output.capturing())
         try:
             yield
         finally:
-            # A job ends once the workers it left have, so none writes after the capture.
-            await manager.stop()
+            # A job ends once the workers it left have. One still running keeps the capture (the process is
+            # ending), so what it writes never reaches the terminal: held by the app, never closed.
+            if not await manager.stop():
+                app.state.kept_capture = capture.pop_all()
 
 
 def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | None = None) -> FastAPI:
