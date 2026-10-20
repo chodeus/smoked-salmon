@@ -73,9 +73,7 @@ def clean_manager():
 
 @pytest.fixture
 def client():
-    # base_url localhost passes TrustedHostMiddleware; the context manager
-    # keeps one portal event loop alive so background job tasks survive
-    # across requests.
+    # localhost passes the Host check; the context manager keeps one portal loop alive for background jobs.
     with web_client() as c:
         yield c
 

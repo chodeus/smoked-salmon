@@ -1182,7 +1182,8 @@ async def test_an_unanswered_question_inside_the_upload_stops_the_job_as_unanswe
     path = str(album_dir)
     job = m.create_threaded("upload", "Upload", wizard_factory(tracker, path), lock_key=path)
     await wait_for(lambda: job.question and "source" in job.question["text"], "the source question")
-    assert job.interaction.answer(job.question["id"], "web") is True
+    answered = job.interaction.answer(job.question["id"], "web")
+    assert answered is True
 
     # The next question (the existing group) is left unanswered.
     await join_job(job)

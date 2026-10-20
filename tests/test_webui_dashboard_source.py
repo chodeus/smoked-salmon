@@ -11,6 +11,8 @@ def test_the_dashboard_asks_the_trackers_nothing_when_the_page_loads() -> None:
     source = DASHBOARD.read_text(encoding="utf-8")
     effects = re.findall(r"\$effect\(\(\) => \{(.*?)\n  \}\)", source, flags=re.DOTALL)
 
-    assert effects, "the dashboard's effects are no longer written as this test expects: update it"
+    # Every effect parsed, so one written another way cannot hide a check.
+    assert effects
+    assert len(effects) == source.count("$effect(")
     assert not [effect for effect in effects if "checkconf" in effect]
     assert "onclick={() => checkconf(true)}" in source
