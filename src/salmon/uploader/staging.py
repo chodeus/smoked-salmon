@@ -10,7 +10,7 @@ import asyncclick as click
 
 from salmon import cfg, dryrun
 from salmon.common.files import rewrite_refusal
-from salmon.converter.conversions import carry_conversion
+from salmon.converter.conversions import carry_conversion, copies_of
 from salmon.errors import UploadError
 
 # Scratch copies live here, one directory per run, removed when the run ends.
@@ -29,7 +29,10 @@ def staged_source(path: str, scratch: bool) -> Iterator[tuple[str, str | None]]:
     # A protected album is copied into a run directory too, but its rename goes into download_directory, to be seeded.
     scratch_dir = _new_scratch_dir()
     try:
-        yield _copy_into(path, scratch_dir, scratch, reason), (scratch_dir if scratch else None)
+        copy = _copy_into(path, scratch_dir, scratch, reason)
+        # A conversion of the copy, or of its rename in scratch_dir, is recorded as of the album given.
+        with copies_of(path, scratch_dir):
+            yield copy, (scratch_dir if scratch else None)
     finally:
         _remove_scratch_dir(scratch_dir, path)
 

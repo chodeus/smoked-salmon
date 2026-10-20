@@ -3,7 +3,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import asyncclick as click
 import msgspec
@@ -15,7 +15,7 @@ from salmon import cfg
 from salmon.common.constants import IMAGE_EXTENSIONS, LOSSY_EXTENSIONS
 from salmon.common.files import process_files
 from salmon.constants import TAG_TRUMP_SIZE
-from salmon.converter.conversions import record_conversion
+from salmon.converter.conversions import conversion_of, missing_files, record_conversion, recorded_files, source_of
 from salmon.errors import UploadError
 from salmon.release_notification import upload_footer
 from salmon.tagger.audio_info import gather_audio_info
@@ -461,23 +461,13 @@ async def transcode_folder(
     _validate_channel_count(items)
 
     if os.path.isdir(new_path):
-        # Compare relative paths, not basenames — multi-disc output nests MP3s in disc
-        # subfolders, and basenames would both miss those and let a same-named top-level
-        # file mask a missing nested one.
-        expected_mp3s = {os.path.relpath(item.dst, new_path) for item in items}
-        existing_files = {
-            os.path.relpath(os.path.join(root, f), new_path)
-            for root, _dirs, files in os.walk(new_path)
-            for f in files
-            if f.lower().endswith(".mp3")
-        }
-        if not expected_mp3s:
-            # No expected output computed — never rmtree on an empty set (could be a seeding folder).
-            raise UploadError(f"Refusing to overwrite {new_path}: no expected MP3 output was computed.")
-        if expected_mp3s <= existing_files:
+        if _is_finished_transcode(path, new_path, bitrate):
             click.secho(f"{new_path} already exists.", fg="yellow")
             return new_path
-        # Existing folder isn't our expected output (e.g. a prior upload with a different file
+        if not items:
+            # No expected output computed — never rmtree on an empty set (could be a seeding folder).
+            raise UploadError(f"Refusing to overwrite {new_path}: no expected MP3 output was computed.")
+        # No record of salmon's, and not the expected output (e.g. a prior upload with a different file
         # template); you may be seeding it, so confirm before deleting.
         if not cfg.upload.yes_all and not click.confirm(
             click.style(
@@ -495,8 +485,63 @@ async def transcode_folder(
     await _transcode_audio_files(items, bitrate)
 
     if items:
-        record_conversion(new_path, source=path, kind="transcode", bitrate=bitrate)
+        files = {os.path.relpath(item.src, path): os.path.relpath(item.dst, new_path) for item in items}
+        record_conversion(new_path, source=source_of(path), kind="transcode", bitrate=bitrate, files=files)
     return new_path
+
+
+def _is_finished_transcode(path: str, new_path: str, bitrate: Bitrate) -> bool:
+    """Whether new_path, which exists, is this transcode of path, complete; False when it is to be made again.
+
+    salmon's record of the transcode lists the files it wrote, under the names the folder check may have shortened
+    since. Only a folder with no record, a transcode that stopped before its last file, is ever made again: one with a
+    record may be what a torrent seeds from. A record of another conversion (another kind, bitrate or source) is
+    refused whatever names the folder holds.
+
+    Raises:
+        UploadError: new_path has a record and is not this transcode, complete.
+    """
+    record = conversion_of(new_path)
+    items = _collect_transcode_items(path, new_path)
+    if record is not None:
+        if differs := _how_record_differs(record, path, bitrate, {os.path.relpath(item.src, path) for item in items}):
+            raise UploadError(f"{new_path} holds {differs}, not this transcode: remove it and run again.")
+        missing = missing_files(new_path, record)
+        if missing:
+            raise UploadError(
+                f"{new_path} is salmon's transcode of this album at {bitrate}, but {', '.join(missing)} "
+                f"{'is' if len(missing) == 1 else 'are'} missing: remove it and run again."
+            )
+        if missing is not None:
+            return True
+    # No record, or this transcode's from before salmon listed the files it wrote: the paths it would give them.
+    expected_mp3s = {Path(item.dst).relative_to(new_path) for item in items}
+    existing_files = {p.relative_to(new_path) for p in Path(new_path).rglob("*") if p.suffix.lower() == ".mp3"}
+    if expected_mp3s and expected_mp3s <= existing_files:
+        return True
+    if record is not None:
+        raise UploadError(
+            f"{new_path} is incomplete or not salmon's transcode of this album at {bitrate}: remove it and run again."
+        )
+    return False
+
+
+def _how_record_differs(record: dict[str, Any], path: str, bitrate: Bitrate, sources: set[str]) -> str | None:
+    """What a conversion record is of, when it is not this transcode of path at bitrate; None when it is.
+
+    ``sources`` are the files of path the transcode makes, relative to it.
+    """
+    if os.path.realpath(record["source"]) != os.path.realpath(source_of(path)):
+        return f"a conversion of another album ({record['source']})"
+    if record["kind"] != "transcode":
+        return "a downconversion of this album"
+    if record["bitrate"] != bitrate:
+        return f"a transcode of this album at {record['bitrate']}"
+    # The fork: a track the album gained or lost since is not in this transcode, or no longer in the album.
+    recorded = recorded_files(record)
+    if recorded is not None and recorded.keys() != sources:
+        return "a transcode of this album from before its files changed"
+    return None
 
 
 def generate_transcode_description(url: str, bitrate: Bitrate) -> str:

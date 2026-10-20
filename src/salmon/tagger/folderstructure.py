@@ -7,7 +7,7 @@ import asyncclick as click
 from salmon.common import clean_name, invisible_chars, show_invisible
 from salmon.constants import ALLOWED_EXTENSIONS, ESSENTIAL_EXTENSIONS
 from salmon.errors import NoncompliantFolderStructure
-from salmon.tagger.renames import RenameStopped, name_key, rename_all
+from salmon.tagger.renames import RenameStopped, name_key, rename_recorded
 
 
 async def check_folder_structure(
@@ -242,13 +242,28 @@ def _rename_or_stop(path: str, renames: list[tuple[str, str]]) -> None:
         NoncompliantFolderStructure: A rename failed, or its new name was taken since the check.
     """
     try:
-        rename_all(renames)
+        rename_recorded(path, renames)
     except RenameStopped as e:
-        # Marked as the listing above marks them, line by line: show_invisible would mark a newline too.
-        click.secho("\n".join(show_invisible(line) for line in e.report(path).splitlines()), fg="red", bold=True)
+        _show_report(path, e)
+        raise NoncompliantFolderStructure from e
+    except OSError as e:
+        # A record write after a stop fails inside rename_recorded's handler: the stop is its context.
+        if isinstance(e.__context__, RenameStopped):
+            _show_report(path, e.__context__)
+        # The renames made stand, and the record names the old files: a later run refuses the folder, never deletes it.
+        click.secho(
+            f"Could not update the record of how {path} was converted ({e}): a later run will refuse it.",
+            fg="red",
+            bold=True,
+        )
         raise NoncompliantFolderStructure from e
     for _, new in renames:
         click.echo(f" >> {new}")
+
+
+def _show_report(path: str, stopped: RenameStopped) -> None:
+    # Marked as the listing marks them, line by line: show_invisible would mark a newline too.
+    click.secho("\n".join(show_invisible(line) for line in stopped.report(path).splitlines()), fg="red", bold=True)
 
 
 def _check_zero_len_folder(path: str) -> None:
