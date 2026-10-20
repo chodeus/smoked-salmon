@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from salmon import cfg
 from salmon.webui import output
-from salmon.webui.auth import AuthMiddleware, auth_router, resolve_auth_token
+from salmon.webui.auth import Auth, AuthMiddleware, auth_router, resolve_auth_token
 from salmon.webui.egress import EgressMiddleware
 from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.routers import browse, checks, convert, jobs, search, spectrals, system, tools, upload
@@ -42,6 +42,7 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
         lifespan=_capturing_output,
     )
     app.state.auth_token = token
+    app.state.auth = Auth(token) if token else None
     app.state.dev = dev
 
     # Innermost, so every route's answer passes it.
@@ -60,7 +61,7 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
     # It checks every request's Host first (DNS rebinding): loopback names, the bind address and allowed_hosts.
     app.add_middleware(
         AuthMiddleware,
-        token=token,
+        auth=app.state.auth,
         bind_host=host,
         allowed_hosts=list(getattr(cfg.upload.web_interface, "allowed_hosts", []) or []),
         dev=dev,

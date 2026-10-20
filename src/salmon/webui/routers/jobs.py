@@ -7,9 +7,13 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from salmon.webui.auth import still_authenticated
 from salmon.webui.jobs import manager
 
 router = APIRouter(tags=["jobs"])
+
+# An idle stream checks this often that its login still holds, so an ended one frees its place.
+SESSION_RECHECK_SECONDS = 60
 
 
 @router.get("/jobs")
@@ -66,8 +70,16 @@ async def events(websocket: WebSocket) -> None:
         return
     try:
         while True:
-            event = await queue.get()
-            await websocket.send_json(event)
+            try:
+                event = await asyncio.wait_for(queue.get(), SESSION_RECHECK_SECONDS)
+            except TimeoutError:
+                event = None
+            # A stream opened with a session gets nothing once a logout has ended it.
+            if not still_authenticated(websocket):
+                await websocket.close(code=1008)
+                return
+            if event is not None:
+                await websocket.send_json(event)
     except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     finally:
