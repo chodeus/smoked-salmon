@@ -27,6 +27,7 @@ import asyncclick as click
 from salmon.common.progress import reset_progress_callback, set_progress_callback
 from salmon.common.redaction import redact_url
 from salmon.errors import AbortAndDeleteFolder, NoAnswerError, UnknownOutcomeError
+from salmon.uploader.record import recording
 from salmon.webui import egress, output
 from salmon.webui.interaction import WebInteraction, no_answer, set_interaction
 
@@ -77,6 +78,25 @@ class JobCapacityError(Exception):
 
 class FolderChangedError(Exception):
     """A job's album folder is no longer the one its request named, where it was."""
+
+
+def _unknown(errors: list[UnknownOutcomeError]) -> UnknownOutcomeError:
+    return UnknownOutcomeError("; ".join(str(error) for error in errors))
+
+
+async def _recorded(coro: Coroutine[Any, Any, Any]) -> Any:
+    """The job's run, ending as an unknown outcome when it went on past a request whose outcome it could not tell."""
+    with recording() as record:
+        try:
+            result = await coro
+        except BaseException as err:
+            # Also when the run stops later (an abort, a cancel): what may be on the tracker is what the job says.
+            if record.unknown_outcomes:
+                raise _unknown(record.unknown_outcomes) from err
+            raise
+    if record.unknown_outcomes:
+        raise _unknown(record.unknown_outcomes)
+    return result
 
 
 async def _in_click_context(coro: Coroutine[Any, Any, Any]) -> Any:
@@ -325,7 +345,7 @@ class JobManager:
                     raise asyncio.CancelledError()
                 # Before the task is made: it takes the context, and with it where its output goes.
                 with output.to(interaction.lines.write):
-                    task = loop.create_task(_in_click_context(factory(job)))
+                    task = loop.create_task(_in_click_context(_recorded(factory(job))))
                 job._thread_task = task
             result = loop.run_until_complete(task)
             status = "done"

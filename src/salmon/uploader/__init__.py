@@ -51,6 +51,7 @@ from salmon.errors import (
     LogCheckSkipped,
     NoAnswerError,
     RequestError,
+    UnknownOutcomeError,
     UploadError,
 )
 from salmon.tagger import (
@@ -72,6 +73,7 @@ from salmon.tagger.pre_data import construct_rls_data
 from salmon.tagger.retagger import rename_files, tag_files
 from salmon.tagger.review import release_type_from_folder, review_metadata, suggest_release_type
 from salmon.tagger.tags import check_tags, gather_tags, standardize_tags
+from salmon.uploader import record
 from salmon.uploader.cover import resolve_cover_url
 from salmon.uploader.dupe_checker import (
     check_existing_group,
@@ -1007,6 +1009,8 @@ async def _upload_staged(
                         )
             except RequestError as e:
                 click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
+                if isinstance(e, UnknownOutcomeError):
+                    record.note_unknown_outcome(e)
 
             tracker = None
             if last_site:

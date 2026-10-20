@@ -31,6 +31,7 @@ from salmon.checks.integrity import IntegrityResult
 from salmon.common.progress import report_progress
 from salmon.errors import UnknownOutcomeError
 from salmon.trackers import base as tracker_base
+from salmon.uploader import record
 from salmon.uploader.frequency import SpectrumResult
 from salmon.uploader.spectrals import get_spectrals_path
 from salmon.webui import egress
@@ -882,6 +883,49 @@ async def test_an_error_chain_that_loops_back_ends_failed():
 
     job = await finished(JobManager().create_threaded("demo", "Demo", run))
     assert job.status == "failed"
+
+
+@pytest.mark.parametrize("then", ["returns", "aborts", "is cancelled"])
+async def test_a_job_that_went_on_past_an_unknown_outcome_ends_as_one(then):
+    noted = threading.Event()
+
+    async def run(job):
+        record.note_unknown_outcome(UnknownOutcomeError("the lossy report went unanswered"))
+        noted.set()
+        if then == "aborts":
+            raise click.Abort()
+        if then == "is cancelled":
+            await asyncio.sleep(15)
+        return "result"
+
+    m = JobManager()
+    job = m.create_threaded("upload", "Upload", run)
+    await until(noted.is_set, "the job to note its unknown outcome")
+    if then == "is cancelled":
+        cancelled = m.cancel(job.id)
+        assert cancelled is True
+    await finished(job)
+    expected = ("unknown_outcome", f"{UNKNOWN_OUTCOME} (the lossy report went unanswered)", None)
+    assert (job.status, job.error, job.result) == expected
+
+
+async def test_each_job_records_its_own_unknown_outcomes():
+    noted = threading.Event()
+
+    async def lost(job):
+        await asyncio.to_thread(record.note_unknown_outcome, UnknownOutcomeError("lost"))
+        noted.set()
+
+    async def clean(job):
+        # Ends after the other job's note: a record they shared would end it as an unknown outcome too.
+        await asyncio.to_thread(noted.wait, 15)
+        return "result"
+
+    m = JobManager()
+    first, second = m.create_threaded("upload", "Lost", lost), m.create_threaded("upload", "Clean", clean)
+    await finished(first)
+    await finished(second)
+    assert (first.status, second.status, second.result) == ("unknown_outcome", "done", "result")
 
 
 async def test_a_job_whose_awaited_task_was_cancelled_ends_cancelled_with_no_cancel_asked():
