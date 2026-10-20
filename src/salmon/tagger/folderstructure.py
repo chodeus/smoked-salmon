@@ -7,7 +7,7 @@ import asyncclick as click
 from salmon.common import clean_name, invisible_chars, show_invisible
 from salmon.constants import ALLOWED_EXTENSIONS, ESSENTIAL_EXTENSIONS
 from salmon.errors import NoncompliantFolderStructure
-from salmon.tagger.mutation import rename_all_or_none
+from salmon.tagger.renames import RenameStopped, name_key, rename_all
 
 
 async def check_folder_structure(
@@ -127,18 +127,19 @@ def _check_invisible_characters(path: str, scene: bool) -> None:
         raise click.Abort
 
     renames = [(old, os.path.join(os.path.dirname(old), clean_name(os.path.basename(old)))) for old, _, _ in offending]
+    key = name_key(old for old, _ in renames)
     taken: set[str] = set()
     for old, new in renames:
         if new == old:
             click.secho(f"Cannot rename {old}: nothing would be left of its name.", fg="red", bold=True)
             raise NoncompliantFolderStructure
-        if os.path.lexists(new) or new in taken:
+        if os.path.lexists(new) or key(new) in taken:
             click.secho(f"Cannot rename {old}: {new} already exists.", fg="red", bold=True)
             raise NoncompliantFolderStructure
-        taken.add(new)
+        taken.add(key(new))
     if not click.confirm(click.style("Rename them to the names without those characters?", fg="magenta"), default=True):
         raise NoncompliantFolderStructure
-    rename_all_or_none(renames)
+    _rename_or_stop(path, renames)
 
 
 def _check_path_lengths(path: str, scene: bool, max_path_length: int | None = None) -> None:
@@ -207,22 +208,47 @@ def _check_path_lengths(path: str, scene: bool, max_path_length: int | None = No
 
     click.secho(f"The following exceed {limit} characters in length, truncating...", fg="red")
     renames = []
+    key = name_key(filepath for filepath, _ in offending_files)
+    planned = set()
     for filepath, filepathlen in offending_files:
-        stem, ext = os.path.splitext(filepath)
+        directory, base = os.path.split(filepath)
+        name, ext = os.path.splitext(base)
         # Drop the overshoot plus the two chars ".." costs, so the in-torrent path
         # lands exactly on the limit.
-        newpath = stem[: len(stem) - (filepathlen - limit) - 2] + ".." + ext
+        kept = len(name) - (filepathlen - limit) - 2
+        newpath = os.path.join(directory, name[:kept] + ".." + ext)
+        # Two names cut to the same start, or a file already there with it: the second becomes "Name~2.."
+        counter = 1
+        while os.path.lexists(newpath) or key(newpath) in planned:
+            counter += 1
+            mark = f"~{counter}"
+            if kept - len(mark) < 1:
+                click.secho(
+                    f"{filepath} cannot be shortened to {limit} characters under a name no other file has.",
+                    fg="red",
+                    bold=True,
+                )
+                raise NoncompliantFolderStructure
+            newpath = os.path.join(directory, name[: kept - len(mark)] + mark + ".." + ext)
+        planned.add(key(newpath))
         renames.append((filepath, newpath))
-    # os.rename silently overwrites: two names truncating to the same target (or onto
-    # an existing file) would destroy audio — refuse instead.
-    targets = [n for _, n in renames]
-    collisions = sorted({n for n in targets if targets.count(n) > 1 or os.path.exists(n)})
-    if collisions:
-        click.secho("Truncating would overwrite these files; rename them manually:", fg="red", bold=True)
-        for n in collisions:
-            click.echo(f" >> {n}")
-        raise NoncompliantFolderStructure
-    rename_all_or_none(renames)
+    _rename_or_stop(path, renames)
+
+
+def _rename_or_stop(path: str, renames: list[tuple[str, str]]) -> None:
+    """Make the renames the checks planned, stopping at the first that fails with what was renamed and what was not.
+
+    Raises:
+        NoncompliantFolderStructure: A rename failed, or its new name was taken since the check.
+    """
+    try:
+        rename_all(renames)
+    except RenameStopped as e:
+        # Marked as the listing above marks them, line by line: show_invisible would mark a newline too.
+        click.secho("\n".join(show_invisible(line) for line in e.report(path).splitlines()), fg="red", bold=True)
+        raise NoncompliantFolderStructure from e
+    for _, new in renames:
+        click.echo(f" >> {new}")
 
 
 def _check_zero_len_folder(path: str) -> None:

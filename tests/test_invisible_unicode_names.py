@@ -4,6 +4,7 @@ Generated folder and file names are cleaned, and check_folder_structure renames 
 release, reports) the names that still hold one.
 """
 
+import os
 from types import SimpleNamespace
 
 import anyio
@@ -11,8 +12,9 @@ import asyncclick as click
 import pytest
 
 from salmon import cfg
-from salmon.common import clean_name, invisible_chars
+from salmon.common import clean_name, invisible_chars, show_invisible
 from salmon.errors import NoncompliantFolderStructure, UploadError
+from salmon.tagger import renames
 from salmon.tagger.foldername import _edit_folder_interactive, generate_folder_name, rename_folder
 from salmon.tagger.folderstructure import _check_invisible_characters, check_folder_structure
 from salmon.tagger.retagger import generate_file_name
@@ -427,3 +429,52 @@ def test_path_length_check_counts_the_cleaned_name(tmp_path, monkeypatch) -> Non
     anyio.run(lambda: check_folder_structure(str(root), False, max_path_length=180))
 
     assert _names(root) == [f"{'x' * 150}.flac"]
+
+
+def test_check_stops_when_a_new_name_is_taken_after_the_check(tmp_path, monkeypatch) -> None:
+    root = _release(tmp_path)
+
+    def confirm(*_args, **_kwargs):
+        (root / "01. Some Title.flac").write_bytes(b"other")
+        return True
+
+    monkeypatch.setattr(click, "confirm", confirm)
+
+    with pytest.raises(NoncompliantFolderStructure):
+        _check_invisible_characters(str(root), False)
+
+    assert (root / "01. Some Title.flac").read_bytes() == b"other"
+    assert (root / f"01. Some{NBSP}Title.flac").read_bytes() == b"fLaC"
+
+
+def test_check_stops_at_the_first_failed_rename_and_names_the_names_left(tmp_path, monkeypatch, capsys) -> None:
+    root = _release(tmp_path)
+    _answer(monkeypatch, True)
+
+    def failing_rename(src, dst):
+        raise PermissionError(13, "Permission denied", src)
+
+    monkeypatch.setattr(os, "rename", failing_rename)
+
+    with pytest.raises(NoncompliantFolderStructure):
+        _check_invisible_characters(str(root), False)
+
+    out = capsys.readouterr().out
+    assert "Permission denied" in out
+    # The fork marks the invisible characters in the report too.
+    assert f"Not renamed: {show_invisible(f'Disc{WORD_JOINER} 1')}" in out
+
+
+def test_check_renames_nothing_when_two_names_clean_to_one_on_a_volume_that_ignores_case(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "Artist - Album [WEB FLAC]"
+    root.mkdir()
+    (root / f"A{NBSP}b.flac").write_bytes(b"one")
+    (root / f"a{ZWSP} b.flac").write_bytes(b"two")
+    monkeypatch.setattr(renames, "_folds_case", lambda _path: True)
+    _answer(monkeypatch, True)
+    before = _names(root)
+
+    with pytest.raises(NoncompliantFolderStructure):
+        _check_invisible_characters(str(root), False)
+
+    assert _names(root) == before

@@ -6,50 +6,9 @@ would upload a release whose tracks disagree with each other, so every such
 failure reports how far it got and stops.
 """
 
-import errno
-import os
 from typing import NoReturn
 
 import asyncclick as click
-
-
-def _rename_no_clobber(src: str, dst: str) -> None:
-    """Rename without ever replacing an existing destination.
-
-    os.rename overwrites silently on POSIX, and checking os.path.exists first
-    only narrows the window — an overwritten file is not something a rollback
-    can put back. os.link fails outright when the destination exists, which is
-    the guarantee this needs.
-
-    A file has no check-then-rename fallback: that is the race being removed, so
-    a filesystem without hardlinks aborts instead of quietly reintroducing it.
-    """
-    if os.path.isdir(src) and not os.path.islink(src):
-        # A folder cannot be hardlinked, and rename only ever replaces an empty one: refuse any name in use.
-        if os.path.lexists(dst):
-            raise FileExistsError(errno.EEXIST, "the new name is in use", dst)
-        os.rename(src, dst)
-        return
-    try:
-        os.link(src, dst)
-    except OSError as e:
-        if e.errno == errno.EEXIST:
-            raise
-        raise OSError(
-            e.errno,
-            f"cannot rename safely on this filesystem ({e.strerror}); refusing rather than risking an overwrite",
-            src,
-        ) from e
-
-    # Between the link and here, another process could have moved the original
-    # away and put something else at src. Unlinking then destroys their file, so
-    # only remove src while it is still the same inode we just linked.
-    try:
-        if os.stat(src).st_ino != os.stat(dst).st_ino:
-            raise OSError(errno.EPERM, "source changed mid-rename; leaving both paths in place", src)
-    except FileNotFoundError:
-        return  # src already gone; the link at dst stands as the rename
-    os.unlink(src)
 
 
 def abort_partial(
@@ -75,29 +34,3 @@ def abort_partial(
     if remaining:
         click.secho(f"Not changed: {', '.join(remaining)}.", fg="yellow")
     raise click.Abort from error
-
-
-def rename_all_or_none(renames: list[tuple[str, str]]) -> None:
-    """Rename every pair, undoing the lot if any one fails.
-
-    Unlike a tag write, a rename is reversible, so a partial run can be put back
-    rather than merely reported.
-    """
-    completed: list[tuple[str, str]] = []
-    restore_failed = False
-    try:
-        for old, new in renames:
-            _rename_no_clobber(old, new)
-            completed.append((old, new))
-            click.echo(f" >> {new}")
-    except BaseException as e:
-        for old, new in reversed(completed):
-            try:
-                _rename_no_clobber(new, old)
-            except OSError:
-                restore_failed = True
-                click.secho(f"Could not restore {old}", fg="red", bold=True)
-        # Saying "rolled back" after a failed restore would be the opposite of true.
-        outcome = "the rollback was incomplete" if restore_failed else "was rolled back"
-        click.secho(f"\nRename failed and {outcome}: {e}", fg="red", bold=True)
-        raise click.Abort from e
