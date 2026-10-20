@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from salmon import cfg
+from salmon.trackers import account
 from salmon.webui import output
 from salmon.webui.auth import Auth, AuthMiddleware, auth_router, resolve_auth_token
 from salmon.webui.egress import EgressMiddleware
@@ -26,16 +27,17 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 @asynccontextmanager
 async def _jobs_running(app: FastAPI) -> AsyncIterator[None]:
-    """While the server runs: jobs, what each prints going to its log until all have ended."""
+    """While the server runs: jobs, their output captured till all have ended, and every tracker request here."""
     with ExitStack() as capture:
         capture.enter_context(output.capturing())
-        try:
-            yield
-        finally:
-            # A job ends once the workers it left have. One still running keeps the capture (the process is
-            # ending), so what it writes never reaches the terminal: held by the app, never closed.
-            if not await manager.stop():
-                app.state.kept_capture = capture.pop_all()
+        async with account.requests_on_this_loop():
+            try:
+                yield
+            finally:
+                # A job ends once the workers it left have. One still running keeps the capture (the process is
+                # ending), so what it writes never reaches the terminal: held by the app, never closed.
+                if not await manager.stop():
+                    app.state.kept_capture = capture.pop_all()
 
 
 def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | None = None) -> FastAPI:

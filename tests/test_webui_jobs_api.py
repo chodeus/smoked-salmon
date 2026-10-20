@@ -24,6 +24,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 from starlette.websockets import WebSocketDisconnect
+from test_trackers_account import FakeTracker, _clients, _post  # pyright: ignore[reportMissingImports]
 from webui_client import reset_manager, web_client  # pyright: ignore[reportMissingImports]
 
 from salmon import cfg
@@ -972,6 +973,41 @@ async def test_a_cancelled_job_whose_request_went_unanswered_ends_as_an_unknown_
     await finished(job)
     assert cancelled is True
     assert (job.status, job.error) == ("unknown_outcome", f"{UNKNOWN_OUTCOME} (Network error: timed out)")
+
+
+def test_cancelling_a_job_during_its_post_stops_it_once_the_tracker_answered():
+    tracker = FakeTracker()
+    went_on = threading.Event()
+
+    with web_client() as c:
+        assert c.portal is not None
+        site = c.portal.call(tracker.start)
+
+        async def run(job):
+            (api,) = _clients(site, "RED", unlimited=True)
+            try:
+                await _post(api)
+                went_on.set()
+            finally:
+                await api.close()
+
+        try:
+            job = c.portal.call(manager.create_threaded, "posts", "Posts", run)
+            deadline = time.monotonic() + 15
+            while not tracker.hits and time.monotonic() < deadline:
+                time.sleep(0.005)
+            cancel = c.post(f"/api/jobs/{job.id}/cancel", json={})
+            data = join_job(c, job.id)
+        finally:
+            c.portal.call(tracker.runner.cleanup)
+
+    assert cancel.status_code == 200
+    assert data["status"] == "cancelled"
+    # The job stopped once the tracker had answered, and went no further.
+    assert tracker.posts == 0
+    assert not went_on.is_set()
+    assert any(line.startswith("Cancelled once POST /ajax.php?action=upload to RED") for line in data["log"])
+    assert [method for _, _, method, _ in tracker.hits] == ["POST"]
 
 
 def test_a_failed_job_says_why_and_its_traceback_goes_to_the_servers_stderr():

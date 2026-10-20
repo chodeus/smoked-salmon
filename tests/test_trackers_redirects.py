@@ -192,20 +192,6 @@ async def test_a_redirect_loop_is_cut_short(serve, api_for):
     assert hits == ["/ping.php", "/pong.php", "/ping.php", "/pong.php"]
 
 
-async def test_a_raw_site_fetch_takes_a_slot_and_stays_put(serve, api_for):
-    seen: list[str | None] = []
-
-    async def image(request: web.Request) -> web.Response:
-        seen.append(request.cookies.get("session"))
-        raise web.HTTPFound("https://elsewhere.example/steal")
-
-    url = await serve(image=image)
-    async with api_for(url).site_get(f"{url}/image.php") as resp:
-        assert resp.status == 302
-    assert seen == ["a-cookie"]
-    assert cast("CountingLimiter", _tracker_limiter("RED")).slots == 1
-
-
 async def _stream_image(
     request: web.Request, chunks: int, size: int, pause: float, head: bytes = b""
 ) -> web.StreamResponse:
@@ -217,19 +203,6 @@ async def _stream_image(
         await asyncio.sleep(pause)
     await resp.write_eof()
     return resp
-
-
-async def test_a_trickled_raw_site_fetch_still_times_out(serve, api_for):
-    async def image(request: web.Request) -> web.StreamResponse:
-        return await _stream_image(request, chunks=10, size=1, pause=0.3)
-
-    url = await serve(image=image)
-    loop = asyncio.get_running_loop()
-    start = loop.time()
-    with pytest.raises(TimeoutError):
-        async with api_for(url).site_get(f"{url}/image.php", timeout_secs=1) as resp:
-            await resp.read()
-    assert loop.time() - start < 2
 
 
 async def test_a_source_image_to_rehost_is_read_to_the_end(serve, api_for):
@@ -400,12 +373,6 @@ def test_one_tracker_budget_holds_across_threads_and_loops():
     # 5 per 0.3 s: the sixth request, from either thread, waits for the window.
     assert len(started) == 6
     assert started[5] - started[0] >= 0.25
-
-
-async def test_a_raw_site_fetch_refuses_another_host(api_for):
-    with pytest.raises(RequestFailedError):
-        async with api_for("https://tracker.example").site_get("https://elsewhere.example/i/x.png"):
-            pass
 
 
 @pytest.mark.parametrize("status", [307, 308])

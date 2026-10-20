@@ -7,10 +7,10 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
+from functools import partial
 from http import HTTPStatus
 from typing import Any, NoReturn, cast
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
-from weakref import WeakKeyDictionary
 
 import aiohttp
 import asyncclick as click
@@ -35,6 +35,8 @@ from salmon.errors import (
     UnknownOutcomeError,
     UploadError,
 )
+from salmon.trackers import account as accounts
+from salmon.trackers.account import POOL_CONNECTIONS, TrackerAccount, account_for
 
 ARTIST_TYPES = [
     "main",
@@ -336,33 +338,6 @@ _TRANSIENT_5XX = frozenset(
 )
 
 
-# Pools still open per click context, closed when it exits. A set, not one callback per pool, so a
-# long-lived context (the web UI server's) holds nothing for a pool already closed.
-_open_pools: WeakKeyDictionary[click.Context, set[aiohttp.ClientSession]] = WeakKeyDictionary()
-# Web UI job threads register their own contexts concurrently.
-_open_pools_lock = threading.Lock()
-
-
-def _close_with_context(session: aiohttp.ClientSession) -> set[aiohttp.ClientSession] | None:
-    """Close ``session`` when the current click context exits; returns that context's open-pool set."""
-    # Web UI jobs get their own context in JobManager._thread_main.
-    ctx = click.get_current_context(silent=True)
-    if ctx is None:
-        return None
-    with _open_pools_lock:
-        open_pools = _open_pools.get(ctx)
-        if open_pools is None:
-            open_pools = _open_pools[ctx] = set()
-
-            async def close_open_pools() -> None:
-                for pool in list(open_pools):
-                    await pool.close()
-
-            ctx.call_on_close(close_open_pools)
-    open_pools.add(session)
-    return open_pools
-
-
 class RetryableError(RequestError):
     """Exception for retryable network errors."""
 
@@ -423,8 +398,9 @@ class BaseGazelleApi:
         self._authenticated = False
         self._authentication: asyncio.Task[None] | None = None
         self._authentication_waiters = 0
+        # The tracker account's pool while this client uses it, and that account.
         self._session: aiohttp.ClientSession | None = None
-        self._pool_owner: set[aiohttp.ClientSession] | None = None
+        self._account_used: TrackerAccount | None = None
         # The image host's credentials image_auth() got, as query parameters, until they expire.
         self._image_auth: dict[str, str] = {}
 
@@ -433,27 +409,64 @@ class BaseGazelleApi:
         """This tracker's request budget, shared process-wide by site_code."""
         return _tracker_limiter(self.site_code)
 
+    def _account(self) -> TrackerAccount:
+        """This tracker's account on the running event loop: its pool."""
+        return account_for(self.site_code)
+
+    @asynccontextmanager
+    async def _turn(self, idempotent: bool) -> AsyncIterator[None]:
+        """Wait for a request's turn in the rate limit; it goes out right after.
+
+        From then on a request that is not idempotent may reach the tracker, so cancelling the salmon web
+        job that sent it waits for the answer instead of stopping it.
+        """
+        async with self._rate_limiter:
+            if not idempotent:
+                accounts.commit()
+            yield
+
     def _http_session(self) -> aiohttp.ClientSession:
-        """Get this instance's kept-alive pool, opening it on first use."""
-        if self._session is None or self._session.closed:
+        """Get the kept-alive pool of this tracker account, shared by all its clients."""
+        account = self._account()
+        if account.pool is None or account.pool.closed:
             # Two reused connections, so a gathered batch can't open one TLS handshake per request
             # and read as scanner traffic. DummyCookieJar: cookies go per request, never kept.
-            self._session = aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(limit=2),
+            # Per event loop, as a ClientSession binds to the running loop.
+            account.pool = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(limit=POOL_CONNECTIONS),
                 cookie_jar=aiohttp.DummyCookieJar(),
             )
-            self._pool_owner = _close_with_context(self._session)
-        return self._session
+        if self._account_used is not account:
+            if self._account_used is not None:
+                # Another loop's: that loop is done with it, or closes it with its own clients.
+                self._account_used.clients.discard(self)
+            self._account_used = account
+        if self not in account.clients:
+            account.clients.add(self)
+            # salmon web closes the pools of its request loop when it stops: the command running there
+            # outlives every client its jobs make.
+            if not accounts.on_request_loop():
+                with suppress(RuntimeError):
+                    click.get_current_context().call_on_close(self.close)
+        self._session = account.pool
+        return account.pool
 
     async def close(self) -> None:
-        """Close the kept-alive pool."""
-        if self._session is not None:
-            await self._session.close()
-            # Only this pool's own context, never the shared registry another thread may be adding to.
-            if self._pool_owner is not None:
-                self._pool_owner.discard(self._session)
-                self._pool_owner = None
-            self._session = None
+        """Stop using the tracker account's pool, and close it unless another client still uses it.
+
+        On salmon web's request loop the pool stays open for the next job, whichever job closes its client
+        last: the loop closes it when salmon web stops.
+        """
+        if accounts.handing_over():
+            # The pool belongs to salmon web's request loop: left there, and never only part way.
+            return await accounts.run_on_request_loop(self.close, cancellable=False)
+        account, self._account_used, self._session = self._account_used, None, None
+        if account is None:
+            return
+        account.clients.discard(self)
+        if not account.clients and account.pool is not None and not accounts.on_request_loop():
+            pool, account.pool = account.pool, None
+            await pool.close()
 
     @asynccontextmanager
     async def _session_for(self, idempotent: bool) -> AsyncIterator[aiohttp.ClientSession]:
@@ -471,29 +484,6 @@ class BaseGazelleApi:
             ) as session,
         ):
             yield session
-
-    @asynccontextmanager
-    async def site_get(
-        self, url: str, headers: dict[str, str] | None = None, timeout_secs: int = 30
-    ) -> AsyncIterator[aiohttp.ClientResponse]:
-        """GET a raw file off the tracker, inside its rate limit, without following redirects."""
-        # The tracker's cookies go with this request, so it may only go to the tracker itself.
-        if not _same_origin(url, self.base_url):
-            raise RequestFailedError(f"Refusing to send {self.site_string} cookies to {urlparse(url).netloc}")
-        timeout = aiohttp.ClientTimeout(total=None, sock_connect=timeout_secs, sock_read=timeout_secs)
-        async with (
-            self._rate_limiter,
-            self._http_session().get(
-                url,
-                headers={**self.headers, **(headers or {})},
-                cookies=self._get_cookies(),
-                timeout=timeout,
-                allow_redirects=False,
-            ) as resp,
-        ):
-            # sock_read resets on every chunk, so a trickled body needs its own bound (as in _request).
-            async with asyncio.timeout(timeout_secs):
-                yield resp
 
     def _get_cookies(self) -> dict[str, str]:
         """Get cookies dict for requests."""
@@ -533,6 +523,9 @@ class BaseGazelleApi:
         """
         if self._authenticated:
             return
+        if accounts.handing_over():
+            # The attempt in progress is a task of salmon web's request loop.
+            return await accounts.run_on_request_loop(self.ensure_authenticated)
         if self._authentication is None or self._authentication.done():
             self._authentication = asyncio.create_task(self.authenticate())
         attempt = self._authentication
@@ -583,6 +576,25 @@ class BaseGazelleApi:
             RateLimitedError: The tracker rate limits it and asks for more than 60 s of waits in all.
             RequestFailedError: With binary, if the answer holds more than 25 MiB. Not retried.
         """
+        if accounts.handing_over():
+            # salmon web: the request runs on its request loop, where each tracker account has its one pool
+            # (ADR 0004), with this context's variables (dry run, job output).
+            action = f"?action={params['action']}" if params and "action" in params else ""
+            return await accounts.run_on_request_loop(
+                partial(
+                    self._request,
+                    method,
+                    url,
+                    params,
+                    data,
+                    timeout_secs,
+                    prefer_api_key,
+                    idempotent,
+                    needs_authkey,
+                    binary,
+                ),
+                what=f"{method} {urlparse(url).path}{action} to {self.site_string}",
+            )
         # A dry run only reads from the tracker; each sending step skips itself, and this stops any that was missed.
         if method != "GET" and dryrun.active():
             dryrun.refuse(f"send {method} {self._scrub(url)} to {self.site_string}")
@@ -613,6 +625,8 @@ class BaseGazelleApi:
         rate_limit_waits: list[int] | None = None,
     ) -> HttpResponse:
         """Send one authenticated request with the retry policy; rate_limit_waits gains each attempt's wait."""
+        # A salmon web job cancelled since the last attempt sends nothing again.
+        accounts.stop_if_cancelled()
         if rate_limit_waits is None:
             rate_limit_waits = []
         if idempotent is None:
@@ -646,7 +660,7 @@ class BaseGazelleApi:
                 # Hop by hop, each through the limiter: aiohttp would follow them all in one slot (#432).
                 for _ in range(_MAX_REDIRECTS + 1):
                     async with (
-                        self._rate_limiter,
+                        self._turn(idempotent),
                         session.request(
                             method,
                             url,
