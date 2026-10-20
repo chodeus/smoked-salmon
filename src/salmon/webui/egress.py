@@ -70,12 +70,12 @@ def _configured_secrets() -> tuple[str, ...]:
 
 
 def known_secrets() -> list[str]:
-    """Every secret but the web token: the config's, and those the trackers have learned so far."""
+    """The config's secrets (a web token set there among them) and those the trackers have learned so far."""
     return [*_configured_secrets(), *learned_secrets()]
 
 
 def masked_text(text: str) -> str:
-    """`text` with every secret but the web token masked, for what the server writes outside /api."""
+    """`text` with every known_secrets() value masked, for what the server writes outside /api."""
     return scrub_secrets(text, known_secrets(), _SHORTEST)
 
 
