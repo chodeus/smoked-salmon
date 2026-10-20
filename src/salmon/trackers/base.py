@@ -527,7 +527,8 @@ class BaseGazelleApi:
             # The attempt in progress is a task of salmon web's request loop.
             return await accounts.run_on_request_loop(self.ensure_authenticated)
         if self._authentication is None or self._authentication.done():
-            self._authentication = asyncio.create_task(self.authenticate())
+            # Shared by the requests waiting on it: none of their cancels may stop it for the others.
+            self._authentication = asyncio.create_task(self.authenticate(), context=accounts.own_context())
         attempt = self._authentication
         self._authentication_waiters += 1
         try:
@@ -577,6 +578,9 @@ class BaseGazelleApi:
             RequestFailedError: With binary, if the answer holds more than 25 MiB. Not retried.
         """
         if accounts.handing_over():
+            if method != "GET" and accounts.caller_cancelled():
+                # A cancelled job whose cancel came back as an unknown outcome may look things up, but changes nothing.
+                raise asyncio.CancelledError(f"cancelled before sending {method} {urlparse(url).path}")
             # salmon web: the request runs on its request loop, where each tracker account has its one pool
             # (ADR 0004), with this context's variables (dry run, job output).
             action = f"?action={params['action']}" if params and "action" in params else ""
@@ -626,7 +630,7 @@ class BaseGazelleApi:
     ) -> HttpResponse:
         """Send one authenticated request with the retry policy; rate_limit_waits gains each attempt's wait."""
         # A salmon web job cancelled since the last attempt sends nothing again.
-        accounts.stop_if_cancelled()
+        accounts.begin_attempt()
         if rate_limit_waits is None:
             rate_limit_waits = []
         if idempotent is None:

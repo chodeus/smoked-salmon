@@ -563,6 +563,116 @@ def test_a_job_gets_the_unknown_outcome_of_its_post_and_nothing_is_sent_again() 
     assert [(method, action) for _, _, method, action in tracker.hits] == [("POST", "fail")]
 
 
+def test_a_cancel_while_a_posts_retry_waits_for_its_turn_stops_it_at_once() -> None:
+    # The POST is answered 429, which the tracker sends without acting: its retry waits 2 s for its turn, and the
+    # cancel during that wait stops it there.
+    stopped_after: list[float] = []
+
+    async def body(tracker: Tracker) -> None:
+        (api,) = _clients(await tracker.start(), "RED", unlimited=True)
+        tracker.limit_once["upload"] = "2"
+
+        async def job() -> None:
+            await _post(api)
+
+        each = Job(job)
+        each.thread.start()
+        await tracker.limited.wait()
+        await asyncio.sleep(0.5)
+        cancelled_at = time.monotonic()
+        each.cancel()
+        await anyio.to_thread.run_sync(each.thread.join, 30)
+        assert isinstance(each.error, asyncio.CancelledError)
+        stopped_after.append(each.ended_at - cancelled_at)
+        await api.close()
+
+    tracker = _serve(body)
+    assert [(method, action) for _, _, method, action in tracker.hits] == [("POST", "upload")]
+    # Long before the retry's turn (1.5 s on).
+    assert stopped_after[0] < 0.5
+
+
+def test_a_cancelled_job_that_goes_on_past_an_unknown_outcome_looks_up_but_changes_nothing() -> None:
+    # As the upload does, which looks a lost upload up by its infohash, and the lossy report and description edit
+    # after it: the cancel came back as the unknown outcome, and the job goes on.
+    went_on: list[str] = []
+
+    async def body(tracker: Tracker) -> None:
+        (api,) = _clients(await tracker.start(), "RED", unlimited=True)
+
+        async def job() -> None:
+            try:
+                await api._request("POST", api.base_url + "/ajax.php", params={"action": "fail"}, data={"file": "x"})
+            except UnknownOutcomeError:
+                went_on.append("caught")
+            await _get(api, "torrent")
+            went_on.append("looked it up")
+            await _post(api)
+            went_on.append("sent the next POST")
+
+        each = Job(job)
+        each.thread.start()
+        await tracker.arrived.wait()
+        each.cancel()
+        await anyio.to_thread.run_sync(each.thread.join, 30)
+        assert isinstance(each.error, asyncio.CancelledError)
+        await api.close()
+
+    tracker = _serve(body)
+    assert went_on == ["caught", "looked it up"]
+    assert [(method, action) for _, _, method, action in tracker.hits] == [("POST", "fail"), ("GET", "torrent")]
+
+
+def test_a_sign_in_runs_outside_the_hand_over_of_the_request_that_started_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Shared by every request waiting on it: the first one's cancel must not stop its retries for the others.
+    seen: list[object] = []
+
+    async def body(tracker: Tracker) -> None:
+        (api,) = _clients(await tracker.start(), "RED", unlimited=True)
+        api._authenticated = False
+
+        async def authenticate() -> None:
+            seen.append(account._hand_over.get())
+            api._authenticated = True
+
+        monkeypatch.setattr(api, "authenticate", authenticate)
+        await _in_threads(Job(api.ensure_authenticated))
+        await api.close()
+
+    _serve(body)
+    assert seen == [None]
+
+
+def test_a_post_cut_off_by_salmon_web_stopping_after_a_cancel_is_an_unknown_outcome() -> None:
+    async def body(tracker: Tracker) -> None:
+        await tracker.start()
+        sending: list[asyncio.Task] = []
+        went_out = asyncio.Event()
+
+        async def call() -> None:
+            # As _turn does once the POST has its turn.
+            account.commit()
+            sending.append(asyncio.current_task())  # type: ignore[arg-type]
+            went_out.set()
+            await asyncio.sleep(15)
+
+        async def job() -> None:
+            await account.run_on_request_loop(call, what="POST /ajax.php?action=upload to RED")
+
+        each = Job(job)
+        each.thread.start()
+        await went_out.wait()
+        each.cancel()
+        # The cancel waits for the answer; salmon web stopping cancels the request on its loop.
+        await asyncio.sleep(0.1)
+        sending[0].cancel()
+        await anyio.to_thread.run_sync(each.thread.join, 30)
+        assert isinstance(each.error, UnknownOutcomeError)
+        assert "salmon web stopped before POST /ajax.php?action=upload to RED was answered" in str(each.error)
+
+    _serve(body)
+
+
 def test_an_anyio_cancel_stops_a_get_at_once() -> None:
     async def body(tracker: Tracker) -> None:
         (api,) = _clients(await tracker.start(), "RED", unlimited=True)

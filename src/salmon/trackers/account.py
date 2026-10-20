@@ -78,10 +78,11 @@ _request_loop: asyncio.AbstractEventLoop | None = None
 class _HandOver:
     """A call handed over to the request loop: its task there, and whether a cancel may still stop it."""
 
-    def __init__(self, committed: bool) -> None:
+    def __init__(self, cancellable: bool) -> None:
         self.task: asyncio.Task | None = None
-        # Set once the call may have reached the tracker: a cancel then waits for it to end.
-        self.committed = committed
+        self.cancellable = cancellable
+        # Set once the attempt in flight may have reached the tracker: a cancel then waits for it to end.
+        self.committed = not cancellable
         # Set once the caller was cancelled: no new attempt goes out. A redirect hop of the attempt in flight
         # still does, as the tracker has acted on it.
         self.cancel_requested = False
@@ -131,19 +132,37 @@ def commit() -> None:
         hand_over.committed = True
 
 
-def stop_if_cancelled() -> None:
-    """Stop a handed-over call whose caller was cancelled, before it sends a request again.
+def begin_attempt() -> None:
+    """Start an attempt of a handed-over call: nothing of it has gone out, and none goes if its caller was cancelled.
 
     Called at the start of each attempt. A retry is only sent when the tracker did not act on the attempt
-    before, so the call can stop there with nothing done. Not called on a redirect hop, whose request the
-    tracker has acted on: that one runs to its end, and its outcome reaches the caller.
+    before, so the call can stop there with nothing done, and a cancel stops it at once until it has its turn
+    (see `commit`). Not called on a redirect hop, whose request the tracker has acted on: that one runs to its
+    end, and its outcome reaches the caller.
 
     Raises:
         asyncio.CancelledError: If the caller was cancelled.
     """
     hand_over = _hand_over.get()
-    if hand_over is not None and hand_over.cancel_requested:
+    if hand_over is None:
+        return
+    hand_over.committed = not hand_over.cancellable
+    if hand_over.cancel_requested:
         raise asyncio.CancelledError("cancelled before sending the request again")
+
+
+def caller_cancelled() -> bool:
+    """Whether the task here was cancelled and went on, as one whose cancel came back as an unknown outcome does."""
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
+def own_context() -> contextvars.Context:
+    """A copy of this context outside any handed-over call: for work several callers share, none of whose cancels
+    may stop it for the others."""
+    context = contextvars.copy_context()
+    context.run(_hand_over.set, None)
+    return context
 
 
 def _settle(finished: asyncio.Future[asyncio.Task], task: asyncio.Task) -> None:
@@ -173,7 +192,7 @@ async def run_on_request_loop(
     if loop is None or loop is asyncio.get_running_loop():
         return await call()
     context = contextvars.copy_context()
-    hand_over = _HandOver(committed=not cancellable)
+    hand_over = _HandOver(cancellable)
     context.run(_hand_over.set, hand_over)
     caller_loop = asyncio.get_running_loop()
     finished: asyncio.Future[asyncio.Task] = caller_loop.create_future()
@@ -220,10 +239,14 @@ async def run_on_request_loop(
                 raise RequestFailedError("salmon web stopped")
             raise RequestFailedError("salmon web stopped: the request was not sent")
         return task.result()
-    if not task.cancelled():
-        error = task.exception()
-        if isinstance(error, UnknownOutcomeError):
-            raise error
+    if task.cancelled():
+        # Cut off once it may have gone out, as by salmon web stopping: its outcome is not known.
         if hand_over.committed and what:
-            click.secho(f"Cancelled once {what} had been answered: check the site for what it did.", fg="yellow")
+            raise UnknownOutcomeError(f"salmon web stopped before {what} was answered")
+        raise cancelled
+    error = task.exception()
+    if isinstance(error, UnknownOutcomeError):
+        raise error
+    if hand_over.committed and what:
+        click.secho(f"Cancelled once {what} had been answered: check the site for what it did.", fg="yellow")
     raise cancelled
