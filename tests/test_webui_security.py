@@ -31,7 +31,7 @@ def test_origin_rule(origin: str, host: str | None, allowed: bool) -> None:
     assert origin_allowed(origin, host) is allowed
 
 
-@pytest.mark.parametrize("bind_host", ["0.0.0.0", "::"])
+@pytest.mark.parametrize("bind_host", ["0.0.0.0", "::"])  # nosec B104 # bind addresses under test: nothing is served
 def test_a_wildcard_bind_is_no_host_name(bind_host: str) -> None:
     assert not host_allowed("0.0.0.0:55155", bind_host, [])
     assert not host_allowed("[::]:55155", bind_host, [])
