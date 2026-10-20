@@ -87,7 +87,7 @@
 <div class="card">
   <FolderPicker bind:value={path} />
   <div style="margin-top: 0.7rem">
-    <button class="btn" onclick={generate} disabled={!path || activeJob?.status === 'running'}>
+    <button class="btn" onclick={generate} disabled={!path || activeJob?.status === 'running' || activeJob?.status === 'queued'}>
       Generate spectrals
     </button>
   </div>
@@ -101,7 +101,7 @@
 
     {#if activeJob.status === 'done' && activeJob.result}
       <div class="row" style="margin: 0.8rem 0">
-        <button class="btn secondary" onclick={upload} disabled={uploadJob?.status === 'running'}>
+        <button class="btn secondary" onclick={upload} disabled={uploadJob?.status === 'running' || uploadJob?.status === 'queued'}>
           Upload to image host
         </button>
         <button class="btn small secondary" onclick={discard}>Delete these spectrals</button>

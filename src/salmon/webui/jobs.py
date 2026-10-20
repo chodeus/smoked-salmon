@@ -21,7 +21,7 @@ import time
 import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import asyncclick as click
 
@@ -42,6 +42,8 @@ MAX_LOG_LINES = 1000
 # Jobs running at once, each an OS thread with its own event loop; the others wait their turn, at most MAX_QUEUED_JOBS.
 MAX_JOBS = 2
 MAX_QUEUED_JOBS = 100
+# How long a job's end waits for the worker threads it left, as asyncio.run does.
+WORKER_JOIN_TIMEOUT = 300
 MAX_SUBSCRIBERS = 64  # websocket connections
 PROGRESS_BROADCAST_INTERVAL = 0.2  # seconds; job.progress itself always updates
 
@@ -90,6 +92,15 @@ def _flatten_exception(e: BaseException) -> list[BaseException]:
     return [e]
 
 
+def _folder_key(folder: str) -> tuple[int, int] | str:
+    """The folder as the disk knows it: another spelling of it (a symlink, case, Unicode form) is the same."""
+    try:
+        found = os.stat(folder)
+    except OSError:
+        return os.path.realpath(folder)
+    return (found.st_dev, found.st_ino)
+
+
 def _shown(value: Any) -> Any:
     """A job's params as the API shows them: each http(s) URL among them masked, the rest as they are."""
     if isinstance(value, str):
@@ -115,8 +126,8 @@ class Job:
         self.result: Any = None
         self.error: str | None = None
         self.lock_key: str | None = None
-        # The album folder it works on, resolved: a job on the same folder waits until this one ends.
-        self.folder: str | None = None
+        # The album folder it works on (see _folder_key): a job on the same folder waits until this one ends.
+        self.folder: tuple[int, int] | str | None = None
         self.question: dict[str, Any] | None = None
         self.log_lines: list[str] = []
         self.interaction: WebInteraction | None = None
@@ -187,7 +198,7 @@ class JobManager:
         if len(self._queue) >= MAX_QUEUED_JOBS:
             raise JobCapacityError(f"{MAX_QUEUED_JOBS} jobs are already waiting: try again once some have run.")
         job = self._register(job_type, title, params, lock_key)
-        job.folder = os.path.realpath(folder) if folder else None
+        job.folder = _folder_key(folder) if folder else None
         interaction = WebInteraction(
             emit=lambda event: self._emit_for(job, event),
             set_question=lambda question: self._set_question(job, question),
@@ -212,13 +223,14 @@ class JobManager:
             try:
                 thread.start()
             except RuntimeError:
-                # No thread to be had: the job ends, and the rest wait for one that does.
+                # No thread to be had for this job: it ends, and its slot goes to the next.
                 job.status = "error"
                 job.error = "Failed to start the worker thread."
                 self._running.discard(job)
                 self._finish(job)
                 self._broadcast({"event": "finished", "job": job.to_dict()})
-                return
+                if job.interaction is not None:
+                    job.interaction.close()
 
     # ------------------------------------------------------------------
     # Execution
@@ -233,7 +245,8 @@ class JobManager:
     ) -> None:
         interaction_token = set_interaction(interaction)
         progress_token = set_progress_callback(_make_progress_callback(job, self._emit))
-        loop = asyncio.new_event_loop()
+        # A BaseEventLoop: its shutdown_default_executor takes the timeout AbstractEventLoop's stub leaves out.
+        loop = cast("asyncio.BaseEventLoop", asyncio.new_event_loop())
         job._thread_loop = loop
         try:
             if interaction.cancel_requested.is_set():
@@ -255,6 +268,11 @@ class JobManager:
             reset_progress_callback(progress_token)
             set_interaction(None)
             del interaction_token
+            # The task is over: a question now could only come from a worker it left, and none would answer it.
+            interaction.cancel_pending()
+            # As asyncio.run does: the to_thread workers it left end first, so the job holds its folder till then.
+            with contextlib.suppress(Exception):
+                loop.run_until_complete(loop.shutdown_default_executor(WORKER_JOIN_TIMEOUT))
             with contextlib.suppress(Exception):
                 loop.close()
             job._thread_loop = None

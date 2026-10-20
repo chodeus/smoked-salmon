@@ -15,6 +15,7 @@ import os
 import pathlib
 import threading
 import time
+import unicodedata
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -31,6 +32,7 @@ from salmon.common.progress import report_progress
 from salmon.uploader.frequency import SpectrumResult
 from salmon.uploader.spectrals import get_spectrals_path
 from salmon.webui import jobs as jobs_mod
+from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.jobs import (
     MAX_FINISHED_JOBS,
     MAX_JOBS,
@@ -490,6 +492,105 @@ async def test_the_queue_is_bounded(monkeypatch):
     gate.set()
     for each in started:
         await finished(each)
+
+
+async def test_a_cancelled_jobs_worker_still_in_its_folder_holds_back_the_next_job(tmp_path):
+    album = tmp_path / "album"
+    album.mkdir()
+    in_folder, release = threading.Event(), threading.Event()
+    overlap: list[bool] = []
+
+    def write_tags() -> None:
+        # A to_thread worker: cancelling the task cannot stop it.
+        in_folder.set()
+        release.wait(15)
+
+    async def first_body(job):
+        await asyncio.to_thread(write_tags)
+
+    async def second_body(job):
+        overlap.append(not release.is_set())
+        return "ran"
+
+    m = JobManager()
+    first = m.create_threaded("tag", "First", first_body, folder=str(album))
+    second = m.create_threaded("upload", "Second", second_body, folder=str(album))
+    await task_started(first)
+    await until(in_folder.is_set, "the worker to be in the folder")
+    assert m.cancel(first.id)
+    await asyncio.sleep(0.3)
+    held = (first.finished_at, second.status)
+    release.set()
+    await finished(first)
+    await finished(second)
+
+    assert held == (None, "queued")
+    assert (first.status, second.status, overlap) == ("cancelled", "done", [False])
+
+
+async def test_a_worker_a_finished_job_left_cannot_ask_a_question():
+    install_interaction_patches()
+    asked: list[str] = []
+
+    def late_question() -> None:
+        time.sleep(0.1)
+        try:
+            click.confirm("Still there?")
+        except BaseException as e:  # noqa: BLE001 - what the question raised is the result
+            asked.append(type(e).__name__)
+
+    left: list[asyncio.Task] = []
+
+    async def leaves_a_worker(job):
+        # to_thread, as jobs start their workers: it carries the job's context, and so its questions.
+        left.append(asyncio.create_task(asyncio.to_thread(late_question)))
+        return "left"
+
+    job = await finished(JobManager().create_threaded("demo", "Demo", leaves_a_worker))
+
+    assert (job.status, job.question, asked) == ("done", None, ["CancelledError"])
+
+
+async def test_a_thread_that_fails_to_start_hands_its_slot_to_the_next_job():
+    m = JobManager()
+    gates = {name: gated() for name in "abcd"}
+    a, b, c, d = (m.create_threaded("demo", name, gates[name][1]) for name in "abcd")
+
+    def no_thread() -> None:
+        raise RuntimeError("can't start new thread")
+
+    m._queue[c].start = no_thread
+    gates["a"][0].set()
+    await finished(a)
+    await until(lambda: d.status == "running", "d to take the free slot")
+    for gate, _run in gates.values():
+        gate.set()
+    for each in (b, d):
+        await finished(each)
+
+    assert (c.status, c.error, c.finished_at is not None) == ("error", "Failed to start the worker thread.", True)
+    assert c.interaction is not None and c.interaction.closed.is_set()
+    assert d.result == "through"
+
+
+async def test_the_same_folder_by_another_case_or_unicode_form_waits(tmp_path):
+    folder = tmp_path / unicodedata.normalize("NFC", "Café Album")
+    folder.mkdir()
+    spellings = [str(tmp_path / "café album"), str(tmp_path / unicodedata.normalize("NFD", "Café Album"))]
+    others = [each for each in spellings if os.path.isdir(each)]
+    if not others:
+        pytest.skip("this filesystem tells case and Unicode forms apart")
+    m = JobManager()
+    gate, run = gated()
+
+    first = m.create_threaded("demo", "First", run, folder=str(folder))
+    same = [m.create_threaded("demo", each, run, folder=each) for each in others]
+    statuses = [job.status for job in same]
+    gate.set()
+    for job in (first, *same):
+        await finished(job)
+
+    assert statuses == ["queued"] * len(others)
 
 
 def test_a_full_queue_refuses_a_job_with_429(client, album_dir, integrity_stub, monkeypatch):
