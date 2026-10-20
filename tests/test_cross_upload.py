@@ -47,6 +47,7 @@ from salmon.cross_upload import (
     lossy_label,
     without_tracker_links,
 )
+from salmon.errors import NoAnswerError
 from salmon.images.base import BaseImageUploader
 from salmon.release_notification import get_version
 from salmon.trackers import base
@@ -2645,3 +2646,41 @@ def test_downconvert_of_a_release_with_mixed_sample_rates_is_refused_before_any_
     assert run.result.exit_code == 1
     assert f"Not cross-uploading {TORRENT_ID}: --downconvert: the files have different sample rates" in run.output
     assert run.target.sent == []
+
+
+@pytest.mark.parametrize("step", ["_prepare", "_upload"])
+def test_an_unanswered_web_question_stops_the_whole_cross_upload(monkeypatch, dirs, step: str) -> None:
+    # Not only that release: the next would ask again and wait as long.
+    album = _album(dirs.downloads / FOLDER, 44100)
+
+    async def unanswered(*_args: Any, **_kwargs: Any) -> None:
+        raise NoAnswerError
+
+    monkeypatch.setattr(cross_upload_module, step, unanswered)
+
+    run = _to_ops(monkeypatch, dirs, album)
+
+    # The abort reaches the command (click's "Aborted!"), not a refusal of the release or a plain exit.
+    assert run.output.rstrip().endswith("Aborted!")
+    assert "Not cross-uploading" not in run.output
+
+
+def test_an_unanswered_web_question_in_the_log_check_stops_the_whole_cross_upload(monkeypatch, dirs) -> None:
+    album = _album(dirs.downloads / FOLDER)
+
+    async def unanswered(_path: str) -> None:
+        raise NoAnswerError
+
+    monkeypatch.setattr(cross_upload_module, "_check_logs", unanswered)
+
+    def answer(folder: Path, torrent_id: int) -> dict[str, Any]:
+        response = _ops_answer(folder, torrent_id)
+        response["torrent"].update(media="CD", hasLog=True, logScore=100)
+        return response
+
+    run = _cross_upload(
+        monkeypatch, dirs, [str(TORRENT_ID), "-yyy"], input="\n", prepare=_source_has(album, answer=answer)
+    )
+
+    assert run.output.rstrip().endswith("Aborted!")
+    assert "the log check stopped it" not in run.output

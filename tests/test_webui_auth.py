@@ -321,3 +321,19 @@ def test_a_page_outside_the_api_needs_no_token():
     with TestClient(create_app(auth_token="s3cret"), base_url="http://localhost") as c:
         answer = c.get("/")
     assert answer.status_code in (200, 404)
+
+
+async def test_a_wildcard_bind_without_allowed_hosts_says_a_browser_elsewhere_is_refused(
+    serve_nothing, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("SALMON_WEB_TOKEN", "x" * 32)
+    monkeypatch.setattr(cfg.upload.web_interface, "allowed_hosts", [])
+    warned = await CliRunner().invoke(web, ["--host", LAN_BIND])
+    monkeypatch.setattr(cfg.upload.web_interface, "allowed_hosts", ["salmon.lan"])
+    listed = await CliRunner().invoke(web, ["--host", LAN_BIND])
+    bound = await CliRunner().invoke(web, ["--host", "192.168.1.20"])
+
+    assert [warned.exit_code, listed.exit_code, bound.exit_code] == [0, 0, 0]
+    assert "No allowed_hosts are set" in warned.output
+    assert "No allowed_hosts are set" not in listed.output
+    assert "No allowed_hosts are set" not in bound.output

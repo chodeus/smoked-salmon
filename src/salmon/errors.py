@@ -1,3 +1,10 @@
+import asyncclick as click
+
+
+class NoAnswerError(click.Abort):
+    """A question went unanswered for too long: the job stops."""
+
+
 class ScrapeError(Exception):
     def __init__(self, message, payload=None):
         self.payload = payload

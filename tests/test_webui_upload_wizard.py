@@ -1171,3 +1171,21 @@ def test_scratch_removal_refuses_anything_outside_the_staging_folder(tmp_path, m
 
     assert (source / "01.flac").read_bytes() == b"seeding"
     assert link.is_symlink() and outside.is_dir() and staging.is_dir()
+
+
+async def test_an_unanswered_question_inside_the_upload_stops_the_job_as_unanswered(
+    jm, tracker, album_dir, upload_world, monkeypatch
+):
+    # salmon up catches its own aborts; one from an unanswered web question must still reach the job.
+    monkeypatch.setattr(interaction_mod, "QUESTION_TIMEOUT_SECONDS", 1.0)
+    m = jm()
+    path = str(album_dir)
+    job = m.create_threaded("upload", "Upload", wizard_factory(tracker, path), lock_key=path)
+    await wait_for(lambda: job.question and "source" in job.question["text"], "the source question")
+    assert job.interaction.answer(job.question["id"], "web") is True
+
+    # The next question (the existing group) is left unanswered.
+    await join_job(job)
+
+    assert (job.status, job.error) == ("error", interaction_mod.no_answer())
+    assert path not in m._active_lock_keys

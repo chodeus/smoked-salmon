@@ -29,8 +29,8 @@ import asyncclick as click
 
 from salmon.common.progress import reset_progress_callback, set_progress_callback
 from salmon.common.redaction import redact_url
-from salmon.errors import AbortAndDeleteFolder
-from salmon.webui.interaction import NoAnswerError, WebInteraction, no_answer, set_interaction
+from salmon.errors import AbortAndDeleteFolder, NoAnswerError
+from salmon.webui.interaction import WebInteraction, no_answer, set_interaction
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine

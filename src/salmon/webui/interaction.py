@@ -27,6 +27,7 @@ import salmon.commands
 import salmon.tagger.pre_data
 import salmon.uploader
 import salmon.uploader.spectrals
+from salmon.errors import NoAnswerError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -36,10 +37,6 @@ _question_counter = itertools.count(1)
 # An unanswered browser question must not block its worker thread forever
 # (there is no TTY to fall back to). Long enough for a human to review spectrals.
 QUESTION_TIMEOUT_SECONDS = 30 * 60
-
-
-class NoAnswerError(asyncclick.Abort):
-    """A question went unanswered for too long: the job stops."""
 
 
 def no_answer() -> str:

@@ -49,6 +49,7 @@ from salmon.errors import (
     EditedLogError,
     InvalidMetadataError,
     LogCheckSkipped,
+    NoAnswerError,
     RequestError,
     UploadError,
 )
@@ -760,6 +761,9 @@ async def _upload_staged(
             source_flac = await choose_source_flac(flac_group, metadata)
             if source_flac is None:
                 raise click.Abort
+    except NoAnswerError:
+        # A web question left unanswered stops the job, which reports it as such.
+        raise
     except click.Abort:
         return click.secho("\nAborting upload...", fg="red")
     except AbortAndDeleteFolder:
@@ -1009,13 +1013,15 @@ async def _upload_staged(
                 click.secho("\nDone uploading this release.", fg="green")
                 break
 
-    except click.Abort:
+    except click.Abort as e:
         if not uploaded or dryrun.active():
             raise
         # What is up stays up and is seeded below: the run only stops offering more.
         click.secho("\nAborting: nothing more is uploaded. Already uploaded:", fg="red")
         for line in uploaded:
             click.echo(f"  {line}")
+        if isinstance(e, NoAnswerError):
+            raise
     finally:
         await seedbox_uploader.execute_upload()
 

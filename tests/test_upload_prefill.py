@@ -23,7 +23,7 @@ import salmon.trackers
 import salmon.uploader
 from salmon import cfg
 from salmon.checks.source import detect_source
-from salmon.errors import RequestError, UploadRefusedError
+from salmon.errors import NoAnswerError, RequestError, UploadRefusedError
 from salmon.search.base import IdentData
 from salmon.tagger import metadata as metadata_mod
 from salmon.tagger import review
@@ -492,3 +492,27 @@ def test_yes_all_still_asks_the_prompts_with_a_pre_filled_default(monkeypatch) -
     anyio.run(review._check_for_empty_release_type, metadata, "Single")
     assert group_id == 200
     assert defaults == ["1", "Y", "Single"]
+
+
+def test_an_unanswered_web_question_after_an_upload_keeps_what_is_up_and_stops_as_unanswered(
+    monkeypatch, tmp_path, dirs
+) -> None:
+    _downloads, torrents = dirs
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
+    sites = _uploads_by_tracker(monkeypatch)
+    real = salmon.uploader.check_existing_group
+
+    async def ops_unanswered(gazelle_site, *args: Any, **kwargs: Any) -> int | None:
+        if gazelle_site.site_code == "OPS":
+            raise NoAnswerError
+        return await real(gazelle_site, *args, **kwargs)
+
+    monkeypatch.setattr(salmon.uploader, "check_existing_group", ops_unanswered)
+
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, args=("-t", "OPS"), input="\n")
+
+    assert sites == ["RED"]
+    assert "Aborting: nothing more is uploaded. Already uploaded:" in run.result.output
+    # The abort reaches the command (click's "Aborted!"), where an [a]bort answer ends the run cleanly.
+    assert run.result.exit_code == 1
+    assert run.result.output.rstrip().endswith("Aborted!")
