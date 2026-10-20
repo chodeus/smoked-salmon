@@ -75,12 +75,6 @@
     }
   }
 
-  // Verified on load, like health - the result is cached server-side so
-  // reloading the dashboard does not keep hitting the trackers.
-  $effect(() => {
-    checkconf()
-  })
-
   $effect(() => {
     apiGet<Health>('/health')
       .then((h) => (health = h))
@@ -89,7 +83,7 @@
 </script>
 
 <h1>Dashboard</h1>
-<p class="lead">Version, tracker connections and the command-line tools salmon depends on. Checked automatically when the page loads.</p>
+<p class="lead">Version, tracker connections and the command-line tools salmon depends on.</p>
 
 <div class="tiles">
   <div class="tile {trackersOk === null ? '' : trackersOk === checks?.length ? 'ok' : 'err'}">
@@ -113,9 +107,13 @@
       <span class="muted" style="margin-right: 0.6rem">checked {cachedAge}s ago</span>
     {/if}
     <button class="btn small" onclick={() => checkconf(true)} disabled={checking}>
-      {checking ? 'Checking …' : 'Re-check'}
+      {checking ? 'Checking…' : 'Check connections'}
     </button>
   </div>
+  <p class="muted">
+    Sends each tracker the requests <span class="mono">salmon checkconf -t</span> sends: your session cookie, then your
+    API key if you set one. Only when you press the button.
+  </p>
   {#if checkError}<p class="muted">{checkError}</p>{/if}
   {#if checking && !checks}<p class="muted">Testing tracker connections …</p>{/if}
   {#if checks}

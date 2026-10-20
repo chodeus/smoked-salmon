@@ -419,7 +419,12 @@ You can get help directly from the CLI by appending --help to any command. This 
 salmon web
 ```
 
-To reach it from another machine, first set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`) to a long random string you keep, which the login page asks for:
+To reach it from another machine, first set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`) to a random string of at least 32 characters you keep, which the login page asks for (`python -c "import secrets; print(secrets.token_urlsafe(32))"` makes one). Then list the names you open it by, its IP address or host name (ports are ignored), under `[upload.web_interface]`: every other name gets "This host name is not allowed", which keeps another site from reaching it through DNS rebinding.
+
+```toml
+[upload.web_interface]
+allowed_hosts = ["192.168.1.20", "salmon.local"]
+```
 
 ```bash
 salmon web --host 0.0.0.0
@@ -469,9 +474,9 @@ During an upload the same measurements are printed, and the plots shown, before 
 
 #### Reading the interface
 
-Every page says what it is for under its heading. The Upload page's options carry hover tooltips and an **Explain these options** toggle that shows the same text inline, so the help does not need a mouse. The Dashboard opens with tiles for trackers connected, required tools present and jobs in flight, and shows free space per configured directory — the disk filling up is what stops an upload mid-job.
+Every page says what it is for under its heading. The Upload page's options carry hover tooltips and an **Explain these options** toggle that shows the same text inline, so the help does not need a mouse. The Dashboard opens with tiles for trackers connected (after **Check connections**, the only time it sends the trackers anything), required tools present and jobs in flight, and shows free space per configured directory — the disk filling up is what stops an upload mid-job.
 
-Because the interface holds your tracker session cookies and can trigger real uploads, every request needs a token. Set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`); without one, `salmon web` on loopback makes a token for that run and prints a login link carrying it after the `#`, which the browser never sends, and any other bind refuses to start. A request that changes something must come as JSON from the interface's own host, so a page on another site cannot send one. Everything the interface sends the browser passes one filter that masks every secret the config holds and every authkey, passkey and image host key a tracker has sent, and an image upload sends a host only a JPEG, PNG, GIF or WebP image whose first frame decodes, whatever it is named.
+Because the interface holds your tracker session cookies and can trigger real uploads, every request needs a token. Set `SALMON_WEB_TOKEN` (or `auth_token` under `[upload.web_interface]`); without one, `salmon web` on loopback makes a token for that run and prints a login link carrying it after the `#`, which the browser never sends, and any other bind refuses to start. A request that changes something must come as JSON from the interface's own host and port, so a page on another site, or another server on the same machine, cannot send one. Everything the interface sends the browser passes one filter that masks every secret the config holds and every authkey, passkey and image host key a tracker has sent, and an image upload sends a host only a JPEG, PNG, GIF or WebP image whose first frame decodes, whatever it is named.
 
 > The older standalone spectral viewer still exists for `salmon up`, but it binds loopback inside the process, so publishing port 55110 from a container has no effect — the web interface above supersedes it.
 
