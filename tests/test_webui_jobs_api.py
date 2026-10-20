@@ -302,8 +302,9 @@ async def test_cancel_running_job_sets_cancelled_and_releases_lock():
 
     job = m.create_threaded("demo", "Demo", factory, lock_key="/some/album")
     await task_started(job)
-    assert m.cancel(job.id) is True
+    cancelled = m.cancel(job.id)
     await finished(job)
+    assert cancelled is True
     assert job.status == "cancelled"
     assert job.finished_at is not None
     assert "/some/album" not in m._active_lock_keys
@@ -311,13 +312,15 @@ async def test_cancel_running_job_sets_cancelled_and_releases_lock():
 
 async def test_cancel_unknown_or_finished_job_returns_false():
     m = JobManager()
-    assert m.cancel("job-does-not-exist") is False
+    unknown = m.cancel("job-does-not-exist")
+    assert unknown is False
 
     async def factory(job):
         return "ok"
 
     job = await finished(m.create_threaded("demo", "Demo", factory))
-    assert m.cancel(job.id) is False
+    again = m.cancel(job.id)
+    assert again is False
 
 
 async def test_lock_key_conflict_raises_and_conflicting_job_is_not_registered():
