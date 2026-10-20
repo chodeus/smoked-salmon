@@ -327,6 +327,10 @@ class UploadDescription(BaseStruct):
     artist_tags_in_tracklist: bool = False
 
 
+# A web token guards uploads with the user's tracker accounts: long enough that guessing it is hopeless.
+WEB_TOKEN_MIN_LENGTH = 32
+
+
 class UploadWebInterface(BaseStruct):
     host: str = "0.0.0.0"
     port: int = 55110
@@ -338,6 +342,13 @@ class UploadWebInterface(BaseStruct):
     def __post_init__(self):
         if self.port < 1 or self.port > 65535:
             raise ValueError("Port number is invalid")
+        if self.auth_token == "":
+            self.auth_token = None
+        if self.auth_token is not None and len(self.auth_token) < WEB_TOKEN_MIN_LENGTH:
+            raise ValueError(
+                f"upload.web_interface.auth_token must be at least {WEB_TOKEN_MIN_LENGTH} characters"
+                ' (python -c "import secrets; print(secrets.token_urlsafe(32))" makes one)'
+            )
 
     @property
     def effective_host(self) -> str:

@@ -27,6 +27,7 @@ import salmon.commands
 import salmon.tagger.pre_data
 import salmon.uploader
 import salmon.uploader.spectrals
+from salmon.errors import NoAnswerError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -36,6 +37,11 @@ _question_counter = itertools.count(1)
 # An unanswered browser question must not block its worker thread forever
 # (there is no TTY to fall back to). Long enough for a human to review spectrals.
 QUESTION_TIMEOUT_SECONDS = 30 * 60
+
+
+def no_answer() -> str:
+    return f"No answer for {round(QUESTION_TIMEOUT_SECONDS / 60)} minutes: the job stopped."
+
 
 _current: contextvars.ContextVar[WebInteraction | None] = contextvars.ContextVar("web_interaction", default=None)
 
@@ -127,17 +133,20 @@ class WebInteraction:
         question_id, future = self._begin(kind, text, **kw)
         try:
             return future.result(timeout=QUESTION_TIMEOUT_SECONDS)
-        except concurrent.futures.TimeoutError as e:
-            self.log("No answer received in time; aborting this job.")
-            raise asyncclick.Abort() from e
+        except concurrent.futures.TimeoutError:
+            self.log(no_answer())
+            raise NoAnswerError() from None
         finally:
             self._finish(question_id)
 
     async def ask_async(self, kind: str, text: str, **kw: Any) -> Any:
-        """Ask from the job's event loop without blocking it."""
+        """Ask from the job's event loop without blocking it, until answered or timeout."""
         question_id, future = self._begin(kind, text, **kw)
         try:
-            return await asyncio.wrap_future(future)
+            return await asyncio.wait_for(asyncio.wrap_future(future), QUESTION_TIMEOUT_SECONDS)
+        except TimeoutError:
+            self.log(no_answer())
+            raise NoAnswerError() from None
         finally:
             self._finish(question_id)
 

@@ -78,12 +78,12 @@ def health() -> dict:
     }
 
 
-# The dashboard runs this on load, so cache it: each call costs two live requests
-# per tracker, and reloading the page should not keep hitting the sites.
+# The dashboard's button asks for a fresh probe (two live requests per tracker); presses in two tabs at
+# once share it. A request without force=true can reuse the result for CHECKCONF_TTL_SECONDS.
 CHECKCONF_TTL_SECONDS = 300
 # monotonic: a backwards wall-clock jump must not keep a stale result alive.
 _checkconf_cache: dict[str, object] = {"at": -math.inf, "result": None}
-# One probe at a time, so concurrent dashboard loads share a single refresh.
+# One probe at a time, so presses in two tabs share a single refresh.
 _checkconf_lock = asyncio.Lock()
 
 

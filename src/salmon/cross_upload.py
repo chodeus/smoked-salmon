@@ -38,6 +38,7 @@ from salmon.errors import (
     DryRunRefused,
     ImageUploadFailed,
     LoginError,
+    NoAnswerError,
     RequestError,
     RequestFailedError,
     UploadError,
@@ -347,6 +348,9 @@ async def _run(
                     conversions_only=target_group_id is not None,
                 )
             )
+        except NoAnswerError:
+            # A web question left unanswered stops the whole run, not this release only.
+            raise
         except (CrossUploadRefused, RequestFailedError, click.Abort) as error:
             # Only this release: SOURCE answered, about it.
             reason = str(error) or "stopped"
@@ -385,6 +389,8 @@ async def _run(
                 click.secho("Already uploaded:", fg="red")
                 for url in uploaded:
                     click.echo(f"  {url}")
+            if isinstance(error, NoAnswerError):
+                raise
             raise click.exceptions.Exit(1) from error
         finally:
             await seedbox.execute_upload()
@@ -447,6 +453,8 @@ async def _prepare(
     if release.torrent["media"] == "CD":
         try:
             await _check_logs(str(release.path))
+        except NoAnswerError:
+            raise
         except click.Abort:
             raise CrossUploadRefused("the log check stopped it") from None
 

@@ -4,8 +4,11 @@ Heavy imports (fastapi, uvicorn) happen inside the command so that normal CLI
 startup stays fast.
 """
 
+import ipaddress
+
 import asyncclick as click
 
+from salmon import cfg
 from salmon.common import commandgroup
 
 
@@ -35,6 +38,12 @@ async def web(host: str, port: int, dev: bool) -> None:
         token = secrets.token_urlsafe(32)
 
     app = create_app(dev=dev, host=host, auth_token=token)
+    if _names_no_machine(host) and not cfg.upload.web_interface.allowed_hosts:
+        click.secho(
+            "No allowed_hosts are set under [upload.web_interface]: a browser on another machine is refused "
+            '("This host name is not allowed") until they list the names you open salmon web by.',
+            fg="yellow",
+        )
     display_host = "localhost" if host in {"0.0.0.0", "127.0.0.1"} else host
     url = f"http://{display_host}:{port}"
     click.secho(f"salmon web interface: {url}", fg="cyan", bold=True)
@@ -43,3 +52,11 @@ async def web(host: str, port: int, dev: bool) -> None:
         click.secho(f"No auth token is set, so this run made one. Log in with: {url}/#token={token}", fg="yellow")
     config = uvicorn.Config(app, host=host, port=port, log_level="warning")
     await uvicorn.Server(config).serve()
+
+
+def _names_no_machine(host: str) -> bool:
+    """Whether a bind address is 0.0.0.0 or ::, which a browser cannot open salmon web by."""
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_unspecified
+    except ValueError:
+        return False

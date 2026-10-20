@@ -5,16 +5,21 @@ deletes, so on any non-loopback bind it must sit behind a shared secret. The
 token comes from the SALMON_WEB_TOKEN env var (so a container can inject it) or
 ``[upload.web_interface] auth_token`` in config; with neither, ``salmon web`` makes one per
 run. Every /api request needs it, and one from another site is refused whatever it carries.
+Every request's Host must be a loopback name, the bind address or an allowed host (security.py).
 """
 
 import hmac
 import json
 import os
-from urllib.parse import urlparse
+from collections.abc import Iterable
 
+import asyncclick as click
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from salmon.config.validations import WEB_TOKEN_MIN_LENGTH
+from salmon.webui.security import host_allowed, origin_allowed
 
 COOKIE_NAME = "salmon_web_token"
 ENV_VAR = "SALMON_WEB_TOKEN"
@@ -26,11 +31,17 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 def resolve_auth_token(explicit: str | None = None) -> str | None:
-    """Return the configured web token (explicit arg, then env, then config); '' -> None."""
+    """Return the configured web token (explicit arg, then env, then config); '' -> None.
+
+    Raises:
+        click.ClickException: SALMON_WEB_TOKEN is too short.
+    """
     if explicit:
         return explicit
     env = os.environ.get(ENV_VAR)
     if env:
+        if len(env) < WEB_TOKEN_MIN_LENGTH:
+            raise click.ClickException(f"{ENV_VAR} must be at least {WEB_TOKEN_MIN_LENGTH} characters.")
         return env
     from salmon import cfg
 
@@ -60,43 +71,50 @@ def token_matches(supplied: str | None, expected: str | None) -> bool:
     return hmac.compare_digest(supplied.encode("utf-8", "surrogatepass"), expected.encode("utf-8", "surrogatepass"))
 
 
-def _host_only(host_header: str) -> str:
-    """Hostname from a Host header, dropping the port and IPv6 brackets."""
-    value = host_header.strip().lower()
-    if value.startswith("["):  # [::1] or [::1]:port
-        return value[1:].split("]", 1)[0]
-    return value.rsplit(":", 1)[0] if ":" in value else value
-
-
-def origin_allowed(origin: str | None, host_header: str | None) -> bool:
-    """Whether a request's Origin is this server's own host (any port, for the Vite dev server); no Origin passes."""
-    if not origin:
-        return True  # non-browser clients (curl, scripts) send no Origin
-    origin_host = urlparse(origin).hostname
-    if origin_host is None or not host_header:
-        return False
-    return origin_host.lower() == _host_only(host_header)
-
-
 def _sent_as_json(content_type: str) -> bool:
     return content_type.split(";", 1)[0].strip().lower() == "application/json"
 
 
 class AuthMiddleware:
-    """Require the web token on /api routes and the websocket, refusing another site's requests first."""
+    """Refuse an unknown Host on every request, then another site's /api requests, then any without the web token."""
 
-    def __init__(self, app: ASGIApp, token: str | None):
+    def __init__(
+        self,
+        app: ASGIApp,
+        token: str | None,
+        *,
+        bind_host: str = "127.0.0.1",
+        allowed_hosts: Iterable[str] = (),
+        dev: bool = False,
+    ):
         self.app = app
         self.token = token
+        self.bind_host = bind_host
+        self.allowed_hosts = list(allowed_hosts)
+        self.dev = dev
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] not in ("http", "websocket") or not scope.get("path", "").startswith("/api/"):
+        if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
+        if scope["type"] == "http":
+            send = _with_security_headers(send)
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        if not host_allowed(headers.get("host"), self.bind_host, self.allowed_hosts):
+            await _refuse(
+                scope,
+                receive,
+                send,
+                403,
+                "This host name is not allowed. Add it to allowed_hosts in the [upload.web_interface] config section.",
+            )
+            return
+        if not scope.get("path", "").startswith("/api/"):
+            await self.app(scope, receive, send)
+            return
         method = scope.get("method", "")
         is_http = scope["type"] == "http"
-        if not origin_allowed(headers.get("origin"), headers.get("host")):
+        if not origin_allowed(headers.get("origin"), headers.get("host"), self.dev):
             await _refuse(scope, receive, send, 403, "Requests from another site are refused.")
             return
         if is_http and method == "OPTIONS":
@@ -115,6 +133,18 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
         await _refuse(scope, receive, send, 401, "Authentication required.")
+
+
+def _with_security_headers(send: Send) -> Send:
+    """``send``, adding upstream's nosniff and no-framing headers to every response."""
+
+    async def sending(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            extra = [(b"x-content-type-options", b"nosniff"), (b"x-frame-options", b"DENY")]
+            message = {**message, "headers": [*message.get("headers", []), *extra]}
+        await send(message)
+
+    return sending
 
 
 async def _refuse(scope: Scope, receive: Receive, send: Send, status: int, detail: str) -> None:
@@ -148,5 +178,19 @@ def login(req: LoginRequest, request: Request, response: Response) -> dict:
         raise HTTPException(status_code=503, detail="No web token is set.")
     if not token_matches(req.token, token):
         raise HTTPException(status_code=401, detail="Invalid token.")
-    response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="strict", max_age=60 * 60 * 24 * 30, path="/")
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="strict",
+        max_age=60 * 60 * 24 * 30,
+        path="/",
+        secure=_secure(request),
+    )
     return {"required": True, "authenticated": True}
+
+
+def _secure(request: Request) -> bool:
+    # Behind a TLS reverse proxy the request arrives as http. Trusting the header here can only add Secure to the
+    # cookie, which keeps it off plain http: a client that forges it only breaks its own login.
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").lower() == "https"

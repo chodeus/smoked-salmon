@@ -73,9 +73,7 @@ def clean_manager():
 
 @pytest.fixture
 def client():
-    # base_url localhost passes TrustedHostMiddleware; the context manager
-    # keeps one portal event loop alive so background job tasks survive
-    # across requests.
+    # localhost passes the Host check; the context manager keeps one portal loop alive for background jobs.
     with web_client() as c:
         yield c
 
@@ -428,27 +426,35 @@ async def test_prune_finished_evicts_oldest_beyond_max_finished_jobs():
 
 
 # ---------------------------------------------------------------------------
-# TrustedHostMiddleware behavior
+# The Host check (DNS rebinding)
 # ---------------------------------------------------------------------------
+
+HOST_REFUSED = {
+    "detail": "This host name is not allowed. Add it to allowed_hosts in the [upload.web_interface] config section."
+}
 
 
 def test_default_loopback_bind_rejects_testserver_host_header():
     c = web_client(base_url="http://testserver")
     resp = c.get("/api/jobs")
-    assert resp.status_code == 400
-    assert resp.text == "Invalid host header"
+    assert resp.status_code == 403
+    assert resp.json() == HOST_REFUSED
 
 
 def test_loopback_bind_rejects_evil_host_header(client):
     resp = client.get("/api/jobs", headers={"host": "evil.example.com"})
-    assert resp.status_code == 400
-    assert resp.text == "Invalid host header"
+    assert resp.status_code == 403
+    assert resp.json() == HOST_REFUSED
 
 
-def test_non_loopback_bind_skips_trusted_host_check():
-    c = web_client(base_url="http://testserver", host=LAN_BIND)
-    resp = c.get("/api/jobs")
-    assert resp.status_code == 200
+def test_a_wildcard_bind_checks_the_host_too(monkeypatch):
+    # Upstream's rule: 0.0.0.0 names no machine, so a LAN bind needs its names in allowed_hosts.
+    monkeypatch.setattr(cfg.upload.web_interface, "allowed_hosts", [])
+    refused = web_client(base_url="http://testserver", host=LAN_BIND).get("/api/jobs")
+    monkeypatch.setattr(cfg.upload.web_interface, "allowed_hosts", ["testserver"])
+    allowed = web_client(base_url="http://testserver", host=LAN_BIND).get("/api/jobs")
+    assert refused.status_code == 403
+    assert allowed.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -899,7 +905,7 @@ def _wait_until_subscribed(client: TestClient) -> None:
 
 
 def test_ws_localhost_origin_receives_job_events_in_order(client, album_dir, integrity_stub):
-    headers = {"host": "localhost", "origin": "http://localhost:5173"}
+    headers = {"host": "localhost", "origin": "http://localhost"}
     with client.websocket_connect("/api/ws", headers=headers) as ws:
         _wait_until_subscribed(client)
         resp = client.post("/api/checks/run", json={"path": str(album_dir), "checks": ["integrity"]})
