@@ -134,7 +134,9 @@ def rename_all(renames: Sequence[Rename]) -> None:
     """Rename each pair in turn, its new path checked just before, so a path that already exists is never replaced.
 
     The file itself under another case is not in the way. A file created between the check and the rename is not
-    replaced either: a file is renamed by a hard link, which fails on a name in use (``_rename_no_clobber``).
+    replaced either: a file is renamed by a hard link, which fails on a name in use (``_rename_no_clobber``). A
+    folder or a symlink is renamed with os.rename, which can still replace what appears at its new name in that
+    moment; nothing else writes into the folder.
 
     Raises:
         RenameStopped: A rename failed, or its new path was in use; the renames after it were not made.

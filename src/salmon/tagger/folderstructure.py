@@ -127,15 +127,16 @@ def _check_invisible_characters(path: str, scene: bool) -> None:
         raise click.Abort
 
     renames = [(old, os.path.join(os.path.dirname(old), clean_name(os.path.basename(old)))) for old, _, _ in offending]
+    key = name_key(old for old, _ in renames)
     taken: set[str] = set()
     for old, new in renames:
         if new == old:
             click.secho(f"Cannot rename {old}: nothing would be left of its name.", fg="red", bold=True)
             raise NoncompliantFolderStructure
-        if os.path.lexists(new) or new in taken:
+        if os.path.lexists(new) or key(new) in taken:
             click.secho(f"Cannot rename {old}: {new} already exists.", fg="red", bold=True)
             raise NoncompliantFolderStructure
-        taken.add(new)
+        taken.add(key(new))
     if not click.confirm(click.style("Rename them to the names without those characters?", fg="magenta"), default=True):
         raise NoncompliantFolderStructure
     _rename_or_stop(path, renames)
