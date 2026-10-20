@@ -253,6 +253,62 @@ def test_a_record_that_cannot_follow_the_folder_check_stops_it_and_says_so(made,
     assert _files(out) == before
 
 
+def test_an_undo_that_stops_leaves_a_record_of_what_is_on_disk(made, tmp_path, monkeypatch) -> None:
+    out = _transcode(_album(tmp_path), tmp_path)
+    tags = {
+        os.path.join("CD1", f"01. {LONG}.mp3"): {"tracknumber": "1", "title": "One"},
+        "02. two.mp3": {"tracknumber": "2", "title": "Two"},
+    }
+    monkeypatch.setattr(
+        "salmon.tagger.retagger.generate_file_name", lambda tags, ext, _multi, **_kw: f"0{tags['tracknumber']}{ext}"
+    )
+    metadata = {"tracks": {"1": {"1": {"artists": [("A", "main")]}, "2": {"artists": [("A", "main")]}}}}
+    real_link, calls = os.link, []
+
+    def link(old: str, new: str) -> None:
+        calls.append(old)
+        # The first rename is made, the second fails, and putting the first back fails too.
+        if len(calls) in (2, 3):
+            raise PermissionError(13, "Permission denied", old)
+        real_link(old, new)
+
+    monkeypatch.setattr(renames.os, "link", link)
+
+    with pytest.raises(UploadError, match="partly renamed"):
+        rename_files(str(out), tags, metadata, auto_rename=True, spectral_ids=None, source="WEB")
+
+    files = _files(out)
+    assert files is not None
+    assert set(files.values()) == {str(path.relative_to(out)) for path in out.rglob("*.mp3")}
+    assert "01.mp3" in files.values()
+
+
+def test_a_stopped_truncation_whose_record_failed_still_says_what_was_renamed(
+    made, tmp_path, monkeypatch, capsys
+) -> None:
+    album = _album(tmp_path)
+    _write_flac(album / "CD1" / f"03. {LONG}.flac", 44100, 16, title="Three")
+    out = _transcode(album, tmp_path)
+    real_link, calls = os.link, []
+
+    def link(old: str, new: str) -> None:
+        calls.append(old)
+        if len(calls) == 2:
+            raise PermissionError(13, "Permission denied", old)
+        real_link(old, new)
+
+    monkeypatch.setattr(renames.os, "link", link)
+    _no_record_writes(monkeypatch)
+
+    with pytest.raises(NoncompliantFolderStructure):
+        _shorten(out)
+
+    out_text = capsys.readouterr().out
+    assert "Permission denied" in out_text
+    assert "Not renamed:" in out_text
+    assert "a later run will refuse it" in out_text
+
+
 def test_a_rename_in_a_folder_without_a_record_writes_none(tmp_path) -> None:
     folder = tmp_path / "Album"
     folder.mkdir()
@@ -476,6 +532,22 @@ def test_a_downconversion_of_the_album_before_it_gained_or_lost_a_track_is_refus
         _write_flac(album / "03. three.flac", 96000, 24, title="Three")
     else:
         (album / "02. two.flac").unlink()
+    before = _snapshot(out)
+
+    with pytest.raises(UploadError, match="incomplete or not salmon's conversion"):
+        _downconvert(album, tmp_path)
+
+    assert _snapshot(out) == before
+
+
+def test_a_downconversion_of_the_album_before_it_gained_a_16_bit_track_is_refused(made, tmp_path) -> None:
+    # The 16-bit track is copied as it is, so only the fork's list of the album's files knows it is new.
+    album = tmp_path / "source" / "Mixed [WEB FLAC]"
+    album.mkdir(parents=True)
+    _write_flac(album / "01. one.flac", 96000, 24, title="One")
+    _write_flac(album / "02. two.flac", 44100, 16, title="Two")
+    out = _downconvert(album, tmp_path)
+    _write_flac(album / "03. three.flac", 44100, 16, title="Three")
     before = _snapshot(out)
 
     with pytest.raises(UploadError, match="incomplete or not salmon's conversion"):

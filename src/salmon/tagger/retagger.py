@@ -535,10 +535,19 @@ def _rename_or_undo(path: str, renames: list[tuple[str, str]]) -> None:
 
 def _undo_renames(path: str, done: list[tuple[str, str]]) -> str:
     """Put back the renames a stopped batch made, and say what names the album's files are left with."""
+    # Local: the converter package imports the tagger.
+    from salmon.converter.conversions import note_renamed
+
     try:
         rename_all([(new, old) for old, new in reversed(done)])
     except RenameStopped as e:
-        return f"Undoing them stopped too. {e.report(path)}\nThe album's files are only partly renamed."
+        message = f"Undoing them stopped too. {e.report(path)}\nThe album's files are only partly renamed."
+        try:
+            # The record follows the renames still in place, as the disk does.
+            note_renamed(path, done[: len(done) - len(e.done)])
+        except OSError as record_error:
+            message += f"\nCould not update the record of how {path} was converted ({record_error})."
+        return message
     return "Those renames were undone: the album's files keep their old names."
 
 

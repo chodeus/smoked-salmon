@@ -3,7 +3,7 @@ import re
 import shutil
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import anyio
 import asyncclick as click
@@ -287,7 +287,7 @@ def _check_finished_conversion(path: str, new_path: str, items: list[ConvertItem
         and os.path.realpath(record["source"]) == os.path.realpath(source_of(path))
         and all(record.get(key) == value for key, value in wanted.items())
         # The fork: a track the album gained or lost since is not in this conversion, or no longer in the album.
-        and (recorded is None or _records_these_files(path, new_path, items, recorded))
+        and (recorded is None or _records_these_files(path, new_path, items, record, recorded))
     ):
         missing = missing_files(new_path, record)
         if missing:
@@ -302,9 +302,14 @@ def _check_finished_conversion(path: str, new_path: str, items: list[ConvertItem
     )
 
 
-def _records_these_files(path: str, new_path: str, items: list[ConvertItem], recorded: dict[str, str]) -> bool:
+def _records_these_files(
+    path: str, new_path: str, items: list[ConvertItem], record: dict[str, Any], recorded: dict[str, str]
+) -> bool:
     """Whether a record lists the album's files as they are now: each one to convert, and none since gone."""
-    # --essential-only leaves the 16-bit files out, so the record need not hold every audio file of path.
+    album_files = record.get("album_files")
+    if isinstance(album_files, list):
+        return sorted(album_files) == sorted(get_audio_files(path))
+    # A record without the fork's list: --essential-only leaves 16-bit files out, so it need not hold every one.
     converted = {os.path.relpath(item.dst, new_path) for item in items}
     return converted <= recorded.keys() and all(os.path.isfile(os.path.join(path, source)) for source in recorded)
 
@@ -359,6 +364,8 @@ async def convert_folder(
             bit_depth=bit_depth,
             sample_rate=_recorded_rate(items),
             files=files,
+            # The fork: every audio file of the album, the 16-bit ones too, to tell when it gains or loses one.
+            album_files=sorted(get_audio_files(path)),
         )
     return final_rate or sample_rate, new_path
 
