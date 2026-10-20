@@ -344,6 +344,62 @@ async def test_lock_released_after_finish_allows_second_job():
     assert second.status == "done"
 
 
+async def test_a_cancel_as_a_jobs_thread_makes_its_task_is_not_lost(monkeypatch):
+    in_window, go = threading.Event(), threading.Event()
+
+    class HeldFlag(threading.Event):
+        def is_set(self) -> bool:
+            seen = super().is_set()
+            # The thread's first check: held there, between reading the flag and making its task.
+            if not in_window.is_set():
+                in_window.set()
+                go.wait(15)
+            return seen
+
+    class HeldInteraction(jobs_mod.WebInteraction):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.cancel_requested = HeldFlag()
+
+    class LingeringLock:
+        """The job's lock, but its thread lingers once it lets go, so a cancel waiting on it reads first."""
+
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        def __enter__(self) -> None:
+            self._lock.acquire()
+
+        def __exit__(self, *_: object) -> None:
+            self._lock.release()
+            if threading.current_thread() is not threading.main_thread():
+                time.sleep(0.2)
+
+    class LingeringJob(jobs_mod.Job):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self._lock = LingeringLock()  # pyright: ignore[reportAttributeAccessIssue]
+
+    monkeypatch.setattr(jobs_mod, "WebInteraction", HeldInteraction)
+    monkeypatch.setattr(jobs_mod, "Job", LingeringJob)
+    ran = []
+
+    async def body(job):
+        ran.append("started")
+        await asyncio.sleep(0)
+        ran.append("went on")
+
+    m = JobManager()
+    job = m.create_threaded("demo", "Demo", body)
+    await until(in_window.is_set, "the job's thread to be about to make its task")
+    threading.Timer(0.2, go.set).start()
+    cancelled = m.cancel(job.id)
+    done = await finished(job)
+    assert cancelled is True
+    assert done.status == "cancelled"
+    assert "went on" not in ran
+
+
 async def test_cancelling_a_queued_job_ends_it_unrun_and_releases_its_lock():
     m = JobManager()
     gate, run = gated()

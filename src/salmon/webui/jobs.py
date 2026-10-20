@@ -135,6 +135,8 @@ class Job:
         # Run when the job is dropped from the list, so a job that left files
         # behind can take them with it. Set by whoever created those files.
         self.on_evict: Callable[[Job], None] | None = None
+        # Reached from the job's thread too.
+        self._lock = threading.Lock()
         self._thread_loop: asyncio.AbstractEventLoop | None = None
         self._thread_task: asyncio.Task | None = None
 
@@ -249,12 +251,13 @@ class JobManager:
         loop = cast("asyncio.BaseEventLoop", asyncio.new_event_loop())
         job._thread_loop = loop
         try:
-            if interaction.cancel_requested.is_set():
-                raise asyncio.CancelledError()
-            # Before the task is made: it takes the context, and with it where its output goes.
-            with output.to(interaction.lines.write):
-                task = loop.create_task(_in_click_context(factory(job)))
-            job._thread_task = task
+            with job._lock:
+                if interaction.cancel_requested.is_set():
+                    raise asyncio.CancelledError()
+                # Before the task is made: it takes the context, and with it where its output goes.
+                with output.to(interaction.lines.write):
+                    task = loop.create_task(_in_click_context(factory(job)))
+                job._thread_task = task
             job.result = loop.run_until_complete(task)
             job.status = "done"
         except (asyncio.CancelledError, concurrent.futures.CancelledError):
@@ -375,7 +378,8 @@ class JobManager:
             return True
         if job.interaction is not None:
             job.interaction.cancel_pending()
-        loop, task = job._thread_loop, job._thread_task
+        with job._lock:
+            loop, task = job._thread_loop, job._thread_task
         if loop is not None and task is not None:
             with contextlib.suppress(RuntimeError):
                 loop.call_soon_threadsafe(task.cancel)
