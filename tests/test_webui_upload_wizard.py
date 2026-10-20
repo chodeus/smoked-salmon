@@ -641,6 +641,26 @@ async def test_cancel_while_async_prompt_pending_cancels_job_and_frees_lock(jm):
     assert second.status == "done"
 
 
+@pytest.mark.parametrize("asked", ["async prompt", "sync confirm"])
+async def test_an_unanswered_question_stops_the_job_and_frees_its_lock(jm, monkeypatch, asked):
+    # Upstream's rule: a question left unanswered for QUESTION_TIMEOUT stops its job, which frees the folder.
+    monkeypatch.setattr(interaction_mod, "QUESTION_TIMEOUT_SECONDS", 0.3)
+    m = jm()
+
+    async def factory(job):
+        if asked == "async prompt":
+            return await click.prompt("Never answered?")
+        return click.confirm("Never answered?")
+
+    job = m.create_threaded("demo", "Demo", factory, lock_key="/albums/z")
+    await join_job(job)
+
+    assert job.status == "error"
+    assert job.error == interaction_mod.no_answer()
+    assert job.question is None
+    assert "/albums/z" not in m._active_lock_keys
+
+
 async def test_cancel_while_sync_confirm_pending_clears_question_and_lock(jm):
     """BUG (pinned): cancelling while a *sync* question (confirm/edit) is
     pending currently ends the job in status 'error' ("CancelledError: ")

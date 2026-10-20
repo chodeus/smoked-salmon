@@ -6,7 +6,6 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from salmon import cfg
 from salmon.webui.auth import AuthMiddleware, auth_router, resolve_auth_token
@@ -37,14 +36,6 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
     # Innermost, so every route's answer passes it.
     app.add_middleware(EgressMiddleware)
 
-    configured_hosts = list(getattr(cfg.upload.web_interface, "allowed_hosts", []) or [])
-    if host in LOOPBACK_HOSTS:
-        # DNS-rebinding protection for loopback/dev binds.
-        app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", *configured_hosts])
-    elif configured_hosts:
-        # A LAN bind can be locked to its own hostname(s)/IP via config.
-        app.add_middleware(TrustedHostMiddleware, allowed_hosts=configured_hosts)
-
     if dev:
         app.add_middleware(
             CORSMiddleware,
@@ -55,7 +46,14 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
         )
 
     # Added last, so outermost: CORS answers a preflight itself, which must not come before the Origin check.
-    app.add_middleware(AuthMiddleware, token=token)
+    # It checks every request's Host first (DNS rebinding): loopback names, the bind address and allowed_hosts.
+    app.add_middleware(
+        AuthMiddleware,
+        token=token,
+        bind_host=host,
+        allowed_hosts=list(getattr(cfg.upload.web_interface, "allowed_hosts", []) or []),
+        dev=dev,
+    )
 
     for router in (system, search, browse, spectrals, convert, checks, jobs, upload, tools):
         app.include_router(router.router, prefix="/api")

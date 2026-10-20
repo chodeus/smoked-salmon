@@ -30,7 +30,7 @@ import asyncclick as click
 from salmon.common.progress import reset_progress_callback, set_progress_callback
 from salmon.common.redaction import redact_url
 from salmon.errors import AbortAndDeleteFolder
-from salmon.webui.interaction import WebInteraction, set_interaction
+from salmon.webui.interaction import NoAnswerError, WebInteraction, no_answer, set_interaction
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -277,6 +277,8 @@ class JobManager:
         leaves = _flatten_exception(e)
         if any(isinstance(leaf, AbortAndDeleteFolder) for leaf in leaves):
             job.error = "Aborted — the album folder was deleted as requested."
+        elif any(isinstance(leaf, NoAnswerError) for leaf in leaves):
+            job.error = no_answer()
         elif any(isinstance(leaf, click.Abort) for leaf in leaves):
             job.error = "Aborted."
         elif len(leaves) > 1 or isinstance(e, BaseExceptionGroup):
