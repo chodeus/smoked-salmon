@@ -614,6 +614,8 @@ class BaseGazelleApi:
         stop=stop_after_attempt(5),
         # Jitter keeps a batch that failed together from retrying in one salvo.
         wait=wait_exponential(multiplier=1, min=1, max=30) + wait_random(0, 2),
+        # Before the wait: a salmon web job cancelled during it, or the attempt before, sends nothing again.
+        before_sleep=lambda _state: accounts.begin_attempt(),
         reraise=True,
     )
     async def _send(
@@ -629,8 +631,6 @@ class BaseGazelleApi:
         rate_limit_waits: list[int] | None = None,
     ) -> HttpResponse:
         """Send one authenticated request with the retry policy; rate_limit_waits gains each attempt's wait."""
-        # A salmon web job cancelled since the last attempt sends nothing again.
-        accounts.begin_attempt()
         if rate_limit_waits is None:
             rate_limit_waits = []
         if idempotent is None:

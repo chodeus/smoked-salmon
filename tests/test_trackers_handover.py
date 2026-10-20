@@ -18,7 +18,7 @@ import anyio
 import asyncclick as click
 import pytest
 from aiohttp import web
-from tenacity import wait_none
+from tenacity import wait_fixed, wait_none
 from test_trackers_account import (  # pyright: ignore[reportMissingImports]
     HELD,
     POST_TIME,
@@ -56,7 +56,8 @@ def short_period(monkeypatch: pytest.MonkeyPatch) -> float:
 
 
 class Tracker(FakeTracker):
-    """The fake tracker, which also answers a POST with action "fail" 500, and one with "hold" after a second."""
+    """The fake tracker, which also answers a POST with action "fail" 500, one with "busy" 429, and one with "hold"
+    after a second."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -67,13 +68,17 @@ class Tracker(FakeTracker):
     async def handle(self, request: web.Request) -> web.Response:
         self.arrived.set()
         action = request.query.get("action", "")
-        if request.method == "POST" and action in ("fail", "hold"):
+        if request.method == "POST" and action in ("fail", "busy", "hold"):
             await request.read()
             self.hits.append((time.monotonic(), request.headers["X-Site"], request.method, action))
-            await asyncio.sleep(POST_TIME if action == "fail" else HELD)
+            await asyncio.sleep(HELD if action == "hold" else POST_TIME)
             self.answered.append(action)
             if action == "hold":
                 return web.json_response({"status": "success", "response": {}})
+            if action == "busy":
+                return web.json_response(
+                    {"status": "failure", "error": "Rate limit exceeded"}, status=429, headers={"Retry-After": "0"}
+                )
             return web.json_response({"status": "failure", "error": "Server error"}, status=500)
         response = await super().handle(request)
         if request.method == "POST":
@@ -93,6 +98,7 @@ class Job:
         self.ended_at = 0.0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
+        self._cancelled = threading.Event()
         self.thread = threading.Thread(target=self._main)
 
     def _main(self) -> None:
@@ -104,14 +110,17 @@ class Job:
             return await self._run()
 
         try:
-            self.result = asyncio.run(main())
+            with account.cancelled_with(self._cancelled):
+                self.result = asyncio.run(main())
         except BaseException as err:
             self.error = err
         self.ended_at = time.monotonic()
 
     def cancel(self) -> None:
+        # As salmon web's JobManager.cancel: the job's tasks see the cancel, then its task is cancelled.
         assert self._loop is not None
         assert self._task is not None
+        self._cancelled.set()
         self._loop.call_soon_threadsafe(self._task.cancel)
 
 
@@ -592,9 +601,46 @@ def test_a_cancel_while_a_posts_retry_waits_for_its_turn_stops_it_at_once() -> N
     assert stopped_after[0] < 0.5
 
 
-def test_a_cancelled_job_that_goes_on_past_an_unknown_outcome_looks_up_but_changes_nothing() -> None:
+@pytest.mark.parametrize(
+    "cancel_after", [0.1, POST_TIME + 0.2], ids=["while_the_429_is_on_its_way", "during_the_backoff_after_it"]
+)
+def test_a_cancel_around_a_429_to_a_post_stops_it_before_the_backoff_ends(
+    monkeypatch: pytest.MonkeyPatch, cancel_after: float
+) -> None:
+    # A 429 says the tracker did not act: once it is answered nothing of the POST is out, and the cancel stops the job.
+    monkeypatch.setattr(BaseGazelleApi._send.retry, "wait", wait_fixed(3))  # type: ignore[attr-defined]
+    stopped_after: list[float] = []
+
+    async def body(tracker: Tracker) -> None:
+        (api,) = _clients(await tracker.start(), "RED", unlimited=True)
+
+        async def job() -> None:
+            await api._request("POST", api.base_url + "/ajax.php", params={"action": "busy"}, data={"file": "x"})
+
+        each = Job(job)
+        each.thread.start()
+        await tracker.arrived.wait()
+        await asyncio.sleep(cancel_after)
+        cancelled_at = time.monotonic()
+        each.cancel()
+        await anyio.to_thread.run_sync(each.thread.join, 30)
+        assert isinstance(each.error, asyncio.CancelledError)
+        stopped_after.append(each.ended_at - cancelled_at)
+        await api.close()
+
+    tracker = _serve(body)
+    assert [(method, action) for _, _, method, action in tracker.hits] == [("POST", "busy")]
+    # Long before the backoff's end (3 s after the 429).
+    assert stopped_after[0] < 1
+
+
+@pytest.mark.parametrize("from_a_task_it_starts", [False, True], ids=["itself", "from_a_task_it_starts"])
+def test_a_cancelled_job_that_goes_on_past_an_unknown_outcome_looks_up_but_changes_nothing(
+    from_a_task_it_starts: bool,
+) -> None:
     # As the upload does, which looks a lost upload up by its infohash, and the lossy report and description edit
-    # after it: the cancel came back as the unknown outcome, and the job goes on.
+    # after it: the cancel came back as the unknown outcome, and the job goes on. Image uploads, the tracker's own
+    # host's among them, go out from tasks a job starts.
     went_on: list[str] = []
 
     async def body(tracker: Tracker) -> None:
@@ -607,7 +653,10 @@ def test_a_cancelled_job_that_goes_on_past_an_unknown_outcome_looks_up_but_chang
                 went_on.append("caught")
             await _get(api, "torrent")
             went_on.append("looked it up")
-            await _post(api)
+            if from_a_task_it_starts:
+                await asyncio.ensure_future(_post(api))
+            else:
+                await _post(api)
             went_on.append("sent the next POST")
 
         each = Job(job)

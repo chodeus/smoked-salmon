@@ -31,6 +31,7 @@ from salmon import cfg
 from salmon.checks.integrity import IntegrityResult
 from salmon.common.progress import report_progress
 from salmon.errors import UnknownOutcomeError
+from salmon.trackers import account as tracker_account
 from salmon.trackers import base as tracker_base
 from salmon.uploader import record
 from salmon.uploader.frequency import SpectrumResult
@@ -315,6 +316,28 @@ async def test_cancel_running_job_sets_cancelled_and_releases_lock():
     assert job.status == "cancelled"
     assert job.finished_at is not None
     assert "/some/album" not in m._active_lock_keys
+
+
+async def test_every_task_of_a_cancelled_job_sees_its_cancel_also_one_started_after_it():
+    # So none of them sends a tracker anything that changes it (tracker_account.caller_cancelled).
+    m = JobManager()
+    seen: list[bool] = []
+
+    async def look() -> None:
+        seen.append(tracker_account.caller_cancelled())
+
+    async def factory(job):
+        # Goes on after the cancel, as a job whose cancel came back as an unknown outcome does.
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.create_task(look())
+            await asyncio.Event().wait()
+        await asyncio.create_task(look())
+
+    job = m.create_threaded("demo", "Demo", factory)
+    await until(lambda: len(seen) == 1, "the job's first look")
+    m.cancel(job.id)
+    await finished(job)
+    assert seen == [False, True]
 
 
 async def test_cancel_unknown_or_finished_job_returns_false():

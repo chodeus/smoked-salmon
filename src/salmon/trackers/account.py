@@ -13,8 +13,8 @@ share one pool per account. In the CLI nothing is handed over.
 import asyncio
 import contextvars
 import threading
-from collections.abc import AsyncIterator, Callable, Coroutine
-from contextlib import asynccontextmanager, suppress
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
+from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, TypeVar
 from weakref import WeakSet
@@ -89,6 +89,8 @@ class _HandOver:
 
 
 _hand_over: ContextVar[_HandOver | None] = ContextVar("tracker_hand_over", default=None)
+# A salmon web job's cancel: an Event, as a task the job starts copies the context it is made in.
+_job_cancel: ContextVar[threading.Event | None] = ContextVar("tracker_job_cancel", default=None)
 
 
 @asynccontextmanager
@@ -135,10 +137,10 @@ def commit() -> None:
 def begin_attempt() -> None:
     """Start an attempt of a handed-over call: nothing of it has gone out, and none goes if its caller was cancelled.
 
-    Called at the start of each attempt. A retry is only sent when the tracker did not act on the attempt
-    before, so the call can stop there with nothing done, and a cancel stops it at once until it has its turn
-    (see `commit`). Not called on a redirect hop, whose request the tracker has acted on: that one runs to its
-    end, and its outcome reaches the caller.
+    Called before each retry, ahead of the wait for it. A retry is only sent when the tracker did not act on the
+    attempt before, so the call can stop there with nothing done, and a cancel stops it at once until it has its
+    turn (see `commit`). Not called on a redirect hop, whose request the tracker has acted on: that one runs to
+    its end, and its outcome reaches the caller.
 
     Raises:
         asyncio.CancelledError: If the caller was cancelled.
@@ -151,10 +153,23 @@ def begin_attempt() -> None:
         raise asyncio.CancelledError("cancelled before sending the request again")
 
 
+@contextmanager
+def cancelled_with(event: threading.Event) -> Iterator[None]:
+    """Count the tasks made in the block, and those they start, as cancelled once `event` is set: a job's cancel."""
+    token = _job_cancel.set(event)
+    try:
+        yield
+    finally:
+        _job_cancel.reset(token)
+
+
 def caller_cancelled() -> bool:
-    """Whether the task here was cancelled and went on, as one whose cancel came back as an unknown outcome does."""
-    task = asyncio.current_task()
-    return task is not None and task.cancelling() > 0
+    """Whether the job here was cancelled and went on, as one whose cancel came back as an unknown outcome does.
+
+    Seen from any task of the job, also one started after the cancel (see `cancelled_with`).
+    """
+    event = _job_cancel.get()
+    return event is not None and event.is_set()
 
 
 def own_context() -> contextvars.Context:
