@@ -12,6 +12,7 @@ from salmon import cfg
 from salmon.config.validations import UploadWebInterface
 from salmon.webui import web
 from salmon.webui.app import create_app
+from salmon.webui.auth import COOKIE_NAME, OLD_COOKIE_NAME
 from salmon.webui.jobs import manager
 
 # The bind address under test: nothing is served on it.
@@ -22,6 +23,13 @@ def _no_configured_token(monkeypatch) -> None:
     """Neither token source set, whatever the machine running the tests has configured."""
     monkeypatch.delenv("SALMON_WEB_TOKEN", raising=False)
     monkeypatch.setattr(cfg.upload.web_interface, "auth_token", None)
+
+
+def _session(c: TestClient, token: str = WEB_TOKEN) -> str:
+    """Log in, and return the session cookie as a header value (TestClient's websocket needs it explicit)."""
+    answer = c.post("/api/login", json={"token": token})
+    assert answer.status_code == 200, answer.text
+    return f"{COOKIE_NAME}={answer.cookies[COOKIE_NAME]}"
 
 
 def _clean():
@@ -136,8 +144,8 @@ def test_ws_rejects_without_token_but_accepts_with_cookie():
         with pytest.raises(WebSocketDisconnect), c.websocket_connect("/api/ws", headers={"host": "localhost"}):
             pass
         # A browser sends the cookie automatically on a same-origin ws; TestClient needs it explicit.
-        with c.websocket_connect("/api/ws", headers={"host": "localhost", "cookie": "salmon_web_token=s3cret"}):
-            pass  # handshake accepted with the cookie
+        with c.websocket_connect("/api/ws", headers={"host": "localhost", "cookie": _session(c, "s3cret")}):
+            pass  # handshake accepted with the session cookie
 
 
 def test_ws_same_host_lan_origin_accepted():
@@ -146,7 +154,7 @@ def test_ws_same_host_lan_origin_accepted():
         headers = {
             "host": "192.168.1.20:55155",
             "origin": "http://192.168.1.20:55155",
-            "cookie": f"salmon_web_token={WEB_TOKEN}",
+            "cookie": _session(c),
         }
         with c.websocket_connect("/api/ws", headers=headers):
             pass  # a LAN browser reaching the box at its own IP is same-origin
@@ -159,7 +167,7 @@ def test_ws_cross_site_origin_rejected_on_lan_bind():
         headers = {
             "host": "192.168.1.20:55155",
             "origin": "http://evil.example.com",
-            "cookie": f"salmon_web_token={WEB_TOKEN}",
+            "cookie": _session(c),
         }
         with pytest.raises(WebSocketDisconnect), c.websocket_connect("/api/ws", headers=headers):
             pass
@@ -269,7 +277,7 @@ def test_a_websocket_from_an_unknown_host_is_refused(monkeypatch: pytest.MonkeyP
     _clean()
     monkeypatch.setattr(cfg.upload.web_interface, "allowed_hosts", [])
     with web_client(base_url="http://evil.example:55155", host=LAN_BIND) as c:
-        headers = {"host": "evil.example:55155", "cookie": f"salmon_web_token={WEB_TOKEN}"}
+        headers = {"host": "evil.example:55155", "cookie": f"{COOKIE_NAME}=any-session"}
         with pytest.raises(WebSocketDisconnect), c.websocket_connect("/api/ws", headers=headers):
             pass
 
@@ -312,7 +320,7 @@ def test_the_login_cookie_is_secure_only_behind_tls(proto: str | None, secure: b
     with TestClient(create_app(auth_token="s3cret"), base_url="http://localhost") as c:
         answer = c.post("/api/login", json={"token": "s3cret"}, headers=headers)
     assert answer.status_code == 200
-    assert ("secure" in answer.headers["set-cookie"].lower().split("; ")) is secure
+    assert ("secure" in _set_cookies(answer)[COOKIE_NAME].lower().split("; ")) is secure
 
 
 def test_a_page_outside_the_api_needs_no_token():
@@ -337,3 +345,74 @@ async def test_a_wildcard_bind_without_allowed_hosts_says_a_browser_elsewhere_is
     assert "No allowed_hosts are set" in warned.output
     assert "No allowed_hosts are set" not in listed.output
     assert "No allowed_hosts are set" not in bound.output
+
+
+def _set_cookies(answer) -> dict[str, str]:
+    """Each Set-Cookie header of an answer, by the cookie's name."""
+    return {header.split("=", 1)[0]: header for header in answer.headers.get_list("set-cookie")}
+
+
+def test_login_sets_a_strict_http_only_session_cookie_that_logs_in():
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        answer = c.post("/api/login", json={"token": WEB_TOKEN})
+        cookie = _set_cookies(answer)[COOKIE_NAME]
+        logged_in = c.get("/api/auth").json()
+        jobs = c.get("/api/jobs")
+    assert answer.status_code == 200
+    assert "httponly" in cookie.lower()
+    assert "samesite=strict" in cookie.lower()
+    assert "path=/" in cookie.lower()
+    # Plain HTTP: a Secure cookie would never come back.
+    assert "secure" not in cookie.lower().split("; ")
+    # The cookie is a session, not the token.
+    assert WEB_TOKEN not in cookie
+    assert logged_in == {"required": True, "authenticated": True}
+    assert jobs.status_code == 200
+
+
+def test_login_deletes_the_cookie_that_held_the_token():
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        answer = c.post("/api/login", json={"token": WEB_TOKEN})
+    old = _set_cookies(answer)[OLD_COOKIE_NAME]
+    assert "max-age=0" in old.lower()
+    assert WEB_TOKEN not in old
+
+
+@pytest.mark.parametrize("cookie_name", [COOKIE_NAME, OLD_COOKIE_NAME])
+def test_the_token_itself_as_a_cookie_is_no_session(cookie_name: str):
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        answer = c.get("/api/jobs", headers={"cookie": f"{cookie_name}={WEB_TOKEN}"})
+    assert answer.status_code == 401
+
+
+def test_logout_ends_the_session():
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        session = _session(c)
+        out = c.post("/api/logout", json={})
+        after = c.get("/api/auth").json()
+        c.cookies.clear()
+        # The old cookie, sent again, is no longer a session.
+        again = c.get("/api/jobs", headers={"cookie": session})
+    assert out.status_code == 200
+    assert out.json() == {"required": True, "authenticated": False}
+    assert "max-age=0" in _set_cookies(out)[COOKIE_NAME].lower()
+    assert after == {"required": True, "authenticated": False}
+    assert again.status_code == 401
+
+
+def test_logout_needs_a_login():
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        answer = c.post("/api/logout", json={})
+    assert answer.status_code == 401
+
+
+def test_a_bearer_token_still_works_without_a_session():
+    _clean()
+    with web_client() as c:
+        answer = c.get("/api/jobs")
+    assert answer.status_code == 200
