@@ -60,6 +60,15 @@ export async function checkAuth(): Promise<AuthState> {
   }
 }
 
+/** Throws unless this browser is logged in; a lost login sends it back to the login screen. */
+export async function confirmLoggedIn(): Promise<void> {
+  const state = await apiGet<AuthState>('/auth')
+  if (state.required && !state.authenticated) {
+    unauthorizedHandler?.()
+    throw new Error('Authentication required.')
+  }
+}
+
 /** Exchange the token for a session cookie. Returns true on success. */
 export async function login(token: string): Promise<boolean> {
   const res = await fetch(BASE + '/login', {
@@ -68,6 +77,10 @@ export async function login(token: string): Promise<boolean> {
     body: JSON.stringify({ token }),
   })
   return res.ok
+}
+
+export async function logout(): Promise<void> {
+  await apiPost('/logout')
 }
 
 export function wsUrl(): string {

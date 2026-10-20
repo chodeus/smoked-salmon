@@ -1,6 +1,7 @@
 """App-level token auth, and the same-host and JSON rules every /api request and the websocket meet first."""
 
 import re
+import time
 
 import pytest
 from asyncclick.testing import CliRunner
@@ -12,7 +13,9 @@ from salmon import cfg
 from salmon.config.validations import UploadWebInterface
 from salmon.webui import web
 from salmon.webui.app import create_app
+from salmon.webui.auth import COOKIE_NAME, OLD_COOKIE_NAME
 from salmon.webui.jobs import manager
+from salmon.webui.routers import jobs as jobs_router
 
 # The bind address under test: nothing is served on it.
 LAN_BIND = "0.0.0.0"  # nosec B104
@@ -22,6 +25,13 @@ def _no_configured_token(monkeypatch) -> None:
     """Neither token source set, whatever the machine running the tests has configured."""
     monkeypatch.delenv("SALMON_WEB_TOKEN", raising=False)
     monkeypatch.setattr(cfg.upload.web_interface, "auth_token", None)
+
+
+def _session(c: TestClient, token: str = WEB_TOKEN) -> str:
+    """Log in, and return the session cookie as a header value (TestClient's websocket needs it explicit)."""
+    answer = c.post("/api/login", json={"token": token})
+    assert answer.status_code == 200, answer.text
+    return f"{COOKIE_NAME}={answer.cookies[COOKIE_NAME]}"
 
 
 def _clean():
@@ -136,8 +146,8 @@ def test_ws_rejects_without_token_but_accepts_with_cookie():
         with pytest.raises(WebSocketDisconnect), c.websocket_connect("/api/ws", headers={"host": "localhost"}):
             pass
         # A browser sends the cookie automatically on a same-origin ws; TestClient needs it explicit.
-        with c.websocket_connect("/api/ws", headers={"host": "localhost", "cookie": "salmon_web_token=s3cret"}):
-            pass  # handshake accepted with the cookie
+        with c.websocket_connect("/api/ws", headers={"host": "localhost", "cookie": _session(c, "s3cret")}):
+            pass  # handshake accepted with the session cookie
 
 
 def test_ws_same_host_lan_origin_accepted():
@@ -146,7 +156,7 @@ def test_ws_same_host_lan_origin_accepted():
         headers = {
             "host": "192.168.1.20:55155",
             "origin": "http://192.168.1.20:55155",
-            "cookie": f"salmon_web_token={WEB_TOKEN}",
+            "cookie": _session(c),
         }
         with c.websocket_connect("/api/ws", headers=headers):
             pass  # a LAN browser reaching the box at its own IP is same-origin
@@ -159,7 +169,7 @@ def test_ws_cross_site_origin_rejected_on_lan_bind():
         headers = {
             "host": "192.168.1.20:55155",
             "origin": "http://evil.example.com",
-            "cookie": f"salmon_web_token={WEB_TOKEN}",
+            "cookie": _session(c),
         }
         with pytest.raises(WebSocketDisconnect), c.websocket_connect("/api/ws", headers=headers):
             pass
@@ -269,7 +279,7 @@ def test_a_websocket_from_an_unknown_host_is_refused(monkeypatch: pytest.MonkeyP
     _clean()
     monkeypatch.setattr(cfg.upload.web_interface, "allowed_hosts", [])
     with web_client(base_url="http://evil.example:55155", host=LAN_BIND) as c:
-        headers = {"host": "evil.example:55155", "cookie": f"salmon_web_token={WEB_TOKEN}"}
+        headers = {"host": "evil.example:55155", "cookie": f"{COOKIE_NAME}=any-session"}
         with pytest.raises(WebSocketDisconnect), c.websocket_connect("/api/ws", headers=headers):
             pass
 
@@ -312,7 +322,7 @@ def test_the_login_cookie_is_secure_only_behind_tls(proto: str | None, secure: b
     with TestClient(create_app(auth_token="s3cret"), base_url="http://localhost") as c:
         answer = c.post("/api/login", json={"token": "s3cret"}, headers=headers)
     assert answer.status_code == 200
-    assert ("secure" in answer.headers["set-cookie"].lower().split("; ")) is secure
+    assert ("secure" in _set_cookies(answer)[COOKIE_NAME].lower().split("; ")) is secure
 
 
 def test_a_page_outside_the_api_needs_no_token():
@@ -337,3 +347,148 @@ async def test_a_wildcard_bind_without_allowed_hosts_says_a_browser_elsewhere_is
     assert "No allowed_hosts are set" in warned.output
     assert "No allowed_hosts are set" not in listed.output
     assert "No allowed_hosts are set" not in bound.output
+
+
+def _set_cookies(answer) -> dict[str, str]:
+    """Each Set-Cookie header of an answer, by the cookie's name."""
+    return {header.split("=", 1)[0]: header for header in answer.headers.get_list("set-cookie")}
+
+
+def test_login_sets_a_strict_http_only_session_cookie_that_logs_in():
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        answer = c.post("/api/login", json={"token": WEB_TOKEN})
+        cookie = _set_cookies(answer)[COOKIE_NAME]
+        logged_in = c.get("/api/auth").json()
+        jobs = c.get("/api/jobs")
+    assert answer.status_code == 200
+    assert "httponly" in cookie.lower()
+    assert "samesite=strict" in cookie.lower()
+    assert "path=/" in cookie.lower()
+    # Plain HTTP: a Secure cookie would never come back.
+    assert "secure" not in cookie.lower().split("; ")
+    # The cookie is a session, not the token.
+    assert WEB_TOKEN not in cookie
+    assert logged_in == {"required": True, "authenticated": True}
+    assert jobs.status_code == 200
+
+
+def test_login_deletes_the_cookie_that_held_the_token():
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        answer = c.post("/api/login", json={"token": WEB_TOKEN})
+    old = _set_cookies(answer)[OLD_COOKIE_NAME]
+    assert "max-age=0" in old.lower()
+    assert WEB_TOKEN not in old
+
+
+@pytest.mark.parametrize("cookie_name", [COOKIE_NAME, OLD_COOKIE_NAME])
+def test_the_token_itself_as_a_cookie_is_no_session(cookie_name: str):
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        answer = c.get("/api/jobs", headers={"cookie": f"{cookie_name}={WEB_TOKEN}"})
+    assert answer.status_code == 401
+
+
+def test_logout_ends_the_session():
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        session = _session(c)
+        out = c.post("/api/logout", json={})
+        after = c.get("/api/auth").json()
+        c.cookies.clear()
+        # The old cookie, sent again, is no longer a session.
+        again = c.get("/api/jobs", headers={"cookie": session})
+    assert out.status_code == 200
+    assert out.json() == {"required": True, "authenticated": False}
+    assert "max-age=0" in _set_cookies(out)[COOKIE_NAME].lower()
+    assert after == {"required": True, "authenticated": False}
+    assert again.status_code == 401
+
+
+def test_logout_needs_a_login():
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        answer = c.post("/api/logout", json={})
+    assert answer.status_code == 401
+
+
+def test_a_bearer_token_still_works_without_a_session():
+    _clean()
+    with web_client() as c:
+        answer = c.get("/api/jobs")
+    assert answer.status_code == 200
+
+
+def test_a_job_stream_gets_nothing_once_its_session_logged_out():
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        ended, kept = _session(c), _session(c)
+        with (
+            c.websocket_connect("/api/ws", headers={"host": "localhost", "cookie": ended}) as ws_ended,
+            c.websocket_connect("/api/ws", headers={"host": "localhost", "cookie": kept}) as ws_kept,
+        ):
+            out = c.post("/api/logout", json={}, headers={"cookie": ended})
+            ws_kept.portal.call(manager._broadcast, {"event": "log", "job_id": "x", "line": "after logout"})
+            received = ws_kept.receive_json()
+            with pytest.raises(WebSocketDisconnect):
+                ws_ended.receive_json()
+    assert out.status_code == 200
+    assert received == {"event": "log", "job_id": "x", "line": "after logout"}
+
+
+def test_an_idle_job_stream_frees_its_place_once_its_session_logged_out(monkeypatch):
+    # No event comes: the ended stream must still leave, or enough of them fill MAX_SUBSCRIBERS.
+    monkeypatch.setattr(jobs_router, "SESSION_RECHECK_SECONDS", 0.02)
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        ended, kept = _session(c), _session(c)
+        with (
+            c.websocket_connect("/api/ws", headers={"host": "localhost", "cookie": ended}) as ws_ended,
+            c.websocket_connect("/api/ws", headers={"host": "localhost", "cookie": kept}) as ws_kept,
+        ):
+            c.post("/api/logout", json={}, headers={"cookie": ended})
+            deadline = time.monotonic() + 5
+            while len(manager._subscribers) > 1 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            # Checked here: without the recheck, the ended stream's receive below would wait forever.
+            assert len(manager._subscribers) == 1
+            with pytest.raises(WebSocketDisconnect) as closed:
+                ws_ended.receive_json()
+            ws_kept.portal.call(manager._broadcast, {"event": "log", "job_id": "x", "line": "still here"})
+            received = ws_kept.receive_json()
+    assert closed.value.code == 1008
+    assert received == {"event": "log", "job_id": "x", "line": "still here"}
+
+
+def test_two_session_cookies_are_read_the_same_way_by_every_check():
+    # A browser can send two of one name (a host-only and a Domain= one): the gate and the routes take the first.
+    _clean()
+    with TestClient(create_app(auth_token=WEB_TOKEN), base_url="http://localhost") as c:
+        first, second = _session(c), _session(c)
+        c.cookies.clear()
+        both = f"{first}; {second.split('=', 1)[1].join([COOKIE_NAME + '=', ''])}"
+        status = c.get("/api/auth", headers={"cookie": both}).json()["authenticated"]
+        out = c.post("/api/logout", json={}, headers={"cookie": both})
+        first_after = c.get("/api/jobs", headers={"cookie": first}).status_code
+        second_after = c.get("/api/jobs", headers={"cookie": second}).status_code
+    assert status is True
+    assert out.status_code == 200
+    assert (first_after, second_after) == (401, 200)
+
+
+def test_logging_out_by_bearer_token_alone_says_it_is_still_logged_in():
+    _clean()
+    with web_client() as c:
+        out = c.post("/api/logout", json={})
+    assert out.status_code == 200
+    assert out.json() == {"required": True, "authenticated": True}
+
+
+def test_the_login_routes_run_on_the_event_loop():
+    # Auth is not thread-safe: a sync route would run in FastAPI's thread pool, two logins at once.
+    import inspect
+
+    from salmon.webui import auth
+
+    assert all(inspect.iscoroutinefunction(route) for route in (auth.auth_status, auth.login, auth.logout))

@@ -10,7 +10,7 @@
   import Jobs from './pages/Jobs.svelte'
   import Login from './pages/Login.svelte'
   import { jobStore } from './lib/jobs.svelte'
-  import { checkAuth, login, onUnauthorized, type AuthState } from './lib/api'
+  import { checkAuth, login, logout, onUnauthorized, type AuthState } from './lib/api'
 
   const routes: Record<string, { component: any; label: string }> = {
     '': { component: Dashboard, label: 'Dashboard' },
@@ -42,6 +42,23 @@
     authState = await checkAuth()
   }
 
+  let signOutError = $state('')
+
+  async function signOut() {
+    signOutError = ''
+    try {
+      await logout()
+    } catch (e) {
+      // A 401 means the session had already ended; any other failure leaves it alive.
+      if (!(e instanceof Error && e.message === 'Authentication required.')) {
+        signOutError = `Log out failed: ${e}`
+        return
+      }
+    }
+    jobStore.stop()
+    authState = { required: true, authenticated: false }
+  }
+
   onUnauthorized(() => {
     if (authState?.required) authState = { required: true, authenticated: false }
   })
@@ -57,6 +74,7 @@
 
   $effect(() => {
     if (authed) jobStore.init()
+    else jobStore.stop()
   })
 </script>
 
@@ -82,6 +100,8 @@
     <span class="chip {jobStore.connected ? 'ok' : 'err'}">
       {jobStore.connected ? 'connected' : 'disconnected'}
     </span>
+    <button class="btn secondary small" onclick={signOut}>Log out</button>
+    {#if signOutError}<span class="muted">{signOutError}</span>{/if}
   </nav>
 
   <main>
