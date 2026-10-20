@@ -29,6 +29,7 @@ from webui_client import reset_manager, web_client  # pyright: ignore[reportMiss
 from salmon import cfg
 from salmon.checks.integrity import IntegrityResult
 from salmon.common.progress import report_progress
+from salmon.errors import UnknownOutcomeError
 from salmon.trackers import base as tracker_base
 from salmon.uploader.frequency import SpectrumResult
 from salmon.uploader.spectrals import get_spectrals_path
@@ -39,6 +40,7 @@ from salmon.webui.jobs import (
     MAX_FINISHED_JOBS,
     MAX_JOBS,
     SUBSCRIBER_QUEUE_SIZE,
+    UNKNOWN_OUTCOME,
     Job,
     JobCapacityError,
     JobConflictError,
@@ -247,7 +249,7 @@ async def test_factory_value_error_sets_error_status_and_message():
         raise ValueError("boom")
 
     job = await finished(m.create_threaded("demo", "Demo", factory))
-    assert job.status == "error"
+    assert job.status == "failed"
     assert job.error == "ValueError: boom"
     assert job.result is None
 
@@ -259,7 +261,7 @@ async def test_factory_click_abort_sets_friendly_error():
         raise click.Abort()
 
     job = await finished(m.create_threaded("demo", "Demo", factory))
-    assert job.status == "error"
+    assert job.status == "failed"
     assert job.error == "Aborted."
 
 
@@ -270,7 +272,7 @@ async def test_factory_exception_group_single_leaf_is_unwrapped():
         raise ExceptionGroup("wrapper", [ValueError("boom")])
 
     job = await finished(m.create_threaded("demo", "Demo", factory))
-    assert job.status == "error"
+    assert job.status == "failed"
     assert job.error == "ValueError: boom"
 
 
@@ -281,7 +283,7 @@ async def test_factory_exception_group_multiple_leaves_are_joined():
         raise ExceptionGroup("wrapper", [ValueError("a"), TypeError("b")])
 
     job = await finished(m.create_threaded("demo", "Demo", factory))
-    assert job.status == "error"
+    assert job.status == "failed"
     assert job.error == "ValueError: a; TypeError: b"
 
 
@@ -293,7 +295,7 @@ async def test_factory_nested_exception_group_with_abort_prefers_abort_message()
         raise ExceptionGroup("outer", [inner, ValueError("ignored")])
 
     job = await finished(m.create_threaded("demo", "Demo", factory))
-    assert job.status == "error"
+    assert job.status == "failed"
     assert job.error == "Aborted."
 
 
@@ -584,7 +586,7 @@ async def test_a_job_whose_folder_was_swapped_while_it_waited_does_not_start(tmp
     await finished(first)
     done = await finished(waiting)
 
-    assert (done.status, ran) == ("error", [])
+    assert (done.status, ran) == ("failed", [])
     assert done.error == f"FolderChangedError: {album} changed or moved while the job waited: start it again."
 
 
@@ -678,7 +680,7 @@ async def test_a_thread_that_fails_to_start_hands_its_slot_to_the_next_job():
     for each in (b, d):
         await finished(each)
 
-    assert (c.status, c.error, c.finished_at is not None) == ("error", "Failed to start the worker thread.", True)
+    assert (c.status, c.error, c.finished_at is not None) == ("failed", "Failed to start the worker thread.", True)
     assert c.interaction is not None and c.interaction.closed.is_set()
     assert d.result == "through"
 
@@ -822,6 +824,64 @@ def test_a_worker_still_running_once_the_server_has_stopped_writes_nothing_to_th
     assert "late line" not in out.getvalue()
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        UnknownOutcomeError("Network error: Server disconnected"),
+        ExceptionGroup("group", [UnknownOutcomeError("Server error 502")]),
+        RuntimeError("upload failed"),
+        ValueError("its answer was not JSON"),
+    ],
+)
+async def test_an_unknown_outcome_gets_a_status_of_its_own(error):
+    async def run(job):
+        if isinstance(error, RuntimeError):
+            # Raised from an unknown outcome.
+            try:
+                raise UnknownOutcomeError("Network error: timed out")
+            except UnknownOutcomeError as cause:
+                raise error from cause
+        if isinstance(error, ValueError):
+            # Raised while handling one, with no `from`.
+            try:
+                raise UnknownOutcomeError("Network error: timed out")
+            except UnknownOutcomeError:
+                raise error  # noqa: B904
+        raise error
+
+    job = await finished(JobManager().create_threaded("unknown", "Unknown", run))
+    assert job.status == "unknown_outcome"
+    assert job.error is not None
+    assert job.error.startswith(UNKNOWN_OUTCOME)
+
+
+async def test_a_job_whose_awaited_task_was_cancelled_ends_cancelled_with_no_cancel_asked():
+    async def run(job):
+        inner = asyncio.create_task(asyncio.sleep(15))
+        asyncio.get_running_loop().call_soon(inner.cancel)
+        await inner
+
+    job = await finished(JobManager().create_threaded("demo", "Demo", run))
+    assert (job.status, job.error) == ("cancelled", None)
+
+
+async def test_a_cancelled_job_whose_request_went_unanswered_ends_as_an_unknown_outcome():
+    async def run(job):
+        try:
+            await asyncio.sleep(15)
+        except asyncio.CancelledError:
+            # As a request handed over does once its answer is lost: the outcome, not the cancel.
+            raise UnknownOutcomeError("Network error: timed out") from None
+
+    m = JobManager()
+    job = m.create_threaded("unknown", "Unknown", run)
+    await task_started(job)
+    cancelled = m.cancel(job.id)
+    await finished(job)
+    assert cancelled is True
+    assert (job.status, job.error) == ("unknown_outcome", f"{UNKNOWN_OUTCOME} (Network error: timed out)")
+
+
 def test_a_failed_job_says_why_and_its_traceback_goes_to_the_servers_stderr():
     async def run(job):
         click.echo("working")
@@ -833,7 +893,7 @@ def test_a_failed_job_says_why_and_its_traceback_goes_to_the_servers_stderr():
         job = c.portal.call(lambda: manager.create_threaded("fails", "Fails", run))
         data = join_job(c, job.id)
 
-    assert data["status"] == "error"
+    assert data["status"] == "failed"
     assert data["error"] == "RuntimeError: it broke"
     assert data["log"] == ["working"]
     assert "Traceback (most recent call last)" in err.getvalue()
@@ -857,7 +917,7 @@ def test_a_failed_jobs_traceback_on_the_servers_stderr_is_masked_through_its_cha
         job = c.portal.call(lambda: manager.create_threaded("fails", "Fails", run))
         data = join_job(c, job.id)
 
-    assert data["status"] == "error"
+    assert data["status"] == "failed"
     shown = err.getvalue()
     assert "KeyError" in shown
     assert "RuntimeError: GET https://tracker.invalid/ajax.php?authkey=" in shown
@@ -960,7 +1020,7 @@ def test_job_factory_error_is_surfaced_in_job_dict(client, album_dir, monkeypatc
     resp = client.post("/api/checks/run", json={"path": str(album_dir), "checks": ["integrity"]})
     assert resp.status_code == 200
     data = join_job(client, resp.json()["id"])
-    assert data["status"] == "error"
+    assert data["status"] == "failed"
     assert data["error"] == "ValueError: integrity exploded"
     assert data["result"] is None
 
@@ -1178,7 +1238,7 @@ def test_a_spectral_that_is_not_an_image_is_not_uploaded(client, album_dir, spec
     resp = client.post("/api/spectrals/upload", json={"job_id": gen_id, "host": "catbox"})
     data = join_job(client, resp.json()["id"])
 
-    assert data["status"] == "error"
+    assert data["status"] == "failed"
     assert "Not uploading 02-mittelteil.png" in data["error"]
     assert uploaded == []
 

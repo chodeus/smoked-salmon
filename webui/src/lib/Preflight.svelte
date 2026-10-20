@@ -48,7 +48,7 @@
   $effect(() => {
     if (jobId || !path) return
     const earlier = jobStore.jobs.find(
-      (j) => j.type === 'checks' && j.params.path === path && j.status !== 'error' && j.status !== 'cancelled',
+      (j) => j.type === 'checks' && j.params.path === path && j.status !== 'failed' && j.status !== 'cancelled',
     )
     if (!earlier) return
     jobId = earlier.id
@@ -102,7 +102,7 @@
 
   {#if running}
     <p class="muted">Decoding every file and searching the trackers — this can take a few minutes.</p>
-  {:else if job?.status === 'error'}
+  {:else if job?.status === 'failed'}
     <p class="muted">Verification failed: {job.error}</p>
   {:else if result && stale}
     <p class="muted">Settings changed since this album was verified. Verify again before uploading.</p>

@@ -450,7 +450,7 @@ async def test_happy_path_uploads_over_real_http(jm, album_dir, upload_world, st
 async def test_upload_rejection_propagates_request_error_to_job(jm, album_dir, start_gazelle, dot_torrents_dir):
     """action=upload answered with {"status": "failure", ...} -> the real HTTP
     layer (api_key_upload) raises RequestError with the site's message and
-    the job ends status='error' mentioning 'already uploaded'.
+    the job ends status='failed' mentioning 'already uploaded'.
 
     Deviation note: the full upload() wizard deliberately catches RequestError
     per tracker (`except RequestError` in salmon/uploader/__init__.py) so its
@@ -501,7 +501,7 @@ async def test_upload_rejection_propagates_request_error_to_job(jm, album_dir, s
     job = m.create_threaded("upload", "Upload to RED", factory, lock_key=path)
     await join_job(job)
 
-    assert job.status == "error"
+    assert job.status == "failed"
     assert job.error is not None
     assert job.error.startswith("RequestError")
     assert "already uploaded" in job.error

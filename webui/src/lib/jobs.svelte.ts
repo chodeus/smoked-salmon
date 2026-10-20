@@ -15,12 +15,14 @@ export interface Question {
   initial: string | null
 }
 
+export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled' | 'unknown_outcome'
+
 export interface Job {
   id: string
   type: string
   title: string
   params: Record<string, unknown>
-  status: 'queued' | 'running' | 'done' | 'error' | 'cancelled'
+  status: JobStatus
   created_at: string
   finished_at: string | null
   progress: JobProgress | null

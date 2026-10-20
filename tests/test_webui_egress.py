@@ -22,7 +22,7 @@ from salmon.config.validations import Seedbox
 from salmon.trackers import base as tracker_base
 from salmon.webui import egress
 from salmon.webui.egress import EgressMiddleware, config_secrets
-from salmon.webui.jobs import manager
+from salmon.webui.jobs import FINISHED, manager
 from salmon.webui.routers import tools
 
 SESSION = "sess-0123456789/abcdef+ghij=="
@@ -66,7 +66,7 @@ def test_the_configs_credentials_are_collected_but_not_its_placeholders(secrets_
 def _wait(client, job_id: str) -> dict:
     for _ in range(300):
         body = client.get(f"/api/jobs/{job_id}").json()
-        if body["status"] in {"done", "error", "cancelled"}:
+        if body["status"] in FINISHED:
             return body
         time.sleep(0.01)
     raise AssertionError("job did not finish")
@@ -87,7 +87,7 @@ def test_a_jobs_log_and_error_reach_the_browser_without_a_secret(secrets_set):
         listed = client.get("/api/jobs").text
         one = client.get(f"/api/jobs/{job.id}").text
 
-    assert finished["status"] == "error"
+    assert finished["status"] == "failed"
     assert finished["log"], "the job wrote its lines"
     for secret in secrets_set:
         assert secret not in listed
