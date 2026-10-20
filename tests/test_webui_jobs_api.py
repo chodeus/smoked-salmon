@@ -909,6 +909,25 @@ async def test_a_job_that_went_on_past_an_unknown_outcome_ends_as_one(then):
     assert (job.status, job.error, job.result) == expected
 
 
+@pytest.mark.parametrize(
+    ("stops_on", "named"),
+    [
+        ("another", "the lossy report went unanswered; the upload went unanswered"),
+        ("the noted one", "the lossy report went unanswered"),
+    ],
+)
+async def test_a_job_that_stops_on_an_unknown_outcome_names_it_after_those_it_noted(stops_on, named):
+    async def run(job):
+        report = UnknownOutcomeError("the lossy report went unanswered")
+        record.note_unknown_outcome(report)
+        # As a cross-upload stops once its next upload goes unanswered.
+        lost = UnknownOutcomeError("the upload went unanswered") if stops_on == "another" else report
+        raise click.exceptions.Exit(1) from lost
+
+    job = await finished(JobManager().create_threaded("upload", "Upload", run))
+    assert (job.status, job.error) == ("unknown_outcome", f"{UNKNOWN_OUTCOME} ({named})")
+
+
 async def test_each_job_records_its_own_unknown_outcomes():
     noted = threading.Event()
 

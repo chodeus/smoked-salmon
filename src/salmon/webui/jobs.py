@@ -80,8 +80,12 @@ class FolderChangedError(Exception):
     """A job's album folder is no longer the one its request named, where it was."""
 
 
-def _unknown(errors: list[UnknownOutcomeError]) -> UnknownOutcomeError:
-    return UnknownOutcomeError("; ".join(str(error) for error in errors))
+def _unknown(noted: list[UnknownOutcomeError], raised: BaseException | None = None) -> UnknownOutcomeError:
+    """One error for every request the run could not tell about: those it noted, then the one it stopped on."""
+    stopped_on = None if raised is None else _unknown_outcome(raised)
+    if stopped_on is not None and all(stopped_on is not each for each in noted):
+        noted = [*noted, stopped_on]
+    return UnknownOutcomeError("; ".join(str(error) for error in noted))
 
 
 async def _recorded(coro: Coroutine[Any, Any, Any]) -> Any:
@@ -92,7 +96,7 @@ async def _recorded(coro: Coroutine[Any, Any, Any]) -> Any:
         except BaseException as err:
             # Also when the run stops later (an abort, a cancel): what may be on the tracker is what the job says.
             if record.unknown_outcomes:
-                raise _unknown(record.unknown_outcomes) from err
+                raise _unknown(record.unknown_outcomes, err) from err
             raise
     if record.unknown_outcomes:
         raise _unknown(record.unknown_outcomes)
