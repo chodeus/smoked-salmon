@@ -1,6 +1,7 @@
 import os
 from types import SimpleNamespace
 
+import asyncclick as click
 import msgspec
 import pytest
 
@@ -10,7 +11,6 @@ from salmon.tagger.retagger import (
     Change,
     _get_tag_number,
     _natural_key,
-    _remap_spectral_ids,
     create_track_changes,
     delete_empty_folders,
     move_non_audio_files,
@@ -43,76 +43,6 @@ def test_rename_files_can_flatten_multi_disc_tracks(tmp_path, monkeypatch) -> No
     assert (tmp_path / "2.01.flac").exists()
     assert not (tmp_path / "CD01").exists()
     assert not (tmp_path / "CD02").exists()
-
-
-def test_rename_files_swap_preserves_content(tmp_path, monkeypatch) -> None:
-    # Files are mis-numbered so retag swaps their names (01<->02). A single-phase
-    # os.rename would clobber a source before its content moved; two-phase must
-    # preserve every file's bytes across the swap.
-    monkeypatch.setattr(cfg.upload.formatting, "file_template", "{tracknumber}")
-    monkeypatch.setattr(cfg.upload.formatting, "split_multi_disc_into_folders", False)
-
-    (tmp_path / "01.flac").write_text("A")  # tagged track 2 -> target 02.flac
-    (tmp_path / "02.flac").write_text("B")  # tagged track 1 -> target 01.flac
-
-    tags = {
-        "01.flac": SimpleNamespace(tracknumber="02", discnumber="1"),
-        "02.flac": SimpleNamespace(tracknumber="01", discnumber="1"),
-    }
-    metadata = {
-        "tracks": {
-            "1": {
-                "1": {"artists": [("Artist", "main")], "title": "Track 1"},
-                "2": {"artists": [("Artist", "main")], "title": "Track 2"},
-            }
-        }
-    }
-
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
-
-    assert (tmp_path / "01.flac").read_text() == "B"
-    assert (tmp_path / "02.flac").read_text() == "A"
-    assert not list(tmp_path.glob(".salmon-rename-*"))  # no temp files left behind
-
-
-def test_rename_files_rolls_back_on_midway_failure(tmp_path, monkeypatch) -> None:
-    # A failure mid-phase-2 must restore every file to its original name — no
-    # bare staging indices, no half-renamed layout.
-    monkeypatch.setattr(cfg.upload.formatting, "file_template", "{tracknumber}")
-    monkeypatch.setattr(cfg.upload.formatting, "split_multi_disc_into_folders", False)
-
-    (tmp_path / "01.flac").write_text("A")
-    (tmp_path / "02.flac").write_text("B")
-    tags = {
-        "01.flac": SimpleNamespace(tracknumber="02", discnumber="1"),
-        "02.flac": SimpleNamespace(tracknumber="01", discnumber="1"),
-    }
-    metadata = {
-        "tracks": {
-            "1": {
-                "1": {"artists": [("Artist", "main")], "title": "Track 1"},
-                "2": {"artists": [("Artist", "main")], "title": "Track 2"},
-            }
-        }
-    }
-
-    real_replace = os.replace
-    calls = {"n": 0}
-
-    def flaky_replace(src, dst):
-        calls["n"] += 1
-        if calls["n"] == 4:  # the second phase-2 move
-            raise OSError("disk full")
-        real_replace(src, dst)
-
-    monkeypatch.setattr("salmon.tagger.retagger.os.replace", flaky_replace)
-
-    with pytest.raises(OSError, match="disk full"):
-        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
-
-    assert (tmp_path / "01.flac").read_text() == "A"
-    assert (tmp_path / "02.flac").read_text() == "B"
-    assert not list(tmp_path.glob(".salmon-rename-*"))
 
 
 def test_rename_files_refuses_target_onto_untracked_file(tmp_path, monkeypatch) -> None:
@@ -148,24 +78,6 @@ def test_rename_files_case_only_rename_is_not_a_collision(tmp_path, monkeypatch)
     rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
 
     assert (tmp_path / "01.flac").read_text() == "A"
-
-
-def test_rename_files_does_not_clobber_stale_staging_file(tmp_path, monkeypatch) -> None:
-    # Staging uses a freshly reserved directory, so a leftover ".salmon-rename-*"
-    # file from a crashed run can never be overwritten by a staging move.
-    monkeypatch.setattr(cfg.upload.formatting, "file_template", "{tracknumber}")
-    monkeypatch.setattr(cfg.upload.formatting, "split_multi_disc_into_folders", False)
-
-    (tmp_path / "01.flac").write_text("A")  # tagged track 2 -> target 02.flac
-    (tmp_path / ".salmon-rename-stale").write_text("S")
-
-    tags = {"01.flac": SimpleNamespace(tracknumber="02", discnumber="1")}
-    metadata = {"tracks": {"1": {"1": {"artists": [("Artist", "main")], "title": "Track 1"}}}}
-
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
-
-    assert (tmp_path / "02.flac").read_text() == "A"
-    assert (tmp_path / ".salmon-rename-stale").read_text() == "S"
 
 
 def test_rename_files_uppercase_ext_audio_not_moved_as_non_audio(tmp_path, monkeypatch) -> None:
@@ -251,14 +163,6 @@ def test_move_non_audio_files_same_dir_is_a_noop(tmp_path) -> None:
 
     assert (cd1 / "cover.jpg").read_text() == "disc"
     assert not (cd1 / "cover.1.jpg").exists()
-
-
-def test_remap_spectral_ids_does_not_chain():
-    # to_rename forms a chain a->b, b->c. Track a's spectral must land on b (its
-    # direct target), not be dragged through to c by sequential application.
-    spectral_ids = {1: "a.flac", 2: "b.flac"}
-    _remap_spectral_ids(spectral_ids, [("a.flac", "b.flac"), ("b.flac", "c.flac")])
-    assert spectral_ids == {1: "b.flac", 2: "c.flac"}
 
 
 def _trackmeta(title, track_no, disc_no):
@@ -1064,6 +968,130 @@ def test_rename_files_never_replaces_a_file_when_two_folders_go_to_one_disc_fold
     assert _contents(tmp_path) == before
     assert ("CD01/cover.jpg", "Disc 1/cover.jpg") in tree
     assert ("CD01/cover.1.jpg", "Disc 1 bonus/cover.jpg") in tree
+
+
+def test_rename_files_renames_nothing_when_tracks_from_two_folders_get_one_name(tmp_path, monkeypatch) -> None:
+    # A single-disc release whose tracks sit in two folders: both are moved into the release folder, and
+    # the second one given the same name used to replace the first.
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
+    tags, metadata = _release(tmp_path, {"CD1/01.flac": (None, 1), "CD2/01.flac": (None, 1)})
+    for tagset in tags.values():
+        tagset.title = "Intro"
+    before = _tree(tmp_path)
+
+    with pytest.raises(UploadError, match="overwrite"):
+        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert _tree(tmp_path) == before
+
+
+def test_rename_files_renames_nothing_over_a_track_already_in_a_disc_folder(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
+    tracks = {"CD01/01. Title 1-1.flac": (1, 1), "Disc 1/dup.flac": (1, 1), "Disc 2/b.flac": (2, 1)}
+    tags, metadata = _release(tmp_path, tracks)
+    before = _tree(tmp_path)
+
+    with pytest.raises(UploadError, match="overwrite"):
+        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert _tree(tmp_path) == before
+
+
+def test_rename_files_moves_a_file_away_before_another_takes_its_name(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting(one_album_artist_file_template="{tracknumber}"))
+    tags, metadata = _release(tmp_path, {"01.flac": (1, 2), "02.flac": (1, 3)})
+
+    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert _tree(tmp_path) == [("02.flac", "01.flac"), ("03.flac", "02.flac")]
+
+
+def test_rename_files_moves_each_spectral_with_its_own_track_along_a_chain(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting(one_album_artist_file_template="{tracknumber}"))
+    tags, metadata = _release(tmp_path, {"01.flac": (1, 2), "02.flac": (1, 3)})
+    spectral_ids = {1: "01.flac", 2: "02.flac"}
+
+    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=spectral_ids, source="CD")
+
+    assert spectral_ids == {1: "02.flac", 2: "03.flac"}
+
+
+def test_rename_files_renames_nothing_when_two_files_swap_names(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting(one_album_artist_file_template="{tracknumber}"))
+    tags, metadata = _release(tmp_path, {"01.flac": (1, 2), "02.flac": (1, 1)})
+    before = _tree(tmp_path)
+
+    with pytest.raises(UploadError, match="overwrite"):
+        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert _tree(tmp_path) == before
+
+
+def test_rename_files_stops_when_a_new_name_is_taken_after_the_check(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
+    tags, metadata = _release(tmp_path, {"a.flac": (1, 1), "b.flac": (1, 2)})
+
+    def confirm(*_args, **_kwargs):
+        (tmp_path / "02. Title 1-2.flac").write_text("someone else's")
+        return True
+
+    monkeypatch.setattr(click, "confirm", confirm)
+
+    with pytest.raises(UploadError) as raised:
+        rename_files(str(tmp_path), tags, metadata, auto_rename=False, spectral_ids=None, source="CD")
+
+    # The fork puts back the renames made before the stop.
+    assert _tree(tmp_path) == [
+        ("02. Title 1-2.flac", "someone else's"),
+        ("a.flac", "a.flac"),
+        ("b.flac", "b.flac"),
+    ]
+    assert "b.flac" in str(raised.value)
+
+
+def test_rename_files_stops_at_the_first_failed_rename_and_names_the_files_left(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
+    tags, metadata = _release(tmp_path, {"a.flac": (1, 1), "b.flac": (1, 2), "c.flac": (1, 3)})
+    link = os.link
+    calls = []
+
+    def failing_link(src, dst):
+        calls.append(src)
+        if len(calls) == 2:
+            raise PermissionError(13, "Permission denied", src)
+        link(src, dst)
+
+    # The fork renames a file by a hard link, and puts back the renames made before the stop.
+    monkeypatch.setattr(os, "link", failing_link)
+
+    with pytest.raises(UploadError) as raised:
+        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert len(calls) == 3
+    assert [name for name, _ in _tree(tmp_path)] == ["a.flac", "b.flac", "c.flac"]
+    message = str(raised.value)
+    assert "a.flac" in message
+    assert "b.flac" in message
+    assert "c.flac" in message
+    assert "undone" in message
+
+
+def test_rename_files_says_the_files_are_partly_renamed_when_the_undo_stops_too(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
+    tags, metadata = _release(tmp_path, {"a.flac": (1, 1), "b.flac": (1, 2)})
+    link = os.link
+
+    def link_only_a(src, dst):
+        if os.path.basename(src) != "a.flac":
+            raise PermissionError(13, "Permission denied", src)
+        link(src, dst)
+
+    monkeypatch.setattr(os, "link", link_only_a)
+
+    with pytest.raises(UploadError, match="only partly renamed"):
+        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+
+    assert [name for name, _ in _tree(tmp_path)] == ["01. Title 1-1.flac", "b.flac"]
 
 
 def test_disc_tags_order_a_flat_folder_when_the_metadata_has_one_disc():

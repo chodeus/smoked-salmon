@@ -1,9 +1,7 @@
 import os
 import re
 import shutil
-import tempfile
 from collections import Counter
-from contextlib import suppress
 from itertools import chain
 from string import Formatter
 from typing import Any
@@ -20,6 +18,7 @@ from salmon.constants import (
 )
 from salmon.errors import UploadError
 from salmon.tagger.mutation import abort_partial
+from salmon.tagger.renames import RenameStopped, plan_renames, rename_all
 from salmon.tagger.tagfile import TagFile, as_stored, keeps_field, parse_tag_number
 
 
@@ -190,18 +189,6 @@ def append_guests_to_track_titles(track):
         if remix:
             track["title"] += remix[1]
     return track["title"]
-
-
-def _remap_spectral_ids(spectral_ids, to_rename):
-    """Remap spectral ids from old filenames to new, once, from a snapshot.
-
-    Applying the original->new map (not each rename sequentially) keeps a chained
-    rename (a->b, b->c) from dragging track a's spectral onto track c.
-    """
-    rename_map = dict(to_rename)
-    for key, value in list(spectral_ids.items()):
-        if value in rename_map:
-            spectral_ids[key] = rename_map[value]
 
 
 def _disc_track_sort_key(value):
@@ -477,6 +464,15 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
 
     if to_rename:
         print_filenames(to_rename)
+        renames, clashes = plan_renames(
+            [(os.path.join(path, filename), os.path.join(path, new_name)) for filename, new_name in to_rename]
+        )
+        if clashes:
+            click.secho("\nNot renaming: these files would overwrite another file.", fg="red")
+            for name in clashes:
+                click.secho(f"   {os.path.relpath(name, path)}", fg="red")
+            # The fork stops the upload rather than going on unrenamed.
+            raise UploadError("Renaming would overwrite another file.")
         if auto_rename or click.confirm(
             click.style("\nWould you like to rename the files?", fg="magenta"),
             default=True,
@@ -484,72 +480,25 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
             for folder in folders_to_create:
                 if not os.path.isdir(folder):
                     os.mkdir(folder)
-            # os.rename silently overwrites on POSIX; refuse if two files map to one name,
-            # or if a target lands on any existing file (tracked or not) that isn't itself
-            # a rename source vacating in phase 1.
-            renamed_sources = {old for old, _ in to_rename}
-            unchanged = set(tags) - renamed_sources
-            targets = [n for _, n in to_rename]
-
-            def _target_blocked(name: str) -> bool:
-                if name in unchanged:
-                    return True
-                full = os.path.join(path, name)
-                if not os.path.exists(full):
-                    return False
-                for old in renamed_sources:
-                    # samefile: a case-variant of a source (case-insensitive fs) is the
-                    # source itself and vacates in phase 1 — not a collision.
-                    with suppress(OSError):
-                        if os.path.samefile(full, os.path.join(path, old)):
-                            return False
-                return True
-
-            collisions = sorted({n for n in targets if targets.count(n) > 1 or _target_blocked(n)})
-            if collisions:
-                raise UploadError(f"Rename would overwrite existing files: {', '.join(collisions)}")
-
             directory_move_pairs = set()
-            # Two-phase via a reserved staging dir: a swap/chain (a->b, b->a) passes the
-            # collision check, and a direct os.rename would clobber a source before it moved.
-            staging_dir = tempfile.mkdtemp(dir=path, prefix=".salmon-rename-")
-            staged: list[tuple[str, str, str]] = []  # (temp, original, final)
-            completed: list[tuple[str, str]] = []  # (final, temp)
-            try:
-                for index, (filename, new_name) in enumerate(to_rename):
-                    old_dir = os.path.dirname(os.path.join(path, filename))
-                    new_dir = os.path.dirname(os.path.join(path, new_name))
-                    if old_dir != path:
-                        # lowercase: move_non_audio_files compares against file.lower()
-                        directory_move_pairs.add((os.path.splitext(filename)[1].lower(), old_dir, new_dir))
-                    temp_path = os.path.join(staging_dir, str(index))
-                    os.replace(os.path.join(path, filename), temp_path)
-                    staged.append((temp_path, os.path.join(path, filename), os.path.join(path, new_name)))
-                for temp_path, _original, final_path in staged:
-                    # os.replace for Windows parity: a samefile-exempt target entry may
-                    # still exist, where os.rename would raise instead of overwriting.
-                    os.replace(temp_path, final_path)
-                    completed.append((final_path, temp_path))
-            except BaseException:
-                # Roll back so a failure (or Ctrl-C) never strands files under temp
-                # names or a half-renamed layout. Finals go back to their own empty
-                # staging slots first — collision-free for any swap/chain order —
-                # then every temp returns to its original name (all slots vacated).
-                for final_path, temp_path in completed:
-                    with suppress(OSError):
-                        os.replace(final_path, temp_path)
-                for temp_path, original_path, _final in staged:
-                    if os.path.exists(temp_path):
-                        with suppress(OSError):
-                            os.replace(temp_path, original_path)
-                raise
-            finally:
-                # rmdir not rmtree: if a rollback step failed, staged audio must survive.
-                with suppress(OSError):
-                    os.rmdir(staging_dir)
+            for filename, new_name in to_rename:
+                old_dir = os.path.dirname(os.path.join(path, filename))
+                new_dir = os.path.dirname(os.path.join(path, new_name))
 
+                if old_dir != path:
+                    # lowercase: move_non_audio_files compares against file.lower()
+                    directory_move_pairs.add((os.path.splitext(filename)[1].lower(), old_dir, new_dir))
+            try:
+                rename_all(renames)
+            except RenameStopped as e:
+                raise UploadError(f"{e.report(path)}\n{_undo_renames(path, e)}") from e
+
+            # Update spectral_ids with new filenames, if spectrals were generated
             if spectral_ids:
-                _remap_spectral_ids(spectral_ids, to_rename)
+                new_names = dict(to_rename)
+                for key, value in spectral_ids.items():
+                    if value in new_names:
+                        spectral_ids[key] = new_names[value]
 
             # A folder holding one disc's tracks has its other files named for that disc (log.2.log)
             disc_of_folder = {folder: discs.pop() for folder, discs in folder_discs.items() if len(discs) == 1}
@@ -557,6 +506,15 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
             delete_empty_folders(path)
     else:
         click.secho("\nNo file renaming is recommended.", fg="green")
+
+
+def _undo_renames(path: str, stopped: RenameStopped) -> str:
+    """Put back the renames a stopped batch made, and say what names the album's files are left with."""
+    try:
+        rename_all([(new, old) for old, new in reversed(stopped.done)])
+    except RenameStopped as e:
+        return f"Undoing them stopped too. {e.report(path)}\nThe album's files are only partly renamed."
+    return "Those renames were undone: the album's files keep their old names."
 
 
 def print_filenames(to_rename):
