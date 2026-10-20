@@ -254,10 +254,11 @@ session = 'get-from-site-cookie'
 # static_root_url = "/static"
 
 # REQUIRED to serve on any non-loopback host: a shared password/token of at least
-# 32 characters. Every request and the websocket must present it (a login screen
+# 32 characters. Every /api request and the websocket must present it (a login screen
 # sets a cookie). Without one, salmon web on loopback makes one per run and prints
 # a login link. Prefer the SALMON_WEB_TOKEN env var (e.g. in Docker) over storing it here.
-# auth_token = "change-me-to-a-random-string-of-32-characters-or-more"
+# python -c "import secrets; print(secrets.token_urlsafe(32))" makes one.
+# auth_token = ""
 
 # REQUIRED on a LAN bind (--host 0.0.0.0): the names the browser opens salmon web by,
 # IPs or host names, ports ignored. Loopback names and the bind address always pass;

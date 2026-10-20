@@ -78,8 +78,8 @@ def health() -> dict:
     }
 
 
-# Run only from the dashboard's button, which always asks for a fresh check. Each call costs two
-# live requests per tracker; the cache only lets presses in two tabs at once share one probe.
+# The dashboard's button asks for a fresh probe (two live requests per tracker); presses in two tabs at
+# once share it. A request without force=true can reuse the result for CHECKCONF_TTL_SECONDS.
 CHECKCONF_TTL_SECONDS = 300
 # monotonic: a backwards wall-clock jump must not keep a stale result alive.
 _checkconf_cache: dict[str, object] = {"at": -math.inf, "result": None}
