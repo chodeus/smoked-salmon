@@ -42,13 +42,21 @@
     authState = await checkAuth()
   }
 
+  let signOutError = $state('')
+
   async function signOut() {
+    signOutError = ''
     try {
       await logout()
-    } finally {
-      jobStore.stop()
-      authState = { required: true, authenticated: false }
+    } catch (e) {
+      // A 401 means the session had already ended; any other failure leaves it alive.
+      if (!(e instanceof Error && e.message === 'Authentication required.')) {
+        signOutError = `Log out failed: ${e}`
+        return
+      }
     }
+    jobStore.stop()
+    authState = { required: true, authenticated: false }
   }
 
   onUnauthorized(() => {
@@ -92,6 +100,7 @@
       {jobStore.connected ? 'connected' : 'disconnected'}
     </span>
     <button class="btn secondary small" onclick={signOut}>Log out</button>
+    {#if signOutError}<span class="muted">{signOutError}</span>{/if}
   </nav>
 
   <main>

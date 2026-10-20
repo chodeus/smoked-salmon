@@ -55,8 +55,13 @@ class JobStore {
     this.started = false
     if (this.retry) clearTimeout(this.retry)
     this.retry = null
-    this.ws?.close()
+    if (this.ws) {
+      // Its close event comes later, and must not reconnect after a new login.
+      this.ws.onclose = null
+      this.ws.close()
+    }
     this.ws = null
+    this.connected = false
     this.jobs = []
   }
 
