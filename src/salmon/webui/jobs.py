@@ -109,11 +109,16 @@ def _unknown_outcome(error: BaseException) -> UnknownOutcomeError | None:
     return None
 
 
+def _write_traceback(e: BaseException) -> None:
+    """`e`'s traceback, its whole chain, on the server's own stderr."""
+    # Never to the job's log, and masked: a chained error may repeat a request's URL.
+    output.real_stderr().write(egress.masked_text("".join(traceback.format_exception(e))))
+
+
 def _failure(e: BaseException) -> str:
     """What a failed job's error says; its traceback goes to the server's own stderr."""
     leaves = _leaves(e)
-    # The traceback never goes to the job's log, and is masked: a chained error may repeat a request's URL.
-    output.real_stderr().write(egress.masked_text("".join(traceback.format_exception(e))))
+    _write_traceback(e)
     if any(isinstance(leaf, AbortAndDeleteFolder) for leaf in leaves):
         return "Aborted — the album folder was deleted as requested."
     if any(isinstance(leaf, NoAnswerError) for leaf in leaves):
@@ -138,6 +143,7 @@ def _outcome(e: BaseException, cancelled: bool) -> tuple[str, str | None]:
     """A job's status and error once it raised `e`: an unknown outcome first, whether or not it was cancelled."""
     unknown = _unknown_outcome(e)
     if unknown is not None:
+        _write_traceback(e)
         return "unknown_outcome", f"{UNKNOWN_OUTCOME} ({unknown})"
     if cancelled or all(isinstance(leaf, asyncio.CancelledError) for leaf in _leaves(e)):
         return "cancelled", None

@@ -925,6 +925,29 @@ def test_a_failed_jobs_traceback_on_the_servers_stderr_is_masked_through_its_cha
         assert secret not in shown
 
 
+def test_an_unknown_outcomes_traceback_goes_to_the_servers_stderr_masked(monkeypatch):
+    api_key = "fake-api-key-0123456789"
+    monkeypatch.setattr(egress, "_configured_secrets", lambda: (api_key,))
+
+    async def run(job):
+        try:
+            raise KeyError(api_key)
+        except KeyError as e:
+            raise UnknownOutcomeError("Network error: timed out") from e
+
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), web_client() as c:
+        assert c.portal is not None
+        job = c.portal.call(lambda: manager.create_threaded("unknown", "Unknown", run))
+        data = join_job(c, job.id)
+
+    assert data["status"] == "unknown_outcome"
+    shown = err.getvalue()
+    assert "KeyError" in shown
+    assert "UnknownOutcomeError: Network error: timed out" in shown
+    assert api_key not in shown
+
+
 # ---------------------------------------------------------------------------
 # The Host check (DNS rebinding)
 # ---------------------------------------------------------------------------
