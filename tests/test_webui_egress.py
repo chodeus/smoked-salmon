@@ -126,6 +126,21 @@ def test_a_secret_of_digits_is_masked_in_strings_and_leaves_numbers_whole(monkey
     assert json.loads(event) == {"line": "key [REDACTED]", "size": int(DIGITS)}
 
 
+def test_the_web_token_is_masked_with_the_other_secrets(monkeypatch):
+    monkeypatch.setattr(egress, "_configured_secrets", lambda: (API_KEY,))
+    token = "fake-web-token-0123456789abcdef"
+
+    async def text(_request) -> PlainTextResponse:
+        return PlainTextResponse(f"{token} {API_KEY}")
+
+    app = Starlette(routes=[Route("/api/text", text)], middleware=[Middleware(EgressMiddleware)])
+    app.state.auth_token = token
+    with TestClient(app) as client:
+        shown = client.get("/api/text").text
+
+    assert shown == "[REDACTED] [REDACTED]"
+
+
 def _png() -> bytes:
     buffer = io.BytesIO()
     Image.new("L", (2, 2), 7).save(buffer, "PNG")

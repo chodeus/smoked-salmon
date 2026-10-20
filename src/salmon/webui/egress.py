@@ -69,6 +69,16 @@ def _configured_secrets() -> tuple[str, ...]:
     return tuple(config_secrets(cfg))
 
 
+def known_secrets() -> list[str]:
+    """Every secret but the web token: the config's, and those the trackers have learned so far."""
+    return [*_configured_secrets(), *learned_secrets()]
+
+
+def masked_text(text: str) -> str:
+    """`text` with every secret but the web token masked, for what the server writes outside /api."""
+    return scrub_secrets(text, known_secrets(), _SHORTEST)
+
+
 def mask(value: Any, secrets: list[str]) -> Any:
     """`value` with every string in it masked: a string, or the dicts and lists a JSON body or an event holds."""
     if isinstance(value, str):
@@ -108,7 +118,7 @@ class EgressMiddleware:
         def secrets() -> list[str]:
             # Looked up each time: a job's tracker may authenticate at any point.
             token = getattr(getattr(scope.get("app"), "state", None), "auth_token", None)
-            return [*_configured_secrets(), *learned_secrets(), *([token] if token else [])]
+            return [*known_secrets(), *([token] if token else [])]
 
         if scope["type"] == "websocket":
 

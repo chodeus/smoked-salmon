@@ -432,7 +432,7 @@ salmon web --host 0.0.0.0
 
 Prompts that the CLI would ask on the terminal appear in the browser instead, and spectrals are shown inline as they are generated.
 
-At most two jobs run at once: the others wait their turn in the order they came, and a job on an album folder waits while another works on that folder. What a job prints goes to its log in the browser, not to the terminal `salmon web` runs in; when a job fails, its traceback goes to that terminal only.
+At most two jobs run at once: the others wait their turn in the order they came, and a job on an album folder waits while another works on that folder. What a job prints goes to its log in the browser, not to the terminal `salmon web` runs in; when a job fails, its traceback goes to that terminal only, with the config's and the trackers' secrets masked.
 
 Every CLI command has a web equivalent, so nothing is terminal-only:
 

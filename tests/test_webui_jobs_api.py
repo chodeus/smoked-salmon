@@ -29,8 +29,10 @@ from webui_client import reset_manager, web_client  # pyright: ignore[reportMiss
 from salmon import cfg
 from salmon.checks.integrity import IntegrityResult
 from salmon.common.progress import report_progress
+from salmon.trackers import base as tracker_base
 from salmon.uploader.frequency import SpectrumResult
 from salmon.uploader.spectrals import get_spectrals_path
+from salmon.webui import egress
 from salmon.webui import jobs as jobs_mod
 from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.jobs import (
@@ -353,12 +355,14 @@ async def test_cancelling_a_queued_job_ends_it_unrun_and_releases_its_lock():
     busy = [m.create_threaded("demo", f"Busy {n}", run) for n in range(MAX_JOBS)]
     job = m.create_threaded("demo", "Demo", never, lock_key="/leaky")
     assert job.status == "queued"
-    assert m.cancel(job.id) is True
+    cancelled = m.cancel(job.id)
+    assert cancelled is True
     assert job.status == "cancelled"
     assert job.finished_at is not None
     assert job.thread is None
     assert "/leaky" not in m._active_lock_keys
-    assert m.cancel(job.id) is False
+    again = m.cancel(job.id)
+    assert again is False
     gate.set()
     for each in busy:
         await finished(each)
@@ -477,7 +481,8 @@ async def test_a_second_job_on_the_same_folder_waits_and_another_folder_goes_on(
     assert (first.status, same.status, elsewhere.status) == ("running", "queued", "running")
     gate.set()
     for each in (first, same, elsewhere):
-        assert (await finished(each)).status == "done"
+        done = await finished(each)
+        assert done.status == "done"
 
 
 async def test_the_queue_is_bounded(monkeypatch):
@@ -517,7 +522,8 @@ async def test_a_cancelled_jobs_worker_still_in_its_folder_holds_back_the_next_j
     second = m.create_threaded("upload", "Second", second_body, folder=str(album))
     await task_started(first)
     await until(in_folder.is_set, "the worker to be in the folder")
-    assert m.cancel(first.id)
+    cancelled = m.cancel(first.id)
+    assert cancelled
     await asyncio.sleep(0.3)
     held = (first.finished_at, second.status)
     release.set()
@@ -658,6 +664,31 @@ def test_a_failed_job_says_why_and_its_traceback_goes_to_the_servers_stderr():
     assert data["log"] == ["working"]
     assert "Traceback (most recent call last)" in err.getvalue()
     assert "RuntimeError: it broke" in err.getvalue()
+
+
+def test_a_failed_jobs_traceback_on_the_servers_stderr_is_masked_through_its_chain(monkeypatch):
+    api_key, passkey, authkey = "fake-api-key-0123456789", "fakepasskey0123456789abcdef", "fake-authkey-0123456789"
+    monkeypatch.setattr(egress, "_configured_secrets", lambda: (api_key,))
+    monkeypatch.setattr(tracker_base, "_learned_secrets", {passkey})
+
+    async def run(job):
+        try:
+            raise KeyError(api_key)
+        except KeyError as e:
+            raise RuntimeError(f"GET https://tracker.invalid/ajax.php?authkey={authkey} for {passkey}") from e
+
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), web_client() as c:
+        assert c.portal is not None
+        job = c.portal.call(lambda: manager.create_threaded("fails", "Fails", run))
+        data = join_job(c, job.id)
+
+    assert data["status"] == "error"
+    shown = err.getvalue()
+    assert "KeyError" in shown
+    assert "RuntimeError: GET https://tracker.invalid/ajax.php?authkey=" in shown
+    for secret in (api_key, passkey, authkey):
+        assert secret not in shown
 
 
 # ---------------------------------------------------------------------------

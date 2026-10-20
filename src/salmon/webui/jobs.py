@@ -28,7 +28,7 @@ import asyncclick as click
 from salmon.common.progress import reset_progress_callback, set_progress_callback
 from salmon.common.redaction import redact_url
 from salmon.errors import AbortAndDeleteFolder, NoAnswerError
-from salmon.webui import output
+from salmon.webui import egress, output
 from salmon.webui.interaction import WebInteraction, no_answer, set_interaction
 
 if TYPE_CHECKING:
@@ -297,8 +297,8 @@ class JobManager:
             job.error = "; ".join(f"{type(leaf).__name__}: {leaf}" for leaf in leaves)
         else:
             job.error = f"{type(e).__name__}: {e}"
-        # The server's own stderr, never the job's log: a chained error may repeat a request's URL.
-        traceback.print_exc(file=output.real_stderr())
+        # The server's own stderr, never the job's log, masked: a chained error may repeat a request's URL.
+        output.real_stderr().write(egress.masked_text("".join(traceback.format_exception(e))))
 
     def _finish(self, job: Job) -> None:
         if job.lock_key is not None:
