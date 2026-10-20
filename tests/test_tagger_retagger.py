@@ -1211,8 +1211,9 @@ def test_rename_files_puts_the_renames_back_when_the_run_is_interrupted(tmp_path
     with pytest.raises(KeyboardInterrupt):
         rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
 
+    out = capsys.readouterr().out
     assert [name for name, _ in _tree(tmp_path)] == ["a.flac", "b.flac", "c.flac"]
-    assert "undone" in capsys.readouterr().out
+    assert "undone" in out
 
 
 def test_rename_files_renames_nothing_onto_a_second_hard_link_to_the_track(tmp_path, monkeypatch) -> None:
