@@ -24,6 +24,9 @@ def reset_manager() -> None:
     for job in list(manager.jobs.values()):
         if job.thread is not None:
             job.thread.join(timeout=15)
+    alive = [job.id for job in manager.jobs.values() if job.thread is not None and job.thread.is_alive()]
+    if alive:
+        raise RuntimeError(f"Job threads still running, so the manager is left as it is: {', '.join(alive)}")
     manager.jobs.clear()
     manager._active_lock_keys.clear()
     manager._queue.clear()

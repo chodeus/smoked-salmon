@@ -544,6 +544,47 @@ async def test_a_second_job_on_the_same_folder_waits_and_another_folder_goes_on(
         assert done.status == "done"
 
 
+@pytest.mark.parametrize(
+    "swap", ["a link elsewhere", "another folder", "a parent leading elsewhere", "moved away and linked back", "gone"]
+)
+async def test_a_job_whose_folder_was_swapped_while_it_waited_does_not_start(tmp_path, swap):
+    parent = tmp_path / "downloads"
+    album = parent / "album"
+    album.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    (outside / "album").mkdir(parents=True)
+    gate, run = gated()
+    ran = []
+
+    async def body(job):
+        ran.append(job.id)
+
+    m = JobManager()
+    first = m.create_threaded("demo", "First", run, folder=str(album))
+    waiting = m.create_threaded("demo", "Waiting", body, folder=str(album))
+    assert waiting.status == "queued"
+    if swap == "a link elsewhere":
+        album.rename(parent / "album-old")
+        album.symlink_to(outside / "album")
+    elif swap == "another folder":
+        album.rename(parent / "album-old")
+        album.mkdir()
+    elif swap == "a parent leading elsewhere":
+        parent.rename(tmp_path / "downloads-old")
+        parent.symlink_to(outside)
+    elif swap == "moved away and linked back":
+        album.rename(outside / "moved")
+        album.symlink_to(outside / "moved")
+    else:
+        album.rename(parent / "album-old")
+    gate.set()
+    await finished(first)
+    done = await finished(waiting)
+
+    assert (done.status, ran) == ("error", [])
+    assert done.error == f"FolderChangedError: {album} changed or moved while the job waited: start it again."
+
+
 async def test_the_queue_is_bounded(monkeypatch):
     monkeypatch.setattr(jobs_mod, "MAX_QUEUED_JOBS", 2)
     m = JobManager()

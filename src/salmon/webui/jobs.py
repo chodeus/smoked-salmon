@@ -72,6 +72,10 @@ class JobCapacityError(Exception):
     """Too many jobs are already waiting; the caller should retry later."""
 
 
+class FolderChangedError(Exception):
+    """A job's album folder is no longer the one its request named, where it was."""
+
+
 async def _in_click_context(coro: Coroutine[Any, Any, Any]) -> Any:
     # Click's context stack is per thread; tracker pools close when this context exits.
     async with click.Context(click.Command("job")):
@@ -106,6 +110,15 @@ def _failure(e: BaseException) -> str:
     if len(leaves) > 1 or isinstance(e, BaseExceptionGroup):
         return "; ".join(f"{type(leaf).__name__}: {leaf}" for leaf in leaves)
     return f"{type(e).__name__}: {e}"
+
+
+def _check_folder(job: Job) -> None:
+    """Start a job that waited only on its request's folder: still at its real path, and still the same folder."""
+    # Validated when the job was made: one swapped since, for a link or another folder, could lead outside the roots.
+    if job.folder_path is None:
+        return
+    if os.path.realpath(job.folder_path) != job.folder_path or _folder_key(job.folder_path) != job.folder:
+        raise FolderChangedError(f"{job.folder_path} changed or moved while the job waited: start it again.")
 
 
 def _folder_key(folder: str) -> tuple[int, int] | str:
@@ -144,6 +157,8 @@ class Job:
         self.lock_key: str | None = None
         # The album folder it works on (see _folder_key): a job on the same folder waits until this one ends.
         self.folder: tuple[int, int] | str | None = None
+        # Where that folder really is: a job that waited starts only if it is still there.
+        self.folder_path: str | None = None
         self.question: dict[str, Any] | None = None
         self.log_lines: list[str] = []
         self.interaction: WebInteraction | None = None
@@ -217,6 +232,7 @@ class JobManager:
             raise JobCapacityError(f"{MAX_QUEUED_JOBS} jobs are already waiting: try again once some have run.")
         job = self._register(job_type, title, params, lock_key)
         job.folder = _folder_key(folder) if folder else None
+        job.folder_path = os.path.realpath(folder) if folder else None
         interaction = WebInteraction(
             emit=lambda event: self._emit_for(job, event),
             set_question=lambda question: self._set_question(job, question),
@@ -269,6 +285,7 @@ class JobManager:
         # Set on the server's loop once the workers the job left have ended, as the job holds its slot till then.
         status, error, result = "error", None, None
         try:
+            _check_folder(job)
             with job._lock:
                 if interaction.cancel_requested.is_set():
                     raise asyncio.CancelledError()
