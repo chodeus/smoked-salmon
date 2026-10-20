@@ -92,9 +92,7 @@ async def generate(req: GenerateRequest) -> dict:
 
     title = f"Spectrals: {os.path.basename(path)}"
     try:
-        job = manager.create_threaded("spectrals", title, run, {"path": path}, lock_key=path)
-    except JobConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        job = manager.create_threaded("spectrals", title, run, {"path": path}, folder=path)
     except JobCapacityError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     job.on_evict = _discard_spectrals

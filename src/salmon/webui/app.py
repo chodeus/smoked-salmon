@@ -1,6 +1,8 @@
 """FastAPI application factory for the salmon web interface."""
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -8,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from salmon import cfg
+from salmon.webui import output
 from salmon.webui.auth import AuthMiddleware, auth_router, resolve_auth_token
 from salmon.webui.egress import EgressMiddleware
 from salmon.webui.interaction import install_interaction_patches
@@ -20,6 +23,13 @@ STATIC_DIR = Path(__file__).parent / "static"
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
+@asynccontextmanager
+async def _capturing_output(_app: FastAPI) -> AsyncIterator[None]:
+    """While the server runs, what each job prints goes to its log."""
+    with output.capturing():
+        yield
+
+
 def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | None = None) -> FastAPI:
     install_interaction_patches()
     token = resolve_auth_token(auth_token)
@@ -29,6 +39,7 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
         docs_url="/api/docs" if dev else None,
         redoc_url=None,
         openapi_url="/api/openapi.json" if dev else None,
+        lifespan=_capturing_output,
     )
     app.state.auth_token = token
     app.state.dev = dev

@@ -21,6 +21,7 @@ test; real providers would be flaky in CI.
 """
 
 import asyncio
+import contextlib
 import os
 import time
 from pathlib import Path
@@ -36,6 +37,7 @@ from salmon import cfg
 from salmon.trackers.red import RedApi
 from salmon.uploader import upload as run_upload
 from salmon.uploader.upload import concat_track_data, prepare_and_upload
+from salmon.webui import output
 from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.jobs import JobManager
 
@@ -113,22 +115,26 @@ def _interaction_patches():
 
 @pytest.fixture
 def jm():
-    """Factory for isolated JobManagers; cancels/joins leftover jobs on teardown."""
+    """Factory for isolated JobManagers whose jobs print to their logs; cancels/joins leftover jobs on teardown."""
     managers = []
+    with contextlib.ExitStack() as capture:
 
-    def make() -> JobManager:
-        m = JobManager()
-        managers.append(m)
-        return m
+        def make() -> JobManager:
+            if not managers:
+                # As salmon web does while it serves; from the test itself, as pytest resets sys.stdout per phase.
+                capture.enter_context(output.capturing())
+            m = JobManager()
+            managers.append(m)
+            return m
 
-    yield make
-    for m in managers:
-        for job in list(m.jobs.values()):
-            if job.finished_at is None:
-                m.cancel(job.id)
-        for job in m.jobs.values():
-            if job.thread is not None:
-                job.thread.join(timeout=5)
+        yield make
+        for m in managers:
+            for job in list(m.jobs.values()):
+                if job.finished_at is None:
+                    m.cancel(job.id)
+            for job in m.jobs.values():
+                if job.thread is not None:
+                    job.thread.join(timeout=5)
 
 
 @pytest.fixture

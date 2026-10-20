@@ -3,8 +3,8 @@
 Web upload jobs run the unmodified upload pipeline in a worker thread with its
 own event loop. Module-level patches on asyncclick (and a few salmon-internal
 seams) dispatch on a context variable: inside a web job every prompt becomes a
-question event that the browser answers via the jobs API; outside (CLI, plain
-webui jobs) the original terminal behavior is untouched.
+question event that the browser answers via the jobs API; outside (the CLI)
+the original terminal behavior is untouched.
 
 asyncclick in the pinned version has an async ``prompt`` but synchronous
 ``confirm``/``edit`` — the worker-thread architecture exists precisely so the
@@ -28,6 +28,7 @@ import salmon.tagger.pre_data
 import salmon.uploader
 import salmon.uploader.spectrals
 from salmon.errors import NoAnswerError
+from salmon.webui import output
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -69,7 +70,8 @@ class WebInteraction:
         self.spectrals: dict[str, Any] | None = None
         self.cancel_requested = threading.Event()
         self.closed = threading.Event()
-        self._line_buffer = ""
+        # What the job prints, as whole lines for its log (output.to sends it here).
+        self.lines = output.Lines(lambda line, _err: self.log(line))
 
     def emit(self, event: dict[str, Any]) -> None:
         if not self.closed.is_set():
@@ -78,18 +80,8 @@ class WebInteraction:
     def log(self, line: str) -> None:
         self.emit({"event": "log", "line": line})
 
-    def log_fragment(self, text: str, nl: bool) -> None:
-        """Assemble nl=False echo fragments into whole lines (listing rows)."""
-        if nl:
-            self.log(self._line_buffer + text)
-            self._line_buffer = ""
-        else:
-            self._line_buffer += text
-
     def flush_log(self) -> None:
-        if self._line_buffer:
-            self.log(self._line_buffer)
-            self._line_buffer = ""
+        self.lines.flush()
 
     def _begin(
         self,
@@ -262,22 +254,6 @@ def _web_input(text: str = "") -> str:
     return "" if raw is None else str(raw)
 
 
-def _web_echo(message: Any = None, **kw: Any) -> None:
-    interaction = _current.get()
-    if interaction is not None and not kw.get("err"):
-        text = "" if message is None else asyncclick.unstyle(str(message))
-        interaction.log_fragment(text, kw.get("nl", True))
-    _originals["echo"](message, **kw)
-
-
-def _web_secho(message: Any = None, **kw: Any) -> None:
-    interaction = _current.get()
-    if interaction is not None and not kw.get("err"):
-        text = "" if message is None else asyncclick.unstyle(str(message))
-        interaction.log_fragment(text, kw.get("nl", True))
-    _originals["secho"](message, **kw)
-
-
 async def _web_view_spectrals(spectrals_path: str, all_spectral_ids: dict[int, str]) -> None:
     interaction = _current.get()
     if interaction is None:
@@ -312,8 +288,6 @@ def install_interaction_patches() -> None:
         prompt=asyncclick.prompt,
         confirm=asyncclick.confirm,
         edit=asyncclick.edit,
-        echo=asyncclick.echo,
-        secho=asyncclick.secho,
         view_spectrals=salmon.uploader.spectrals.view_spectrals,
         flush_stdin=salmon.uploader.spectrals.flush_stdin,
         handle_spectrals_upload_and_deletion=salmon.uploader.spectrals.handle_spectrals_upload_and_deletion,
@@ -321,8 +295,6 @@ def install_interaction_patches() -> None:
     asyncclick.prompt = _web_prompt
     asyncclick.confirm = _web_confirm
     asyncclick.edit = _web_edit
-    asyncclick.echo = _web_echo
-    asyncclick.secho = _web_secho
     salmon.uploader.spectrals.view_spectrals = _web_view_spectrals
     salmon.uploader.spectrals.flush_stdin = _web_flush_stdin
     # handle_spectrals_upload_and_deletion is imported by name into other

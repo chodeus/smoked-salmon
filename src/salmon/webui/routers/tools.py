@@ -24,7 +24,7 @@ from salmon.images import HOSTS, upload_images
 from salmon.images.files import NotAnImage, check_image
 from salmon.tagger import tag as tag_command
 from salmon.uploader.description import build_tracklist_description
-from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
+from salmon.webui.jobs import Job, JobCapacityError, manager
 from salmon.webui.validation import (
     assert_public_url,
     validate_confined_path,
@@ -75,11 +75,9 @@ class CrossUploadRequest(BaseModel):
     dry_run: bool = False
 
 
-def _queue(kind: str, title: str, run, meta: dict, lock_key: str | None = None) -> dict:
+def _queue(kind: str, title: str, run, meta: dict, folder: str | None = None) -> dict:
     try:
-        job = manager.create_threaded(kind, title, run, meta, lock_key=lock_key)
-    except JobConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        job = manager.create_threaded(kind, title, run, meta, folder=folder)
     except JobCapacityError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     return job.to_dict()
@@ -165,7 +163,7 @@ async def tag(req: TagRequest) -> dict:
         )
         return {"path": path}
 
-    return _queue("tag", f"Tag: {os.path.basename(path)}", run, {"path": path}, lock_key=path)
+    return _queue("tag", f"Tag: {os.path.basename(path)}", run, {"path": path}, folder=path)
 
 
 @router.post("/cross-upload")

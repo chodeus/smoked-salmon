@@ -8,18 +8,15 @@ import os
 import time
 
 import pytest
-from webui_client import web_client  # pyright: ignore[reportMissingImports]
+from webui_client import reset_manager, web_client  # pyright: ignore[reportMissingImports]
 
 import salmon.trackers
 from salmon import cfg
-from salmon.webui.jobs import manager
 
 
 @pytest.fixture(autouse=True)
 def _clean():
-    manager.jobs.clear()
-    manager._subscribers.clear()
-    manager._active_lock_keys.clear()
+    reset_manager()
 
 
 @pytest.fixture

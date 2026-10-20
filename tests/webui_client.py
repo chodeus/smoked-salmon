@@ -5,6 +5,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from salmon.webui.app import create_app
+from salmon.webui.jobs import manager
 
 WEB_TOKEN = "test-web-token-0001"
 
@@ -12,3 +13,12 @@ WEB_TOKEN = "test-web-token-0001"
 def web_client(base_url: str = "http://localhost", **app_options: Any) -> TestClient:
     headers = {"Authorization": f"Bearer {WEB_TOKEN}", "Content-Type": "application/json"}
     return TestClient(create_app(auth_token=WEB_TOKEN, **app_options), base_url=base_url, headers=headers)
+
+
+def reset_manager() -> None:
+    """Empty the job manager the routes use: the tests share it, each on an event loop of its own."""
+    manager.jobs.clear()
+    manager._subscribers.clear()
+    manager._active_lock_keys.clear()
+    manager._queue.clear()
+    manager._running.clear()

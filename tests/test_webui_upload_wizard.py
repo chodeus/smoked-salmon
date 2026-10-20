@@ -18,6 +18,8 @@ tests for the answer endpoint and spectral image serving).
 """
 
 import asyncio
+import contextlib
+import io
 import os
 import shutil
 import time
@@ -27,7 +29,7 @@ from types import SimpleNamespace
 import asyncclick as click
 import pytest
 from torf import Torrent
-from webui_client import web_client  # pyright: ignore[reportMissingImports]
+from webui_client import reset_manager, web_client  # pyright: ignore[reportMissingImports]
 
 import salmon.tagger.pre_data
 import salmon.trackers
@@ -36,6 +38,7 @@ from salmon import cfg
 from salmon.constants import RELEASE_TYPES
 from salmon.uploader import upload as run_upload
 from salmon.webui import interaction as interaction_mod
+from salmon.webui import output
 from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.jobs import JobConflictError, JobManager
 from salmon.webui.jobs import manager as global_manager
@@ -135,22 +138,26 @@ def _interaction_patches():
 
 @pytest.fixture
 def jm():
-    """Factory for isolated JobManagers; cancels/joins leftover jobs on teardown."""
+    """Factory for isolated JobManagers whose jobs print to their logs; cancels/joins leftover jobs on teardown."""
     managers = []
+    with contextlib.ExitStack() as capture:
 
-    def make() -> JobManager:
-        m = JobManager()
-        managers.append(m)
-        return m
+        def make() -> JobManager:
+            if not managers:
+                # As salmon web does while it serves; from the test itself, as pytest resets sys.stdout per phase.
+                capture.enter_context(output.capturing())
+            m = JobManager()
+            managers.append(m)
+            return m
 
-    yield make
-    for m in managers:
-        for job in list(m.jobs.values()):
-            if job.finished_at is None:
-                m.cancel(job.id)
-        for job in m.jobs.values():
-            if job.thread is not None:
-                job.thread.join(timeout=5)
+        yield make
+        for m in managers:
+            for job in list(m.jobs.values()):
+                if job.finished_at is None:
+                    m.cancel(job.id)
+            for job in m.jobs.values():
+                if job.thread is not None:
+                    job.thread.join(timeout=5)
 
 
 TRACK_FILES = ["01. Intro.flac", "02. Mittelteil.flac", "03. Outro.flac"]
@@ -742,26 +749,20 @@ async def test_same_path_conflicts_and_distinct_paths_run_concurrently(jm):
 # ---------------------------------------------------------------------------
 
 
-async def test_secho_streams_to_job_log_and_cli_context_uses_original(jm, monkeypatch):
-    printed = []
-    monkeypatch.setitem(interaction_mod._originals, "secho", lambda message=None, **kw: printed.append(message))
-
+async def test_secho_goes_to_the_job_log_only_and_the_cli_prints_as_ever():
     async def factory(job):
         click.secho("streamed to the browser", fg="cyan")
         return "ok"
 
-    m = jm()
-    job = m.create_threaded("demo", "Demo", factory)
-    await join_job(job)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), output.capturing():
+        job = JobManager().create_threaded("demo", "Demo", factory)
+        await join_job(job)
+        # Outside any job (CLI context): printed as ever, and no job log.
+        click.secho("plain cli line")
 
-    # Inside a web job: captured in the job log AND still passed to the original.
-    assert "streamed to the browser" in job.log_lines
-    assert printed == ["streamed to the browser"]
-
-    # Outside any job (CLI context): only the original prints, no job log.
-    click.secho("plain cli line")
-    assert printed == ["streamed to the browser", "plain cli line"]
-    assert "plain cli line" not in job.log_lines
+    assert job.log_lines == ["streamed to the browser"]
+    assert out.getvalue() == "plain cli line\n"
 
 
 # ---------------------------------------------------------------------------
@@ -804,9 +805,7 @@ async def test_edit_and_raw_input_seams(jm):
 
 @pytest.fixture
 def client():
-    global_manager.jobs.clear()
-    global_manager._subscribers.clear()
-    global_manager._active_lock_keys.clear()
+    reset_manager()
     with web_client() as c:
         try:
             yield c
@@ -817,9 +816,7 @@ def client():
             for job in global_manager.jobs.values():
                 if job.thread is not None:
                     job.thread.join(timeout=5)
-    global_manager.jobs.clear()
-    global_manager._subscribers.clear()
-    global_manager._active_lock_keys.clear()
+    reset_manager()
 
 
 def test_http_answer_endpoint_and_spectral_serving(client, tmp_path):

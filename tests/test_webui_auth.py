@@ -6,13 +6,12 @@ import pytest
 from asyncclick.testing import CliRunner
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
-from webui_client import WEB_TOKEN, web_client  # pyright: ignore[reportMissingImports]
+from webui_client import WEB_TOKEN, reset_manager, web_client  # pyright: ignore[reportMissingImports]
 
 from salmon import cfg
 from salmon.config.validations import UploadWebInterface
 from salmon.webui import web
 from salmon.webui.app import create_app
-from salmon.webui.jobs import manager
 
 # The bind address under test: nothing is served on it.
 LAN_BIND = "0.0.0.0"  # nosec B104
@@ -25,9 +24,7 @@ def _no_configured_token(monkeypatch) -> None:
 
 
 def _clean():
-    manager.jobs.clear()
-    manager._subscribers.clear()
-    manager._active_lock_keys.clear()
+    reset_manager()
 
 
 def test_an_app_without_a_token_refuses_every_api_request(monkeypatch):
