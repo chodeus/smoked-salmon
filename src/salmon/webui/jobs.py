@@ -92,6 +92,22 @@ def _flatten_exception(e: BaseException) -> list[BaseException]:
     return [e]
 
 
+def _failure(e: BaseException) -> str:
+    """What a failed job's error says; its traceback goes to the server's own stderr."""
+    leaves = _flatten_exception(e)
+    # The traceback never goes to the job's log, and is masked: a chained error may repeat a request's URL.
+    output.real_stderr().write(egress.masked_text("".join(traceback.format_exception(e))))
+    if any(isinstance(leaf, AbortAndDeleteFolder) for leaf in leaves):
+        return "Aborted — the album folder was deleted as requested."
+    if any(isinstance(leaf, NoAnswerError) for leaf in leaves):
+        return no_answer()
+    if any(isinstance(leaf, click.Abort) for leaf in leaves):
+        return "Aborted."
+    if len(leaves) > 1 or isinstance(e, BaseExceptionGroup):
+        return "; ".join(f"{type(leaf).__name__}: {leaf}" for leaf in leaves)
+    return f"{type(e).__name__}: {e}"
+
+
 def _folder_key(folder: str) -> tuple[int, int] | str:
     """The folder as the disk knows it: another spelling of it (a symlink, case, Unicode form) is the same."""
     try:
@@ -250,6 +266,8 @@ class JobManager:
         # A BaseEventLoop: its shutdown_default_executor takes the timeout AbstractEventLoop's stub leaves out.
         loop = cast("asyncio.BaseEventLoop", asyncio.new_event_loop())
         job._thread_loop = loop
+        # Set on the server's loop once the workers the job left have ended, as the job holds its slot till then.
+        status, error, result = "error", None, None
         try:
             with job._lock:
                 if interaction.cancel_requested.is_set():
@@ -258,15 +276,15 @@ class JobManager:
                 with output.to(interaction.lines.write):
                     task = loop.create_task(_in_click_context(factory(job)))
                 job._thread_task = task
-            job.result = loop.run_until_complete(task)
-            job.status = "done"
+            result = loop.run_until_complete(task)
+            status = "done"
         except (asyncio.CancelledError, concurrent.futures.CancelledError):
-            job.status = "cancelled"
+            status = "cancelled"
         except BaseException as e:  # noqa: BLE001 - single funnel for job errors
             if interaction.cancel_requested.is_set():
-                job.status = "cancelled"
+                status = "cancelled"
             else:
-                self._record_failure(job, e)
+                error = _failure(e)
         finally:
             reset_progress_callback(progress_token)
             set_interaction(None)
@@ -282,34 +300,19 @@ class JobManager:
             job.question = None
             # The log is whole before the job reads as finished.
             interaction.lines.flush()
-            self._call(self._finished, job)
+            self._call(self._finished, job, status, error, result)
             # From here on, leaked to_thread workers must neither emit
             # events nor block on unanswerable questions.
             interaction.close()
-
-    def _record_failure(self, job: Job, e: BaseException) -> None:
-        job.status = "error"
-        leaves = _flatten_exception(e)
-        if any(isinstance(leaf, AbortAndDeleteFolder) for leaf in leaves):
-            job.error = "Aborted — the album folder was deleted as requested."
-        elif any(isinstance(leaf, NoAnswerError) for leaf in leaves):
-            job.error = no_answer()
-        elif any(isinstance(leaf, click.Abort) for leaf in leaves):
-            job.error = "Aborted."
-        elif len(leaves) > 1 or isinstance(e, BaseExceptionGroup):
-            job.error = "; ".join(f"{type(leaf).__name__}: {leaf}" for leaf in leaves)
-        else:
-            job.error = f"{type(e).__name__}: {e}"
-        # The server's own stderr, never the job's log, masked: a chained error may repeat a request's URL.
-        output.real_stderr().write(egress.masked_text("".join(traceback.format_exception(e))))
 
     def _finish(self, job: Job) -> None:
         if job.lock_key is not None:
             self._active_lock_keys.discard(job.lock_key)
         job.finished_at = _now()
 
-    def _finished(self, job: Job) -> None:
-        """On the server's loop, once a job's thread has ended: say so, and start the jobs it held back."""
+    def _finished(self, job: Job, status: str, error: str | None, result: Any) -> None:
+        """On the server's loop, once a job's thread has ended: its outcome, and the jobs it held back started."""
+        job.status, job.error, job.result = status, error, result
         self._running.discard(job)
         self._finish(job)
         self._broadcast({"event": "finished", "job": job.to_dict()})

@@ -584,12 +584,13 @@ async def test_a_cancelled_jobs_worker_still_in_its_folder_holds_back_the_next_j
     cancelled = m.cancel(first.id)
     assert cancelled
     await asyncio.sleep(0.3)
-    held = (first.finished_at, second.status)
+    # Still running while its worker holds the folder: neither finished, nor cancelled, nor prunable yet.
+    held = (first.finished_at, first.status, second.status)
     release.set()
     await finished(first)
     await finished(second)
 
-    assert held == (None, "queued")
+    assert held == (None, "running", "queued")
     assert (first.status, second.status, overlap) == ("cancelled", "done", [False])
 
 

@@ -675,15 +675,7 @@ async def test_an_unanswered_question_stops_the_job_and_frees_its_lock(jm, monke
 
 
 async def test_cancel_while_sync_confirm_pending_clears_question_and_lock(jm):
-    """BUG (pinned): cancelling while a *sync* question (confirm/edit) is
-    pending currently ends the job in status 'error' ("CancelledError: ")
-    rather than 'cancelled': WebInteraction.cancel_pending() cancels a
-    concurrent.futures.Future, and on this Python
-    concurrent.futures.CancelledError is a plain Exception subclass — NOT
-    asyncio.CancelledError — so _thread_main's `except asyncio.CancelledError`
-    misses it and _record_failure runs instead. The important invariants
-    (question cleared, lock released, thread stopped) do hold; this test
-    accepts either status so it stays green once the code is fixed."""
+    """A sync question's future is a concurrent.futures one: its CancelledError still ends the job as cancelled."""
     m = jm()
 
     async def factory(job):
@@ -694,12 +686,10 @@ async def test_cancel_while_sync_confirm_pending_clears_question_and_lock(jm):
     await wait_for(lambda: job.question, "question to appear")
 
     cancelled = m.cancel(job.id)
-    assert cancelled is True
     await join_job(job)
 
-    assert job.status in {"cancelled", "error"}  # currently: "error" (see docstring)
-    if job.status == "error":
-        assert job.error.startswith("CancelledError")
+    assert cancelled is True
+    assert job.status == "cancelled"
     assert job.question is None
     assert job.result is None
     assert "/albums/y" not in m._active_lock_keys
