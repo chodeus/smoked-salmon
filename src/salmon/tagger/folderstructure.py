@@ -247,6 +247,14 @@ def _rename_or_stop(path: str, renames: list[tuple[str, str]]) -> None:
         # Marked as the listing above marks them, line by line: show_invisible would mark a newline too.
         click.secho("\n".join(show_invisible(line) for line in e.report(path).splitlines()), fg="red", bold=True)
         raise NoncompliantFolderStructure from e
+    except OSError as e:
+        # The renames stand; the record still names the old files, so a later run refuses the folder, never deletes it.
+        click.secho(
+            f"Could not update the record of how {path} was converted ({e}): a later run will refuse it.",
+            fg="red",
+            bold=True,
+        )
+        raise NoncompliantFolderStructure from e
     for _, new in renames:
         click.echo(f" >> {new}")
 

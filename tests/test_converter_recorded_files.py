@@ -22,6 +22,7 @@ from salmon.errors import NoncompliantFolderStructure, UploadError
 from salmon.tagger import folderstructure, renames
 from salmon.tagger.retagger import rename_files
 from salmon.trackers.ops import OpsApi
+from salmon.uploader.staging import staged_source
 
 if TYPE_CHECKING:
     from salmon.uploader.seedbox import UploadManager
@@ -212,6 +213,46 @@ def test_an_undone_rename_of_the_tracks_leaves_the_record_as_it_was(made, tmp_pa
     assert all((out / path).is_file() for path in before.values())
 
 
+def _no_record_writes(monkeypatch) -> None:
+    def full_disk(*_args, **_kwargs) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(conversions, "record_conversion", full_disk)
+
+
+def test_a_record_that_cannot_follow_the_renamed_tracks_puts_them_back(made, tmp_path, monkeypatch) -> None:
+    # The fork: the record is written once the tracks are renamed, and a failed write puts every rename back.
+    out = _transcode(_album(tmp_path), tmp_path)
+    before = _snapshot(out)
+    tags = {
+        os.path.join("CD1", f"01. {LONG}.mp3"): {"tracknumber": "1", "title": "One"},
+        "02. two.mp3": {"tracknumber": "2", "title": "Two"},
+    }
+    monkeypatch.setattr(
+        "salmon.tagger.retagger.generate_file_name", lambda tags, ext, _multi, **_kw: f"0{tags['tracknumber']}{ext}"
+    )
+    metadata = {"tracks": {"1": {"1": {"artists": [("A", "main")]}, "2": {"artists": [("A", "main")]}}}}
+    _no_record_writes(monkeypatch)
+
+    with pytest.raises(UploadError, match="No space left on device"):
+        rename_files(str(out), tags, metadata, auto_rename=True, spectral_ids=None, source="WEB")
+
+    assert _snapshot(out) == before
+
+
+def test_a_record_that_cannot_follow_the_folder_check_stops_it_and_says_so(made, tmp_path, monkeypatch, capsys) -> None:
+    out = _transcode(_album(tmp_path), tmp_path)
+    before = _files(out)
+    _no_record_writes(monkeypatch)
+
+    with pytest.raises(NoncompliantFolderStructure):
+        _shorten(out)
+
+    # The shortened name stands; the record still names the old one, so a later run refuses the folder.
+    assert "a later run will refuse it" in capsys.readouterr().out
+    assert _files(out) == before
+
+
 def test_a_rename_in_a_folder_without_a_record_writes_none(tmp_path) -> None:
     folder = tmp_path / "Album"
     folder.mkdir()
@@ -333,6 +374,48 @@ def test_another_conversions_record_is_refused_whatever_names_it_holds(made, tmp
     assert _snapshot(out) == before
 
 
+@pytest.mark.parametrize("change", ["gained", "lost"])
+def test_a_transcode_of_the_album_before_it_gained_or_lost_a_track_is_refused_not_removed(
+    made, tmp_path, change
+) -> None:
+    album = _album(tmp_path)
+    out = _transcode(album, tmp_path)
+    if change == "gained":
+        _write_flac(album / "03. three.flac", 44100, 16, title="Three")
+    else:
+        (album / "02. two.flac").unlink()
+    before = _snapshot(out)
+
+    with pytest.raises(UploadError) as refused:
+        _transcode(album, tmp_path)
+
+    assert str(refused.value) == (
+        f"{out} holds a transcode of this album from before its files changed, not this transcode: "
+        "remove it and run again."
+    )
+    assert _snapshot(out) == before
+
+
+def test_a_transcode_made_from_a_runs_copy_is_reused_from_a_later_runs_copy(made, tmp_path, monkeypatch) -> None:
+    # A run that works on a copy (--skip-flac-upload, a protected album kept unrenamed) makes a new one each time.
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
+    album = _album(tmp_path)
+    with staged_source(str(album), scratch=True) as (copy, _rename_into):
+        out = _transcode(Path(copy), downloads)
+    made.clear()
+
+    with staged_source(str(album), scratch=True) as (copy, _rename_into):
+        again = _transcode(Path(copy), downloads)
+
+    assert again == out
+    assert made == []
+    record = conversions.conversion_of(str(out))
+    assert record is not None
+    assert record["source"] == str(album)
+
+
 # Downconversions
 
 
@@ -383,6 +466,22 @@ def test_an_old_downconversion_record_whose_names_differ_is_refused(made, tmp_pa
 
 
 # The upload of a reused conversion
+
+
+@pytest.mark.parametrize("change", ["gained", "lost"])
+def test_a_downconversion_of_the_album_before_it_gained_or_lost_a_track_is_refused(made, tmp_path, change) -> None:
+    album = _album(tmp_path, 24, 96000)
+    out = _downconvert(album, tmp_path)
+    if change == "gained":
+        _write_flac(album / "03. three.flac", 96000, 24, title="Three")
+    else:
+        (album / "02. two.flac").unlink()
+    before = _snapshot(out)
+
+    with pytest.raises(UploadError, match="incomplete or not salmon's conversion"):
+        _downconvert(album, tmp_path)
+
+    assert _snapshot(out) == before
 
 
 def test_a_shortened_downconversion_reads_by_its_source_names(made, tmp_path) -> None:

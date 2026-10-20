@@ -18,7 +18,7 @@ from salmon.constants import (
 )
 from salmon.errors import UploadError
 from salmon.tagger.mutation import abort_partial
-from salmon.tagger.renames import RenameStopped, plan_renames, rename_recorded
+from salmon.tagger.renames import RenameStopped, plan_renames, rename_all
 from salmon.tagger.tagfile import TagFile, as_stored, keeps_field, parse_tag_number
 
 
@@ -506,30 +506,37 @@ def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
 
 
 def _rename_or_undo(path: str, renames: list[tuple[str, str]]) -> None:
-    """``rename_recorded``, putting back the renames made when one fails or the run is interrupted.
+    """Rename each pair, then the conversion record; put the renames back if one fails, the record can't, or a stop.
 
     Raises:
-        UploadError: A rename failed.
+        UploadError: A rename failed, or the conversion record could not be updated.
     """
+    # Local: the converter package imports the tagger.
+    from salmon.converter.conversions import note_renamed
+
     done: list[tuple[str, str]] = []
     try:
         # One at a time, so an interrupt knows what to put back too.
         for rename in renames:
-            rename_recorded(path, [rename])
+            rename_all([rename])
             done.append(rename)
+        # Once, after the last: a record that cannot be written leaves every rename to put back, and itself as it was.
+        note_renamed(path, renames)
     except BaseException as e:
         undone = _undo_renames(path, done)
-        if not isinstance(e, RenameStopped):
-            click.secho(undone, fg="red", bold=True)
-            raise
-        stopped = RenameStopped(e.error, done, e.failed, renames[len(done) + 1 :])
-        raise UploadError(f"{stopped.report(path)}\n{undone}") from e
+        if isinstance(e, RenameStopped):
+            stopped = RenameStopped(e.error, done, e.failed, renames[len(done) + 1 :])
+            raise UploadError(f"{stopped.report(path)}\n{undone}") from e
+        if isinstance(e, OSError):
+            raise UploadError(f"Could not update the record of how {path} was converted ({e}).\n{undone}") from e
+        click.secho(undone, fg="red", bold=True)
+        raise
 
 
 def _undo_renames(path: str, done: list[tuple[str, str]]) -> str:
     """Put back the renames a stopped batch made, and say what names the album's files are left with."""
     try:
-        rename_recorded(path, [(new, old) for old, new in reversed(done)])
+        rename_all([(new, old) for old, new in reversed(done)])
     except RenameStopped as e:
         return f"Undoing them stopped too. {e.report(path)}\nThe album's files are only partly renamed."
     return "Those renames were undone: the album's files keep their old names."
