@@ -5,7 +5,9 @@ import os
 import asyncclick as click
 import pytest
 
+import salmon.checks
 import salmon.checks.album as album_mod
+from salmon import cfg
 from salmon.checks import mqa_test
 
 
@@ -42,3 +44,36 @@ async def test_a_clean_album_does_not_abort(monkeypatch, tmp_path):
     monkeypatch.setattr(album_mod, "check_mqa", fake_check_mqa)
 
     await mqa_test(path)  # must not raise
+
+
+def test_every_file_is_the_default() -> None:
+    assert cfg.upload.mqa_check_all_tracks is True
+
+
+async def test_with_the_opt_out_only_the_first_file_is_read(monkeypatch, tmp_path):
+    """upload.mqa_check_all_tracks = false: faster, and MQA on track 4 is not caught."""
+    path = _album(tmp_path)
+    seen: list[str] = []
+
+    async def fake_check_mqa(p):
+        seen.append(os.path.basename(p))
+        return os.path.basename(p).startswith("04")
+
+    monkeypatch.setattr(salmon.checks, "check_mqa", fake_check_mqa)
+    monkeypatch.setattr(album_mod, "check_mqa", fake_check_mqa)
+
+    await mqa_test(path, all_files=False)
+
+    assert seen == ["01 - track.flac"]
+
+
+async def test_with_the_opt_out_mqa_on_the_first_file_still_aborts(monkeypatch, tmp_path):
+    path = _album(tmp_path)
+
+    async def fake_check_mqa(p):
+        return os.path.basename(p).startswith("01")
+
+    monkeypatch.setattr(salmon.checks, "check_mqa", fake_check_mqa)
+
+    with pytest.raises(click.Abort):
+        await mqa_test(path, all_files=False)
