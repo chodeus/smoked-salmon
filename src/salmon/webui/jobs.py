@@ -105,7 +105,8 @@ async def _recorded(coro: Coroutine[Any, Any, Any]) -> Any:
 
 
 async def _in_click_context(coro: Coroutine[Any, Any, Any]) -> Any:
-    # Click's context stack is per thread; tracker pools close when this context exits.
+    # Click's context stack is per thread: a job's code that asks for one gets its own. Its tracker pools are not
+    # tied to it: they are salmon web's request loop's, closed when salmon web stops.
     async with click.Context(click.Command("job")):
         return await coro
 
