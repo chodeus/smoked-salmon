@@ -22,6 +22,10 @@ MOVES = [
     ("upload.web_interface.port", "upload.spectrals_viewer.port", 55111),
     ("upload.web_interface.display_host", "upload.spectrals_viewer.display_host", "spectrals.lan"),
     ("upload.debug_tracker_connection", "tracker.debug_connection", True),
+    ("upload.description.review_as_comment_tag", "upload.formatting.review_as_comment_tag", False),
+    ("upload.description.fullwidth_replacements", "upload.formatting.fullwidth_replacements", True),
+    ("upload.description.empty_track_comment_tag", "upload.formatting.empty_track_comment_tag", False),
+    ("upload.compression.lma_comment_in_t_desc", "upload.description.lma_comment_in_t_desc", True),
 ]
 MOVE_IDS = [old for old, _, _ in MOVES]
 

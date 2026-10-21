@@ -292,7 +292,7 @@ def test_rename_folder_refuses_a_name_with_a_path_separator(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("replacements", [True, False])
 def test_generated_names_keep_fullwidth_replacements_accents_and_emoji(monkeypatch, replacements) -> None:
-    monkeypatch.setattr(cfg.upload.description, "fullwidth_replacements", replacements)
+    monkeypatch.setattr(cfg.upload.formatting, "fullwidth_replacements", replacements)
     _file_template(monkeypatch)
     tags = _tags()
     tags.title = "Café: 日本語 \U0001f3b5 What?"
