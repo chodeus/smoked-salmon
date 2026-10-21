@@ -127,7 +127,7 @@ def flow(monkeypatch):
     monkeypatch.setattr(salmon.trackers, "get_class", lambda code: lambda: FakeSite(code))
     monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", False)
     monkeypatch.setattr(salmon.uploader.cfg.upload.requests, "last_minute_dupe_check", False)
-    monkeypatch.setattr(salmon.uploader.cfg.image, "auto_compress_cover", False)
+    monkeypatch.setattr(salmon.uploader.cfg.image, "embed_missing_cover", False)
 
     def set_fake(name: str, fake) -> None:
         overrides[name] = fake

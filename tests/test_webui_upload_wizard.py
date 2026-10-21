@@ -341,7 +341,7 @@ def upload_world(monkeypatch, tmp_path):
     monkeypatch.setattr(cfg.upload.requests, "last_minute_dupe_check", False)
     monkeypatch.setattr(cfg.upload.description, "copy_uploaded_url_to_clipboard", False)
     monkeypatch.setattr(cfg.image, "remove_auto_downloaded_cover_image", False)
-    monkeypatch.setattr(cfg.image, "auto_compress_cover", False)
+    monkeypatch.setattr(cfg.image, "embed_missing_cover", False)
     monkeypatch.setattr(cfg.image, "default_spectral_ids", None)
     monkeypatch.setattr(cfg, "seedbox", [])
     # RED + one remaining site so the "upload to another tracker?" loop runs.

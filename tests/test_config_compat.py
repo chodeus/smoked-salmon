@@ -26,6 +26,7 @@ MOVES = [
     ("upload.description.fullwidth_replacements", "upload.formatting.fullwidth_replacements", True),
     ("upload.description.empty_track_comment_tag", "upload.formatting.empty_track_comment_tag", False),
     ("upload.compression.lma_comment_in_t_desc", "upload.description.lma_comment_in_t_desc", True),
+    ("image.auto_compress_cover", "image.embed_missing_cover", True),
 ]
 MOVE_IDS = [old for old, _, _ in MOVES]
 
