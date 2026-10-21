@@ -362,7 +362,7 @@ def _run_conversion_up(monkeypatch, torrents: Path, args: tuple[str, ...], *, co
         torrents,
         args,
         multi_tracker_upload=False,
-        construct_rls_data=_returning(rls_data),
+        construct_rls_data=_returning_async(rls_data),
         concat_track_data=_returning(source_tracks),
         check_spectrals=_returning_async((False, None)),
         convert_folder=convert_folder,

@@ -24,6 +24,7 @@ from test_uploader_dry_run import (  # pyright: ignore[reportMissingImports]
     FakeTracker,
     _loose_rate_limit,  # noqa: F401 (a fixture: see pytestmark)
     _returning,
+    _returning_async,
     _run_up,
     image_uploads,  # noqa: F401 (a fixture: see pytestmark)
 )
@@ -220,7 +221,7 @@ def _24bit_run(monkeypatch, world: World, name: str, title: str = LONG_TITLE):
         rate=96000,
         bits=24,
         args=("--conversions", "16bit"),
-        construct_rls_data=_returning(rls_data),
+        construct_rls_data=_returning_async(rls_data),
         concat_track_data=_returning(track_data),
         gather_audio_info=gather_audio_info,
         # The group holds no 16-bit FLAC yet: -yyy makes the downconversion.

@@ -35,7 +35,7 @@ async def check_folder_structure(
         click.secho("\nChecking folder structure...", fg="cyan", bold=True)
         try:
             await _check_illegal_folders(path)
-            _check_invisible_characters(path, scene)
+            await _check_invisible_characters(path, scene)
             _check_path_lengths(path, scene, max_path_length)
             _check_zero_len_folder(path)
             await _check_extensions(path, scene, essential_only=essential_only)
@@ -93,7 +93,7 @@ async def _check_illegal_folders(path: str) -> None:
                         break
 
 
-def _check_invisible_characters(path: str, scene: bool) -> None:
+async def _check_invisible_characters(path: str, scene: bool) -> None:
     """Rename, once the user agrees, the sub-folders and files whose names hold characters a tracker refuses."""
     folder_name = os.path.basename(os.path.normpath(path))
     offending: list[tuple[str, str, list[str]]] = []

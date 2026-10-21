@@ -160,7 +160,7 @@ def test_rename_folder_refuses_a_name_with_nothing_visible(tmp_path, monkeypatch
     album.mkdir()
 
     with pytest.raises(UploadError, match="Invalid folder name"):
-        rename_folder(str(album), {**FOLDER_METADATA, "title": title}, auto_rename=True, check=False)
+        anyio.run(lambda: rename_folder(str(album), {**FOLDER_METADATA, "title": title}, auto_rename=True, check=False))
 
     assert [entry.name for entry in tmp_path.iterdir()] == ["Album"]
 
@@ -205,7 +205,7 @@ def test_rename_folder_refuses_a_name_that_is_not_a_folder_name(tmp_path, monkey
 
     # The default answer to "replace the existing folder?" is yes, and that used to rmtree the directory.
     with pytest.raises(UploadError, match="Invalid folder name"):
-        rename_folder(str(album), FOLDER_METADATA, auto_rename=True)
+        anyio.run(lambda: rename_folder(str(album), FOLDER_METADATA, auto_rename=True))
 
     _assert_untouched(parent, downloads, album)
 
@@ -217,7 +217,7 @@ def test_rename_folder_without_check_refuses_a_name_that_is_not_a_folder_name(tm
     _default_answers(monkeypatch)
 
     with pytest.raises(UploadError, match="Invalid folder name"):
-        rename_folder(str(album), FOLDER_METADATA, auto_rename=True, check=False)
+        anyio.run(lambda: rename_folder(str(album), FOLDER_METADATA, auto_rename=True, check=False))
 
     _assert_untouched(parent, downloads, album)
 
@@ -236,7 +236,7 @@ def test_rename_folder_refuses_an_edited_name_that_is_not_a_folder_name(tmp_path
     monkeypatch.setattr(click, "edit", lambda *_args, **_kwargs: name)
 
     with pytest.raises(SystemExit):
-        rename_folder(str(album), FOLDER_METADATA, auto_rename=False)
+        anyio.run(lambda: rename_folder(str(album), FOLDER_METADATA, auto_rename=False))
 
     assert any("retry" in text for text in asked)
     _assert_untouched(parent, downloads, album)
@@ -248,7 +248,9 @@ def test_rename_folder_refuses_a_template_that_renders_empty(tmp_path, monkeypat
     _default_answers(monkeypatch)
 
     with pytest.raises(UploadError, match="Invalid folder name"):
-        rename_folder(str(album), {**FOLDER_METADATA, "description": ""}, auto_rename=True, check=False)
+        anyio.run(
+            lambda: rename_folder(str(album), {**FOLDER_METADATA, "description": ""}, auto_rename=True, check=False)
+        )
 
     _assert_untouched(parent, downloads, album)
 
@@ -259,7 +261,7 @@ def test_edit_folder_offers_a_retry_for_a_name_that_would_be_refused(monkeypatch
     monkeypatch.setattr(click, "edit", lambda *_args, **_kwargs: next(names))
     monkeypatch.setattr(click, "confirm", lambda text, default=False, **_kwargs: "acceptable" not in text)
 
-    name = _edit_folder_interactive("Old", auto_rename=False)
+    name = anyio.run(lambda: _edit_folder_interactive("Old", auto_rename=False))
 
     assert name == "Fixed Name"
 
@@ -268,7 +270,7 @@ def test_rename_folder_still_renames_a_normal_name(tmp_path, monkeypatch) -> Non
     parent, downloads, album = _download_dir(tmp_path, monkeypatch)
     _default_answers(monkeypatch)
 
-    new_path = rename_folder(str(album), FOLDER_METADATA, auto_rename=True, check=False)
+    new_path = anyio.run(lambda: rename_folder(str(album), FOLDER_METADATA, auto_rename=True, check=False))
 
     assert new_path.startswith(str(downloads))
     assert new_path != str(album)
@@ -282,7 +284,7 @@ def test_rename_folder_refuses_a_name_with_a_path_separator(tmp_path, monkeypatc
     _default_answers(monkeypatch)
 
     with pytest.raises(UploadError, match="Invalid folder name"):
-        rename_folder(str(album), FOLDER_METADATA, auto_rename=True, check=False)
+        anyio.run(lambda: rename_folder(str(album), FOLDER_METADATA, auto_rename=True, check=False))
 
     _assert_untouched(parent, downloads, album)
     assert not (parent / "escape").exists()
@@ -324,7 +326,7 @@ def test_check_raises_noncompliant_when_the_user_says_no(tmp_path, monkeypatch) 
     _answer(monkeypatch, False)
 
     with pytest.raises(NoncompliantFolderStructure):
-        _check_invisible_characters(str(root), False)
+        anyio.run(lambda: _check_invisible_characters(str(root), False))
 
     assert _names(root) == before
 
@@ -335,7 +337,7 @@ def test_check_does_not_rename_a_scene_release(tmp_path, monkeypatch) -> None:
     asked = _answer(monkeypatch, True)
 
     with pytest.raises(NoncompliantFolderStructure):
-        _check_invisible_characters(str(root), True)
+        anyio.run(lambda: _check_invisible_characters(str(root), True))
 
     assert _names(root) == before
     assert asked == []
@@ -360,7 +362,7 @@ def test_check_refuses_a_rename_onto_an_existing_path(tmp_path, monkeypatch) -> 
     asked = _answer(monkeypatch, True)
 
     with pytest.raises(NoncompliantFolderStructure):
-        _check_invisible_characters(str(root), False)
+        anyio.run(lambda: _check_invisible_characters(str(root), False))
 
     assert _names(root) == before
     assert (root / "01. Some Title.flac").read_bytes() == b"other"
@@ -375,7 +377,7 @@ def test_check_refuses_two_names_that_clean_to_the_same_name(tmp_path, monkeypat
     _answer(monkeypatch, True)
 
     with pytest.raises(NoncompliantFolderStructure):
-        _check_invisible_characters(str(root), False)
+        anyio.run(lambda: _check_invisible_characters(str(root), False))
 
     assert len(_names(root)) == 2
 
@@ -387,7 +389,7 @@ def test_check_refuses_a_name_with_nothing_left_after_cleaning(tmp_path, monkeyp
     asked = _answer(monkeypatch, True)
 
     with pytest.raises(NoncompliantFolderStructure):
-        _check_invisible_characters(str(root), False)
+        anyio.run(lambda: _check_invisible_characters(str(root), False))
 
     assert len(_names(root)) == 1
     assert asked == []
@@ -400,7 +402,7 @@ def test_check_aborts_on_a_release_folder_name_it_cannot_rename(tmp_path, monkey
     asked = _answer(monkeypatch, True)
 
     with pytest.raises(click.Abort):
-        _check_invisible_characters(str(root), False)
+        anyio.run(lambda: _check_invisible_characters(str(root), False))
 
     assert root.is_dir()
     assert asked == []
@@ -441,7 +443,7 @@ def test_check_stops_when_a_new_name_is_taken_after_the_check(tmp_path, monkeypa
     monkeypatch.setattr(click, "confirm", confirm)
 
     with pytest.raises(NoncompliantFolderStructure):
-        _check_invisible_characters(str(root), False)
+        anyio.run(lambda: _check_invisible_characters(str(root), False))
 
     assert (root / "01. Some Title.flac").read_bytes() == b"other"
     assert (root / f"01. Some{NBSP}Title.flac").read_bytes() == b"fLaC"
@@ -457,7 +459,7 @@ def test_check_stops_at_the_first_failed_rename_and_names_the_names_left(tmp_pat
     monkeypatch.setattr(os, "rename", failing_rename)
 
     with pytest.raises(NoncompliantFolderStructure):
-        _check_invisible_characters(str(root), False)
+        anyio.run(lambda: _check_invisible_characters(str(root), False))
 
     out = capsys.readouterr().out
     assert "Permission denied" in out
@@ -475,6 +477,6 @@ def test_check_renames_nothing_when_two_names_clean_to_one_on_a_volume_that_igno
     before = _names(root)
 
     with pytest.raises(NoncompliantFolderStructure):
-        _check_invisible_characters(str(root), False)
+        anyio.run(lambda: _check_invisible_characters(str(root), False))
 
     assert _names(root) == before

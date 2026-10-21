@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Any
 
+import anyio
 import pytest
 
 from salmon import cfg, dryrun
@@ -41,13 +42,15 @@ def _album(folder: Path) -> Path:
 
 
 def _rename(path: Path, original: Path | None = None, parent: Path | None = None) -> str:
-    return foldername.rename_folder(
-        str(path),
-        METADATA,
-        auto_rename=True,
-        check=False,
-        parent=str(parent) if parent else None,
-        original=str(original) if original else None,
+    return anyio.run(
+        lambda: foldername.rename_folder(
+            str(path),
+            METADATA,
+            auto_rename=True,
+            check=False,
+            parent=str(parent) if parent else None,
+            original=str(original) if original else None,
+        )
     )
 
 

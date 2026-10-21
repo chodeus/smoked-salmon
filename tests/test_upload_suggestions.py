@@ -197,7 +197,11 @@ def _search_results(*entries):
 
 def test_metadata_prompt_pretypes_the_suggestion(monkeypatch) -> None:
     defaults = _capturing_prompt(monkeypatch, "salmon.tagger.metadata.click.prompt", answer="m")
-    monkeypatch.setattr(metadata_mod, "_get_manual_metadata", lambda rls_data: {"tracks": {}})
+
+    async def manual_metadata(_rls_data):
+        return {"tracks": {}}
+
+    monkeypatch.setattr(metadata_mod, "_get_manual_metadata", manual_metadata)
 
     anyio.run(metadata_mod._select_choice, {}, {"urls": []}, "*" + QOBUZ_URL)
 
@@ -321,7 +325,11 @@ def test_the_metadata_prompt_says_how_several_answers_combine(monkeypatch) -> No
         return "m"
 
     monkeypatch.setattr("salmon.tagger.metadata.click.prompt", fake_prompt)
-    monkeypatch.setattr(metadata_mod, "_get_manual_metadata", lambda rls_data: {"tracks": {}})
+
+    async def manual_metadata(_rls_data):
+        return {"tracks": {}}
+
+    monkeypatch.setattr(metadata_mod, "_get_manual_metadata", manual_metadata)
 
     anyio.run(metadata_mod._select_choice, {1: ("Deezer", "1")}, {"urls": []}, None)
 

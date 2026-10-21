@@ -30,7 +30,7 @@ class Change(msgspec.Struct, frozen=True):
     new: Any
 
 
-def tag_files(path, tags, metadata, auto_rename):
+async def tag_files(path, tags, metadata, auto_rename):
     """
     Wrapper function that calls the functions that create and print the
     proposed changes, and then prompts for confirmation to retag the file.
@@ -407,7 +407,7 @@ def retag_files(path, album_changes, track_changes):
     click.secho("Retagged files.", fg="green")
 
 
-def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
+async def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=None):
     """
     Call functions that generate the proposed changes, then print and prompt
     for confirmation. Apply the changes if user agrees.

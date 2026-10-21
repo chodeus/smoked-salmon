@@ -106,7 +106,7 @@ def flow(monkeypatch):
         "check_hybrid": _sync(False),
         "standardize_tags": _sync(),
         "gather_tags": _sync({}),
-        "construct_rls_data": _sync(rls_data),
+        "construct_rls_data": lambda *_a, **_k: _done(rls_data),
         "mqa_test": recording("mqa_test"),
         "get_metadata": recording("get_metadata", (metadata, None)),
         "edit_metadata": recording("edit_metadata", ("/release", metadata, {}, {})),
