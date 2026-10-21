@@ -786,7 +786,7 @@ async def _upload_staged(
             if cfg.image.embed_missing_cover:
                 # A missing cover is downloaded from the metadata first, as the per-tracker step used to.
                 cover_path, downloaded = None, False
-                if metadata["cover"] and has_flac_without_picture(path) and not get_cover_from_path(path):
+                if has_flac_without_picture(path) and not get_cover_from_path(path):
                     cover_path, downloaded = await download_cover_if_nonexistent(path, metadata["cover"])
                 embed_missing_cover(path, cover_path)
                 if downloaded and remove_downloaded_cover_image and cover_path:

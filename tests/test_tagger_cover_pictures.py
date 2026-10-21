@@ -158,12 +158,13 @@ def test_only_warns_with_the_setting_off(album, monkeypatch, capsys) -> None:
 
 
 def test_an_existing_cover_file_is_not_overwritten(album) -> None:
-    (album / "folder.png").write_bytes(b"the folder's own cover")
+    own = _image("png")
+    (album / "folder.png").write_bytes(own)
 
     cover.check_embedded_pictures(str(album))
 
     assert FLAC(album / "01. One.flac").pictures == []
-    assert (album / "folder.png").read_bytes() == b"the folder's own cover"
+    assert (album / "folder.png").read_bytes() == own
     assert not (album / "cover.jpg").exists()
 
 
@@ -516,3 +517,14 @@ def test_artwork_not_tagged_as_the_front_cover_is_kept_as_the_cover_file(tmp_pat
 
     assert FLAC(tmp_path / "01.flac").pictures == []
     assert (tmp_path / "cover.jpg").read_bytes() == other
+
+
+def test_a_cover_file_that_is_not_an_image_keeps_the_embedded_artwork(tmp_path, capsys) -> None:
+    (tmp_path / "cover.jpg").write_bytes(b"<html>403 Forbidden</html>")
+    _write_flac(tmp_path / "01.flac", pictures=((PictureType.COVER_FRONT, FRONT),))
+
+    cover.check_embedded_pictures(str(tmp_path))
+
+    assert [picture.data for picture in FLAC(tmp_path / "01.flac").pictures] == [FRONT]
+    assert (tmp_path / "cover.jpg").read_bytes() == b"<html>403 Forbidden</html>"
+    assert "could not be read as a JPEG or PNG image" in capsys.readouterr().out

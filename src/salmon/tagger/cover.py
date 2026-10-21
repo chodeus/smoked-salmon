@@ -330,6 +330,10 @@ def check_embedded_pictures(path: str) -> None:
         return
 
     cover_file = get_cover_from_path(path)
+    if cover_file and not _is_valid_cover(cover_file):
+        # Not a copy of the artwork: the embedded pictures may be the only one.
+        click.secho(f"Leaving them as they are: {cover_file} could not be read as a JPEG or PNG image.", fg="red")
+        return
     stripped = 0
     for filename in oversized:
         audio = FLAC(os.path.join(path, filename))

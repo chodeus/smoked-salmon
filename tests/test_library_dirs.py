@@ -57,7 +57,9 @@ def _album(folder: Path) -> Path:
     tagged = FLAC(folder / "01 - one.flac")
     tagged.add_picture(picture)
     tagged.save()
-    (folder / "cover.jpg").write_bytes(b"jpeg")
+    buffer = io.BytesIO()
+    Image.new("RGB", (10, 10), "green").save(buffer, "jpeg")
+    (folder / "cover.jpg").write_bytes(buffer.getvalue())
     # Old mtimes, so a rewrite shows even within the filesystem's timestamp resolution.
     for entry in folder.rglob("*"):
         os.utime(entry, ns=(1_000_000_000, 1_000_000_000))
@@ -710,6 +712,24 @@ def test_up_on_an_album_symlinked_into_a_library_leaves_its_target_byte_identica
     assert _snapshot(elsewhere) == before
     assert (library / "Artist" / "Linked").is_symlink()
     assert uploads[0] == str(downloads / RENAMED)
+
+
+def test_up_embeds_a_sibling_flacs_cover_with_no_cover_url(monkeypatch, dirs) -> None:
+    _library, downloads = dirs
+    album, cover_bytes = _bare_album(downloads / "Album")
+    (album / "cover.jpg").unlink()
+    one = FLAC(album / "01 - one.flac")
+    picture = Picture()
+    picture.type, picture.mime, picture.data = PictureType.COVER_FRONT, "image/jpeg", cover_bytes
+    one.add_picture(picture)
+    one.save()
+    seen: list[list[int]] = []
+
+    result, _uploads, _transcodes = _run_up(monkeypatch, album, embed=None, upload_and_report=_pictures_at_upload(seen))
+
+    assert result.exit_code == 0, result.output
+    assert seen[0] == [1, 1]
+    assert all(FLAC(file).pictures[0].data == cover_bytes for file in (downloads / RENAMED).glob("*.flac"))
 
 
 @pytest.mark.parametrize(
