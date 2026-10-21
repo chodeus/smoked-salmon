@@ -476,6 +476,24 @@ def test_aborting_at_a_named_tracker_keeps_what_is_up(monkeypatch, tmp_path, dir
     assert "Aborting: nothing more is uploaded. Already uploaded:" in run.result.output
 
 
+def test_skip_flac_upload_takes_the_first_default_tracker(monkeypatch, tmp_path, dirs) -> None:
+    # Several default trackers, none named: the one --group-id is on is the first.
+    _downloads, torrents = dirs
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
+    monkeypatch.setattr(cfg.tracker, "default_trackers", ["RED", "OPS"])
+    sites = _uploads_by_tracker(monkeypatch)
+
+    run = _run_up(
+        monkeypatch, _album(tmp_path / "Album"), torrents, trackers=(), args=("-g", "55", "--skip-flac-upload")
+    )
+
+    assert "--skip-flac-upload uploads to the one tracker" not in run.result.output
+    assert run.result.exit_code == 0, run.result.output
+    assert sites == ["RED"]
+    assert "Next tracker" not in run.result.output
+    assert ANOTHER_TRACKER not in run.result.output
+
+
 def test_skip_flac_upload_takes_one_named_tracker(monkeypatch, tmp_path, dirs) -> None:
     _downloads, torrents = dirs
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])

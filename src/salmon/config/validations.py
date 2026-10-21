@@ -249,7 +249,7 @@ class Tracker(BaseStruct):
     red: GazelleTrackerSettings | None = None
     ops: GazelleTrackerSettings | None = None
     dic: GazelleTrackerSettings | None = None
-    # Without -t, a run uploads to these in order, then offers the other trackers. Empty: asks which.
+    # Without -t, a run uploads to these in order, then offers the others if upload.multi_tracker_upload. Empty: asks.
     default_trackers: list[str] = msgspec.field(default_factory=list)
     # Print every tracker request and response, secrets masked.
     debug_connection: bool = False

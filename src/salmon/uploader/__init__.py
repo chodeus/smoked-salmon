@@ -285,8 +285,12 @@ async def up(
     conversions: tuple[str, ...] | None,
 ) -> None:
     """Command to upload an album folder to a Gazelle Site."""
-    if skip_flac_upload and (conflict := skip_flac_upload_conflict(group_id, request, spectrals_after, trackers)):
+    # Only trackers named with -t can be too many: without -t, the run takes the first default tracker, as upstream's.
+    named = () if isinstance(trackers, salmon.trackers.UnnamedTrackers) else trackers
+    if skip_flac_upload and (conflict := skip_flac_upload_conflict(group_id, request, spectrals_after, named)):
         raise click.UsageError(conflict)
+    if skip_flac_upload:
+        trackers = type(trackers)(trackers[:1])
     if essential_only and scene:
         raise click.UsageError("--essential-only and --scene cannot be used together.")
     if dry_run and spectrals_after:

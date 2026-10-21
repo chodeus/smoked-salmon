@@ -110,7 +110,8 @@ password = 'password'
 # TRACKER SETTINGS
 # ===============================
 [tracker]
-# Without -t, a run uploads to these in order, then offers the other trackers. Not set: it asks which.
+# Without -t, a run uploads to these in order, then offers the other trackers if upload.multi_tracker_upload is on.
+# Not set: it asks which.
 default_trackers = ['RED']
 # Print every tracker request and response, with secrets masked
 # debug_connection = false
