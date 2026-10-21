@@ -15,8 +15,6 @@ _BOUND_WHERE_REPLACED = {
     "prompt_async": {"interaction.py"},
     "handle_spectrals_upload_and_deletion": {"uploader/spectrals.py", "uploader/__init__.py", "commands.py"},
 }
-# The one module whose input() salmon web shadows with a module global.
-_INPUT_MODULES = {"tagger/pre_data.py"}
 
 
 def _modules() -> Iterator[tuple[str, ast.Module]]:
@@ -99,16 +97,15 @@ def test_the_scan_sees_an_import_made_at_import_time_in_a_block_but_not_one_in_a
     assert {alias.name for node in _import_time_imports(tree) for alias in node.names} == {"x", "y"}
 
 
-def test_input_is_called_only_where_salmon_web_shadows_it() -> None:
-    found = [
-        name
-        for name, tree in _modules()
-        if name not in _INPUT_MODULES
+def _calls_input(tree: ast.AST) -> bool:
+    return any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "input"
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "input"
-    ]
+    )
 
-    assert found == []
+
+def test_no_module_calls_input() -> None:
+    assert [name for name, tree in _modules() if _calls_input(tree)] == []
 
 
 def test_prompt_async_is_awaited_only_under_view_spectrals() -> None:
@@ -126,12 +123,6 @@ def test_prompt_async_is_awaited_only_under_view_spectrals() -> None:
 def test_the_scan_finds_each_guarded_name_where_it_is_allowed() -> None:
     modules = dict(_modules())
     held = {(name, held_name) for name, tree in modules.items() for held_name in _top_level_names(tree)}
-    calls_input = {
-        name
-        for name, tree in modules.items()
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "input"
-    }
 
     assert {(module, fn) for fn, allowed in _BOUND_WHERE_REPLACED.items() for module in allowed} <= held
-    assert calls_input == _INPUT_MODULES
+    assert _calls_input(ast.parse("def f():\n    return input('?')\n"))

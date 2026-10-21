@@ -6,6 +6,7 @@ import anyio
 import asyncclick as click
 
 from salmon import cfg, interaction
+from salmon.tagger import foldername
 from salmon.uploader import spectrals
 
 
@@ -37,6 +38,19 @@ class Scripted:
 
 
 # The implementation in use is a context value
+
+
+def test_an_implementation_set_in_a_context_answers_a_question_deep_in_the_code() -> None:
+    scripted = Scripted([False, "A New Name"])
+
+    async def ask() -> str:
+        with interaction.using(scripted):
+            return await foldername._edit_folder_interactive("Old Name", auto_rename=False)
+
+    assert anyio.run(ask) == "A New Name"
+    assert [kind for kind, _ in scripted.asked] == ["confirm", "edit"]
+    assert scripted.asked[1][1] == "Old Name"
+    assert scripted.answers == []
 
 
 def test_the_terminal_implementation_is_back_outside_the_context() -> None:

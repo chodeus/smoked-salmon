@@ -7,7 +7,7 @@ import anyio
 import asyncclick as click
 from mutagen import File as MutagenFile
 
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.common import get_audio_files
 from salmon.tagger.mutation import abort_partial
 from salmon.tagger.tagfile import TagFile
@@ -132,7 +132,7 @@ async def prompt_editor(path: str) -> bool:
     Returns:
         True if the tags may have changed and should be re-read.
     """
-    if click.confirm(
+    if await interaction.confirm(
         click.style("\nAre the above tags acceptable? ([n] to open in tag editor)", fg="magenta"),
         default=True,
     ):
@@ -218,7 +218,7 @@ async def edit_tags_as_json(path: str) -> bool:
         return False
 
     before = _tags_to_dict(tags)
-    edited = click.edit(
+    edited = await interaction.edit(
         json.dumps(before, indent=2, ensure_ascii=False), extension=".json", editor=cfg.upload.default_editor
     )
     if edited is None:

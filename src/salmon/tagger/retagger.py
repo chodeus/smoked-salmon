@@ -9,7 +9,7 @@ from typing import Any
 import asyncclick as click
 import msgspec
 
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.common.strings import clean_name, has_visible_chars
 from salmon.constants import (
     ARROWS,
@@ -41,7 +41,7 @@ async def tag_files(path, tags, metadata, auto_rename):
     album_changes = collect_album_data(metadata)
     track_changes = create_track_changes(tags, metadata)
     print_changes(album_changes, track_changes, next(iter(tags.values())))
-    if auto_rename or click.confirm(
+    if auto_rename or await interaction.confirm(
         click.style("\nWould you like to auto-tag the files with the updated metadata?", fg="magenta"),
         default=True,
     ):
@@ -473,7 +473,7 @@ async def rename_files(path, tags, metadata, auto_rename, spectral_ids, source=N
                 click.secho(f"   {os.path.relpath(name, path)}", fg="red")
             # The fork stops the upload rather than going on unrenamed.
             raise UploadError("Renaming would overwrite another file.")
-        if auto_rename or click.confirm(
+        if auto_rename or await interaction.confirm(
             click.style("\nWould you like to rename the files?", fg="magenta"),
             default=True,
         ):

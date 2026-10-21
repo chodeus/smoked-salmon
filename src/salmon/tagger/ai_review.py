@@ -26,7 +26,7 @@ from openai.types.responses import (
     ResponseReasoningSummaryTextDoneEvent,
 )
 
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.constants import ARTIST_IMPORTANCES
 from salmon.errors import InvalidMetadataError
 from salmon.tagger.sources.base import standardize_genres
@@ -1150,7 +1150,7 @@ async def review_metadata_with_ai(
     if not ai_cfg.enabled:
         return await _run_manual_review(metadata, validator, manual_review)
 
-    if cfg.upload.yes_all or skip_initial_review:
+    if await interaction.assume_defaults() or skip_initial_review:
         current_metadata = deepcopy(metadata)
     else:
         current_metadata = await _run_manual_review(
@@ -1161,9 +1161,9 @@ async def review_metadata_with_ai(
         )
 
     should_run = (
-        cfg.upload.yes_all
+        await interaction.assume_defaults()
         or apply_suggestions
-        or click.confirm(
+        or await interaction.confirm(
             click.style("\nRun AI metadata review?", fg="magenta"),
             default=None,
         )
@@ -1221,7 +1221,7 @@ async def review_metadata_with_ai(
         if not diff_lines:
             return await _finalize_manual_review(current_metadata, validator, manual_review)
 
-        if cfg.upload.yes_all or apply_suggestions:
+        if await interaction.assume_defaults() or apply_suggestions:
             applied_metadata = await _apply_ai_review(
                 current_metadata,
                 review,
@@ -1233,7 +1233,7 @@ async def review_metadata_with_ai(
             return await _finalize_manual_review(current_metadata, validator, manual_review)
 
         while True:
-            choice = await click.prompt(
+            choice = await interaction.prompt(
                 click.style(
                     "\n[a]pply suggestions, [k]eep original, [p]rompt model and rerun",
                     fg="magenta",
@@ -1243,7 +1243,7 @@ async def review_metadata_with_ai(
             choice = choice.strip().lower()[:1]
 
             if choice == "p":
-                user_instruction = await click.prompt(
+                user_instruction = await interaction.prompt(
                     click.style("What should the model change or prioritize?", fg="magenta"),
                     type=click.STRING,
                 )

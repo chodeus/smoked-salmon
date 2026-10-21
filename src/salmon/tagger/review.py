@@ -5,7 +5,7 @@ from collections.abc import Sequence
 
 import asyncclick as click
 
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.constants import RELEASE_TYPES
 from salmon.errors import InvalidMetadataError
 from salmon.tagger.metadata import _print_metadata
@@ -57,7 +57,7 @@ async def review_metadata(metadata, validator, enforce_required_fields: bool = T
     }
     while True:
         _print_metadata(metadata)
-        r = await click.prompt(
+        r = await interaction.prompt(
             click.style(
                 "\nAre there any metadata fields you would like to edit? [a]rtists, "
                 "artist a[L]iases (rename or split an artist on every track), [t]itle, [g]enres, "
@@ -83,7 +83,7 @@ async def review_metadata(metadata, validator, enforce_required_fields: bool = T
                 if break_:
                     break
                 continue
-            click.confirm(
+            await interaction.confirm(
                 click.style(str(e) + " Revisit metadata step?", fg="magenta"),
                 default=True,
                 abort=True,
@@ -181,7 +181,7 @@ async def _edit_artists(metadata):
     )
     artist_text = "\n".join(f"{a} ({i})" for a, i in metadata["artists"])
     while True:
-        artist_text = click.edit(artist_text, editor=cfg.upload.default_editor)
+        artist_text = await interaction.edit(artist_text, editor=cfg.upload.default_editor)
         if not artist_text:
             return
         try:
@@ -197,7 +197,7 @@ async def _edit_artists(metadata):
             metadata["artists"] = tuples_artists_list
             return
         except (ValueError, KeyError, TypeError) as e:
-            click.confirm(
+            await interaction.confirm(
                 click.style(f"The tracks file is invalid ({type(e)}: {e}), retry?", fg="red"),
                 default=True,
                 abort=True,
@@ -216,7 +216,7 @@ async def _alias_artists(metadata):
             + " into two artists; nothing after --> removes the artist.\n"
             + f"{marker}\n\n"
         )
-        artist_list = click.edit(artist_list_str, editor=cfg.upload.default_editor)
+        artist_list = await interaction.edit(artist_list_str, editor=cfg.upload.default_editor)
         try:
             if artist_list is None:
                 return
@@ -232,7 +232,7 @@ async def _alias_artists(metadata):
                         artists_to_delete.append(existing.lower())
             break
         except (IndexError, ValueError):
-            click.confirm(
+            await interaction.confirm(
                 click.style("Invalid artist list. Retry?", fg="red"),
                 default=True,
                 abort=True,
@@ -271,7 +271,7 @@ async def _edit_release_type(metadata, default: str | None = None):
     while True:
         rtype = (
             (
-                await click.prompt(
+                await interaction.prompt(
                     click.style("\nWhich release type corresponds to this release? (case insensitive)", fg="magenta"),
                     type=click.STRING,
                     default=default,
@@ -329,7 +329,7 @@ def _print_release_types():
 
 
 async def _edit_title(metadata):
-    title = click.edit(metadata["title"], editor=cfg.upload.default_editor)
+    title = await interaction.edit(metadata["title"], editor=cfg.upload.default_editor)
     if title:
         metadata["title"] = title.strip()
 
@@ -337,7 +337,7 @@ async def _edit_title(metadata):
 async def _edit_years(metadata):
     while True:
         text = f"Year      : {metadata['year']}\nGroup Year: {metadata['group_year']}"
-        text = click.edit(text, editor=cfg.upload.default_editor)
+        text = await interaction.edit(text, editor=cfg.upload.default_editor)
         try:
             if not text:
                 return
@@ -350,7 +350,7 @@ async def _edit_years(metadata):
             metadata["group_year"] = group_year_match[1]
             return
         except (TypeError, KeyError, ValueError):
-            click.confirm(
+            await interaction.confirm(
                 click.style(
                     "Invalid values or formatting in the years file. Retry?",
                     fg="magenta",
@@ -361,7 +361,7 @@ async def _edit_years(metadata):
 
 
 async def _edit_genres(metadata):
-    genres = click.edit("\n".join(metadata["genres"]), editor=cfg.upload.default_editor)
+    genres = await interaction.edit("\n".join(metadata["genres"]), editor=cfg.upload.default_editor)
     if genres:
         standardized = standardize_genres([g.strip() for g in genres.split("\n") if g.strip()])
         if not standardized:
@@ -371,7 +371,7 @@ async def _edit_genres(metadata):
 
 
 async def _edit_urls(metadata):
-    urls = click.edit("\n".join(metadata["urls"]), editor=cfg.upload.default_editor)
+    urls = await interaction.edit("\n".join(metadata["urls"]), editor=cfg.upload.default_editor)
     if urls:
         metadata["urls"] = [g for g in urls.split("\n") if g.strip()]
 
@@ -384,7 +384,7 @@ async def _edit_edition_info(metadata):
             f"Edition Title : {metadata['edition_title'] or ''}\n"
             f"UPC           : {metadata['upc'] or ''}"
         )
-        text = click.edit(text, editor=cfg.upload.default_editor)
+        text = await interaction.edit(text, editor=cfg.upload.default_editor)
         try:
             if not text:
                 return
@@ -401,7 +401,7 @@ async def _edit_edition_info(metadata):
             metadata["upc"] = upc_match[1] or None
             return
         except (TypeError, KeyError, ValueError):
-            click.confirm(
+            await interaction.confirm(
                 click.style(
                     "Invalid values or formatting in the editions file. Retry?",
                     fg="magenta",
@@ -412,7 +412,7 @@ async def _edit_edition_info(metadata):
 
 
 async def _edit_comment(metadata):
-    review = click.edit(metadata["comment"], editor=cfg.upload.default_editor)
+    review = await interaction.edit(metadata["comment"], editor=cfg.upload.default_editor)
     metadata["comment"] = review.strip() if review else None
 
 
@@ -440,7 +440,7 @@ async def _edit_tracks(metadata):
 
     text_tracks = "\n\n-----\n\n".join(text_tracks_li)
     while True:
-        text_tracks = click.edit(text_tracks, editor=cfg.upload.default_editor)
+        text_tracks = await interaction.edit(text_tracks, editor=cfg.upload.default_editor)
         if not text_tracks:
             return
         try:
@@ -468,7 +468,7 @@ async def _edit_tracks(metadata):
             _rebuild_release_artists(metadata)
             return
         except (TypeError, ValueError, KeyError) as e:
-            click.confirm(
+            await interaction.confirm(
                 click.style(f"The tracks file is invalid ({type(e)}: {e}), retry?", fg="red"),
                 default=True,
                 abort=True,

@@ -772,11 +772,11 @@ async def test_secho_goes_to_the_job_log_only_and_the_cli_prints_as_ever():
 
 
 # ---------------------------------------------------------------------------
-# 7. click.edit and the raw-input seam (pre_data)
+# 7. click.edit and the encoding prompt (pre_data)
 # ---------------------------------------------------------------------------
 
 
-async def test_edit_and_raw_input_seams(jm):
+async def test_edit_and_encoding_prompt_seams(jm):
     m = jm()
 
     async def factory(job):
