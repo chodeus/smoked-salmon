@@ -51,7 +51,12 @@ async def job_spectral(job_id: str, filename: str) -> FileResponse:
     spectrals = job.asker.spectrals
     if filename not in spectrals["files"]:
         raise HTTPException(status_code=404, detail="Unknown spectral image.")
-    return FileResponse(os.path.join(spectrals["path"], filename))
+    path = os.path.join(spectrals["path"], filename)
+    if not os.path.isfile(path):
+        # The job has deleted them since its last question: the page stops showing them.
+        job.asker.withdraw_deleted_spectrals()
+        raise HTTPException(status_code=404, detail="The job has deleted its spectrals.")
+    return FileResponse(path)
 
 
 @router.post("/jobs/{job_id}/cancel")

@@ -22,6 +22,7 @@ import contextlib
 import io
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -708,6 +709,24 @@ async def test_a_job_that_goes_on_after_its_cancel_is_stopped_at_its_next_questi
     assert (job.status, job.question, job.result) == ("cancelled", None, None)
 
 
+async def test_a_web_job_shows_the_spectrals_the_terminal_would(jm, tmp_path):
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "01 Full.png").write_bytes(b"PNG")
+    # A compression's leftover copy, which the terminal's viewers leave out.
+    (specs / ".01 Full.png.tmp.png").write_bytes(b"PNG")
+    m = jm()
+
+    async def factory(job):
+        await interaction.show_spectrals(str(specs), {1: TRACK_FILES[0]})
+
+    job = m.create_threaded("demo", "Demo", factory)
+    questions = await drive(job, [("Look at the spectrals", True)])
+    await join_job(job)
+
+    assert questions[0]["files"] == salmon.uploader.spectrals._spectral_images(str(specs)) == ["01 Full.png"]
+
+
 async def test_spectrals_deleted_after_the_last_question_are_gone_once_the_job_ends(jm, tmp_path):
     m = jm()
     specs = tmp_path / "specs"
@@ -976,6 +995,34 @@ def test_http_answer_endpoint_and_spectral_serving(client, tmp_path):
     assert final["status"] == "done"
     assert final["result"] == {"confirmed": True}
     assert final["question"] is None
+
+
+def test_spectrals_the_job_deleted_are_not_found_and_no_longer_shown(client, tmp_path):
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "01 Full.png").write_bytes(b"PNG")
+    deleted, uploaded = threading.Event(), threading.Event()
+
+    async def factory(job):
+        await interaction.show_spectrals(str(specs), {1: TRACK_FILES[0]})
+        # As handle_spectrals_upload_and_deletion does, before the tracker upload and any next question.
+        shutil.rmtree(specs)
+        deleted.set()
+        await asyncio.to_thread(uploaded.wait, 10)
+
+    assert client.portal is not None
+    job = client.portal.call(lambda: global_manager.create_threaded("upload", "Wizard", factory))
+    looked = wait_until(lambda: job.question, "the spectrals question")
+    assert (
+        client.post(f"/api/jobs/{job.id}/answer", json={"question_id": looked["id"], "value": True}).status_code == 200
+    )
+    wait_until(deleted.is_set, "the spectrals folder to be deleted")
+
+    image = client.get(f"/api/jobs/{job.id}/spectrals/01%20Full.png")
+    listed = client.get(f"/api/jobs/{job.id}").json()["spectrals"]
+    uploaded.set()
+
+    assert (image.status_code, listed) == (404, None)
 
 
 # ---------------------------------------------------------------------------
