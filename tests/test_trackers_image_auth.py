@@ -186,7 +186,7 @@ async def test_a_signed_fetch_gets_the_image_and_keeps_no_signed_url(red) -> Non
 async def test_debug_output_shows_neither_the_imgauth_answer_nor_a_signed_fetchs_query(
     red, monkeypatch, capsys
 ) -> None:
-    monkeypatch.setattr(cfg.upload, "debug_tracker_connection", True)
+    monkeypatch.setattr(cfg.tracker, "debug_connection", True)
     api, _ = await red()
 
     auth = await api.image_auth()
@@ -200,7 +200,7 @@ async def test_debug_output_shows_neither_the_imgauth_answer_nor_a_signed_fetchs
 
 
 async def test_debug_output_masks_the_query_of_every_signed_image_url_in_an_answer(red, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(cfg.upload, "debug_tracker_connection", True)
+    monkeypatch.setattr(cfg.tracker, "debug_connection", True)
     api, tracker = await red()
     signed = f"/i/cover.jpg?h={KEY}&e={EXPIRY}&u={USER}"
     tracker.page = {

@@ -150,7 +150,7 @@ def no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     """Retry without the backoff between attempts, so only the rate limit waits are left."""
     monkeypatch.setattr(BaseGazelleApi._send.retry, "wait", wait_none())  # type: ignore[attr-defined]
     # The debug lines would go to each job's output as well.
-    monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
+    monkeypatch.setattr(cfg.tracker, "debug_connection", False)
 
 
 @pytest.fixture

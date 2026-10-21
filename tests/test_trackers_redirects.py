@@ -44,7 +44,7 @@ class FakeApi(BaseGazelleApi):
 
 @pytest.fixture(autouse=True)
 def _counting_limiter(monkeypatch):
-    monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
+    monkeypatch.setattr(cfg.tracker, "debug_connection", False)
     monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", CountingLimiter())
 
 
@@ -328,7 +328,7 @@ async def test_the_red_image_host_never_repeats_a_credential(serve, monkeypatch,
 
     url = await serve(ajax=ajax)
     _red_image_host_against(monkeypatch, url, api_key)
-    monkeypatch.setattr(cfg.upload, "debug_tracker_connection", True)
+    monkeypatch.setattr(cfg.tracker, "debug_connection", True)
     image = tmp_path / "cover.png"
     image.write_bytes(b"png-data")
 

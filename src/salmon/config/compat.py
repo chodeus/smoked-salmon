@@ -45,6 +45,7 @@ OLD_KEYS: tuple[Moved | Removed, ...] = (
     Moved("upload.web_interface.host", "upload.spectrals_viewer.host"),
     Moved("upload.web_interface.port", "upload.spectrals_viewer.port"),
     Moved("upload.web_interface.display_host", "upload.spectrals_viewer.display_host"),
+    Moved("upload.debug_tracker_connection", "tracker.debug_connection"),
     Removed(
         "upload.web_interface.static_root_url",
         "the spectrals viewer now always serves its files at /static",

@@ -55,7 +55,7 @@ class DummyGazelleApi(BaseGazelleApi):
 @pytest.fixture(autouse=True)
 def _deterministic_cfg(monkeypatch):
     """Keep debug output off and neutralize the shared tracker rate limiter."""
-    monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
+    monkeypatch.setattr(cfg.tracker, "debug_connection", False)
     monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100_000, 1))
 
 

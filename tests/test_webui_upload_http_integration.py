@@ -310,7 +310,7 @@ def upload_world(monkeypatch, tmp_path):
     monkeypatch.setattr(cfg.upload, "yes_all", False)
     monkeypatch.setattr(cfg.upload, "multi_tracker_upload", True)
     monkeypatch.setattr(cfg.upload, "upload_to_seedbox", False)
-    monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
+    monkeypatch.setattr(cfg.tracker, "debug_connection", False)
     monkeypatch.setattr(cfg.upload.requests, "check_requests", False)
     monkeypatch.setattr(cfg.upload.requests, "last_minute_dupe_check", False)
     monkeypatch.setattr(cfg.upload.description, "copy_uploaded_url_to_clipboard", False)
