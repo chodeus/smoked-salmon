@@ -368,7 +368,7 @@ def settings(monkeypatch) -> None:
     monkeypatch.setattr(cfg.upload, "torrent_name_normalization", "")
     monkeypatch.setattr(cfg.upload.requests, "check_recent_uploads", True)
     monkeypatch.setattr(cfg.upload.description, "copy_uploaded_url_to_clipboard", False)
-    # A loose budget of its own per tracker and test: the shared one would hold each run to 5 requests in 10 s.
+    # One loose budget for every tracker, made again for each test: the real one would hold a run to 5 requests in 10 s.
     monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(1000, 1))
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS", "DIC"])
     monkeypatch.setattr(cross_upload_module, "_check_logs", _no_log_check)

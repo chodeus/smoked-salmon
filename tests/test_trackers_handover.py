@@ -73,6 +73,8 @@ class Tracker(FakeTracker):
         self.answered: list[str] = []
         self.arrived = asyncio.Event()
         self.edit_sent = asyncio.Event()
+        # Edits answered 502 first, which an idempotent request is sent again after.
+        self.failing_edits = 0
 
     async def start(self) -> str:
         app = web.Application()
@@ -88,6 +90,9 @@ class Tracker(FakeTracker):
         self.hits.append((time.monotonic(), request.headers["X-Site"], request.method, "edit"))
         if request.method != "POST":
             return web.Response(text=EDIT_PAGE, content_type="text/html")
+        if self.failing_edits:
+            self.failing_edits -= 1
+            return web.Response(text="Bad gateway", status=502)
         self.edit_sent.set()
         await asyncio.sleep(HELD)
         self.answered.append("edit")
@@ -798,9 +803,12 @@ def test_salmon_web_stopping_during_a_call_says_whether_it_may_have_gone_out(
     _serve(body)
 
 
-def test_salmon_web_stopping_during_a_description_edit_says_it_may_have_gone_out() -> None:
+@pytest.mark.parametrize("failing_edits", [0, 1], ids=["its_first_attempt", "its_retry"])
+def test_salmon_web_stopping_during_a_description_edit_says_it_may_have_gone_out(failing_edits: int) -> None:
+    # An edit answered 502 may have been made all the same: its retry is as much a may-have-gone-out as the first.
     async def body(tracker: Tracker) -> None:
         (api,) = _clients(await tracker.start(), "RED", unlimited=True)
+        tracker.failing_edits = failing_edits
 
         async def job() -> None:
             await api.append_to_torrent_description(7, "SPECTRALS ")

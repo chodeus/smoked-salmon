@@ -143,6 +143,8 @@ class _HandOver:
         self.cancellable = cancellable
         # Set once the attempt in flight may have reached the tracker: a cancel then waits for it to end.
         self.committed = not cancellable
+        # Set for an idempotent request sent again after an attempt that may have reached the tracker.
+        self.committed_across_retries = False
         # Set once the caller was cancelled: no new attempt goes out. A redirect hop of the attempt in flight
         # still does, as the tracker has acted on it.
         self.cancel_requested = False
@@ -184,14 +186,17 @@ def on_request_loop() -> bool:
     return loop is not None and loop is asyncio.get_running_loop()
 
 
-def commit() -> None:
+def commit(*, across_retries: bool = False) -> None:
     """Note that the call handed over may reach the tracker from now on: a cancel no longer stops it.
 
-    Called right before a request that is not idempotent goes out. Does nothing in a call not handed over.
+    Called right before a request that is not idempotent goes out, or with `across_retries` before an idempotent
+    one that changes something, whose retries follow attempts that may have reached the tracker. Does nothing in a
+    call not handed over.
     """
     hand_over = _hand_over.get()
     if hand_over is not None:
         hand_over.committed = True
+        hand_over.committed_across_retries |= across_retries
 
 
 def begin_attempt() -> None:
@@ -208,7 +213,7 @@ def begin_attempt() -> None:
     hand_over = _hand_over.get()
     if hand_over is None:
         return
-    hand_over.committed = not hand_over.cancellable
+    hand_over.committed = hand_over.committed_across_retries or not hand_over.cancellable
     if hand_over.cancel_requested:
         raise asyncio.CancelledError("cancelled before sending the request again")
 

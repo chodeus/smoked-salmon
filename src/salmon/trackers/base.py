@@ -1354,8 +1354,8 @@ class BaseGazelleApi:
                 (name, description_addition + value if name == "release_desc" else value) for name, value in fields
             ]
             # Every field is the one the form showed, or the description above, so sending it twice is harmless.
-            # It may reach the tracker from here: a cancel or salmon web stopping says so instead of "not sent".
-            accounts.commit()
+            # It may reach the tracker from here, and before each retry: a cancel or salmon web stopping says so.
+            accounts.commit(across_retries=True)
             return await self._request("POST", url, data=new_data, idempotent=True, needs_authkey=False)
 
     """The following three parsing functions are part of the gazelle class

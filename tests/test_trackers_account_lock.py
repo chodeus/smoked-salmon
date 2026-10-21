@@ -173,7 +173,8 @@ def request_loop() -> Iterator[None]:
 
     thread = threading.Thread(target=loop.run_until_complete, args=(main(),))
     thread.start()
-    assert ready.wait(5)
+    is_up = ready.wait(5)
+    assert is_up
     yield
     loop.call_soon_threadsafe(stop[0].set)
     thread.join(10)
