@@ -29,6 +29,7 @@ from test_cross_upload import (  # pyright: ignore[reportMissingImports]
 
 import salmon.cross_upload as cross_upload_module
 import salmon.trackers
+from salmon import interaction
 from salmon.cross_upload import _folder_torrents
 
 TARGET_FLAC_ID = 700500
@@ -115,6 +116,24 @@ def test_all_formats_is_another_name_for_all(monkeypatch, dirs) -> None:  # noqa
 
     assert run.result.exit_code == 0, run.output
     assert "   uploads: FLAC Lossless, MP3 320, MP3 V0" in run.output
+
+
+def test_yyy_lasts_for_its_run_only(monkeypatch, dirs) -> None:  # noqa: F811
+    assumed_after: list[bool] = []
+    invoke = CliRunner.invoke
+
+    async def invoke_then_look(self: CliRunner, *args: Any, **kwargs: Any) -> Any:
+        result = await invoke(self, *args, **kwargs)
+        # Looked at in the run's own context: a value it set and never reset is gone once anyio.run returns.
+        assumed_after.append(interaction.run_assumes_defaults())
+        return result
+
+    monkeypatch.setattr(CliRunner, "invoke", invoke_then_look)
+    album = _album(dirs.downloads / FOLDER)
+    run = _cross_upload(monkeypatch, dirs, [str(TORRENT_ID), "-yyy"], input="\n", prepare=_source_has(album))
+
+    assert run.result.exit_code == 0, run.output
+    assert assumed_after == [False]
 
 
 def _target_group(*torrents: dict[str, Any]) -> dict[str, Any]:

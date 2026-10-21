@@ -1,13 +1,28 @@
-"""The interaction layer: who answers a command's questions, and what `-yyy` is (#630)."""
+"""The interaction layer: who answers a command's questions, and what `-yyy` is (#630).
 
+The runs go against the local fake tracker of test_uploader_dry_run and a fake image host, never a real one.
+"""
+
+from pathlib import Path
 from typing import Any
 
 import anyio
 import asyncclick as click
+import pytest
+from test_uploader_dry_run import (  # pyright: ignore[reportMissingImports]
+    _loose_rate_limit,  # noqa: F401 (a fixture: see pytestmark)
+    _run_up,
+    _write_flac,
+    image_uploads,  # noqa: F401 (a fixture: see pytestmark)
+)
 
+import salmon.trackers
 from salmon import cfg, interaction
 from salmon.tagger import foldername
 from salmon.uploader import spectrals
+
+# Covers and spectrals go to the fake image host. The fork's process-wide rate limit would make each run wait.
+pytestmark = pytest.mark.usefixtures("image_uploads", "_loose_rate_limit")
 
 
 class Scripted:
@@ -186,3 +201,54 @@ def test_an_implementation_decides_for_its_own_context(monkeypatch) -> None:
             return [outside, await interaction.assume_defaults()]
 
     assert anyio.run(read) == [False, True]
+
+
+@pytest.fixture
+def torrents(monkeypatch, tmp_path) -> Path:
+    downloads, torrents = tmp_path / "downloads", tmp_path / "torrents"
+    downloads.mkdir()
+    torrents.mkdir()
+    monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
+    monkeypatch.setattr(cfg.directory, "tmp_dir", None)
+    monkeypatch.setattr(cfg.directory, "library_dirs", [])
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED"])
+    return torrents
+
+
+def _album(folder: Path) -> Path:
+    folder.mkdir(parents=True)
+    _write_flac(folder / "01 - one.flac", title="One", artist="Artist", date="2020")
+    _write_flac(folder / "02 - two.flac", title="Two", artist="Artist", date="2020")
+    (folder / "cover.jpg").write_bytes(b"jpeg")
+    return folder
+
+
+# A new group, keep the folder name, upload, no lossy report comment, no downconversion.
+ANSWERS = "\ny\ny\n\nn\n"
+
+
+def test_yyy_in_one_run_does_not_leak_into_the_next_run_in_the_process(monkeypatch, tmp_path, torrents) -> None:
+    assumed: list[bool] = []
+
+    async def record(*_args: Any, **_kwargs: Any) -> dict:
+        assumed.append(await interaction.assume_defaults())
+        return {}
+
+    first = _run_up(monkeypatch, _album(tmp_path / "First"), torrents, yes_all=True, check_tags=record)
+
+    assert first.result.exit_code == 0, first.result.output
+    assert assumed == [True]
+    # -yyy sets nothing in the config: a later run in this process reads the same defaults.
+    assert cfg.upload.yes_all is False
+
+    # The fork never replaces the first run's renamed copy, which shares files with its album: another downloads folder.
+    (tmp_path / "downloads2").mkdir()
+    monkeypatch.setattr(cfg.directory, "download_directory", str(tmp_path / "downloads2"))
+    second = _run_up(
+        monkeypatch, _album(tmp_path / "Second"), torrents, input=ANSWERS, yes_all=False, check_tags=record
+    )
+
+    assert second.result.exit_code == 0, second.result.output
+    assert assumed == [True, False]
+    # The second run asked its questions: the answers it was given were read.
+    assert "Successfully uploaded" in second.result.output

@@ -291,9 +291,7 @@ async def up(
             "--dry-run cannot be used with --spectrals-after: that step edits the uploaded torrent, and a dry run "
             "uploads none."
         )
-    if yyy:
-        cfg.upload.yes_all = True
-    with dryrun.mode(dry_run):
+    with dryrun.mode(dry_run), interaction.assuming_defaults(yyy):
         if dry_run:
             dryrun.say(
                 "the upload runs on a copy of the album and sends nothing. Each upload's form is printed instead."

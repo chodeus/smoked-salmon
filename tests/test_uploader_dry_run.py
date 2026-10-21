@@ -349,7 +349,7 @@ def _run_up(
     }.items():
         monkeypatch.setattr(salmon.uploader, name, fake)
     monkeypatch.setattr(salmon.tagger.foldername, "generate_folder_name", _returning(RENAMED))
-    # -yyy sets yes_all: patched, so it is put back after the test.
+    # A config with yes_all on would answer the questions the run is meant to ask.
     monkeypatch.setattr(cfg.upload, "yes_all", False)
     monkeypatch.setattr(cfg.upload, "multi_tracker_upload", multi_tracker_upload)
     monkeypatch.setattr(cfg.upload, "upload_to_seedbox", True)
