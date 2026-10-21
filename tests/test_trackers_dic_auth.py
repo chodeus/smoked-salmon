@@ -10,7 +10,8 @@ from salmon import cfg
 from salmon.commands import checkconf
 from salmon.common import UploadFiles
 from salmon.config.validations import GazelleTrackerSettings
-from salmon.trackers.base import SharedLimiter
+from salmon.trackers.account import SlidingWindowLimiter
+from salmon.trackers.base import BaseGazelleApi
 from salmon.trackers.dic import DICApi
 
 IGNORED = "tracker.dic.api_key is ignored: DIC does not take API keys, salmon uses its session cookie."
@@ -22,7 +23,7 @@ def _dic_with_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg.tracker, "dic", GazelleTrackerSettings(session="test-session", api_key="a-dic-api-key"))
     monkeypatch.setattr(dic, "_api_key_warned", False)
     # A loose budget of its own per test: the shared one would hold each test to 5 requests in 10 s.
-    monkeypatch.setattr("salmon.trackers.base._tracker_limiter", lambda _code: SharedLimiter(100, 1))
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))
 
 
 def _dic(runner: web.AppRunner) -> DICApi:

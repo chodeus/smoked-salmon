@@ -14,7 +14,8 @@ from torf import Torrent
 from salmon.common import UploadFiles
 from salmon.errors import LoginError, RequestError, UnknownOutcomeError
 from salmon.trackers import base
-from salmon.trackers.base import BaseGazelleApi, RetryableError, SharedLimiter
+from salmon.trackers.account import SlidingWindowLimiter
+from salmon.trackers.base import BaseGazelleApi, RetryableError
 
 
 class FakeApi(BaseGazelleApi):
@@ -33,8 +34,7 @@ class FakeApi(BaseGazelleApi):
 def no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     """Retry without waiting, so the tests count attempts, not seconds."""
     monkeypatch.setattr(BaseGazelleApi._send.retry, "wait", wait_none())  # type: ignore[attr-defined]
-    limiters: dict[str, SharedLimiter] = {}
-    monkeypatch.setattr(base, "_tracker_limiter", lambda code: limiters.setdefault(code, SharedLimiter(100, 1)))
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))
 
 
 def _wait_before_lookups(monkeypatch: pytest.MonkeyPatch, first: float, second: float) -> None:

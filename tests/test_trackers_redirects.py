@@ -1,7 +1,6 @@
 """Tracker redirects and the site log, against real local servers."""
 
 import asyncio
-import threading
 import time
 import traceback
 from types import SimpleNamespace
@@ -15,13 +14,14 @@ import salmon.cross_upload as cross_upload
 from salmon import cfg
 from salmon.errors import ImageUploadFailed, LoginError, RequestError, RequestFailedError, UnknownOutcomeError
 from salmon.images import red as red_image_host
-from salmon.trackers.base import BaseGazelleApi, RetryableError, SharedLimiter, _same_origin, _tracker_limiter
+from salmon.trackers.account import SlidingWindowLimiter
+from salmon.trackers.base import BaseGazelleApi, RetryableError, _same_origin
 
 
-class CountingLimiter(SharedLimiter):
+class CountingLimiter(SlidingWindowLimiter):
     """A limiter loose enough not to slow the tests, which counts the slots taken."""
 
-    def __init__(self, *_args) -> None:
+    def __init__(self) -> None:
         super().__init__(100, 1)
         self.slots = 0
 
@@ -45,7 +45,7 @@ class FakeApi(BaseGazelleApi):
 @pytest.fixture(autouse=True)
 def _counting_limiter(monkeypatch):
     monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
-    monkeypatch.setattr("salmon.trackers.base.SharedLimiter", CountingLimiter)
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", CountingLimiter())
 
 
 @pytest.fixture
@@ -111,7 +111,7 @@ async def test_each_redirect_hop_takes_a_rate_limiter_slot(serve, api_for):
     group_id = await api.get_redirect_torrentgroupid(1)
     assert group_id == 2
     assert hits == ["/torrents.php?torrentid=1", "/torrents.php?id=2&torrentid=1"]
-    assert cast("CountingLimiter", _tracker_limiter("RED")).slots == len(hits)
+    assert cast("CountingLimiter", BaseGazelleApi._rate_limiter).slots == len(hits)
 
 
 async def test_a_redirected_post_is_fetched_with_get(serve, api_for):
@@ -218,7 +218,7 @@ async def test_a_source_image_to_rehost_is_read_to_the_end(serve, api_for):
 
 async def test_clients_of_one_tracker_share_one_budget(api_for):
     first, second = api_for("http://127.0.0.1:1"), api_for("http://127.0.0.1:1")
-    assert first._rate_limiter is second._rate_limiter
+    assert first._account().limiter is second._account().limiter
 
 
 class FakeLog:
@@ -351,26 +351,22 @@ async def test_an_api_failure_never_repeats_the_session_cookie(serve, api_for):
     assert "SYNTH-SESSION-COOKIE" not in str(excinfo.value)
 
 
-def test_one_tracker_budget_holds_across_threads_and_loops():
-    # Web UI jobs run in worker threads, each on its own event loop, against one account.
-    limiter = SharedLimiter(5, 0.3)
+def test_one_tracker_budget_holds_across_concurrent_requests():
+    # salmon web sends every job's requests on its one request loop, against one account.
+    limiter = SlidingWindowLimiter(5, 0.3)
     started: list[float] = []
 
-    def job() -> None:
-        async def run() -> None:
-            for _ in range(3):
-                async with limiter:
-                    started.append(time.monotonic())
+    async def job() -> None:
+        for _ in range(3):
+            async with limiter:
+                started.append(time.monotonic())
 
-        asyncio.run(run())
+    async def two_jobs() -> None:
+        await asyncio.gather(job(), job())
 
-    threads = [threading.Thread(target=job) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    asyncio.run(two_jobs())
     started.sort()
-    # 5 per 0.3 s: the sixth request, from either thread, waits for the window.
+    # 5 per 0.3 s: the sixth request, from either job, waits for the window.
     assert len(started) == 6
     assert started[5] - started[0] >= 0.25
 
@@ -445,7 +441,7 @@ async def test_only_a_429_lets_a_post_naming_the_rate_limit_be_sent_again(
 ):
     posts: list[int] = []
     pauses: list[float] = []
-    monkeypatch.setattr(SharedLimiter, "pause", lambda _self, seconds: pauses.append(seconds))
+    monkeypatch.setattr(SlidingWindowLimiter, "pause", lambda _self, seconds: pauses.append(seconds))
 
     async def upload(request: web.Request) -> web.Response:
         posts.append(status)
@@ -462,7 +458,7 @@ async def test_only_a_429_lets_a_post_naming_the_rate_limit_be_sent_again(
 
 
 def test_a_paused_budget_holds_every_request_until_the_pause_ends():
-    limiter = SharedLimiter(100, 1)
+    limiter = SlidingWindowLimiter(100, 1)
 
     async def run() -> float:
         limiter.pause(0.3)
@@ -474,7 +470,8 @@ def test_a_paused_budget_holds_every_request_until_the_pause_ends():
 
 
 async def test_a_429_pauses_the_tracker_for_every_client(serve, api_for, monkeypatch):
-    monkeypatch.setattr("salmon.trackers.base.SharedLimiter", SharedLimiter)
+    # The tracker account's own limiter, which the 429 pauses.
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", None)
     hits: list[float] = []
 
     async def ajax(request: web.Request) -> web.Response:

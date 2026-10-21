@@ -15,7 +15,8 @@ from salmon import cfg
 from salmon.checks.connection import check_tracker_connection
 from salmon.errors import RequestFailedError, UnknownOutcomeError
 from salmon.trackers import account
-from salmon.trackers.base import BaseGazelleApi, SharedLimiter
+from salmon.trackers.account import SlidingWindowLimiter
+from salmon.trackers.base import BaseGazelleApi
 from salmon.webui.jobs import JobManager
 
 
@@ -35,7 +36,7 @@ class FakeApi(BaseGazelleApi):
 def _quiet(monkeypatch):
     monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
     # Measures connection reuse, not throttling.
-    monkeypatch.setattr("salmon.trackers.base.SharedLimiter", lambda *_a, **_k: SharedLimiter(100, 1))
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))
 
 
 @pytest.fixture

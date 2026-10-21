@@ -4,9 +4,8 @@ import math
 import re
 import threading
 import time
-from collections import deque
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager, suppress
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from functools import partial
 from http import HTTPStatus
 from typing import Any, NoReturn, cast
@@ -214,87 +213,6 @@ def _same_origin(url: str, other: str) -> bool:
     return (first.scheme, first.host, first.port) == (second.scheme, second.host, second.port)
 
 
-class SharedLimiter:
-    """At most max_rate entries per period, shared by every thread and event loop."""
-
-    def __init__(self, max_rate: int, period: float) -> None:
-        self._max_rate = max_rate
-        self._period = period
-        self._entered: deque[float] = deque()
-        self._paused_until = 0.0
-        # A thread lock, not an asyncio one: web UI jobs each run their own event loop.
-        self._lock = threading.Lock()
-
-    def _wait(self) -> float:
-        """Take a slot and return 0, or return how long until one frees up."""
-        with self._lock:
-            now = time.monotonic()
-            if now < self._paused_until:
-                return self._paused_until - now
-            while self._entered and now - self._entered[0] >= self._period:
-                self._entered.popleft()
-            if len(self._entered) < self._max_rate:
-                self._entered.append(now)
-                return 0.0
-            return self._period - (now - self._entered[0])
-
-    def pause(self, seconds: float) -> None:
-        """Hold every entry for `seconds`, as when the tracker answers 429."""
-        with self._lock:
-            self._paused_until = max(self._paused_until, time.monotonic() + seconds)
-
-    async def __aenter__(self) -> None:
-        while (wait := self._wait()) > 0:
-            await asyncio.sleep(wait)
-
-    async def __aexit__(self, *_exc: object) -> None:
-        return None
-
-
-# The tracker limits the account, so every client of one tracker, in any job, shares a budget.
-_limiters: dict[str, SharedLimiter] = {}
-_limiters_lock = threading.Lock()
-
-
-# 0.5 s over the tracker's 10 s: requests arrive with jitter, and 6 entered a period apart could land within 10 s.
-_RATE_PERIOD = 10.5
-
-
-def _tracker_limiter(site_code: str) -> SharedLimiter:
-    """5 requests per 10 seconds for one tracker, with a margin, process-wide."""
-    with _limiters_lock:
-        if site_code not in _limiters:
-            _limiters[site_code] = SharedLimiter(5, _RATE_PERIOD)
-        return _limiters[site_code]
-
-
-# How often a request waiting for its account's lock tries it again.
-_ACCOUNT_LOCK_POLL = 0.05
-
-
-class _AccountLock:
-    """One upload or edit at a time for a tracker account, across every thread and event loop."""
-
-    def __init__(self) -> None:
-        # A thread lock, polled: web UI jobs each run their own event loop, which an asyncio lock is bound to.
-        self._lock = threading.Lock()
-
-    async def __aenter__(self) -> None:
-        while not self._lock.acquire(blocking=False):
-            await asyncio.sleep(_ACCOUNT_LOCK_POLL)
-
-    async def __aexit__(self, *_exc: object) -> None:
-        self._lock.release()
-
-
-_account_locks: dict[str, _AccountLock] = {}
-
-
-def _account_lock(site_code: str) -> _AccountLock:
-    with _limiters_lock:
-        return _account_locks.setdefault(site_code, _AccountLock())
-
-
 # An upload that fills a request takes two hops; one spare.
 _MAX_REDIRECTS = 3
 # The most a binary answer (an image on the tracker's own host) may hold. Reading stops there.
@@ -379,6 +297,10 @@ class BaseGazelleApi:
     # Artist roles (from ARTIST_IMPORTANCES) that this tracker's upload form does not offer.
     # Uploads drop artists with these roles rather than send an unrecognised importance value.
     unsupported_artist_roles: frozenset[str] = frozenset()
+
+    # The rate limiter requests go through: None for the tracker account's, shared by every client of the
+    # tracker. Tests replace it with one that does not make them wait.
+    _rate_limiter: AbstractAsyncContextManager[Any] | None = None
     api_key_prefix: str = ""  # OPS wants "token <key>"; RED wants the bare key
     keeplogged: str | None = None
 
@@ -404,14 +326,13 @@ class BaseGazelleApi:
         # The image host's credentials image_auth() got, as query parameters, until they expire.
         self._image_auth: dict[str, str] = {}
 
-    @property
-    def _rate_limiter(self) -> SharedLimiter:
-        """This tracker's request budget, shared process-wide by site_code."""
-        return _tracker_limiter(self.site_code)
-
     def _account(self) -> TrackerAccount:
-        """This tracker's account on the running event loop: its pool."""
+        """This tracker's account on the running event loop: its rate limit, pool and lock."""
         return account_for(self.site_code)
+
+    def _limiter(self) -> AbstractAsyncContextManager[Any]:
+        """The rate limiter every request and redirect hop of this client goes through."""
+        return self._rate_limiter if self._rate_limiter is not None else self._account().limiter
 
     @asynccontextmanager
     async def _turn(self, idempotent: bool) -> AsyncIterator[None]:
@@ -420,7 +341,7 @@ class BaseGazelleApi:
         From then on a request that is not idempotent may reach the tracker, so cancelling the salmon web
         job that sent it waits for the answer instead of stopping it.
         """
-        async with self._rate_limiter:
+        async with self._limiter():
             if not idempotent:
                 accounts.commit()
             yield
@@ -470,14 +391,19 @@ class BaseGazelleApi:
 
     @asynccontextmanager
     async def _session_for(self, idempotent: bool) -> AsyncIterator[aiohttp.ClientSession]:
-        """The pool, or a one-off fresh connection for a request that must not be re-sent."""
+        """The pool, or a one-off fresh connection for a request that must not be re-sent.
+
+        A pooled request holds one of the pool's connections while it is sent, taken before it enters the rate limiter.
+        """
+        account = self._account()
         if idempotent:
-            yield self._http_session()
+            async with account.pool_slots:
+                yield self._http_session()
             return
         # A pooled connection may be one the tracker is closing as idle, and a failure on it
         # can't be told from a request the tracker acted on. Two jobs' uploads or edits never overlap.
         async with (
-            _account_lock(self.site_code),
+            account.non_idempotent_lock,
             aiohttp.ClientSession(
                 connector=aiohttp.TCPConnector(force_close=True),
                 cookie_jar=aiohttp.DummyCookieJar(),
@@ -845,7 +771,7 @@ class BaseGazelleApi:
                 click.secho(
                     f"{self.site_string} named its rate limit: the next request waits {paused} seconds.", fg="yellow"
                 )
-                self._rate_limiter.pause(paused)
+                self._account().limiter.pause(paused)
                 raise error
             waited = sum(rate_limit_waits)
             if waited + wait > _MAX_RATE_LIMIT_WAITS:
@@ -856,7 +782,7 @@ class BaseGazelleApi:
             rate_limit_waits.append(wait)
             click.secho(f"Rate limit exceeded, waiting {wait} seconds...", fg="yellow")
             # Every request to this tracker waits, not just this one; its retry waits in the limiter.
-            self._rate_limiter.pause(wait)
+            self._account().limiter.pause(wait)
             raise error
 
         if resp.status == HTTPStatus.UNAUTHORIZED:
@@ -1387,10 +1313,33 @@ class BaseGazelleApi:
 
     async def append_to_torrent_description(self, torrent_id: int, description_addition: str) -> None:
         """Prepend text to a torrent's description; RequestError if the form is unreadable or the edit refused."""
+        resp = await self._edit_torrent_description(torrent_id, description_addition)
+        resp_text = resp.text
+
+        soup = BeautifulSoup(resp_text, "lxml")
+        edit_error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
+        if edit_error and edit_error.parent and edit_error.parent.parent:
+            p_tag = edit_error.parent.parent.find("p")
+            error_message = safe_response_excerpt(self._scrub(p_tag.text)) if p_tag else "Unknown error"
+            raise RequestError(f"Failed to edit torrent: {error_message}")
+        else:
+            click.secho("Added spectrals to the torrent description.", fg="green")
+
+    async def _edit_torrent_description(self, torrent_id: int, description_addition: str) -> HttpResponse:
+        """Send the torrent's edit form back with `description_addition` before its description; its answer."""
+        if accounts.handing_over():
+            if accounts.caller_cancelled():
+                # As _request: a cancelled job whose cancel came back as an unknown outcome changes nothing.
+                raise asyncio.CancelledError(f"cancelled before editing the description of torrent {torrent_id}")
+            # The account's lock is the request loop's: one taken on a job's loop would keep out only that job.
+            return await accounts.run_on_request_loop(
+                lambda: self._edit_torrent_description(torrent_id, description_addition),
+                what=f"the description edit of torrent {torrent_id} on {self.site_string}",
+            )
         url = self.base_url + "/torrents.php"
         # Held from the read to the write, or another job's edit in between is lost. Both requests are
         # idempotent: _session_for must not take this lock again, as it isn't re-entrant.
-        async with _account_lock(self.site_code):
+        async with self._account().non_idempotent_lock:
             # Send the tracker's own edit form back with only the description changed (a rebuilt one loses fields).
             # Authenticated first: the page holds the authkey, and _scrub masks only a known one.
             page = await self._request("GET", url, params={"action": "edit", "id": torrent_id})
@@ -1405,17 +1354,9 @@ class BaseGazelleApi:
                 (name, description_addition + value if name == "release_desc" else value) for name, value in fields
             ]
             # Every field is the one the form showed, or the description above, so sending it twice is harmless.
-            resp = await self._request("POST", url, data=new_data, idempotent=True, needs_authkey=False)
-        resp_text = resp.text
-
-        soup = BeautifulSoup(resp_text, "lxml")
-        edit_error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
-        if edit_error and edit_error.parent and edit_error.parent.parent:
-            p_tag = edit_error.parent.parent.find("p")
-            error_message = safe_response_excerpt(self._scrub(p_tag.text)) if p_tag else "Unknown error"
-            raise RequestError(f"Failed to edit torrent: {error_message}")
-        else:
-            click.secho("Added spectrals to the torrent description.", fg="green")
+            # It may reach the tracker from here, and before each retry: a cancel or salmon web stopping says so.
+            accounts.commit(across_retries=True)
+            return await self._request("POST", url, data=new_data, idempotent=True, needs_authkey=False)
 
     """The following three parsing functions are part of the gazelle class
     in order that they be easily overwritten in the derivative site classes.

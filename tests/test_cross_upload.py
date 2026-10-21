@@ -50,8 +50,8 @@ from salmon.cross_upload import (
 from salmon.errors import NoAnswerError
 from salmon.images.base import BaseImageUploader
 from salmon.release_notification import get_version
-from salmon.trackers import base
-from salmon.trackers.base import BaseGazelleApi, SharedLimiter
+from salmon.trackers.account import SlidingWindowLimiter
+from salmon.trackers.base import BaseGazelleApi
 from salmon.trackers.dic import DICApi
 from salmon.trackers.ops import OpsApi
 from salmon.trackers.red import RedApi
@@ -368,9 +368,8 @@ def settings(monkeypatch) -> None:
     monkeypatch.setattr(cfg.upload, "torrent_name_normalization", "")
     monkeypatch.setattr(cfg.upload.requests, "check_recent_uploads", True)
     monkeypatch.setattr(cfg.upload.description, "copy_uploaded_url_to_clipboard", False)
-    # A loose budget of its own per tracker and test: the shared one would hold each run to 5 requests in 10 s.
-    limiters: dict[str, SharedLimiter] = {}
-    monkeypatch.setattr(base, "_tracker_limiter", lambda code: limiters.setdefault(code, SharedLimiter(1000, 1)))
+    # One loose budget for every tracker, made again for each test: the real one would hold a run to 5 requests in 10 s.
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(1000, 1))
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS", "DIC"])
     monkeypatch.setattr(cross_upload_module, "_check_logs", _no_log_check)
 
