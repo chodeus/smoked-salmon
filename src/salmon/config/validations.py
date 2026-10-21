@@ -119,7 +119,8 @@ SPECTRALS_REFUSED = {
 # Trackers that fetch and cache RED-hosted images themselves, so a BARE RED URL renders there
 # unchanged. Only bare: RED's per-viewer signed URLs 403 once the signature expires.
 RED_IMAGE_PROXY_TARGETS = frozenset({"OPS"})
-SpectralSelectionLiteral = Literal["*", "+", "0"]
+# "*" (all), "+" (a random third), "0" (none), or track IDs separated by spaces, such as "3" or "1 5 9".
+SpectralSelection = Annotated[str, msgspec.Meta(pattern=r"^(\*|\+|0|0*[1-9]\d*( +0*[1-9]\d*)*)$")]
 
 
 def spectrals_refusal(host: str) -> str | None:
@@ -163,7 +164,7 @@ class ImageUploader(BaseStruct):
     remove_auto_downloaded_cover_image: bool = False
     # Embed the front cover, shrunk to fit, in every FLAC with no picture.
     embed_missing_cover: bool = False
-    default_spectral_ids: SpectralSelectionLiteral | None = None
+    default_spectral_ids: SpectralSelection | None = None
     red: ImageHostOverride | None = None
     ops: ImageHostOverride | None = None
     dic: ImageHostOverride | None = None

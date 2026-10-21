@@ -75,7 +75,8 @@ def test_per_tracker_ptpimg_cover_uploader_fails_with_a_clear_message(tmp_path: 
 
 
 def test_ptpimg_in_a_setting_that_is_not_a_host_keeps_its_own_error(tmp_path: Path) -> None:
-    text = _base_config(tmp_path).replace('# default_spectral_ids = "*"', 'default_spectral_ids = "ptpimg"')
+    text = _base_config(tmp_path).replace('# default_spectral_ids = "3"', 'default_spectral_ids = "ptpimg"')
+    assert 'default_spectral_ids = "ptpimg"' in text
     path = _write_config(tmp_path, text)
     with pytest.raises(msgspec.ValidationError, match="default_spectral_ids"):
         _parse_config(path)
