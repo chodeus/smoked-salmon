@@ -163,6 +163,58 @@ def test_tidal_token_is_warned_about_whatever_its_value_and_version(
     assert "client_id" in warnings[0] and "client_secret" in warnings[0]
 
 
+def test_the_old_default_tracker_is_a_list_of_one_with_a_warning(tmp_path: Path, capsys) -> None:
+    raw = _base(tmp_path)
+    raw["tracker"]["default_tracker"] = "RED"
+    cfg, warnings = _load(tmp_path, raw, capsys)
+    assert cfg.tracker.default_trackers == ["RED"]
+    assert warnings == [
+        "tracker.default_tracker is now tracker.default_trackers (under [tracker]): it still works in 0.21, and "
+        f"stops salmon from 0.22.0. See {UPGRADE_PAGE}"
+    ]
+
+
+def test_the_old_and_the_new_default_trackers_together_are_refused(tmp_path: Path, capsys) -> None:
+    raw = _base(tmp_path)
+    raw["tracker"].update(default_tracker="RED", default_trackers=["RED"])
+    with pytest.raises(ValueError, match="tracker.default_tracker and tracker.default_trackers are both set"):
+        _load(tmp_path, raw, capsys)
+
+
+def test_the_old_default_tracker_is_refused_from_0_22_0(tmp_path: Path, capsys, monkeypatch) -> None:
+    _version(monkeypatch, "0.22.0")
+    raw = _base(tmp_path)
+    raw["tracker"]["default_tracker"] = "RED"
+    with pytest.raises(ValueError, match="tracker.default_tracker is now tracker.default_trackers"):
+        _load(tmp_path, raw, capsys)
+
+
+def test_default_trackers_are_upper_cased_each_once_in_order(tmp_path: Path, capsys) -> None:
+    raw = _base(tmp_path)
+    raw["tracker"]["ops"] = {"session": "another-real-cookie"}
+    raw["tracker"]["default_trackers"] = ["ops", "RED", "Ops"]
+    cfg, warnings = _load(tmp_path, raw, capsys)
+    assert cfg.tracker.default_trackers == ["OPS", "RED"]
+    assert warnings == []
+
+
+@pytest.mark.parametrize(
+    ("codes", "message"),
+    [
+        (["RED", "OPS"], "tracker.default_trackers names OPS, which has no \\[tracker.ops\\] in your config"),
+        (["XYZ"], "tracker.default_trackers names XYZ, which is not RED, OPS or DIC"),
+    ],
+    ids=["not configured", "not a tracker"],
+)
+def test_a_default_tracker_salmon_cannot_upload_to_is_refused(
+    tmp_path: Path, capsys, codes: list[str], message: str
+) -> None:
+    raw = _base(tmp_path)
+    raw["tracker"]["default_trackers"] = codes
+    with pytest.raises(msgspec.ValidationError, match=message):
+        _load(tmp_path, raw, capsys)
+
+
 def test_the_collected_warnings_hold_the_unknown_keys_too(tmp_path: Path, capsys) -> None:
     raw = _put(_put(_base(tmp_path), "upload.qwertyuiop", True), "upload.debug_tracker_connection", True)
     _, warnings = _load(tmp_path, raw, capsys)

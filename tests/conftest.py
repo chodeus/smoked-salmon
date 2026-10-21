@@ -30,7 +30,7 @@ def _ensure_config() -> None:
         d.mkdir()
     (cfg_dir / "config.toml").write_text(
         f'[directory]\ndownload_directory = "{music}"\ndottorrents_dir = "{torrents}"\ntmp_dir = "{tmpdir}"\n\n'
-        f'[tracker.red]\nsession = "test-session"\n\n[tracker]\ndefault_tracker = "RED"\n'
+        f'[tracker.red]\nsession = "test-session"\n\n[tracker]\ndefault_trackers = ["RED"]\n'
     )
 
 

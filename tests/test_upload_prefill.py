@@ -276,12 +276,12 @@ def test_named_trackers_are_uploaded_to_in_order_without_asking(monkeypatch, tmp
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS", "DIC"])
     sites = _uploads_by_tracker(monkeypatch)
 
-    # `-t RED` comes from _run_up: with `-t OPS`, two named trackers. A new group on each.
+    # Two named trackers. A new group on each.
     run = _run_up(
         monkeypatch,
         _album(tmp_path / "Album"),
         torrents,
-        args=("-t", "OPS"),
+        trackers=("RED", "OPS"),
         input="\n\n",
         multi_tracker_upload=multi_tracker_upload,
     )
@@ -292,16 +292,95 @@ def test_named_trackers_are_uploaded_to_in_order_without_asking(monkeypatch, tmp
     assert "Next tracker: OPS" in run.result.output
 
 
-def test_one_named_tracker_still_offers_another(monkeypatch, tmp_path, dirs) -> None:
+def test_one_named_tracker_is_the_only_one(monkeypatch, tmp_path, dirs) -> None:
+    """`-t RED` with RED and OPS configured, multi_tracker_upload on: RED only, with no tracker question."""
     _downloads, torrents = dirs
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
     sites = _uploads_by_tracker(monkeypatch)
 
+    # A new group on RED.
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, input="\n", trackers=("RED",))
+
+    assert run.result.exit_code == 0, run.result.output
+    assert sites == ["RED"]
+    assert ANOTHER_TRACKER not in run.result.output
+
+
+def test_one_tracker_chosen_without_t_still_offers_another(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
+    sites = _uploads_by_tracker(monkeypatch)
+
+    # No -t, default_trackers = ["RED"]: RED, then none at the offer.
     run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, input="\nn\n")
 
     assert run.result.exit_code == 0, run.result.output
     assert sites == ["RED"]
     assert ANOTHER_TRACKER in run.result.output
+
+
+def test_default_trackers_are_uploaded_to_in_order_then_the_others_are_offered(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS", "DIC"])
+    monkeypatch.setitem(API_KEYS, "DIC", "dic-api-key")
+    monkeypatch.setattr(cfg.tracker, "default_trackers", ["RED", "OPS"])
+    sites = _uploads_by_tracker(monkeypatch)
+
+    # A new group on RED, then on OPS, then none at the offer of DIC.
+    run = _run_up(
+        monkeypatch,
+        _album(tmp_path / "Album"),
+        torrents,
+        input="\n\nn\n",
+        trackers=(),
+        classes={"RED": RedApi, "OPS": OpsApi, "DIC": ThirdApi},
+    )
+
+    assert run.result.exit_code == 0, run.result.output
+    output = run.result.output
+    assert sites == ["RED", "OPS"]
+    assert "Which tracker would you like to upload to?" not in output
+    assert "Next tracker: OPS" in output
+    assert output.count(ANOTHER_TRACKER) == 1
+    assert "Your choices are DIC or [n]one." in output
+
+
+def test_default_trackers_without_multi_tracker_upload_offer_no_other(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS", "DIC"])
+    monkeypatch.setitem(API_KEYS, "DIC", "dic-api-key")
+    monkeypatch.setattr(cfg.tracker, "default_trackers", ["RED", "OPS"])
+    sites = _uploads_by_tracker(monkeypatch)
+
+    run = _run_up(
+        monkeypatch,
+        _album(tmp_path / "Album"),
+        torrents,
+        input="\n\n",
+        trackers=(),
+        classes={"RED": RedApi, "OPS": OpsApi, "DIC": ThirdApi},
+        multi_tracker_upload=False,
+    )
+
+    assert run.result.exit_code == 0, run.result.output
+    assert sites == ["RED", "OPS"]
+    assert "Next tracker: OPS" in run.result.output
+    assert ANOTHER_TRACKER not in run.result.output
+
+
+def test_a_tracker_named_with_t_wins_over_default_trackers(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
+    monkeypatch.setattr(cfg.tracker, "default_trackers", ["RED", "OPS"])
+    sites = _uploads_by_tracker(monkeypatch)
+
+    # A new group on OPS.
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, input="\n", trackers=("OPS",))
+
+    assert run.result.exit_code == 0, run.result.output
+    assert sites == ["OPS"]
+    assert "Next tracker" not in run.result.output
+    assert ANOTHER_TRACKER not in run.result.output
 
 
 def test_a_skipped_named_tracker_moves_on_to_the_next(monkeypatch, tmp_path, dirs) -> None:
@@ -318,7 +397,7 @@ def test_a_skipped_named_tracker_moves_on_to_the_next(monkeypatch, tmp_path, dir
 
     monkeypatch.setattr(salmon.uploader, "resolve_cover_url", no_cover_on_red)
 
-    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, args=("-t", "OPS"), input="\n\n")
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, trackers=("RED", "OPS"), input="\n\n")
 
     assert run.result.exit_code == 0, run.result.output
     assert "Skipping upload to RED" in run.result.output
@@ -340,7 +419,7 @@ def test_a_failed_named_tracker_moves_on_to_the_next(monkeypatch, tmp_path, dirs
 
     monkeypatch.setattr(salmon.uploader, "upload_and_report", red_fails)
 
-    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, args=("-t", "OPS"), input="\n\n")
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, trackers=("RED", "OPS"), input="\n\n")
 
     assert run.result.exit_code == 0, run.result.output
     assert "Upload to RED failed: refused" in run.result.output
@@ -374,7 +453,7 @@ def test_a_named_tracker_whose_group_search_fails_moves_on_to_the_next(monkeypat
         monkeypatch,
         _album(tmp_path / "Album"),
         torrents,
-        args=("-t", "OPS,DIC"),
+        trackers=("RED", "OPS", "DIC"),
         input="\n\n",
         classes={"RED": RedApi, "OPS": OpsApi, "DIC": ThirdApi},
     )
@@ -390,11 +469,29 @@ def test_aborting_at_a_named_tracker_keeps_what_is_up(monkeypatch, tmp_path, dir
     sites = _uploads_by_tracker(monkeypatch)
 
     # A new group on RED, then [a]bort at OPS's group prompt.
-    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, args=("-t", "OPS"), input="\na\n")
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, trackers=("RED", "OPS"), input="\na\n")
 
     assert run.result.exit_code == 0, run.result.output
     assert sites == ["RED"]
     assert "Aborting: nothing more is uploaded. Already uploaded:" in run.result.output
+
+
+def test_skip_flac_upload_takes_the_first_default_tracker(monkeypatch, tmp_path, dirs) -> None:
+    # Several default trackers, none named: the one --group-id is on is the first.
+    _downloads, torrents = dirs
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
+    monkeypatch.setattr(cfg.tracker, "default_trackers", ["RED", "OPS"])
+    sites = _uploads_by_tracker(monkeypatch)
+
+    run = _run_up(
+        monkeypatch, _album(tmp_path / "Album"), torrents, trackers=(), args=("-g", "55", "--skip-flac-upload")
+    )
+
+    assert "--skip-flac-upload uploads to the one tracker" not in run.result.output
+    assert run.result.exit_code == 0, run.result.output
+    assert sites == ["RED"]
+    assert "Next tracker" not in run.result.output
+    assert ANOTHER_TRACKER not in run.result.output
 
 
 def test_skip_flac_upload_takes_one_named_tracker(monkeypatch, tmp_path, dirs) -> None:
@@ -402,7 +499,11 @@ def test_skip_flac_upload_takes_one_named_tracker(monkeypatch, tmp_path, dirs) -
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
 
     run = _run_up(
-        monkeypatch, _album(tmp_path / "Album"), torrents, args=("-t", "OPS", "-g", "55", "--skip-flac-upload")
+        monkeypatch,
+        _album(tmp_path / "Album"),
+        torrents,
+        trackers=("RED", "OPS"),
+        args=("-g", "55", "--skip-flac-upload"),
     )
 
     assert run.result.exit_code == 2
@@ -420,7 +521,7 @@ def test_naming_the_trackers_sends_what_choosing_them_did(monkeypatch, tmp_path,
     # RED, then OPS picked at the "another tracker?" question, as before.
     chosen = _run_up(monkeypatch, _album(tmp_path / "chosen" / "Album"), torrents, input="\nOPS\n\n")
     (Path(cfg.directory.download_directory) / "Artist - Album (2020) [WEB FLAC]").rename(tmp_path / "first-run")
-    named = _run_up(monkeypatch, _album(tmp_path / "named" / "Album"), torrents, args=("-t", "OPS"), input="\n\n")
+    named = _run_up(monkeypatch, _album(tmp_path / "named" / "Album"), torrents, trackers=("RED", "OPS"), input="\n\n")
 
     assert chosen.result.exit_code == 0, chosen.result.output
     assert named.result.exit_code == 0, named.result.output
@@ -508,7 +609,7 @@ def test_an_unanswered_web_question_after_an_upload_keeps_what_is_up_and_stops_a
 
     monkeypatch.setattr(salmon.uploader, "check_existing_group", ops_unanswered)
 
-    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, args=("-t", "OPS"), input="\n")
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, trackers=("RED", "OPS"), input="\n")
 
     assert sites == ["RED"]
     assert "Aborting: nothing more is uploaded. Already uploaded:" in run.result.output

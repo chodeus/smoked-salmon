@@ -41,7 +41,13 @@ class Removed:
     did_nothing: bool = False
 
 
+def _one_tracker_to_list(value: Any) -> Any:
+    """``default_tracker = "RED"`` as ``default_trackers = ["RED"]``; anything else is left for the decode to refuse."""
+    return [value] if isinstance(value, str) else value
+
+
 OLD_KEYS: tuple[Moved | Removed, ...] = (
+    Moved("tracker.default_tracker", "tracker.default_trackers", convert=_one_tracker_to_list),
     Moved("upload.web_interface.host", "upload.spectrals_viewer.host"),
     Moved("upload.web_interface.port", "upload.spectrals_viewer.port"),
     Moved("upload.web_interface.display_host", "upload.spectrals_viewer.display_host"),

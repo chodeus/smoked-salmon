@@ -243,7 +243,7 @@ def test_next_tracker_takes_the_preselected_site_without_asking(monkeypatch) -> 
 
     monkeypatch.setattr(trackers, "choose_tracker", never)
 
-    result = anyio.run(uploader.next_tracker, True, ["OPS"])
+    result = anyio.run(uploader.next_tracker, ["RED", "OPS"], ["OPS"])
     assert result == "OPS"
 
 
@@ -256,7 +256,7 @@ def test_next_tracker_asks_when_nothing_was_preselected(monkeypatch) -> None:
 
     monkeypatch.setattr(trackers, "choose_tracker", choose)
 
-    result = anyio.run(uploader.next_tracker, False, ["OPS", "DIC"])
+    result = anyio.run(uploader.next_tracker, None, ["OPS", "DIC"])
     assert result == "OPS"
     assert asked == [["OPS", "DIC"]]
 

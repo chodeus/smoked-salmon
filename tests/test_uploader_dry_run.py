@@ -299,11 +299,15 @@ def _run_up(
     classes: dict[str, type[BaseGazelleApi]] | None = None,
     multi_tracker_upload: bool = True,
     yes_all: bool = True,
-    trackers: tuple[str, ...] = ("RED",),
+    trackers: tuple[str, ...] | None = None,
     tracker: "FakeTracker | None" = None,
     **fakes: Any,
 ) -> Run:
-    """`salmon up ALBUM -t RED` (or `trackers`) on the fake tracker with real forms; `classes` maps codes to clients."""
+    """`salmon up ALBUM` on the fake tracker with real forms; `classes` maps codes to clients.
+
+    Without `trackers`, no -t and tracker.default_trackers = ["RED"]: RED, then the other trackers are offered.
+    `trackers` are named with -t, each; `()` names none and leaves default_trackers as the test set it.
+    """
     rls_data = {
         "format": "FLAC",
         "encoding": "Lossless",
@@ -368,6 +372,10 @@ def _run_up(
     # Both trackers configured, so the run goes on to OPS after RED.
     monkeypatch.setattr(salmon.trackers, "tracker_list", list(classes))
     monkeypatch.setattr(salmon.trackers, "get_class", lambda code: lambda: _client(classes[code], tracker, torrents))
+
+    if trackers is None:
+        monkeypatch.setattr(cfg.tracker, "default_trackers", ["RED"])
+        trackers = ()
 
     async def run():
         async with tracker.serving():

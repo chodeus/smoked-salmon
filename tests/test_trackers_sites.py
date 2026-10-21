@@ -758,9 +758,9 @@ async def test_choose_tracker_first_time_single_tracker_short_circuits(monkeypat
     assert prompts == []
 
 
-async def test_choose_tracker_first_time_uses_default_tracker(monkeypatch) -> None:
+async def test_choose_tracker_first_time_uses_the_first_default_tracker(monkeypatch) -> None:
     monkeypatch.setattr(trackers, "tracker_list", ["RED", "OPS"])
-    monkeypatch.setattr(trackers.tracker_cfg, "default_tracker", "OPS")
+    monkeypatch.setattr(trackers.tracker_cfg, "default_trackers", ["OPS", "RED"])
     prompts = patch_tracker_prompt(monkeypatch, [])
 
     actual = await trackers.choose_tracker_first_time()
@@ -770,7 +770,7 @@ async def test_choose_tracker_first_time_uses_default_tracker(monkeypatch) -> No
 
 async def test_choose_tracker_first_time_prompts_without_default(monkeypatch) -> None:
     monkeypatch.setattr(trackers, "tracker_list", ["RED", "OPS"])
-    monkeypatch.setattr(trackers.tracker_cfg, "default_tracker", None)
+    monkeypatch.setattr(trackers.tracker_cfg, "default_trackers", [])
     prompts = patch_tracker_prompt(monkeypatch, ["ops"])
 
     actual = await trackers.choose_tracker_first_time()
@@ -814,12 +814,36 @@ async def test_validate_tracker_none_value_uses_first_time_flow(monkeypatch) -> 
 
 async def test_validate_tracker_none_value_prefers_default_tracker(monkeypatch) -> None:
     monkeypatch.setattr(trackers, "tracker_list", ["RED", "OPS"])
-    monkeypatch.setattr(trackers.tracker_cfg, "default_tracker", "RED")
+    monkeypatch.setattr(trackers.tracker_cfg, "default_trackers", ["RED"])
     prompts = patch_tracker_prompt(monkeypatch, [])
 
     actual = await trackers.validate_tracker(None, "tracker", None)
     assert actual == "RED"
     assert prompts == []
+
+
+@pytest.mark.parametrize(
+    ("given", "defaults", "expected", "unnamed"),
+    [
+        (("RED",), ["OPS", "RED"], ("RED",), False),
+        (("OPS,RED",), [], ("OPS", "RED"), False),
+        ((), ["OPS", "RED"], ("OPS", "RED"), True),
+        ((), ["OPS"], ("OPS",), True),
+    ],
+    ids=["one_named", "several_named", "several_defaults", "one_default"],
+)
+async def test_named_trackers_are_exactly_those_and_defaults_are_unnamed(
+    monkeypatch, given: tuple[str, ...], defaults: list[str], expected: tuple[str, ...], unnamed: bool
+) -> None:
+    # Unnamed: the run offers the other trackers after them (#773). Named with -t: the run uploads to exactly those.
+    monkeypatch.setattr(trackers, "tracker_list", ["RED", "OPS", "DIC"])
+    monkeypatch.setattr(trackers.tracker_cfg, "default_trackers", defaults)
+    patch_tracker_prompt(monkeypatch, [])
+
+    chosen = await trackers.validate_trackers(None, "tracker", given)
+
+    assert tuple(chosen) == expected
+    assert isinstance(chosen, trackers.UnnamedTrackers) is unnamed
 
 
 async def test_validate_tracker_non_string_value_raises_bad_parameter(monkeypatch) -> None:
