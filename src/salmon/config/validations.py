@@ -327,11 +327,12 @@ class UploadDescription(BaseStruct):
     artist_tags_in_tracklist: bool = False
 
 
-class UploadWebInterface(BaseStruct):
+class UploadSpectralsViewer(BaseStruct):
+    """The spectrals viewer salmon upload opens in the browser, not ``salmon web`` ([web])."""
+
     host: str = "0.0.0.0"
     port: int = 55110
     display_host: str = "localhost"
-    static_root_url: str = "/static"
 
     def __post_init__(self):
         if self.port < 1 or self.port > 65535:
@@ -433,7 +434,7 @@ class Upload(BaseStruct):
     search: UploadSearch = msgspec.field(default_factory=UploadSearch)
     formatting: UploadFormatting = msgspec.field(default_factory=UploadFormatting)
     description: UploadDescription = msgspec.field(default_factory=UploadDescription)
-    web_interface: UploadWebInterface = msgspec.field(default_factory=UploadWebInterface)
+    spectrals_viewer: UploadSpectralsViewer = msgspec.field(default_factory=UploadSpectralsViewer)
     requests: UploadRequests = msgspec.field(default_factory=UploadRequests)
     compression: UploadCompression = msgspec.field(default_factory=UploadCompression)
     ai_review: UploadAiReview = msgspec.field(default_factory=UploadAiReview)

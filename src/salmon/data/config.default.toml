@@ -242,16 +242,14 @@ session = 'get-from-site-cookie'
 # # Wrap artist names in [artist][/artist] BBCode in the group description's tracklist.
 # artist_tags_in_tracklist = false
 
-# [upload.web_interface]
-# # web interface settings
+# [upload.spectrals_viewer]
+# # the spectrals viewer salmon upload opens in the browser
 # host = "0.0.0.0"
 # port = 55110
 
 # Host used in generated URLs (e.g. spectral viewer links).
 # Set to "" to use the value of "host".
 # display_host = "localhost"
-
-# static_root_url = "/static"
 
 # [upload.requests]
 # # request handling
@@ -299,7 +297,7 @@ session = 'get-from-site-cookie'
 # [::1] and the bind address, e.g. the seedbox's name or LAN address. This stops DNS rebinding.
 # Bound to 0.0.0.0, every name but the loopback ones must be listed here.
 #
-# The [upload.web_interface] section above is the spectrals viewer that salmon upload opens, not
+# The [upload.spectrals_viewer] section above is the spectrals viewer that salmon upload opens, not
 # this.
 
 # [web]

@@ -6,7 +6,8 @@ import msgspec
 import requests
 from packaging.version import Version
 
-from salmon import cfg
+# salmon, not salmon.cfg: the config's own checks read get_version() while salmon is still loading it.
+import salmon
 
 FORK_URL = "https://github.com/chodeus/smoked-salmon"
 UPSTREAM_URL = "https://github.com/smokin-salmon/smoked-salmon"
@@ -128,8 +129,8 @@ def show_release_notification() -> None:
     If a newer version exists, prints a notice and optionally the changelog.
     Does nothing if update_notification is disabled in config.
     """
-    notify = cfg.upload.update_notification
-    verbose = cfg.upload.update_notification_verbose
+    notify = salmon.cfg.upload.update_notification
+    verbose = salmon.cfg.upload.update_notification_verbose
 
     if not notify:
         return
