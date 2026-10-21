@@ -196,7 +196,7 @@ async def cross_upload(req: CrossUploadRequest) -> dict:
                 transcodes=tuple(req.transcodes),
                 downconvert=req.downconvert,
                 all_formats=req.all_formats,
-                # Never -yyy here: it sets yes_all for the rest of the process. The job asks instead.
+                # No -yyy from the browser: the job asks its questions there.
                 yyy=False,
                 dry_run=req.dry_run,
             )

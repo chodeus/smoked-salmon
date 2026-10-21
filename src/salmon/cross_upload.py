@@ -231,8 +231,6 @@ async def cross_upload(
         raise click.UsageError(f"At most {MAX_RELEASES} releases per run, not {len(values)}.")
     if (path or group_id or target_group_id) and len(values) > 1:
         raise click.UsageError("--path, --group-id and --target-group-id go with a single release.")
-    if yyy:
-        cfg.upload.yes_all = True
 
     source_site = salmon.trackers.get_class(source)()
     target_site = salmon.trackers.get_class(target)()
@@ -240,7 +238,7 @@ async def cross_upload(
     items = list(dict.fromkeys(_input_item(value, source_site) for value in values))
     # A cross-upload is a re-post: it is never marked as the user's own purchase or rip.
     target_site.skip_upload_marks()
-    with dryrun.mode(dry_run):
+    with dryrun.mode(dry_run), interaction.assuming_defaults(yyy):
         if dry_run:
             dryrun.say("reading from both trackers and sending nothing. Each upload's form is printed instead.")
         try:
