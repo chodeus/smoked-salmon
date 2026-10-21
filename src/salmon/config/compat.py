@@ -56,6 +56,12 @@ OLD_KEYS: tuple[Moved | Removed, ...] = (
         "the spectrals viewer now always serves its files at /static",
         default="/static",
     ),
+    Removed(
+        "metadata.tidal.token",
+        "it only worked with Tidal's retired API. Register a client at https://developer.tidal.com and set "
+        "client_id and client_secret under [metadata.tidal] instead",
+        did_nothing=True,
+    ),
 )
 
 # Every warning about the config, unknown keys included, in the order printed: for salmon web's Dashboard.

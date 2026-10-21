@@ -150,6 +150,19 @@ def test_static_root_url_set_to_anything_else_is_refused(tmp_path: Path, capsys)
         _load(tmp_path, raw, capsys)
 
 
+@pytest.mark.parametrize("version", ["0.20.0", "0.22.0", "1.0.0"])
+@pytest.mark.parametrize("value", ["your-token", "a-token-from-the-web-player"])
+def test_tidal_token_is_warned_about_whatever_its_value_and_version(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch, value: str, version: str
+) -> None:
+    _version(monkeypatch, version)
+    cfg, warnings = _load(tmp_path, _put(_base(tmp_path), "metadata.tidal.token", value), capsys)
+    assert not hasattr(cfg.metadata.tidal, "token")
+    assert len(warnings) == 1
+    assert warnings[0].startswith("metadata.tidal.token is no longer used, remove it")
+    assert "client_id" in warnings[0] and "client_secret" in warnings[0]
+
+
 def test_the_collected_warnings_hold_the_unknown_keys_too(tmp_path: Path, capsys) -> None:
     raw = _put(_put(_base(tmp_path), "upload.qwertyuiop", True), "upload.debug_tracker_connection", True)
     _, warnings = _load(tmp_path, raw, capsys)
