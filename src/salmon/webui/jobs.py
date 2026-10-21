@@ -1,9 +1,9 @@
 """In-memory job manager for the web interface.
 
 Each job runs in a worker thread with its own event loop: its filesystem work may block that private loop while the
-server loop keeps serving (and delivers browser answers to pending questions). At most
-MAX_JOBS run at once; the others wait their turn in the order they came, and a job waits while another works on the
-same album folder. What a job prints goes to its log (see output.py).
+server loop keeps serving (and delivers browser answers to pending questions). At most ``[web] max_jobs`` run at
+once; the others wait their turn in the order they came, and a job waits while another works on the same album
+folder. What a job prints goes to its log (see output.py).
 
 Each job exposes status, progress, log tail, pending question and a result;
 subscribers (websocket connections) receive every state change as an event.
@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import asyncclick as click
 
-from salmon import interaction
+from salmon import cfg, interaction
 from salmon.common.progress import reset_progress_callback, set_progress_callback
 from salmon.common.redaction import redact_url
 from salmon.errors import AbortAndDeleteFolder, NoAnswerError, UnknownOutcomeError
@@ -45,8 +45,7 @@ UNKNOWN_OUTCOME = "The request may have reached the tracker: check the site befo
 MAX_FINISHED_JOBS = 200
 SUBSCRIBER_QUEUE_SIZE = 500
 MAX_LOG_LINES = 1000
-# Jobs running at once, each an OS thread with its own event loop; the others wait their turn, at most MAX_QUEUED_JOBS.
-MAX_JOBS = 2
+# At most this many jobs wait their turn behind the [web] max_jobs running.
 MAX_QUEUED_JOBS = 100
 # How long a job's end waits for the worker threads it left, as asyncio.run does.
 WORKER_JOIN_TIMEOUT = 300
@@ -356,7 +355,8 @@ class _JobAsker:
 
 
 class JobManager:
-    def __init__(self):
+    def __init__(self, max_jobs: int | None = None):
+        self.max_jobs = max_jobs or cfg.web.max_jobs
         self.jobs: dict[str, Job] = {}
         self._subscribers: set[asyncio.Queue] = set()
         self._active_lock_keys: set[str] = set()
@@ -410,9 +410,9 @@ class JobManager:
         return job
 
     def _schedule(self) -> None:
-        """Start the jobs waiting, in order, while fewer than MAX_JOBS run; a job waits while its folder is busy."""
+        """Start the jobs waiting, in order, while fewer than max_jobs run; a job waits while its folder is busy."""
         for job, thread in list(self._queue.items()):
-            if len(self._running) >= MAX_JOBS:
+            if len(self._running) >= self.max_jobs:
                 return
             if job.folder is not None and any(other.folder == job.folder for other in self._running):
                 continue

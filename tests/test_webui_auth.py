@@ -10,7 +10,7 @@ from starlette.websockets import WebSocketDisconnect
 from webui_client import WEB_TOKEN, reset_manager, web_client  # pyright: ignore[reportMissingImports]
 
 from salmon import cfg
-from salmon.config.validations import UploadWebInterface
+from salmon.config.validations import Web
 from salmon.webui import web
 from salmon.webui.app import create_app
 from salmon.webui.auth import COOKIE_NAME, OLD_COOKIE_NAME
@@ -24,7 +24,7 @@ LAN_BIND = "0.0.0.0"  # nosec B104
 def _no_configured_token(monkeypatch) -> None:
     """Neither token source set, whatever the machine running the tests has configured."""
     monkeypatch.delenv("SALMON_WEB_TOKEN", raising=False)
-    monkeypatch.setattr(cfg.upload.web_interface, "auth_token", None)
+    monkeypatch.setattr(cfg.web, "token", None)
 
 
 def _session(c: TestClient, token: str = WEB_TOKEN) -> str:
@@ -214,8 +214,37 @@ async def test_a_lan_bind_without_a_token_does_not_start(serve_nothing):
     result = await CliRunner().invoke(web, ["--host", LAN_BIND])
 
     assert result.exit_code != 0
-    assert "Refusing to serve on 0.0.0.0 without an auth token" in result.output
+    assert "salmon web will not listen on 0.0.0.0 without a token" in result.output
     assert serve_nothing == []
+
+
+async def test_it_listens_where_web_says_unless_the_command_says_otherwise(monkeypatch: pytest.MonkeyPatch):
+    import uvicorn
+
+    listened: list[tuple[str, int]] = []
+
+    async def serve(self) -> None:
+        listened.append((self.config.host, self.config.port))
+
+    monkeypatch.setattr(uvicorn.Server, "serve", serve)
+    monkeypatch.setenv("SALMON_WEB_TOKEN", "x" * 32)
+    monkeypatch.setattr(cfg.web, "host", "127.0.0.2")
+    monkeypatch.setattr(cfg.web, "port", 55156)
+    from_config = await CliRunner().invoke(web, [])
+    from_command = await CliRunner().invoke(web, ["--host", "127.0.0.3", "--port", "55157"])
+
+    assert [from_config.exit_code, from_command.exit_code] == [0, 0]
+    assert listened == [("127.0.0.2", 55156), ("127.0.0.3", 55157)]
+
+
+@pytest.mark.parametrize(("host", "shown"), [("::1", "http://[::1]:55155/"), ("::", "http://localhost:55155/")])
+async def test_an_ipv6_bind_prints_a_url_a_browser_can_open(serve_nothing, monkeypatch, host: str, shown: str):
+    monkeypatch.setenv("SALMON_WEB_TOKEN", "x" * 32)
+
+    result = await CliRunner().invoke(web, ["--host", host])
+
+    assert result.exit_code == 0, result.output
+    assert f"salmon web interface: {shown}" in result.output
 
 
 def test_a_preflight_from_another_site_is_refused():
@@ -253,29 +282,29 @@ async def test_a_short_environment_token_is_refused(serve_nothing, monkeypatch: 
 
 @pytest.mark.parametrize(("token", "kept"), [("", None), ("x" * 32, "x" * 32)])
 def test_a_configured_token_of_32_characters_or_none_is_kept(token: str, kept: str | None):
-    assert UploadWebInterface(auth_token=token).auth_token == kept
+    assert Web(token=token).token == kept
 
 
 def test_a_short_configured_token_is_refused():
-    with pytest.raises(ValueError, match="upload.web_interface.auth_token must be at least 32 characters"):
-        UploadWebInterface(auth_token="x" * 31)
+    with pytest.raises(ValueError, match="web.token must be at least 32 characters"):
+        Web(token="x" * 31)
 
 
 @pytest.mark.parametrize("path", ["/", "/api/auth", "/api/jobs"])
 def test_an_unknown_host_is_refused_before_anything_else(path: str, monkeypatch: pytest.MonkeyPatch):
     _clean()
-    monkeypatch.setattr(cfg.upload.web_interface, "allowed_hosts", [])
+    monkeypatch.setattr(cfg.web, "allowed_hosts", [])
     with web_client(base_url="http://evil.example:55155", host=LAN_BIND) as c:
         answer = c.get(path)
     assert answer.status_code == 403
     assert answer.json() == {
-        "detail": "This host name is not allowed. Add it to allowed_hosts in the [upload.web_interface] config section."
+        "detail": "This host name is not allowed. Add it to allowed_hosts in the [web] config section."
     }
 
 
 def test_a_websocket_from_an_unknown_host_is_refused(monkeypatch: pytest.MonkeyPatch):
     _clean()
-    monkeypatch.setattr(cfg.upload.web_interface, "allowed_hosts", [])
+    monkeypatch.setattr(cfg.web, "allowed_hosts", [])
     with web_client(base_url="http://evil.example:55155", host=LAN_BIND) as c:
         headers = {"host": "evil.example:55155", "cookie": f"{COOKIE_NAME}=any-session"}
         with pytest.raises(WebSocketDisconnect), c.websocket_connect("/api/ws", headers=headers):
@@ -297,7 +326,7 @@ def test_loopback_names_the_bind_address_and_allowed_hosts_pass(
     bind: str, host: str, allowed_hosts: list[str], monkeypatch: pytest.MonkeyPatch
 ):
     _clean()
-    monkeypatch.setattr(cfg.upload.web_interface, "allowed_hosts", allowed_hosts)
+    monkeypatch.setattr(cfg.web, "allowed_hosts", allowed_hosts)
     with web_client(base_url=f"http://{host}", host=bind) as c:
         answer = c.get("/api/auth")
     assert answer.status_code == 200
@@ -335,9 +364,9 @@ async def test_a_wildcard_bind_without_allowed_hosts_says_a_browser_elsewhere_is
     serve_nothing, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("SALMON_WEB_TOKEN", "x" * 32)
-    monkeypatch.setattr(cfg.upload.web_interface, "allowed_hosts", [])
+    monkeypatch.setattr(cfg.web, "allowed_hosts", [])
     warned = await CliRunner().invoke(web, ["--host", LAN_BIND])
-    monkeypatch.setattr(cfg.upload.web_interface, "allowed_hosts", ["salmon.lan"])
+    monkeypatch.setattr(cfg.web, "allowed_hosts", ["salmon.lan"])
     listed = await CliRunner().invoke(web, ["--host", LAN_BIND])
     bound = await CliRunner().invoke(web, ["--host", "192.168.1.20"])
 

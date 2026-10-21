@@ -3,7 +3,7 @@
 The web UI holds the account's tracker cookies and can trigger real uploads and
 deletes, so on any non-loopback bind it must sit behind a shared secret. The
 token comes from the SALMON_WEB_TOKEN env var (so a container can inject it) or
-``[upload.web_interface] auth_token`` in config; with neither, ``salmon web`` makes one per
+``[web] token`` in config; with neither, ``salmon web`` makes one per
 run. Every /api request needs it, or a session cookie a login traded it for (upstream's ``Auth``),
 and one from another site is refused whatever it carries.
 Every request's Host must be a loopback name, the bind address or an allowed host (security.py).
@@ -24,7 +24,7 @@ from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from salmon.config.validations import WEB_TOKEN_MIN_LENGTH
-from salmon.webui.security import host_allowed, origin_allowed
+from salmon.webui.security import host_allowed, is_loopback, origin_allowed
 
 COOKIE_NAME = "salmon_web_session"
 # The fork's cookie before sessions held the token itself: login and logout delete it.
@@ -40,22 +40,29 @@ EXEMPT_API_PATHS = {"/api/login", "/api/auth"}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
-def resolve_auth_token(explicit: str | None = None) -> str | None:
-    """Return the configured web token (explicit arg, then env, then config); '' -> None.
+def resolve_token(host: str, configured: str | None) -> tuple[str, bool]:
+    """The token for a server bound to ``host``, and whether it was made for this start.
+
+    ``SALMON_WEB_TOKEN`` beats the config's ``[web] token``. With neither, a loopback bind gets a new random token;
+    any other bind refuses to start.
 
     Raises:
-        click.ClickException: SALMON_WEB_TOKEN is too short.
+        click.ClickException: No token for a non-loopback bind, or ``SALMON_WEB_TOKEN`` is too short.
     """
-    if explicit:
-        return explicit
     env = os.environ.get(ENV_VAR)
     if env:
         if len(env) < WEB_TOKEN_MIN_LENGTH:
             raise click.ClickException(f"{ENV_VAR} must be at least {WEB_TOKEN_MIN_LENGTH} characters.")
-        return env
-    from salmon import cfg
-
-    return getattr(cfg.upload.web_interface, "auth_token", None) or None
+        return env, False
+    if configured:
+        return configured, False
+    if is_loopback(host):
+        return secrets.token_urlsafe(32), True
+    raise click.ClickException(
+        f"salmon web will not listen on {host} without a token: anyone who reaches it could upload with your "
+        f"tracker accounts. Set {ENV_VAR} or [web] token (at least {WEB_TOKEN_MIN_LENGTH} characters), "
+        "or listen on 127.0.0.1."
+    )
 
 
 def _encode(value: str) -> bytes:
@@ -157,7 +164,7 @@ class AuthMiddleware:
                 receive,
                 send,
                 403,
-                "This host name is not allowed. Add it to allowed_hosts in the [upload.web_interface] config section.",
+                "This host name is not allowed. Add it to allowed_hosts in the [web] config section.",
             )
             return
         if not scope.get("path", "").startswith("/api/"):

@@ -327,28 +327,15 @@ class UploadDescription(BaseStruct):
     artist_tags_in_tracklist: bool = False
 
 
-# A web token guards uploads with the user's tracker accounts: long enough that guessing it is hopeless.
-WEB_TOKEN_MIN_LENGTH = 32
-
-
 class UploadWebInterface(BaseStruct):
     host: str = "0.0.0.0"
     port: int = 55110
     display_host: str = "localhost"
     static_root_url: str = "/static"
-    auth_token: str | None = None
-    allowed_hosts: list[str] = msgspec.field(default_factory=list)
 
     def __post_init__(self):
         if self.port < 1 or self.port > 65535:
             raise ValueError("Port number is invalid")
-        if self.auth_token == "":
-            self.auth_token = None
-        if self.auth_token is not None and len(self.auth_token) < WEB_TOKEN_MIN_LENGTH:
-            raise ValueError(
-                f"upload.web_interface.auth_token must be at least {WEB_TOKEN_MIN_LENGTH} characters"
-                ' (python -c "import secrets; print(secrets.token_urlsafe(32))" makes one)'
-            )
 
     @property
     def effective_host(self) -> str:
@@ -464,6 +451,34 @@ class Upload(BaseStruct):
             raise ValueError(f"upload.conversions: {e}") from None
 
 
+# A web token guards uploads with the user's tracker accounts: long enough that guessing it is hopeless.
+WEB_TOKEN_MIN_LENGTH = 32
+
+
+class Web(BaseStruct):
+    """``salmon web``. The CLI's spectrals viewer keeps its own [upload.spectrals_viewer]."""
+
+    host: str = "127.0.0.1"
+    port: int = 55155
+    token: str | None = None
+    # Host header values accepted besides loopback names and the bind address (DNS rebinding).
+    allowed_hosts: list[str] = msgspec.field(default_factory=list)
+    max_jobs: int = 2
+
+    def __post_init__(self):
+        if self.port < 1 or self.port > 65535:
+            raise ValueError("web.port must be between 1 and 65535")
+        if self.token == "":
+            self.token = None
+        if self.token is not None and len(self.token) < WEB_TOKEN_MIN_LENGTH:
+            raise ValueError(
+                f"web.token must be at least {WEB_TOKEN_MIN_LENGTH} characters"
+                ' (python -c "import secrets; print(secrets.token_urlsafe(32))" makes one)'
+            )
+        if self.max_jobs < 1:
+            raise ValueError("web.max_jobs must be at least 1")
+
+
 class Cfg(BaseStruct):
     "This class defines the schema that msgspec uses to parse the config"
 
@@ -473,6 +488,7 @@ class Cfg(BaseStruct):
     tracker: Tracker = msgspec.field(default_factory=Tracker)
     seedbox: list[Seedbox] = msgspec.field(default_factory=list)
     upload: Upload = msgspec.field(default_factory=Upload)
+    web: Web = msgspec.field(default_factory=Web)
 
     def __post_init__(self):
         # A tracker's own dottorrents_dir gets .torrent files written with overwrite, like the global one.
