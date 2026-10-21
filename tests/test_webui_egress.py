@@ -79,6 +79,7 @@ def test_a_jobs_log_and_error_reach_the_browser_without_a_secret(secrets_set):
         click.echo(f"cookie {SESSION} as sent {quote(SESSION, safe='')} key {API_KEY} keeplogged {KEEPLOGGED}")
         click.echo(f"seedbox http://user:{BOX_PASSWORD}@127.0.0.1:8080 announce .../{PASSKEY}/announce")
         click.echo(f"rclone --sftp-pass {RCLONE_PASS}; review endpoint failed with {AI_PASSWORD}")
+        click.echo(f"catbox userhash {USERHASH}")
         raise RuntimeError(f"GET https://tracker.example/torrents.php?action=download&torrent_pass={PASSKEY}")
 
     with web_client() as client:
