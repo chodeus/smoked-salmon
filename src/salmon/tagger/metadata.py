@@ -8,7 +8,7 @@ from typing import Any
 import asyncclick as click
 import msgspec
 
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.checks.source import is_store_url, tag_urls
 from salmon.common import handle_scrape_errors, make_searchstrs, re_strip
 from salmon.common.strings import artist_keys, comparable
@@ -226,7 +226,7 @@ async def _select_choice(
 
     while True:
         if choices:
-            res = await click.prompt(
+            res = await interaction.prompt(
                 click.style(
                     "\nWhich metadata results would you like to use? Type result numbers and/or paste URLs, "
                     'separated by spaces; all of them are combined. Put "*" before the one the files came from '
@@ -237,7 +237,7 @@ async def _select_choice(
                 default=default,
             )
         else:
-            res = await click.prompt(
+            res = await interaction.prompt(
                 click.style(
                     "\nNo metadata results were found. Paste URLs separated by spaces (all of them are combined), "
                     'with "*" before the one the files came from (the WEB store). Or [m]anual / [a]bort.',
@@ -311,7 +311,7 @@ async def _get_manual_metadata(rls_data):
     metadata = json.dumps(rls_data, indent=2, ensure_ascii=False)
     while True:
         try:
-            metadata = click.edit(metadata, extension=".json", editor=cfg.upload.default_editor) or metadata
+            metadata = await interaction.edit(metadata, extension=".json", editor=cfg.upload.default_editor) or metadata
             metadata_dict = msgspec.json.decode(metadata)
             if isinstance(metadata_dict["genres"], str):
                 metadata_dict["genres"] = [metadata_dict["genres"]]
@@ -319,7 +319,7 @@ async def _get_manual_metadata(rls_data):
             metadata_dict["genres"] = standardize_genres(metadata_dict["genres"])
             return metadata_dict
         except (TypeError, msgspec.DecodeError):
-            click.confirm(
+            await interaction.confirm(
                 click.style("Metadata is not a valid JSON file, retry?", fg="magenta", bold=True),
                 default=True,
                 abort=True,

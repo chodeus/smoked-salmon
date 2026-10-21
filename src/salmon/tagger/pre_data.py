@@ -6,7 +6,7 @@ from copy import deepcopy
 
 import asyncclick as click
 
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.common import RE_USELESS_VERSION, re_split, split_genre
 from salmon.common.files import _tracknumber_sort_key
 from salmon.common.strings import strip_numbered_suffixes
@@ -242,8 +242,7 @@ def _parse_role_names(role_value):
 async def _prompt_encoding():
     click.echo(f"\nValid encodings: {', '.join(TAG_ENCODINGS.keys())}")
     while True:
-        # A blocking input(): this loop waits for the answer.
-        enc = input(click.style("What is the encoding of this release? [a]bort: ", fg="magenta"))
+        enc = await interaction.prompt(click.style("What is the encoding of this release? [a]bort", fg="magenta"))
         try:
             return TAG_ENCODINGS[enc.upper()]
         except KeyError:

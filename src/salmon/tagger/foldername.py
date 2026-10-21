@@ -7,7 +7,7 @@ from string import Formatter
 
 import asyncclick as click
 
-from salmon import cfg, dryrun
+from salmon import cfg, dryrun, interaction
 from salmon.common import clean_name, has_visible_chars, strip_template_keys
 from salmon.common.files import rewrite_refusal
 from salmon.common.strings import plain_spaces
@@ -44,7 +44,7 @@ async def rename_folder(path, metadata, auto_rename, check=True, parent=None, or
         click.echo(f"Old folder name        : {old_base}")
         click.echo(f"New pending folder name: {new_base}")
 
-        user_rename_choice = cfg.upload.yes_all or click.confirm(
+        user_rename_choice = await interaction.assume_defaults() or await interaction.confirm(
             click.style("\nWould you like to replace the original folder name?", fg="magenta"), default=True
         )
 
@@ -66,7 +66,7 @@ async def rename_folder(path, metadata, auto_rename, check=True, parent=None, or
         # Often the very album this copy was made from: replacing it would break what seeds from it.
         if (reason := rewrite_refusal(new_path)) is not None:
             raise UploadError(f"Not replacing {new_path}: {reason}. Rename it, or give the upload another folder name.")
-        if not check or click.confirm(
+        if not check or await interaction.confirm(
             click.style(
                 f"A folder already exists with the new folder name '{new_path}', would you like to replace it?",
                 fg="magenta",
@@ -332,16 +332,16 @@ async def _edit_folder_interactive(foldername, auto_rename):
     """Allow the user to edit the pending folder name in a text editor."""
     if auto_rename:
         return foldername
-    if not click.confirm(
+    if not await interaction.confirm(
         click.style("Is the new folder name acceptable? ([n] to edit)", fg="magenta"),
         default=True,
     ):
-        newname = click.edit(foldername, editor=cfg.upload.default_editor)
+        newname = await interaction.edit(foldername, editor=cfg.upload.default_editor)
         while True:
             if newname is None:
                 return foldername
             elif re.search(BLACKLISTED_CHARS, newname) or not _is_folder_name(clean_name(newname.replace("\n", ""))):
-                if not click.confirm(
+                if not await interaction.confirm(
                     click.style(
                         "Folder name is empty or contains invalid characters, retry?",
                         fg="magenta",
@@ -352,5 +352,5 @@ async def _edit_folder_interactive(foldername, auto_rename):
                     sys.exit(1)
             else:
                 return clean_name(newname.replace("\n", ""))
-            newname = click.edit(foldername, editor=cfg.upload.default_editor)
+            newname = await interaction.edit(foldername, editor=cfg.upload.default_editor)
     return foldername

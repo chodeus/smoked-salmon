@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any
 import asyncclick
 
 import salmon.commands
-import salmon.tagger.pre_data
 import salmon.uploader
 import salmon.uploader.spectrals
 from salmon.errors import NoAnswerError
@@ -246,14 +245,6 @@ def _web_edit(text: str | None = None, **kw: Any) -> str | None:
     return raw if raw.endswith("\n") else raw + "\n"
 
 
-def _web_input(text: str = "") -> str:
-    interaction = _current.get()
-    if interaction is None:
-        return input(text)
-    raw = interaction.ask_sync("prompt", str(text), default=None)
-    return "" if raw is None else str(raw)
-
-
 async def _web_view_spectrals(
     spectrals_path: str, all_spectral_ids: dict[int, str], wait_for_enter: Callable[[str], Awaitable[None]]
 ) -> None:
@@ -304,6 +295,3 @@ def install_interaction_patches() -> None:
     salmon.uploader.spectrals.handle_spectrals_upload_and_deletion = _web_handle_spectrals_upload_and_deletion
     salmon.uploader.handle_spectrals_upload_and_deletion = _web_handle_spectrals_upload_and_deletion
     salmon.commands.handle_spectrals_upload_and_deletion = _web_handle_spectrals_upload_and_deletion
-    # pre_data._prompt_encoding uses the raw builtin input(); a module-level
-    # name shadows the builtin lookup.
-    setattr(salmon.tagger.pre_data, "input", _web_input)  # noqa: B010 - shadows the builtin, not a real attribute
