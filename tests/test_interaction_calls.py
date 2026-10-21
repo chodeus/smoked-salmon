@@ -15,11 +15,7 @@ CLICK_MODULES = {"asyncclick", "click"}
 # Where a direct question is allowed: the terminal's implementation, and the first-run config creation,
 # which runs before any interface exists and never runs in the web.
 ALLOWED_FILES = {"interaction.py"}
-ALLOWED_FUNCTIONS = {
-    ("config/__init__.py", "setup_config"),
-    # The fork's: salmon web's patches stand in for asyncclick's, until it asks through the interface too.
-    ("webui/interaction.py", "install_interaction_patches"),
-}
+ALLOWED_FUNCTIONS = {("config/__init__.py", "setup_config")}
 
 
 def _is_click_module(name: str | None) -> bool:

@@ -43,12 +43,12 @@ async def answer_question(job_id: str, req: AnswerRequest) -> dict:
     return {"answered": req.question_id}
 
 
-@router.get("/jobs/{job_id}/spectral/{filename}")
+@router.get("/jobs/{job_id}/spectrals/{filename}")
 async def job_spectral(job_id: str, filename: str) -> FileResponse:
     job = manager.jobs.get(job_id)
-    if job is None or job.interaction is None or job.interaction.spectrals is None:
+    if job is None or job.asker is None or job.asker.spectrals is None:
         raise HTTPException(status_code=404, detail="No spectrals for this job.")
-    spectrals = job.interaction.spectrals
+    spectrals = job.asker.spectrals
     if filename not in spectrals["files"]:
         raise HTTPException(status_code=404, detail="Unknown spectral image.")
     return FileResponse(os.path.join(spectrals["path"], filename))

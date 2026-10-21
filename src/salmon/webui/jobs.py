@@ -1,7 +1,7 @@
 """In-memory job manager for the web interface.
 
-Each job runs in a worker thread with its own event loop: its synchronous prompts and filesystem work may block that
-private loop while the server loop keeps serving (and delivers browser answers to pending questions). At most
+Each job runs in a worker thread with its own event loop: its filesystem work may block that private loop while the
+server loop keeps serving (and delivers browser answers to pending questions). At most
 MAX_JOBS run at once; the others wait their turn in the order they came, and a job waits while another works on the
 same album folder. What a job prints goes to its log (see output.py).
 
@@ -12,6 +12,7 @@ subscribers (websocket connections) receive every state change as an event.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import itertools
 import os
@@ -24,18 +25,20 @@ from typing import TYPE_CHECKING, Any, cast
 
 import asyncclick as click
 
+from salmon import interaction
 from salmon.common.progress import reset_progress_callback, set_progress_callback
 from salmon.common.redaction import redact_url
 from salmon.errors import AbortAndDeleteFolder, NoAnswerError, UnknownOutcomeError
 from salmon.trackers import account as accounts
 from salmon.uploader.record import recording
 from salmon.webui import egress, output
-from salmon.webui.interaction import WebInteraction, no_answer, set_interaction
+from salmon.webui.interaction import WebInteraction
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
 _id_counter = itertools.count(1)
+_question_ids = itertools.count(1)
 
 FINISHED = frozenset({"done", "failed", "cancelled", "unknown_outcome"})
 UNKNOWN_OUTCOME = "The request may have reached the tracker: check the site before trying again."
@@ -50,6 +53,8 @@ WORKER_JOIN_TIMEOUT = 300
 # How long stopping salmon web waits for its running jobs.
 STOP_TIMEOUT = 30
 MAX_SUBSCRIBERS = 64  # websocket connections
+# An unanswered question must not hold its job, and the job's folder, for good. Long enough to look at spectrals.
+QUESTION_TIMEOUT = 30 * 60
 PROGRESS_BROADCAST_INTERVAL = 0.2  # seconds; job.progress itself always updates
 
 
@@ -140,6 +145,10 @@ def _unknown_outcome(error: BaseException) -> UnknownOutcomeError | None:
     return None
 
 
+def _no_answer() -> str:
+    return f"No answer for {round(QUESTION_TIMEOUT / 60)} minutes: the job stopped."
+
+
 def _write_traceback(e: BaseException) -> None:
     """`e`'s traceback, its whole chain, on the server's own stderr."""
     # Never to the job's log, and masked: a chained error may repeat a request's URL.
@@ -153,7 +162,7 @@ def _failure(e: BaseException) -> str:
     if any(isinstance(leaf, AbortAndDeleteFolder) for leaf in leaves):
         return "Aborted — the album folder was deleted as requested."
     if any(isinstance(leaf, NoAnswerError) for leaf in leaves):
-        return no_answer()
+        return _no_answer()
     if any(isinstance(leaf, click.Abort) for leaf in leaves):
         return "Aborted."
     if len(leaves) > 1 or isinstance(e, BaseExceptionGroup):
@@ -221,7 +230,7 @@ class Job:
         self.folder_path: str | None = None
         self.question: dict[str, Any] | None = None
         self.log_lines: list[str] = []
-        self.interaction: WebInteraction | None = None
+        self.asker: _JobAsker | None = None
         self.thread: threading.Thread | None = None
         # Run when the job is dropped from the list, so a job that left files
         # behind can take them with it. Set by whoever created those files.
@@ -245,8 +254,99 @@ class Job:
             "error": self.error,
             "question": self.question,
             "log": self.log_lines[-MAX_LOG_LINES:],
-            "spectrals": (self.interaction.spectrals or {}).get("files") if self.interaction else None,
+            "spectrals": (self.asker.spectrals or {}).get("files") if self.asker else None,
         }
+
+
+class _JobAsker:
+    """A job's side of its questions (`salmon.webui.interaction.Asker`): the one waiting, the log, its spectrals."""
+
+    def __init__(self, emit: Callable[[dict[str, Any]], None], set_question: Callable[[dict[str, Any] | None], None]):
+        self._emit = emit
+        self._set_question = set_question
+        self._lock = threading.Lock()
+        self._pending: tuple[str, concurrent.futures.Future] | None = None
+        self.spectrals: dict[str, Any] | None = None
+        self.cancel_requested = threading.Event()
+        self.closed = threading.Event()
+        # What the job prints, as whole lines for its log (output.to sends it here).
+        self.lines = output.Lines(lambda line, _err: self.log(line))
+
+    def emit(self, event: dict[str, Any]) -> None:
+        if not self.closed.is_set():
+            self._emit(event)
+
+    def log(self, line: str) -> None:
+        self.emit({"event": "log", "line": line})
+
+    def _begin(self, question: dict[str, Any]) -> tuple[str, concurrent.futures.Future]:
+        if self.cancel_requested.is_set() or self.closed.is_set():
+            raise concurrent.futures.CancelledError()
+        self.lines.flush()
+        question = {"id": f"q-{next(_question_ids)}", **question}
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        with self._lock:
+            # Again under the lock: close() may have run since, and would find nothing pending to cancel.
+            if self.cancel_requested.is_set() or self.closed.is_set():
+                raise concurrent.futures.CancelledError()
+            self._pending = (question["id"], future)
+        self._set_question(question)
+        self.emit({"event": "question", "question": question})
+        return question["id"], future
+
+    def _finish(self, question_id: str) -> None:
+        with self._lock:
+            self._pending = None
+        self._set_question(None)
+        self.emit({"event": "question_answered", "question_id": question_id})
+
+    async def ask(self, question: dict[str, Any]) -> Any:
+        """Put `question` to the browser, and wait for its answer without blocking the job's loop."""
+        self.withdraw_deleted_spectrals()
+        question_id, future = self._begin(question)
+        try:
+            return await asyncio.wait_for(asyncio.wrap_future(future), QUESTION_TIMEOUT)
+        except TimeoutError:
+            self.log(_no_answer())
+            raise NoAnswerError() from None
+        finally:
+            self._finish(question_id)
+
+    def show_spectrals(self, folder: str, files: list[str]) -> None:
+        self.spectrals = {"path": folder, "files": files}
+        self.emit({"event": "spectrals_ready", "files": files})
+
+    def withdraw_deleted_spectrals(self) -> None:
+        """Stop showing spectrals whose folder the job has deleted since, whose images would no longer load."""
+        if self.spectrals is not None and not os.path.isdir(self.spectrals["path"]):
+            self.spectrals = None
+            self.emit({"event": "spectrals_ready", "files": []})
+
+    def answer(self, question_id: str, value: Any) -> bool:
+        """Deliver an answer (called from the server loop). False if stale."""
+        with self._lock:
+            if self._pending is None or self._pending[0] != question_id:
+                return False
+            future = self._pending[1]
+        try:
+            future.set_result(value)
+        except concurrent.futures.InvalidStateError:
+            return False
+        return True
+
+    def cancel_pending(self) -> None:
+        """Request cancellation: fail the pending question and refuse new ones."""
+        self.cancel_requested.set()
+        with self._lock:
+            if self._pending is not None:
+                self._pending[1].cancel()
+
+    def close(self) -> None:
+        """Stop emitting events and asking questions (the job is finished)."""
+        self.closed.set()
+        with self._lock:
+            if self._pending is not None:
+                self._pending[1].cancel()
 
 
 class JobManager:
@@ -293,12 +393,12 @@ class JobManager:
         job = self._register(job_type, title, params, lock_key)
         job.folder = _folder_key(folder) if folder else None
         job.folder_path = os.path.realpath(folder) if folder else None
-        interaction = WebInteraction(
+        asker = _JobAsker(
             emit=lambda event: self._emit_for(job, event),
             set_question=lambda question: self._set_question(job, question),
         )
-        job.interaction = interaction
-        self._queue[job] = threading.Thread(target=self._thread_main, args=(job, interaction, factory), daemon=True)
+        job.asker = asker
+        self._queue[job] = threading.Thread(target=self._thread_main, args=(job, asker, factory), daemon=True)
         self._broadcast({"event": "created", "job": job.to_dict()})
         self._schedule()
         return job
@@ -323,8 +423,8 @@ class JobManager:
                 self._running.discard(job)
                 self._finish(job)
                 self._broadcast({"event": "finished", "job": job.to_dict()})
-                if job.interaction is not None:
-                    job.interaction.close()
+                if job.asker is not None:
+                    job.asker.close()
 
     # ------------------------------------------------------------------
     # Execution
@@ -334,10 +434,7 @@ class JobManager:
         job.status = status
         self._broadcast({"event": "status", "job_id": job.id, "status": status})
 
-    def _thread_main(
-        self, job: Job, interaction: WebInteraction, factory: Callable[[Job], Coroutine[Any, Any, Any]]
-    ) -> None:
-        interaction_token = set_interaction(interaction)
+    def _thread_main(self, job: Job, asker: _JobAsker, factory: Callable[[Job], Coroutine[Any, Any, Any]]) -> None:
         progress_token = set_progress_callback(_make_progress_callback(job, self._emit))
         # A BaseEventLoop: its shutdown_default_executor takes the timeout AbstractEventLoop's stub leaves out.
         loop = cast("asyncio.BaseEventLoop", asyncio.new_event_loop())
@@ -347,23 +444,25 @@ class JobManager:
         try:
             _check_folder(job)
             with job._lock:
-                if interaction.cancel_requested.is_set():
+                if asker.cancel_requested.is_set():
                     raise asyncio.CancelledError()
-                # Before the task is made: it takes the context, and with it where its output goes and the cancel its
-                # tracker requests see.
-                with output.to(interaction.lines.write), accounts.cancelled_with(interaction.cancel_requested):
+                # Before the task is made: it takes the context, and with it where its output goes, who answers its
+                # questions, and the cancel its tracker requests see.
+                with (
+                    output.to(asker.lines.write),
+                    interaction.using(WebInteraction(asker)),
+                    accounts.cancelled_with(asker.cancel_requested),
+                ):
                     task = loop.create_task(_in_click_context(_recorded(factory(job))))
                 job._thread_task = task
             result = loop.run_until_complete(task)
             status = "done"
         except BaseException as e:  # noqa: BLE001 - single funnel for job errors
-            status, error = _outcome(e, interaction.cancel_requested.is_set())
+            status, error = _outcome(e, asker.cancel_requested.is_set())
         finally:
             reset_progress_callback(progress_token)
-            set_interaction(None)
-            del interaction_token
             # The task is over: a question now could only come from a worker it left, and none would answer it.
-            interaction.cancel_pending()
+            asker.cancel_pending()
             # As asyncio.run does: the to_thread workers it left end first, so the job holds its folder till then.
             with contextlib.suppress(Exception):
                 loop.run_until_complete(loop.shutdown_default_executor(WORKER_JOIN_TIMEOUT))
@@ -371,12 +470,13 @@ class JobManager:
                 loop.close()
             job._thread_loop = None
             job.question = None
-            # The log is whole before the job reads as finished.
-            interaction.lines.flush()
+            # The log is whole, and its spectrals still there, before the job reads as finished.
+            asker.lines.flush()
+            asker.withdraw_deleted_spectrals()
             self._call(self._finished, job, status, error, result)
             # From here on, leaked to_thread workers must neither emit
             # events nor block on unanswerable questions.
-            interaction.close()
+            asker.close()
 
     def _finish(self, job: Job) -> None:
         if job.lock_key is not None:
@@ -432,9 +532,9 @@ class JobManager:
 
     def answer(self, job_id: str, question_id: str, value: Any) -> bool:
         job = self.jobs.get(job_id)
-        if job is None or job.interaction is None:
+        if job is None or job.asker is None:
             return False
-        return job.interaction.answer(question_id, value)
+        return job.asker.answer(question_id, value)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -462,11 +562,11 @@ class JobManager:
             job.status = "cancelled"
             self._finish(job)
             self._broadcast({"event": "finished", "job": job.to_dict()})
-            if job.interaction is not None:
-                job.interaction.close()
+            if job.asker is not None:
+                job.asker.close()
             return True
-        if job.interaction is not None:
-            job.interaction.cancel_pending()
+        if job.asker is not None:
+            job.asker.cancel_pending()
         with job._lock:
             loop, task = job._thread_loop, job._thread_task
         if loop is not None and task is not None:

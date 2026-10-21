@@ -430,7 +430,7 @@ allowed_hosts = ["192.168.1.20", "salmon.local"]
 salmon web --host 0.0.0.0
 ```
 
-Prompts that the CLI would ask on the terminal appear in the browser instead, and spectrals are shown inline as they are generated.
+Prompts that the CLI would ask on the terminal appear in the browser instead. A job shows its spectrals there, one at a time or as a grid, and waits until you are done with them; they stay on the job's page until the job deletes them.
 
 At most two jobs run at once: the others wait their turn in the order they came, except that a job on an album folder another job is working on waits for it, and the jobs after it may go first. Up to 100 jobs wait; past that a new one is refused (429) and is not queued. Stopping `salmon web` cancels its jobs and waits up to 30 seconds for the running ones to end. A job that waited starts only if its folder is still the one it named, where it was. What a job prints goes to its log in the browser, not to the terminal `salmon web` runs in; when a job fails, its traceback goes to that terminal only, with the config's and the trackers' secrets masked. When a request that changes something may have reached the tracker but salmon did not get the answer, the job ends as "unknown outcome", and its traceback goes to that terminal too. Check the site before you try again. Cancelling a job while its upload or report is on its way to a tracker waits for the tracker's answer, then stops the job; if that answer is lost, the job may still look the upload up, but sends the trackers nothing more that changes anything. Every job's tracker requests share one connection pool per tracker.
 

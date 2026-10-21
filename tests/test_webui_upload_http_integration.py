@@ -39,7 +39,6 @@ from salmon.trackers.red import RedApi
 from salmon.uploader import upload as run_upload
 from salmon.uploader.upload import concat_track_data, prepare_and_upload
 from salmon.webui import output
-from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.jobs import UNKNOWN_OUTCOME, JobManager
 
 POLL = 0.005
@@ -90,7 +89,7 @@ async def drive(job, script, timeout=DEADLINE):
             )
         seen.append(question)
         last_id = question["id"]
-        answered = job.interaction.answer(question["id"], answer)
+        answered = job.asker.answer(question["id"], answer)
         assert answered is True
         idx += 1
     else:
@@ -106,13 +105,8 @@ async def drive(job, script, timeout=DEADLINE):
 
 
 # ---------------------------------------------------------------------------
-# Fixtures: interaction patches, job managers, in-process fake Gazelle server
+# Fixtures: job managers, in-process fake Gazelle server
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _interaction_patches():
-    install_interaction_patches()  # idempotent
 
 
 @pytest.fixture
@@ -376,6 +370,7 @@ def http_wizard_factory(base_url, torrents_dir, path):
 HAPPY_PATH_SCRIPT = [
     ("What is the source of this release?", "web"),
     ("Would you like to upload to an existing group?", "n"),
+    ("Look at the spectrals, then go on.", True),
     ("Is this release lossy mastered?", "n"),
     ("What spectral IDs would you like to upload", "*"),
     ("Would you like to upload the torrent?", True),
@@ -437,10 +432,10 @@ async def test_happy_path_uploads_over_real_http(jm, album_dir, upload_world, st
 
     # Spectrals surfaced to the browser; the selected ids reached the
     # (stubbed) spectral uploader.
-    assert job.interaction.spectrals is not None
-    assert len(job.interaction.spectrals["files"]) == 6
+    assert job.asker.spectrals is not None
+    assert len(job.asker.spectrals["files"]) == 6
     assert upload_world.spectral_uploads == [
-        (job.interaction.spectrals["path"], {1: TRACK_FILES[0], 2: TRACK_FILES[1], 3: TRACK_FILES[2]})
+        (job.asker.spectrals["path"], {1: TRACK_FILES[0], 2: TRACK_FILES[1], 3: TRACK_FILES[2]})
     ]
 
     log = "\n".join(job.log_lines)
@@ -545,7 +540,7 @@ async def test_an_upload_whose_answer_is_lost_ends_the_job_as_an_unknown_outcome
         "upload", "Upload to RED", http_wizard_factory(base_url, dot_torrents_dir, path), lock_key=path
     )
 
-    await drive(job, HAPPY_PATH_SCRIPT[:5] + HAPPY_PATH_SCRIPT[6:])
+    await drive(job, [step for step in HAPPY_PATH_SCRIPT if "downconversion" not in step[0]])
     await join_job(job)
 
     assert job.status == "unknown_outcome", (job.error, job.log_lines)
