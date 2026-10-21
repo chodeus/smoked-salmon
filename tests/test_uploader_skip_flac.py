@@ -374,7 +374,7 @@ def _flow(monkeypatch, group: dict[str, Any], source: str = "WEB", **fakes: Any)
             "get_spectrals_path": _returning("/spectrals"),
             "handle_spectrals_upload_and_deletion": _returning_async(),
             "resolve_cover_url": _returning_async((True, None)),
-            "strip_oversized_pictures": _returning(False),
+            "check_embedded_pictures": _returning(),
             "UploadManager": FakeUploadManager,
             "check_existing_group": _returning_async(None, calls, "check_existing_group"),
             "check_requests": _returning_async(None, calls, "check_requests"),

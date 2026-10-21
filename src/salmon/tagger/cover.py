@@ -15,7 +15,6 @@ from PIL import Image
 
 from salmon import cfg
 from salmon.common import get_audio_files
-from salmon.constants import TAG_TRUMP_SIZE
 
 # A cover is a few MiB: this stops a wrong URL from filling memory.
 _MAX_COVER_BYTES = 25 * 1024 * 1024
@@ -246,107 +245,6 @@ def compress_to_target_size(image, target_size):
 
 def get_8kib_padding(info: PaddingInfo):
     return humanfriendly.parse_size("8KiB")
-
-
-def strip_oversized_pictures(path: str, track_data: dict) -> list[str]:
-    """Drop pictures and padding from FLACs whose tag block is a trump reason; returns the files it rewrote."""
-    stripped = []
-    for filename, track in track_data.items():
-        size = track.get("tag size")
-        if not filename.lower().endswith(".flac") or not size or size <= TAG_TRUMP_SIZE:
-            continue
-        try:
-            audio = FLAC(os.path.join(path, filename))
-        except Exception as error:
-            click.secho(f"{filename}: could not read the FLAC metadata ({type(error).__name__}); left as is.", fg="red")
-            continue
-        pictures = [picture for picture in audio.pictures if picture.data]
-        # Front covers first: the first picture that saves is the copy kept.
-        pictures.sort(key=lambda picture: picture.type != PictureType.COVER_FRONT)
-        if pictures and not _existing_cover(path) and not any(_write_picture(path, p) for p in pictures):
-            # The embedded pictures are the only copy of the artwork: never strip them.
-            click.secho(
-                f"{filename}: pictures and padding exceed 1 MiB (a trump reason), but left as they are: "
-                "the embedded artwork could not be read as an image to keep.",
-                fg="red",
-            )
-            continue
-        click.secho(
-            f"{filename}: {humanfriendly.format_size(size, binary=True)} of pictures and padding exceeds 1 MiB "
-            "(a trump reason); removing them.",
-            fg="yellow",
-        )
-        audio.clear_pictures()
-        audio.save(padding=get_8kib_padding)
-        stripped.append(filename)
-    return stripped
-
-
-def compress_pictures(path):
-    """Embed the folder's cover into FLACs that carry no picture, resized to stay under the trump threshold."""
-    cover_file = get_cover_from_path(path)
-    for filename in get_audio_files(path):
-        if not filename.lower().endswith(".flac"):
-            continue
-        click.secho(f"Processing file: {filename}", fg="blue")
-        audio = FLAC(os.path.join(path, filename))
-        if audio.pictures:
-            click.secho("Existing covers meet size requirements", fg="bright_white")
-            continue
-        click.secho("Attempting to add external cover...", fg="magenta")
-        if not cover_file:
-            click.secho("No cover file found!", fg="red")
-            continue
-
-        try:
-            with open(cover_file, "rb") as c:
-                data = c.read()
-        except OSError as e:
-            click.secho(f"Could not read cover file {cover_file} as an image ({e}); leaving it out.", fg="red")
-            continue
-
-        max_picture_block_size = TAG_TRUMP_SIZE - humanfriendly.parse_size("8KiB")
-
-        # The PICTURE block's own fields (MIME type, dimensions, lengths) count against the limit too, so
-        # the image gets what is left once they are written with no data.
-        picture = Picture()
-        try:
-            # Decoded, not just identified: a truncated image still opens.
-            with Image.open(cover_file) as image:
-                image.load()
-                picture.mime = image.get_format_mimetype()
-        except (OSError, ValueError, Image.DecompressionBombError) as e:
-            click.secho(f"Could not read cover file {cover_file} as an image ({e}); leaving it out.", fg="red")
-            continue
-
-        if len(data) <= max_picture_block_size - len(picture.write()):
-            click.secho(
-                f"Cover size ({humanfriendly.format_size(len(data), binary=True)}) within limit",
-                fg="bright_green",
-            )
-        else:
-            click.secho(
-                f"Resizing oversized cover ({humanfriendly.format_size(len(data), binary=True)})...",
-                fg="yellow",
-            )
-            picture.mime = "image/jpeg"
-            try:
-                image = Image.open(cover_file)
-                image.thumbnail((1000, 1000))
-                image = _flatten_to_rgb(image)
-                data = compress_to_target_size(image, max_picture_block_size - len(picture.write()))
-            except (OSError, ValueError, Image.DecompressionBombError) as e:
-                click.secho(f"Could not convert cover file {cover_file} to a JPEG ({e}); leaving it out.", fg="red")
-                continue
-            if data is None:
-                click.secho(f"Could not shrink {cover_file} enough to embed it; leaving it out.", fg="red")
-                continue
-
-        picture.data = data
-        picture.type = PictureType.COVER_FRONT
-        audio.add_picture(picture)
-        audio.save(padding=get_8kib_padding)
-        click.secho(f"Saved {filename} with optimized cover", fg="bright_green")
 
 
 def pictures_and_padding_size(audio: FLAC) -> int:

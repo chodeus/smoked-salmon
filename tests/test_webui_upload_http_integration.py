@@ -255,6 +255,7 @@ def upload_world(monkeypatch, tmp_path):
     monkeypatch.setattr("salmon.uploader.gather_audio_info", lambda path: dict(world.audio_info))
     monkeypatch.setattr("salmon.uploader.standardize_tags", lambda path: None)
     monkeypatch.setattr("salmon.uploader.gather_tags", lambda path: dict(world.tags))
+    monkeypatch.setattr("salmon.uploader.check_embedded_pictures", lambda path: None)
 
     async def fake_check_tags(path):
         return dict(world.tags)

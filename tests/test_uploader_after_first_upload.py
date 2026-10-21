@@ -112,7 +112,7 @@ def flow(monkeypatch):
         "edit_metadata": recording("edit_metadata", ("/release", metadata, {}, {})),
         "concat_track_data": _sync({"01.flac": {}}),
         "resolve_cover_url": recording("resolve_cover_url", (True, None)),
-        "strip_oversized_pictures": _sync(False),
+        "check_embedded_pictures": _sync(),
         "collect_upload_warnings": _sync([]),
         "check_requests": recording("check_requests"),
         "check_existing_group": recording("check_existing_group", 5),

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import anyio
 import pytest
 from aiohttp import web
+from mutagen.flac import FLAC
 from mutagen.id3 import PictureType
 from PIL import Image
 
@@ -223,6 +224,31 @@ async def test_a_cover_download_cut_off_partway_leaves_no_file(tmp_path, monkeyp
 
     assert result is None
     assert list(tmp_path.iterdir()) == []
+
+
+def _bare_flac(path: Path) -> None:
+    """A FLAC with no audio and no picture: a STREAMINFO block only."""
+    info = (44100 << 44) | (1 << 41) | (15 << 36)
+    streaminfo = (4096).to_bytes(2, "big") * 2 + bytes(6) + info.to_bytes(8, "big") + bytes(16)
+    path.write_bytes(b"fLaC" + bytes([0x80]) + len(streaminfo).to_bytes(3, "big") + streaminfo)
+
+
+async def test_a_downloaded_cover_named_with_a_query_string_is_embedded(tmp_path, monkeypatch, cover_server) -> None:
+    # get_cover_from_path does not match this name: the uploader hands the downloaded path to the embed.
+    monkeypatch.setattr(cfg.upload.formatting, "lowercase_cover", True)
+    body = _jpeg()
+
+    async def whole(_request: web.Request) -> web.Response:
+        return web.Response(body=body, content_type="image/jpeg")
+
+    _bare_flac(tmp_path / "01.flac")
+    url = await cover_server(whole) + "?size=big"
+
+    cover_path, downloaded = await cover.download_cover_if_nonexistent(str(tmp_path), url)
+    cover.embed_missing_cover(str(tmp_path), cover_path)
+
+    assert (cover_path, downloaded) == (str(tmp_path / "cover.jpg?size=big"), True)
+    assert [picture.data for picture in FLAC(tmp_path / "01.flac").pictures] == [body]
 
 
 async def test_a_downloaded_cover_is_written_whole(tmp_path, monkeypatch, cover_server) -> None:

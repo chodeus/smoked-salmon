@@ -1,6 +1,7 @@
 """library_dirs: an album inside one comes out of any salmon run byte-identical, and is never deleted."""
 
 import hashlib
+import io
 import os
 import struct
 import sys
@@ -13,6 +14,7 @@ import pytest
 from asyncclick.testing import CliRunner
 from mutagen.flac import FLAC, Picture
 from mutagen.id3 import PictureType
+from PIL import Image
 
 import salmon.checks
 import salmon.commands
@@ -24,6 +26,7 @@ import salmon.uploader
 from salmon import cfg
 from salmon.config.validations import Directory
 from salmon.errors import AbortAndDeleteFolder, UploadError
+from salmon.tagger.audio_info import metadata_size
 from salmon.uploader import staging
 from salmon.uploader.spectrals import get_spectrals_path
 
@@ -383,8 +386,20 @@ async def _rename_files(path: str, *_args: Any) -> None:
             os.rename(os.path.join(path, name), os.path.join(path, name.replace(" - ", ". ")))
 
 
-def _run_up(monkeypatch, album: Path, **fakes: Any) -> tuple[Any, list[str], list[tuple[str, str]]]:
-    """`salmon up ALBUM -g 5` with real staging and renames, `fakes` for more seams: (result, uploads, transcodes)."""
+def _run_up(
+    monkeypatch,
+    album: Path,
+    *,
+    embed: bool | None = False,
+    scene: bool = False,
+    cover_url: str | None = None,
+    **fakes: Any,
+) -> tuple[Any, list[str], list[tuple[str, str]]]:
+    """Run `salmon up ALBUM -g 5` with the real staging, tag standardizing, picture strip and folder rename.
+
+    The seams that need audio tools, a network or a reviewer are stubbed, `fakes` replace more of them.
+    Returns the result, the folder of every upload, and the (source, output) of every transcode.
+    """
     uploads: list[str] = []
     transcodes: list[tuple[str, str]] = []
 
@@ -415,7 +430,7 @@ def _run_up(monkeypatch, album: Path, **fakes: Any) -> tuple[Any, list[str], lis
         "year": 2020,
         "edition_title": None,
         "scene": False,
-        "cover": None,
+        "cover": cover_url,
         "genres": [],
     }
     for name, fake in {
@@ -443,18 +458,32 @@ def _run_up(monkeypatch, album: Path, **fakes: Any) -> tuple[Any, list[str], lis
     }.items():
         monkeypatch.setattr(salmon.uploader, name, fake)
     monkeypatch.setattr(salmon.tagger.foldername, "generate_folder_name", _returning(RENAMED))
-    # -yyy sets yes_all: patched, so it is put back after the test.
+    # A config with yes_all on would answer the questions the run is meant to ask.
     monkeypatch.setattr(cfg.upload, "yes_all", False)
     monkeypatch.setattr(cfg.upload.requests, "last_minute_dupe_check", False)
     monkeypatch.setattr(cfg.upload.requests, "check_requests", False)
     monkeypatch.setattr(cfg.upload, "multi_tracker_upload", False)
-    monkeypatch.setattr(cfg.image, "embed_missing_cover", False)
+    if embed is not None:
+        monkeypatch.setattr(cfg.image, "embed_missing_cover", embed)
     monkeypatch.setattr(salmon.trackers, "get_class", lambda _tracker: FakeSite)
 
     async def run():
         return await CliRunner().invoke(
             salmon.uploader.up,
-            [str(album), "-t", "RED", "-g", "5", "-s", "WEB", "-n", "-yyy", "--skip-integrity-check", "--skip-up"],
+            [
+                str(album),
+                "-t",
+                "RED",
+                "-g",
+                "5",
+                "-s",
+                "WEB",
+                "-n",
+                "-yyy",
+                "--skip-integrity-check",
+                "--skip-up",
+                *(["--scene"] if scene else []),
+            ],
             input="y\n",
         )
 
@@ -482,13 +511,159 @@ def test_up_leaves_a_library_album_byte_identical_and_uploads_a_copy(
     assert [source for source, _output in transcodes] == [str(copy)] * 2
     assert set(os.listdir(downloads)) == {staging.STAGING_DIR, RENAMED, f"{RENAMED} [320]", f"{RENAMED} [V0]"}
     assert os.listdir(downloads / staging.STAGING_DIR) == []
-    # Every change the run makes landed in the copy: the retag, the alias rewrite, the renames.
+    # Every change the run makes landed in the copy: the retag, the alias rewrite, the picture strip, the renames.
     one = FLAC(copy / "01. one.flac")
-    assert (one["album"], one["date"]) == (["Album"], ["2020"])
+    assert (one["album"], one["date"], one.pictures) == (["Album"], ["2020"], [])
     assert "year" not in one
     assert FLAC(copy / "CD1" / "02 - two.flac")["album"] == ["Album"]
     assert _inodes(copy).isdisjoint(_inodes(library))
     assert all(os.stat(file).st_nlink == 1 for file in library.rglob("*") if file.is_file())
+
+
+def _bare_album(folder: Path) -> tuple[Path, bytes]:
+    """A release whose FLACs have no picture, with a real cover.jpg. Returns the folder and the cover's bytes."""
+    folder.mkdir(parents=True)
+    _write_flac(folder / "01 - one.flac", title="One", artist="Artist")
+    _write_flac(folder / "02 - two.flac", title="Two", artist="Artist")
+    buffer = io.BytesIO()
+    Image.new("RGB", (10, 10), "green").save(buffer, "jpeg")
+    (folder / "cover.jpg").write_bytes(buffer.getvalue())
+    return folder, buffer.getvalue()
+
+
+def _pictures_at_upload(seen: list[list[int]], files: list[list[str]] | None = None):
+    """An upload_and_report that records how many pictures each FLAC has, and the files, when the torrent is made."""
+
+    async def upload_and_report(_site: Any, path: str, *_args: Any, **_kwargs: Any) -> tuple:
+        if files is not None:
+            files.append(sorted(str(file.relative_to(path)) for file in Path(path).rglob("*") if file.is_file()))
+        seen.append(sorted(len(FLAC(file).pictures) for file in Path(path).rglob("*.flac")))
+        return 21, 5, "/t.torrent", b"", "https://tracker.test/t"
+
+    return upload_and_report
+
+
+def test_up_embeds_the_folder_cover_in_a_flac_with_no_picture_before_the_first_torrent(monkeypatch, dirs) -> None:
+    _library, downloads = dirs
+    album, cover_bytes = _bare_album(downloads / "Album")
+    seen: list[list[int]] = []
+
+    result, _uploads, _transcodes = _run_up(monkeypatch, album, embed=True, upload_and_report=_pictures_at_upload(seen))
+
+    assert result.exit_code == 0, result.output
+    assert seen[0] == [1, 1]
+    copy = downloads / RENAMED
+    for file in copy.glob("*.flac"):
+        (picture,) = FLAC(file).pictures
+        assert picture.type == PictureType.COVER_FRONT
+        assert picture.data == cover_bytes
+    assert (copy / "cover.jpg").read_bytes() == cover_bytes
+
+
+def test_up_leaves_the_files_alone_with_embed_missing_cover_off(monkeypatch, dirs) -> None:
+    _library, downloads = dirs
+    album, _cover = _bare_album(downloads / "Album")
+    seen: list[list[int]] = []
+
+    result, _uploads, _transcodes = _run_up(
+        monkeypatch, album, embed=False, upload_and_report=_pictures_at_upload(seen)
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen[0] == [0, 0]
+
+
+def test_up_leaves_a_scene_release_alone(monkeypatch, dirs) -> None:
+    _library, downloads = dirs
+    album, _cover = _bare_album(downloads / "Album")
+    seen: list[list[int]] = []
+
+    result, _uploads, _transcodes = _run_up(
+        monkeypatch, album, embed=True, scene=True, upload_and_report=_pictures_at_upload(seen)
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen[0] == [0, 0]
+
+
+def test_up_embeds_the_cover_in_the_copy_of_a_library_album_only(monkeypatch, dirs) -> None:
+    library, downloads = dirs
+    album, cover_bytes = _bare_album(library / "Album")
+    before = _snapshot(library)
+    seen: list[list[int]] = []
+
+    result, _uploads, _transcodes = _run_up(monkeypatch, album, embed=True, upload_and_report=_pictures_at_upload(seen))
+
+    assert result.exit_code == 0, result.output
+    assert seen[0] == [1, 1]
+    assert _snapshot(library) == before
+    assert all(len(FLAC(file).pictures) == 1 for file in (downloads / RENAMED).glob("*.flac"))
+
+
+def test_up_embeds_the_cover_by_default(monkeypatch, dirs) -> None:
+    # No embed_missing_cover set: the default config does it.
+    _library, downloads = dirs
+    album, cover_bytes = _bare_album(downloads / "Album")
+    seen: list[list[int]] = []
+
+    result, _uploads, _transcodes = _run_up(monkeypatch, album, embed=None, upload_and_report=_pictures_at_upload(seen))
+
+    assert result.exit_code == 0, result.output
+    assert seen[0] == [1, 1]
+    assert (downloads / RENAMED / "cover.jpg").read_bytes() == cover_bytes
+
+
+def _downloading(cover_bytes: bytes, calls: list[str]):
+    """A download_cover_if_nonexistent that writes the cover into the folder, as the real one would."""
+
+    async def download(path: str, url: str | None) -> tuple[str, bool]:
+        calls.append(str(url))
+        # A query string in the name, as a URL like .../c.jpg?size=big gives.
+        target = Path(path, "cover.jpg?size=big")
+        target.write_bytes(cover_bytes)
+        return str(target), True
+
+    return download
+
+
+@pytest.mark.parametrize("remove", [False, True])
+def test_up_downloads_a_missing_cover_and_embeds_it_before_the_first_torrent(monkeypatch, dirs, remove: bool) -> None:
+    _library, downloads = dirs
+    album, cover_bytes = _bare_album(downloads / "Album")
+    (album / "cover.jpg").unlink()
+    monkeypatch.setattr(cfg.image, "remove_auto_downloaded_cover_image", remove)
+    seen: list[list[int]] = []
+    files: list[list[str]] = []
+    calls: list[str] = []
+
+    result, _uploads, _transcodes = _run_up(
+        monkeypatch,
+        album,
+        embed=None,
+        cover_url="https://store.test/c.jpg",
+        upload_and_report=_pictures_at_upload(seen, files),
+        download_cover_if_nonexistent=_downloading(cover_bytes, calls),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["https://store.test/c.jpg"]
+    assert seen[0] == [1, 1]
+    # With removal on, the downloaded file is gone before the torrent is made, so it is not in it.
+    assert ("cover.jpg?size=big" in files[0]) is not remove
+    assert all(FLAC(file).pictures[0].data == cover_bytes for file in (downloads / RENAMED).glob("*.flac"))
+
+
+def test_up_says_once_that_there_is_no_cover_to_embed(monkeypatch, dirs) -> None:
+    _library, downloads = dirs
+    album, _cover = _bare_album(downloads / "Album")
+    (album / "cover.jpg").unlink()
+    seen: list[list[int]] = []
+
+    result, _uploads, _transcodes = _run_up(monkeypatch, album, embed=None, upload_and_report=_pictures_at_upload(seen))
+
+    assert result.exit_code == 0, result.output
+    assert seen[0] == [0, 0]
+    assert result.output.count("No cover file to embed") == 1
 
 
 @pytest.mark.parametrize("how", ["hardlinked file", "symlinked file", "symlinked folder"])
@@ -537,20 +712,70 @@ def test_up_on_an_album_symlinked_into_a_library_leaves_its_target_byte_identica
     assert uploads[0] == str(downloads / RENAMED)
 
 
+@pytest.mark.parametrize(
+    ("strip", "scene", "stripped"),
+    [(None, False, True), (False, False, False), (None, True, False)],
+    ids=["default", "strip_oversized_pictures off", "scene"],
+)
+def test_oversized_pictures_are_stripped_from_the_copy(
+    monkeypatch, dirs, strip: bool | None, scene: bool, stripped: bool
+) -> None:
+    library, _downloads = dirs
+    album = _album(library / "Album")
+    before = _snapshot(library)
+    if strip is not None:
+        monkeypatch.setattr(cfg.image, "strip_oversized_pictures", strip)
+    pictures_when_transcoded: list[int] = []
+
+    async def transcode(path: str, bitrate: str, *_args: Any, output_dir: str | None = None, **_kw: Any) -> str:
+        pictures_when_transcoded.append(len(FLAC(next(Path(path).glob("01*one.flac"))).pictures))
+        new_path = os.path.join(output_dir or os.path.dirname(path), f"{os.path.basename(path)} [{bitrate}]")
+        os.makedirs(new_path)
+        return new_path
+
+    result, _uploads, _transcodes = _run_up(monkeypatch, album, scene=scene, transcode_folder=transcode)
+
+    assert result.exit_code == 0, result.output
+    assert ("exceed RED's 1 MiB limit" in result.output) is not scene
+    assert pictures_when_transcoded == [0 if stripped else 1] * 2
+    assert _snapshot(library) == before
+
+
+@pytest.mark.parametrize("strip", [True, False])
+def test_the_upload_rules_see_the_files_after_the_strip(monkeypatch, dirs, strip: bool) -> None:
+    _library, downloads = dirs
+    album = _album(downloads / "Album")
+    monkeypatch.setattr(cfg.image, "strip_oversized_pictures", strip)
+
+    def tag_sizes(path: str) -> dict[str, dict[str, int | None]]:
+        files = Path(path).rglob("*.flac")
+        return {str(f.relative_to(path)): {"sample rate": 44100, "tag size": metadata_size(FLAC(f))} for f in files}
+
+    result, _uploads, _transcodes = _run_up(
+        monkeypatch, album, gather_audio_info=tag_sizes, concat_track_data=lambda _tags, audio_info: audio_info
+    )
+
+    assert result.exit_code == 0, result.output
+    assert ("2.3.19, a trump reason" in result.output) is not strip
+
+
 @pytest.mark.parametrize("when", ["before the rename", "after the rename"])
 def test_abort_and_delete_keeps_the_library_album_and_deletes_the_copy(monkeypatch, dirs, when: str) -> None:
     library, downloads = dirs
     album = _album(library / "Album")
     before = _snapshot(library)
+    deleted: list[str] = []
 
     async def delete_before(*_args: Any, **_kwargs: Any) -> None:
         raise AbortAndDeleteFolder
 
-    def delete_after(*_args: Any) -> None:
+    def delete_after(path: str) -> None:
+        deleted.append(path)
         raise AbortAndDeleteFolder
 
-    # concat_track_data is the first step on the renamed copy, after edit_metadata returns it.
-    fakes = {"check_spectrals": delete_before} if when == "before the rename" else {"concat_track_data": delete_after}
+    fakes: dict[str, Any] = (
+        {"check_spectrals": delete_before} if when == "before the rename" else {"check_embedded_pictures": delete_after}
+    )
     monkeypatch.setattr(cfg.upload, "windows_use_recycle_bin", False)
 
     result, uploads, _transcodes = _run_up(monkeypatch, album, **fakes)
@@ -558,9 +783,10 @@ def test_abort_and_delete_keeps_the_library_album_and_deletes_the_copy(monkeypat
     assert result.exit_code == 0, result.output
     assert uploads == []
     assert _snapshot(library) == before
-    assert f"{album} is kept" in result.output
+    assert f"Deleting the copy the upload worked on. {album} is kept." in result.output
     assert "Deleted folder" in result.output
     # What was deleted is the copy: nothing of this run is left in download_directory.
+    assert deleted == ([] if when == "before the rename" else [str(downloads / RENAMED)])
     assert os.listdir(downloads) == [staging.STAGING_DIR]
     assert os.listdir(downloads / staging.STAGING_DIR) == []
 
