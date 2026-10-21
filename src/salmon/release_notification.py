@@ -66,7 +66,7 @@ def get_version() -> str | None:
     """Returns the local installed version, cached after first read.
 
     Returns:
-        The current version string, or None if the version file is not found.
+        The current version string, or None if the version file is missing or unreadable.
     """
     global _cached_version
     if _cached_version is not None:
@@ -74,7 +74,8 @@ def get_version() -> str | None:
     try:
         _cached_version = msgspec.toml.decode(LOCAL_VERSION_FILE.read_bytes(), type=VersionData).current
         return _cached_version
-    except FileNotFoundError:
+    # The config's old-key check reads it at every start: a broken file must not stop salmon.
+    except (OSError, msgspec.DecodeError):
         return None
 
 

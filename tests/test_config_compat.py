@@ -160,3 +160,15 @@ def test_a_warning_is_printed_once_per_config_path(tmp_path: Path, capsys) -> No
     assert len(first) == 1
     assert second == []
     assert compat.config_warnings == first
+
+
+@pytest.mark.parametrize("text", ["current = ", "", 'current = "0.11.0"\n'], ids=["bad toml", "empty", "no changelog"])
+def test_a_broken_version_file_does_not_stop_a_config_loading(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    version_file = tmp_path / "version.toml"
+    version_file.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(salmon.release_notification, "LOCAL_VERSION_FILE", version_file)
+    monkeypatch.setattr(salmon.release_notification, "_cached_version", None)
+    cfg, _ = _load(tmp_path, _put(_base(tmp_path), "upload.web_interface.port", 55111), capsys)
+    assert cfg.upload.spectrals_viewer.port == 55111
