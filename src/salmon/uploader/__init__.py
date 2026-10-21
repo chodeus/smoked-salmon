@@ -430,13 +430,8 @@ async def next_tracker(trackers: list[str] | None, remaining: list[str]) -> str 
 
 
 def follow_up_trackers(trackers: list[str] | None, current: str, offer_others: bool = False) -> list[str]:
-    """Sites available for the follow-up offer after uploading to `current`.
-
-    None means every configured site. With `offer_others` (no -t named the trackers), the other configured
-    sites follow `trackers`, if multi_tracker_upload. Codes are deduped in order — only one entry is removed per
-    upload, so a repeat would be re-offered and could upload to the same tracker twice. `current` stays in the list
-    because it is removed after its own upload.
-    """
+    """Sites from `current` on: `trackers` (None: all), then the rest if offer_others and multi_tracker_upload."""
+    # Deduped: one entry is removed per upload, so a repeat would upload twice. `current` stays for its own removal.
     sites = list(dict.fromkeys(trackers)) if trackers is not None else list(salmon.trackers.tracker_list)
     if trackers is not None and offer_others and cfg.upload.multi_tracker_upload:
         sites += [code for code in salmon.trackers.tracker_list if code not in sites]
