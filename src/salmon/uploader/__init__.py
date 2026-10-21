@@ -631,7 +631,7 @@ async def _upload_staged(
     if not scene:
         standardize_tags(path)
     tags = gather_tags(path)
-    rls_data = construct_rls_data(
+    rls_data = await construct_rls_data(
         tags,
         audio_info,
         source,
@@ -1088,7 +1088,7 @@ async def edit_metadata(
             apply_suggestions=apply_ai_suggestions,
         )
         if not metadata["scene"]:
-            tag_files(path, tags, metadata, auto_rename)
+            await tag_files(path, tags, metadata, auto_rename)
 
         tags = await check_tags(path)
         tag_messages = process_tag_issues(path, scene=metadata["scene"])
@@ -1101,12 +1101,12 @@ async def edit_metadata(
                 await recompress_path(path)
             except UploadError as e:
                 raise UploadError(f"{e} Rerun without -c.") from e
-        renamed = rename_folder(path, metadata, auto_rename, parent=rename_into, original=original)
+        renamed = await rename_folder(path, metadata, auto_rename, parent=rename_into, original=original)
         if renamed != path:
             original = None  # A second pass renames the folder this one made, which is no copy.
         path = renamed
         if not metadata["scene"]:
-            rename_files(path, tags, metadata, auto_rename, spectral_ids, source)
+            await rename_files(path, tags, metadata, auto_rename, spectral_ids, source)
         await check_folder_structure(
             path, metadata["scene"], essential_only=essential_only, max_path_length=max_path_length
         )

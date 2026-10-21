@@ -174,7 +174,7 @@ def test_renaming_the_tracks_of_a_converted_folder_renames_them_in_the_record(ma
     )
     metadata = {"tracks": {"1": {"1": {"artists": [("A", "main")]}, "2": {"artists": [("A", "main")]}}}}
 
-    rename_files(str(out), tags, metadata, auto_rename=True, spectral_ids=None, source="WEB")
+    anyio.run(lambda: rename_files(str(out), tags, metadata, auto_rename=True, spectral_ids=None, source="WEB"))
 
     files = _files(out)
     assert files is not None
@@ -206,7 +206,7 @@ def test_an_undone_rename_of_the_tracks_leaves_the_record_as_it_was(made, tmp_pa
     monkeypatch.setattr(renames.os, "link", link)
 
     with pytest.raises(UploadError):
-        rename_files(str(out), tags, metadata, auto_rename=True, spectral_ids=None, source="WEB")
+        anyio.run(lambda: rename_files(str(out), tags, metadata, auto_rename=True, spectral_ids=None, source="WEB"))
 
     assert len(calls) == 3
     assert _files(out) == before
@@ -235,7 +235,7 @@ def test_a_record_that_cannot_follow_the_renamed_tracks_puts_them_back(made, tmp
     _no_record_writes(monkeypatch)
 
     with pytest.raises(UploadError, match="No space left on device"):
-        rename_files(str(out), tags, metadata, auto_rename=True, spectral_ids=None, source="WEB")
+        anyio.run(lambda: rename_files(str(out), tags, metadata, auto_rename=True, spectral_ids=None, source="WEB"))
 
     assert _snapshot(out) == before
 
@@ -275,7 +275,7 @@ def test_an_undo_that_stops_leaves_a_record_of_what_is_on_disk(made, tmp_path, m
     monkeypatch.setattr(renames.os, "link", link)
 
     with pytest.raises(UploadError, match="partly renamed"):
-        rename_files(str(out), tags, metadata, auto_rename=True, spectral_ids=None, source="WEB")
+        anyio.run(lambda: rename_files(str(out), tags, metadata, auto_rename=True, spectral_ids=None, source="WEB"))
 
     files = _files(out)
     assert files is not None

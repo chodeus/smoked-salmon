@@ -2,6 +2,8 @@
 
 import json
 
+import anyio
+
 import salmon.tagger.metadata as metadata_module
 from salmon.common import split_genre
 from salmon.tagger.ai_review import apply_ai_metadata_result
@@ -194,9 +196,9 @@ def test_manual_metadata_genres_are_standardized(monkeypatch):
     rls_data = {"genres": [], "urls": []}
     edited = {"genres": ["Dance / Pop", "Drum & Bass"], "urls": []}
     monkeypatch.setattr(metadata_module.click, "edit", lambda *_a, **_k: json.dumps(edited))
-    first = metadata_module._get_manual_metadata(rls_data)["genres"]
+    first = anyio.run(lambda: metadata_module._get_manual_metadata(rls_data))["genres"]
     edited["genres"] = "Folk, World, & Country"
-    second = metadata_module._get_manual_metadata(rls_data)["genres"]
+    second = anyio.run(lambda: metadata_module._get_manual_metadata(rls_data))["genres"]
 
     assert first == ["Dance", "Pop", "Drum & Bass"]
     assert second == ["Folk", "World", "Country"]

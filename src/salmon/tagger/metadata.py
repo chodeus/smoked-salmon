@@ -248,7 +248,7 @@ async def _select_choice(
             )
 
         if res.lower().startswith("m"):
-            return _get_manual_metadata(rls_data), None
+            return await _get_manual_metadata(rls_data), None
         elif res.lower().startswith("a"):
             raise click.Abort
 
@@ -286,7 +286,7 @@ async def _select_choice(
         if not tasks:
             # Go to manual mode only if we have any URLs
             if rls_data["urls"]:
-                meta = _get_manual_metadata(rls_data)
+                meta = await _get_manual_metadata(rls_data)
                 meta["urls"] = meta.get("urls", [])
                 # If we have a source_url (from a starred URL), make sure it's included
                 if source_url and source_url not in meta["urls"]:
@@ -303,7 +303,7 @@ async def _select_choice(
         return meta, source_url
 
 
-def _get_manual_metadata(rls_data):
+async def _get_manual_metadata(rls_data):
     """
     Use the metadata built from the file tags as a base, then allow the user to edit
     that dictionary.

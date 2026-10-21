@@ -39,7 +39,7 @@ EMPTY_METADATA = {
 }
 
 
-def construct_rls_data(
+async def construct_rls_data(
     tags,
     audio_info,
     source,
@@ -70,7 +70,7 @@ def construct_rls_data(
     metadata["scene"] = scene
     metadata["format"] = parse_format(next(iter(tags.keys())))
 
-    metadata["encoding"], metadata["encoding_vbr"] = parse_encoding(
+    metadata["encoding"], metadata["encoding_vbr"] = await parse_encoding(
         metadata["format"], audio_info, encoding, prompt_encoding, hybrid
     )
     return metadata
@@ -115,7 +115,7 @@ def parse_format(filename):
     return FORMATS[os.path.splitext(filename)[1].lower()]
 
 
-def parse_encoding(format_, audio_info, supplied_encoding, prompt_encoding, hybrid=False):
+async def parse_encoding(format_, audio_info, supplied_encoding, prompt_encoding, hybrid=False):
     """Get the encoding from the FLAC files, otherwise require the user to specify it."""
     if format_ == "FLAC":
         if hybrid:
@@ -132,7 +132,7 @@ def parse_encoding(format_, audio_info, supplied_encoding, prompt_encoding, hybr
     if supplied_encoding and list(supplied_encoding) != [None, None]:
         return supplied_encoding
     if prompt_encoding:
-        return _prompt_encoding()
+        return await _prompt_encoding()
     click.secho("An encoding must be specified if the files are not lossless.", fg="red")
     raise click.Abort
 
@@ -239,7 +239,7 @@ def _parse_role_names(role_value):
     return list(dict.fromkeys(names))
 
 
-def _prompt_encoding():
+async def _prompt_encoding():
     click.echo(f"\nValid encodings: {', '.join(TAG_ENCODINGS.keys())}")
     while True:
         # Use synchronous input since this is called from sync context

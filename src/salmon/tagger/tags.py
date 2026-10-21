@@ -160,7 +160,7 @@ async def open_tag_editor(path: str) -> bool:
             if result.returncode == 0:
                 return True
             click.secho(f"puddletag exited with {result.returncode}; falling back to the text editor.", fg="yellow")
-    return edit_tags_as_json(path)
+    return await edit_tags_as_json(path)
 
 
 def _tags_to_dict(tags: dict[str, TagFile]) -> dict[str, dict]:
@@ -206,7 +206,7 @@ def _reject_bad_document(after: object, before: dict[str, dict]) -> str | None:
     return None
 
 
-def edit_tags_as_json(path: str) -> bool:
+async def edit_tags_as_json(path: str) -> bool:
     """Edit every track's tags as one JSON document and write back what changed.
 
     Returns:

@@ -243,8 +243,9 @@ def test_a_release_that_is_not_all_flac_stops_before_the_copy(monkeypatch, tmp_p
             "conversion_of": _returning(None),
             **{
                 name: _returning(None, calls, name)
-                for name in ("staged_source", "gather_audio_info", "standardize_tags", "construct_rls_data")
+                for name in ("staged_source", "gather_audio_info", "standardize_tags")
             },
+            "construct_rls_data": _returning_async(None, calls, "construct_rls_data"),
         },
     )
     site = FakeSite(_group(_torrent(11)))
@@ -363,7 +364,7 @@ def _flow(monkeypatch, group: dict[str, Any], source: str = "WEB", **fakes: Any)
             "check_hybrid": _returning(False),
             "standardize_tags": _returning(),
             "gather_tags": _returning({}),
-            "construct_rls_data": _returning(rls_data),
+            "construct_rls_data": _returning_async(rls_data),
             "mqa_test": _returning_async(None, calls, "mqa_test"),
             "_check_logs": _returning_async(None, calls, "log_check"),
             "check_spectrals": _returning_async((False, None), calls, "check_spectrals"),

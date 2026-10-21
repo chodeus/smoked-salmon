@@ -20,7 +20,7 @@ from salmon.errors import UploadError
 from salmon.tagger.audio_info import gather_audio_info
 
 
-def rename_folder(path, metadata, auto_rename, check=True, parent=None, original=None):
+async def rename_folder(path, metadata, auto_rename, check=True, parent=None, original=None):
     """
     Create a revised folder name from the new metadata and present it to the
     user. Have them decide whether or not to accept the folder name.
@@ -48,7 +48,9 @@ def rename_folder(path, metadata, auto_rename, check=True, parent=None, original
             click.style("\nWould you like to replace the original folder name?", fg="magenta"), default=True
         )
 
-        new_base = _edit_folder_interactive(new_base, auto_rename) if auto_rename or user_rename_choice else old_base
+        new_base = (
+            await _edit_folder_interactive(new_base, auto_rename) if auto_rename or user_rename_choice else old_base
+        )
 
     # A name with a path separator or . / .. would escape the download dir and, via the
     # rmtree below, delete something outside it — reject before building new_path.
@@ -326,7 +328,7 @@ def _is_folder_name(name: str) -> bool:
     return has_visible_chars(name)
 
 
-def _edit_folder_interactive(foldername, auto_rename):
+async def _edit_folder_interactive(foldername, auto_rename):
     """Allow the user to edit the pending folder name in a text editor."""
     if auto_rename:
         return foldername

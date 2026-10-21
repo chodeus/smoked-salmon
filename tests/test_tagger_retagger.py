@@ -1,6 +1,7 @@
 import os
 from types import SimpleNamespace
 
+import anyio
 import asyncclick as click
 import msgspec
 import pytest
@@ -38,7 +39,7 @@ def test_rename_files_can_flatten_multi_disc_tracks(tmp_path, monkeypatch) -> No
         }
     }
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert (tmp_path / "1.01.flac").exists()
     assert (tmp_path / "2.01.flac").exists()
@@ -59,7 +60,7 @@ def test_rename_files_refuses_target_onto_untracked_file(tmp_path, monkeypatch) 
     metadata = {"tracks": {"1": {"1": {"artists": [("Artist", "main")], "title": "Track 1"}}}}
 
     with pytest.raises(UploadError):
-        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert (tmp_path / "01.flac").read_text() == "A"
     assert (tmp_path / "02.flac").read_text() == "UNTRACKED"
@@ -76,7 +77,7 @@ def test_rename_files_case_only_rename_is_not_a_collision(tmp_path, monkeypatch)
     tags = {"01.FLAC": SimpleNamespace(tracknumber="01", discnumber="1")}
     metadata = {"tracks": {"1": {"1": {"artists": [("Artist", "main")], "title": "Track 1"}}}}
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert (tmp_path / "01.flac").read_text() == "A"
 
@@ -103,7 +104,7 @@ def test_rename_files_uppercase_ext_audio_not_moved_as_non_audio(tmp_path, monke
         }
     }
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert (tmp_path / "1.01.flac").read_text() == "CD1"
     assert (tmp_path / "2.01.flac").read_text() == "CD2"
@@ -523,7 +524,7 @@ def test_tag_files_stops_on_a_flat_folder_without_disc_tags_instead_of_crashing(
 
     # The fork stops the upload: uploading the uncorrected tags would break the tracker's tagging rules.
     with pytest.raises(UploadError, match="DISCNUMBER"):
-        tag_files("/unused", tags, metadata, auto_rename=True)
+        anyio.run(lambda: tag_files("/unused", tags, metadata, auto_rename=True))
 
 
 def test_create_track_changes_refuses_disc_folders_whose_track_counts_differ_from_the_metadata():
@@ -643,7 +644,7 @@ def test_tag_files_stops_when_one_disc_folder_is_genuinely_ambiguous():
 
     # The fork stops the upload: uploading the uncorrected tags would break the tracker's tagging rules.
     with pytest.raises(UploadError, match="DISCNUMBER"):
-        tag_files("/unused", tags, metadata, auto_rename=True)
+        anyio.run(lambda: tag_files("/unused", tags, metadata, auto_rename=True))
 
 
 def test_create_track_changes_handles_the_one_folder_disc_dot_track_layout():
@@ -800,7 +801,7 @@ def test_rename_files_names_are_unchanged_by_default(tmp_path, monkeypatch, case
     monkeypatch.setattr(cfg.upload, "formatting", _formatting(**setting))
     tags, metadata = _release(tmp_path, tracks, others)
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source=source)
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source=source))
 
     assert [name for name, _ in _tree(tmp_path)] == expected
 
@@ -811,7 +812,7 @@ def test_rename_files_single_folder_setting_leaves_single_disc_releases_alone(tm
     _single_folder(monkeypatch)
     tags, metadata = _release(tmp_path, tracks, others)
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source=source)
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source=source))
 
     assert [name for name, _ in _tree(tmp_path)] == expected
 
@@ -820,7 +821,7 @@ def test_rename_files_can_keep_a_multi_disc_release_in_one_folder(tmp_path, monk
     _single_folder(monkeypatch)
     tags, metadata = _release(tmp_path, _two_discs())
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert _tree(tmp_path) == [
         ("1.01. Title 1-1.flac", "Disc 1/a001.flac"),
@@ -833,7 +834,7 @@ def test_rename_files_single_folder_pads_numbers_to_the_largest(tmp_path, monkey
     _single_folder(monkeypatch)
     tags, metadata = _release(tmp_path, {"a.flac": (1, 1), "b.flac": (1, 100), "c.flac": (10, 1)})
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert [name for name, _ in _tree(tmp_path)] == [
         "01.001. Title 1-1.flac",
@@ -852,7 +853,7 @@ def test_rename_files_single_folder_names_each_disc_folders_files_for_its_disc(t
     tags, metadata = _release(tmp_path, _two_discs(), [*others, "cover.jpg"])
     before = _contents(tmp_path)
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert _contents(tmp_path) == before
     assert _tree(tmp_path) == [
@@ -883,7 +884,7 @@ def test_rename_files_single_folder_numbers_a_file_whose_new_name_is_taken(tmp_p
     tags, metadata = _release(tmp_path, _two_discs(), ["Disc 1/cover.jpg", "Disc 2/cover.jpg", "cover.1.jpg"])
     before = _contents(tmp_path)
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     tree = _tree(tmp_path)
     assert _contents(tmp_path) == before
@@ -901,7 +902,7 @@ def test_rename_files_single_folder_keeps_the_names_from_a_folder_of_several_dis
     tags, metadata = _release(tmp_path, _two_discs(folder="Audio"), ["Audio/rip.log", "Audio/cover.jpg", "cover.jpg"])
     before = _contents(tmp_path)
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     tree = _tree(tmp_path)
     assert _contents(tmp_path) == before
@@ -930,7 +931,7 @@ def test_rename_files_single_folder_renames_nothing_when_two_tracks_get_one_name
 
     # The fork stops the upload rather than going on unrenamed.
     with pytest.raises(UploadError, match="overwrite"):
-        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert _tree(tmp_path) == before
 
@@ -941,7 +942,7 @@ def test_rename_files_single_folder_renames_nothing_over_an_existing_file(tmp_pa
     before = _tree(tmp_path)
 
     with pytest.raises(UploadError, match="overwrite"):
-        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert _tree(tmp_path) == before
 
@@ -951,7 +952,9 @@ def test_rename_files_single_folder_updates_the_spectral_file_names(tmp_path, mo
     tags, metadata = _release(tmp_path, _two_discs())
     spectral_ids = {1: "Disc 1/a001.flac", 2: "Disc 1/a002.flac", 3: "Disc 2/b001.flac"}
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=spectral_ids, source="CD")
+    anyio.run(
+        lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=spectral_ids, source="CD")
+    )
 
     assert spectral_ids == {1: "1.01. Title 1-1.flac", 2: "1.02. Title 1-2.flac", 3: "2.01. Title 2-1.flac"}
 
@@ -963,7 +966,7 @@ def test_rename_files_never_replaces_a_file_when_two_folders_go_to_one_disc_fold
     tags, metadata = _release(tmp_path, tracks, ["Disc 1/cover.jpg", "Disc 1 bonus/cover.jpg"])
     before = _contents(tmp_path)
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     tree = _tree(tmp_path)
     assert _contents(tmp_path) == before
@@ -981,7 +984,7 @@ def test_rename_files_renames_nothing_when_tracks_from_two_folders_get_one_name(
     before = _tree(tmp_path)
 
     with pytest.raises(UploadError, match="overwrite"):
-        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert _tree(tmp_path) == before
 
@@ -993,7 +996,7 @@ def test_rename_files_renames_nothing_over_a_track_already_in_a_disc_folder(tmp_
     before = _tree(tmp_path)
 
     with pytest.raises(UploadError, match="overwrite"):
-        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert _tree(tmp_path) == before
 
@@ -1002,7 +1005,7 @@ def test_rename_files_moves_a_file_away_before_another_takes_its_name(tmp_path, 
     monkeypatch.setattr(cfg.upload, "formatting", _formatting(one_album_artist_file_template="{tracknumber}"))
     tags, metadata = _release(tmp_path, {"01.flac": (1, 2), "02.flac": (1, 3)})
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert _tree(tmp_path) == [("02.flac", "01.flac"), ("03.flac", "02.flac")]
 
@@ -1012,7 +1015,9 @@ def test_rename_files_moves_each_spectral_with_its_own_track_along_a_chain(tmp_p
     tags, metadata = _release(tmp_path, {"01.flac": (1, 2), "02.flac": (1, 3)})
     spectral_ids = {1: "01.flac", 2: "02.flac"}
 
-    rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=spectral_ids, source="CD")
+    anyio.run(
+        lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=spectral_ids, source="CD")
+    )
 
     assert spectral_ids == {1: "02.flac", 2: "03.flac"}
 
@@ -1023,7 +1028,7 @@ def test_rename_files_renames_nothing_when_two_files_swap_names(tmp_path, monkey
     before = _tree(tmp_path)
 
     with pytest.raises(UploadError, match="overwrite"):
-        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert _tree(tmp_path) == before
 
@@ -1038,7 +1043,7 @@ def test_rename_files_renames_nothing_when_two_names_differ_only_by_case_where_t
     before = _tree(tmp_path)
 
     with pytest.raises(UploadError, match="overwrite"):
-        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert _tree(tmp_path) == before
 
@@ -1054,7 +1059,9 @@ def test_rename_files_stops_when_a_new_name_is_taken_after_the_check(tmp_path, m
     monkeypatch.setattr(click, "confirm", confirm)
 
     with pytest.raises(UploadError) as raised:
-        rename_files(str(tmp_path), tags, metadata, auto_rename=False, spectral_ids=None, source="CD")
+        anyio.run(
+            lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=False, spectral_ids=None, source="CD")
+        )
 
     # The fork puts back the renames made before the stop.
     assert _tree(tmp_path) == [
@@ -1081,7 +1088,7 @@ def test_rename_files_stops_at_the_first_failed_rename_and_names_the_files_left(
     monkeypatch.setattr(os, "link", failing_link)
 
     with pytest.raises(UploadError) as raised:
-        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert len(calls) == 3
     assert [name for name, _ in _tree(tmp_path)] == ["a.flac", "b.flac", "c.flac"]
@@ -1105,7 +1112,7 @@ def test_rename_files_says_the_files_are_partly_renamed_when_the_undo_stops_too(
     monkeypatch.setattr(os, "link", link_only_a)
 
     with pytest.raises(UploadError, match="only partly renamed"):
-        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert [name for name, _ in _tree(tmp_path)] == ["01. Title 1-1.flac", "b.flac"]
 
@@ -1209,7 +1216,7 @@ def test_rename_files_puts_the_renames_back_when_the_run_is_interrupted(tmp_path
     monkeypatch.setattr(os, "link", interrupted_link)
 
     with pytest.raises(KeyboardInterrupt):
-        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     out = capsys.readouterr().out
     assert [name for name, _ in _tree(tmp_path)] == ["a.flac", "b.flac", "c.flac"]
@@ -1222,6 +1229,6 @@ def test_rename_files_renames_nothing_onto_a_second_hard_link_to_the_track(tmp_p
     os.link(tmp_path / "a.flac", tmp_path / "01. Title 1-1.flac")
 
     with pytest.raises(UploadError, match="overwrite"):
-        rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD")
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert [name for name, _ in _tree(tmp_path)] == ["01. Title 1-1.flac", "a.flac"]

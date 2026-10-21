@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+import anyio
+
 from salmon import cfg
 from salmon.tagger import foldername
 
@@ -44,7 +46,7 @@ def test_hardlink_fallback_survives_a_partial_tree(tmp_path, monkeypatch) -> Non
         "encoding": "Lossless",
     }
 
-    new_path = foldername.rename_folder(str(source), metadata, auto_rename=True, check=False)
+    new_path = anyio.run(lambda: foldername.rename_folder(str(source), metadata, auto_rename=True, check=False))
     copied = [(Path(new_path) / name).read_bytes() for name in file_names]
 
     assert calls["n"] >= 2

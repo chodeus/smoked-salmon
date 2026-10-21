@@ -155,7 +155,7 @@ def test_a_release_the_review_takes_off_the_list_is_searched_and_uploaded(monkey
         _album(downloads.parent / "seeding" / "Album"),
         torrents,
         multi_tracker_upload=False,
-        construct_rls_data=lambda *_args, **_kwargs: {**tags, "catno": "CAT1"},
+        construct_rls_data=_returning_async({**tags, "catno": "CAT1"}),
     )
 
     assert run.result.exit_code == 0, run.result.output

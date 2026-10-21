@@ -7,6 +7,7 @@ the wiser.
 
 import json
 
+import anyio
 import pytest
 
 from salmon.tagger import tags as tags_mod
@@ -44,19 +45,19 @@ def album(album_dir, monkeypatch):
 
 def test_discarding_the_editor_writes_nothing(album, monkeypatch):
     monkeypatch.setattr(tags_mod.click, "edit", lambda *_a, **_kw: None)
-    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is False
     assert album["saved"] == []
 
 
 def test_invalid_json_writes_nothing(album, monkeypatch):
     monkeypatch.setattr(tags_mod.click, "edit", lambda *_a, **_kw: "{not json")
-    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is False
     assert album["saved"] == []
 
 
 def test_an_unchanged_document_writes_nothing(album, monkeypatch):
     monkeypatch.setattr(tags_mod.click, "edit", lambda text, **_kw: text)
-    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is False
     assert album["saved"] == []
 
 
@@ -67,7 +68,7 @@ def test_only_the_edited_file_is_written(album, monkeypatch):
         return json.dumps(doc)
 
     monkeypatch.setattr(tags_mod.click, "edit", edit)
-    assert tags_mod.edit_tags_as_json(album["path"]) is True
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is True
     assert album["saved"] == ["01.flac"]
     assert album["fake"]["01.flac"]["title"] == "Renamed"
     assert album["fake"]["02.flac"]["title"] == "Two"
@@ -80,13 +81,18 @@ def test_an_unknown_filename_aborts_without_writing(album, monkeypatch):
         return json.dumps(doc)
 
     monkeypatch.setattr(tags_mod.click, "edit", edit)
-    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is False
     assert album["saved"] == []
 
 
 async def test_without_puddletag_the_json_editor_is_used(album, monkeypatch):
     used: list[str] = []
-    monkeypatch.setattr(tags_mod, "edit_tags_as_json", lambda _p: used.append("json") or True)
+
+    async def json_editor(_path: str) -> bool:
+        used.append("json")
+        return True
+
+    monkeypatch.setattr(tags_mod, "edit_tags_as_json", json_editor)
     actual = await tags_mod.open_tag_editor(album["path"])
     assert actual is True
     assert used == ["json"], "a missing puddletag must not be reported as a successful edit"
@@ -104,7 +110,11 @@ async def test_puddletag_is_preferred_when_installed(album, monkeypatch):
 
     monkeypatch.setattr(tags_mod.shutil, "which", lambda _n: "/usr/bin/puddletag")
     monkeypatch.setattr(tags_mod.anyio, "run_process", fake_run)
-    monkeypatch.setattr(tags_mod, "edit_tags_as_json", lambda _p: pytest.fail("should not fall back"))
+
+    async def no_fallback(_path: str) -> bool:
+        pytest.fail("should not fall back")
+
+    monkeypatch.setattr(tags_mod, "edit_tags_as_json", no_fallback)
     actual = await tags_mod.open_tag_editor(album["path"])
     assert actual is True
     assert launched == [["puddletag", album["path"]]]
@@ -119,7 +129,11 @@ async def test_a_failed_puddletag_launch_falls_back(album, monkeypatch):
 
     monkeypatch.setattr(tags_mod.shutil, "which", lambda _n: "/usr/bin/puddletag")
     monkeypatch.setattr(tags_mod.anyio, "run_process", fake_run)
-    monkeypatch.setattr(tags_mod, "edit_tags_as_json", lambda _p: True)
+
+    async def json_editor(_path: str) -> bool:
+        return True
+
+    monkeypatch.setattr(tags_mod, "edit_tags_as_json", json_editor)
     actual = await tags_mod.open_tag_editor(album["path"])
     assert actual is True
 
@@ -143,14 +157,14 @@ def test_a_document_broken_partway_down_writes_nothing(album, monkeypatch, mutat
         return json.dumps(doc)
 
     monkeypatch.setattr(tags_mod.click, "edit", edit)
-    assert tags_mod.edit_tags_as_json(album["path"]) is False, why
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is False, why
     assert album["saved"] == [], f"{why} left a partial write"
     assert album["fake"]["01.flac"]["title"] == "One", f"{why} mutated the first file"
 
 
 def test_a_non_object_root_is_rejected(album, monkeypatch):
     monkeypatch.setattr(tags_mod.click, "edit", lambda *_a, **_kw: '["not", "a", "map"]')
-    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is False
     assert album["saved"] == []
 
 
@@ -162,7 +176,7 @@ def test_scalar_and_list_values_are_accepted(album, monkeypatch):
         return json.dumps(doc)
 
     monkeypatch.setattr(tags_mod.click, "edit", edit)
-    assert tags_mod.edit_tags_as_json(album["path"]) is True
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is True
     assert sorted(album["saved"]) == ["01.flac", "02.flac"]
 
 
@@ -177,7 +191,7 @@ def test_booleans_are_rejected(album, monkeypatch, literal):
         return json.dumps(doc)
 
     monkeypatch.setattr(tags_mod.click, "edit", edit)
-    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is False
     assert album["saved"] == []
 
 
@@ -197,7 +211,7 @@ def test_json_constants_are_rejected(album, monkeypatch, literal):
         return raw.replace(marker, '"tracknumber": ' + literal)
 
     monkeypatch.setattr(tags_mod.click, "edit", edit)
-    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is False
     assert album["saved"] == []
 
 
@@ -211,7 +225,7 @@ def test_an_unsupported_field_is_rejected_not_silently_dropped(album, monkeypatc
         return json.dumps(doc)
 
     monkeypatch.setattr(tags_mod.click, "edit", edit)
-    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is False
     assert album["saved"] == []
     assert album["fake"]["01.flac"]["title"] == "One"
 
@@ -226,7 +240,7 @@ def test_an_overflowing_number_is_rejected(album, monkeypatch):
         return json.dumps(doc).replace('"tracknumber": null', '"tracknumber": 1e9999')
 
     monkeypatch.setattr(tags_mod.click, "edit", edit)
-    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is False
     assert album["saved"] == []
 
 
@@ -239,7 +253,12 @@ async def test_a_puddletag_that_cannot_start_falls_back(album, monkeypatch):
 
     monkeypatch.setattr(tags_mod.shutil, "which", lambda _n: "/usr/bin/puddletag")
     monkeypatch.setattr(tags_mod.anyio, "run_process", boom)
-    monkeypatch.setattr(tags_mod, "edit_tags_as_json", lambda _p: used.append("json") or True)
+
+    async def json_editor(_path: str) -> bool:
+        used.append("json")
+        return True
+
+    monkeypatch.setattr(tags_mod, "edit_tags_as_json", json_editor)
     actual = await tags_mod.open_tag_editor(album["path"])
     assert actual is True
     assert used == ["json"], "a launch failure must not be reported as a successful edit"
@@ -255,7 +274,7 @@ def test_an_oversized_integer_is_rejected_not_crashed(album, monkeypatch):
         return json.dumps(doc).replace('"tracknumber": null', '"tracknumber": ' + "9" * 400)
 
     monkeypatch.setattr(tags_mod.click, "edit", edit)
-    assert tags_mod.edit_tags_as_json(album["path"]) is True
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is True
     assert album["saved"] == ["01.flac", "02.flac"], "a large integer is a valid, finite tag value"
 
 
@@ -293,7 +312,7 @@ def test_a_write_failure_reports_what_was_and_was_not_written(album, monkeypatch
     import asyncclick
 
     with pytest.raises(asyncclick.Abort):
-        tags_mod.edit_tags_as_json(album["path"])
+        anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"]))
     out = capsys.readouterr().out
 
     assert saved == ["01.flac"]
@@ -326,7 +345,7 @@ def test_a_failure_on_the_first_file_leaves_nothing_written(album, monkeypatch, 
     import asyncclick
 
     with pytest.raises(asyncclick.Abort):
-        tags_mod.edit_tags_as_json(album["path"])
+        anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"]))
     assert "inconsistent" not in capsys.readouterr().out
 
 
@@ -340,5 +359,5 @@ def test_a_document_that_drops_a_track_is_rejected(album, monkeypatch):
         return json.dumps(doc)
 
     monkeypatch.setattr(tags_mod.click, "edit", edit)
-    assert tags_mod.edit_tags_as_json(album["path"]) is False
+    assert anyio.run(lambda: tags_mod.edit_tags_as_json(album["path"])) is False
     assert album["saved"] == []

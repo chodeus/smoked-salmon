@@ -293,11 +293,17 @@ def upload_world(monkeypatch, tmp_path):
     monkeypatch.setattr("salmon.uploader.check_tags", fake_check_tags)
     monkeypatch.setattr("salmon.uploader.get_metadata", fake_get_metadata)
     monkeypatch.setattr("salmon.uploader.review_metadata_with_ai", fake_review_metadata_with_ai)
-    monkeypatch.setattr("salmon.uploader.tag_files", lambda *a, **k: None)
-    monkeypatch.setattr("salmon.uploader.rename_files", lambda *a, **k: None)
-    monkeypatch.setattr(
-        "salmon.uploader.rename_folder", lambda path, metadata, auto_rename, parent=None, original=None: path
-    )
+
+    async def fake_tag_or_rename_files(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("salmon.uploader.tag_files", fake_tag_or_rename_files)
+    monkeypatch.setattr("salmon.uploader.rename_files", fake_tag_or_rename_files)
+
+    async def fake_rename_folder(path, metadata, auto_rename, parent=None, original=None):
+        return path
+
+    monkeypatch.setattr("salmon.uploader.rename_folder", fake_rename_folder)
     monkeypatch.setattr("salmon.uploader.check_folder_structure", fake_check_folder_structure)
     monkeypatch.setattr("salmon.uploader.cover.download_cover_if_nonexistent", fake_download_cover)
     monkeypatch.setattr("salmon.uploader.cover.upload_cover", fake_upload_cover)
