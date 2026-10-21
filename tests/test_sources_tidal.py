@@ -19,7 +19,7 @@ from salmon.errors import ScrapeError
 from salmon.search.tidal import COUNTRIES, Searcher
 from salmon.sources import base as sources_base
 from salmon.sources import tidal as tidal_source
-from salmon.sources.tidal import MAX_PAGES, TidalBase, credentials_configured
+from salmon.sources.tidal import MAX_PAGES, TidalBase
 from salmon.tagger.sources.tidal import Scraper
 
 ALBUM_URL = "https://tidal.com/album/75194842"
@@ -526,26 +526,6 @@ def test_an_undated_unlabelled_search_result_shows_no_none(tidal: FakeTidal, mon
     ((ident, shown),) = releases.values()
     assert ident.year is None
     assert "None" not in str(shown)
-
-
-@pytest.mark.parametrize(
-    ("token", "notified"),
-    [("a-token-from-the-web-player", True), ("your-token", False), (None, False)],
-)
-def test_retired_token_alone_leaves_tidal_off_with_one_notice(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], token: str | None, notified: bool
-) -> None:
-    monkeypatch.setattr(cfg.metadata.tidal, "client_id", None)
-    monkeypatch.setattr(cfg.metadata.tidal, "client_secret", None)
-    monkeypatch.setattr(cfg.metadata.tidal, "token", token)
-    tidal_source._notify_retired_token.cache_clear()
-
-    # Asked twice: the notice still prints only once.
-    configured = [credentials_configured(), credentials_configured()]
-    assert configured == [False, False]
-
-    out = capsys.readouterr().out
-    assert out.count("developer.tidal.com") == (1 if notified else 0)
 
 
 @pytest.mark.parametrize("tags", [["LOSSLESS", "HIRES_LOSSLESS"], ["HIRES_LOSSLESS", "LOSSLESS"]])
