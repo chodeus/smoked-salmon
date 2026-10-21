@@ -2,7 +2,7 @@ import os
 
 import asyncclick as click
 
-from salmon import cfg, dryrun
+from salmon import cfg, dryrun, interaction
 from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
 from salmon.images import upload_cover
 from salmon.tagger.cover import download_cover_if_nonexistent
@@ -60,12 +60,12 @@ async def resolve_cover_url(
         fg="yellow",
         bold=True,
     )
-    if cfg.upload.yes_all:
+    if await interaction.assume_defaults():
         click.secho("Not uploading a new group without a cover image with -yyy (upload.yes_all).", fg="red", bold=True)
         return False, None
 
     while True:
-        raw_choice = await click.prompt(
+        raw_choice = await interaction.prompt(
             click.style("Continue upload without a cover image? [y/N/reload]", fg="magenta"),
             default="n",
             show_default=False,

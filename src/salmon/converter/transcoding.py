@@ -11,7 +11,7 @@ from mutagen import flac, mp3
 from mutagen.flac import VCFLACDict
 from mutagen.id3 import APIC, TXXX, Frames
 
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.common.constants import IMAGE_EXTENSIONS, LOSSY_EXTENSIONS
 from salmon.common.files import process_files
 from salmon.constants import TAG_TRUMP_SIZE
@@ -469,7 +469,7 @@ async def transcode_folder(
             raise UploadError(f"Refusing to overwrite {new_path}: no expected MP3 output was computed.")
         # No record of salmon's, and not the expected output (e.g. a prior upload with a different file
         # template); you may be seeding it, so confirm before deleting.
-        if not cfg.upload.yes_all and not click.confirm(
+        if not await interaction.assume_defaults() and not await interaction.confirm(
             click.style(
                 f"{new_path} exists but doesn't match the expected transcode. Delete it and re-transcode?",
                 fg="magenta",

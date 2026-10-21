@@ -346,3 +346,28 @@ async def test_scene_release_aborts_before_offering_to_sanitize(integrity_gate):
         await resolve_integrity_for_upload("/music", scene=True, assume_yes=False)
 
     assert calls == ["check"], "no confirm, no sanitize"
+
+
+@pytest.mark.parametrize("kind", ["file", "folder"])
+async def test_the_check_command_sanitizes_only_when_told_to(monkeypatch, tmp_path, kind):
+    """Enter at the sanitize question keeps the files as they are, as upstream's: sanitizing re-encodes them."""
+    import importlib
+
+    ig = importlib.import_module("salmon.checks.integrity")
+    (tmp_path / "a.flac").write_bytes(b"fLaC")
+    sanitized: list[str] = []
+
+    async def failing(_path):
+        return ig.IntegrityResult(False, "", (), md5_unset=("a.flac",), checked=1)
+
+    async def sanitize(path):
+        sanitized.append(path)
+
+    monkeypatch.setattr(ig, "rewrite_refusal", lambda _path: None)
+    monkeypatch.setattr(ig, "check_integrity", failing)
+    monkeypatch.setattr(ig, "sanitize_and_verify", sanitize)
+    monkeypatch.setattr(click, "confirm", lambda *_args, default=False, **_kwargs: default)
+
+    await ig.handle_integrity_check(str(tmp_path / "a.flac") if kind == "file" else str(tmp_path))
+
+    assert sanitized == []

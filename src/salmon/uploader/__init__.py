@@ -11,7 +11,7 @@ from mutagen import MutagenError
 from torf import TorfError
 
 import salmon.trackers
-from salmon import cfg, dryrun
+from salmon import cfg, dryrun, interaction
 from salmon.checks import mqa_test
 from salmon.checks.do_not_upload import Candidate, do_not_upload_reason
 from salmon.checks.high_rate import sixteen_bit_notice
@@ -374,7 +374,7 @@ async def _check_logs(path: str) -> None:
                 raise click.Abort() from e
             except CRCMismatchError as e:
                 click.secho("Error: CRC mismatch between log and audio files!", fg="red", bold=True)
-                if not click.confirm(
+                if not await interaction.confirm(
                     click.style(
                         "Log file CRC does not match audio files. Do you want to continue upload anyway?",
                         fg="magenta",
@@ -655,8 +655,8 @@ async def _upload_staged(
             click.secho("No MQA release detected", fg="green")
 
         if rls_data["encoding"] == "24bit Lossless" and not skip_up:
-            if not cfg.upload.yes_all:
-                if click.confirm(
+            if not await interaction.assume_defaults():
+                if await interaction.confirm(
                     click.style("\n24bit detected. Do you want to check whether might be upconverted?", fg="magenta"),
                     default=True,
                 ):
@@ -971,8 +971,8 @@ async def _upload_staged(
                     and (conversion_options := get_downconversion_options(rls_data, track_data, quiet=True))
                     and (
                         source_flac is not None
-                        or cfg.upload.yes_all
-                        or click.confirm(
+                        or await interaction.assume_defaults()
+                        or await interaction.confirm(
                             click.style("\nWould you like to check downconversion options?", fg="magenta"),
                             default=bool(wanted_conversions(conversion_options, held, conversions)),
                         )
@@ -1112,9 +1112,11 @@ async def edit_metadata(
         )
 
         if not skip_integrity_check:
-            await resolve_integrity_for_upload(path, scene=metadata["scene"], assume_yes=cfg.upload.yes_all)
+            await resolve_integrity_for_upload(
+                path, scene=metadata["scene"], assume_yes=await interaction.assume_defaults()
+            )
 
-        if cfg.upload.yes_all or click.confirm(
+        if await interaction.assume_defaults() or await interaction.confirm(
             click.style("\nWould you like to upload the torrent? (No to re-run metadata section)", fg="magenta"),
             default=True,
         ):
@@ -1167,7 +1169,7 @@ async def last_min_dupe_check(gazelle_site, searchstrs, our_title=None):
     recent_uploads = await dupe_check_recent_torrents(gazelle_site, searchstrs, our_title)
     if recent_uploads:
         print_recent_upload_results(gazelle_site, recent_uploads, " / ".join(searchstrs))
-        if not click.confirm(
+        if not await interaction.confirm(
             click.style(
                 "\nWould you still like to upload?",
                 fg="red",
@@ -1332,7 +1334,7 @@ async def prompt_downconversion_choice(
         return []
 
     wanted = wanted_conversions(options, held, conversions)
-    if cfg.upload.yes_all:
+    if await interaction.assume_defaults():
         return wanted
 
     click.secho("\nDownconversion Options", fg="cyan", bold=True)
@@ -1367,7 +1369,7 @@ async def prompt_downconversion_choice(
 
     while True:
         try:
-            choices = await click.prompt(
+            choices = await interaction.prompt(
                 click.style(
                     '\nSelect formats to convert (space-separated list of IDs, "0" for none, "*" for all)', fg="magenta"
                 ),
@@ -1399,7 +1401,7 @@ async def prompt_downconversion_choice(
             if selected_tasks:
                 display_names = [task["name"] for task in selected_tasks]
                 click.secho(f"\nSelected formats: {', '.join(display_names)}", fg="green")
-                if click.confirm(click.style("Confirm selection?", fg="magenta"), default=True):
+                if await interaction.confirm(click.style("Confirm selection?", fg="magenta"), default=True):
                     break
             else:
                 break
@@ -1768,7 +1770,7 @@ async def _prompt_source(detected: dict | None = None):
         default = str(detected["source"])
         click.secho(f"Files suggest {detected['source']}: {' '.join(detected['reasons'])}", fg="cyan")
     while True:
-        sauce = await click.prompt(
+        sauce = await interaction.prompt(
             click.style("What is the source of this release? [a]bort", fg="magenta"),
             default=default,
         )

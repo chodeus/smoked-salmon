@@ -8,6 +8,7 @@ import asyncclick as click
 import msgspec
 from mutagen import MutagenError, flac
 
+from salmon import interaction
 from salmon.common.files import process_files
 from salmon.errors import UpconvertCheckError, UpconvertCheckNotApplicable
 
@@ -32,7 +33,7 @@ async def upload_upconvert_test(path: str) -> None:
     """
     any_upconverts = await test_upconverted(path)
     if any_upconverts:
-        if click.confirm(
+        if await interaction.confirm(
             click.style(
                 "Possible upconverts detected. Would you like to quit uploading?",
                 fg="red",

@@ -676,8 +676,8 @@ async def prompt_spectrals(spectral_ids, lossy_master, check_lma, force_prompt_l
     while True:
         ids = (
             "*"
-            if cfg.upload.yes_all and not force_prompt_lossy_master
-            else await click.prompt(
+            if await interaction.assume_defaults() and not force_prompt_lossy_master
+            else await interaction.prompt(
                 click.style(
                     f"What spectral IDs would you like to upload to {cfg.image.specs_uploader}? "
                     '(space-separated list of IDs, "0" for none, "*" for all, or "+" for a randomized selection)',
@@ -718,9 +718,9 @@ async def prompt_lossy_master(force_prompt_lossy_master=False, suggested: str = 
         flush_stdin()
         r = (
             "n"
-            if cfg.upload.yes_all and not force_prompt_lossy_master
+            if await interaction.assume_defaults() and not force_prompt_lossy_master
             else (
-                await click.prompt(
+                await interaction.prompt(
                     click.style(
                         "\nIs this release lossy mastered? [y]es, [N]o, [r]eopen spectrals, [a]bort"
                         + (", [d]elete music folder" if offer_deletion else ""),
@@ -799,8 +799,9 @@ async def generate_lossy_approval_comment(source_url, filenames, force_prompt_lo
     while True:
         comment = (
             ""
-            if cfg.upload.yes_all and not force_prompt_lossy_master
-            else await click.prompt(
+            # Without a source URL, an empty comment is refused: yes_all would refuse it forever.
+            if await interaction.assume_defaults() and not force_prompt_lossy_master and source_url
+            else await interaction.prompt(
                 click.style(
                     "Do you have a comment for the lossy approval report? It is appropriate to "
                     "make a note about the source here. Source information from go, gos, and the "
