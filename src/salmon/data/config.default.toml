@@ -64,7 +64,7 @@ ra_key = 'api_key'
 
 # Before a non-scene upload, FLACs whose pictures plus padding exceed 1 MiB (a trump reason) lose them, keeping
 # the front cover as a file. Set to true to also embed that cover into FLACs carrying none, resized to fit.
-# auto_compress_cover = false
+# embed_missing_cover = false
 
 # Per-tracker overrides, kept last: an [image.<tracker>] header takes every setting below it; unset keys use [image].
 # A tracker's image_uploader is the default of `salmon images up -t <tracker>`; RED→OPS cross-uploads keep RED's images.

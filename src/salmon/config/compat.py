@@ -50,6 +50,7 @@ OLD_KEYS: tuple[Moved | Removed, ...] = (
     Moved("upload.description.fullwidth_replacements", "upload.formatting.fullwidth_replacements"),
     Moved("upload.description.empty_track_comment_tag", "upload.formatting.empty_track_comment_tag"),
     Moved("upload.compression.lma_comment_in_t_desc", "upload.description.lma_comment_in_t_desc"),
+    Moved("image.auto_compress_cover", "image.embed_missing_cover"),
     Removed(
         "upload.web_interface.static_root_url",
         "the spectrals viewer now always serves its files at /static",

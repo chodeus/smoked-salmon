@@ -885,7 +885,7 @@ async def _upload_staged(
 
             if not scene:
                 rewritten = bool(strip_oversized_pictures(path, track_data))
-                if cfg.image.auto_compress_cover:
+                if cfg.image.embed_missing_cover:
                     compress_pictures(path)
                     rewritten = True
                 if rewritten:
