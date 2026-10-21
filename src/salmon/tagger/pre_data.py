@@ -242,7 +242,7 @@ def _parse_role_names(role_value):
 async def _prompt_encoding():
     click.echo(f"\nValid encodings: {', '.join(TAG_ENCODINGS.keys())}")
     while True:
-        # Use synchronous input since this is called from sync context
+        # A blocking input(): this loop waits for the answer.
         enc = input(click.style("What is the encoding of this release? [a]bort: ", fg="magenta"))
         try:
             return TAG_ENCODINGS[enc.upper()]
