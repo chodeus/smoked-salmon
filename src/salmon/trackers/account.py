@@ -244,24 +244,25 @@ async def run_on_request_loop(
             while not finished.done():
                 with suppress(asyncio.CancelledError):
                     await asyncio.shield(finished)
-    task = finished.result()
+    return _outcome(finished.result(), hand_over, cancelled, what)
+
+
+def _outcome(task: asyncio.Task, hand_over: _HandOver, cancelled: asyncio.CancelledError | None, what: str) -> Any:
+    """What the caller of a handed-over call gets once the call has ended: its result, or what it raised."""
+    if task.cancelled() and hand_over.committed and what:
+        # Cut off once it may have gone out, as by salmon web stopping, whether or not the caller was cancelled.
+        raise UnknownOutcomeError(f"salmon web stopped before {what} was answered")
     if cancelled is None:
         if task.cancelled():
             # Only salmon web stopping cancels a call no one cancelled.
-            if hand_over.committed and what:
-                raise UnknownOutcomeError(f"salmon web stopped before {what} was answered")
             if hand_over.committed:
                 raise RequestFailedError("salmon web stopped")
             raise RequestFailedError("salmon web stopped: the request was not sent")
         return task.result()
-    if task.cancelled():
-        # Cut off once it may have gone out, as by salmon web stopping: its outcome is not known.
+    if not task.cancelled():
+        error = task.exception()
+        if isinstance(error, UnknownOutcomeError):
+            raise error
         if hand_over.committed and what:
-            raise UnknownOutcomeError(f"salmon web stopped before {what} was answered")
-        raise cancelled
-    error = task.exception()
-    if isinstance(error, UnknownOutcomeError):
-        raise error
-    if hand_over.committed and what:
-        click.secho(f"Cancelled once {what} had been answered: check the site for what it did.", fg="yellow")
+            click.secho(f"Cancelled once {what} had been answered: check the site for what it did.", fg="yellow")
     raise cancelled

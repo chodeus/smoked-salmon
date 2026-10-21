@@ -722,6 +722,53 @@ def test_a_post_cut_off_by_salmon_web_stopping_after_a_cancel_is_an_unknown_outc
     _serve(body)
 
 
+@pytest.mark.parametrize(
+    ("cancellable", "what", "error", "message"),
+    [
+        (
+            True,
+            "POST /ajax.php?action=upload to RED",
+            RequestFailedError,
+            "salmon web stopped: the request was not sent",
+        ),
+        (False, "", RequestFailedError, "salmon web stopped"),
+        (
+            False,
+            "POST /ajax.php?action=upload to RED",
+            UnknownOutcomeError,
+            "salmon web stopped before POST /ajax.php?action=upload to RED was answered",
+        ),
+    ],
+    ids=["before_it_went_out", "after_it_may_have_gone_out", "after_an_upload_may_have_gone_out"],
+)
+def test_salmon_web_stopping_during_a_call_says_whether_it_may_have_gone_out(
+    cancellable: bool, what: str, error: type[Exception], message: str
+) -> None:
+    async def body(tracker: Tracker) -> None:
+        await tracker.start()
+        running: list[asyncio.Task] = []
+        started = asyncio.Event()
+
+        async def call() -> None:
+            running.append(asyncio.current_task())  # type: ignore[arg-type]
+            started.set()
+            await asyncio.sleep(15)
+
+        async def job() -> None:
+            await account.run_on_request_loop(call, cancellable=cancellable, what=what)
+
+        each = Job(job)
+        each.thread.start()
+        await started.wait()
+        # No one cancelled the job: salmon web stopping cancels the request on its loop.
+        running[0].cancel()
+        await anyio.to_thread.run_sync(each.thread.join, 30)
+        assert isinstance(each.error, error)
+        assert str(each.error) == message
+
+    _serve(body)
+
+
 def test_an_anyio_cancel_stops_a_get_at_once() -> None:
     async def body(tracker: Tracker) -> None:
         (api,) = _clients(await tracker.start(), "RED", unlimited=True)
