@@ -69,7 +69,7 @@ def health() -> dict:
             "optional": {name: shutil.which(name) for name in OPTIONAL_BINARIES},
         },
         "trackers": tracker_list,
-        "default_tracker": cfg.tracker.default_tracker,
+        "default_trackers": cfg.tracker.default_trackers,
         "directories": {
             "download": _dir_info(cfg.directory.download_directory),
             "tmp": _dir_info(cfg.directory.tmp_dir),

@@ -110,7 +110,8 @@ password = 'password'
 # TRACKER SETTINGS
 # ===============================
 [tracker]
-default_tracker = 'RED'       # If not set, you'll be prompted to choose when using multiple trackers
+# Without -t, a run uploads to these in order, then offers the other trackers. Not set: it asks which.
+default_trackers = ['RED']
 # Print every tracker request and response, with secrets masked
 # debug_connection = false
 

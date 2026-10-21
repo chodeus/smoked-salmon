@@ -181,7 +181,10 @@ def validate_conversions(ctx, param, value: str | None) -> tuple[str, ...] | Non
     "trackers",
     multiple=True,
     callback=salmon.trackers.validate_trackers,
-    help=f"Uploading Choices: ({'/'.join(salmon.trackers.tracker_list)}); repeat to upload to several in that order",
+    help=f"Uploading Choices: ({'/'.join(salmon.trackers.tracker_list)}). Name one, or several comma-separated or "
+    "with -t repeated, to upload to exactly those, in that order, without being asked for another tracker. Without -t, "
+    "salmon uses tracker.default_trackers in order, then offers the other trackers only if "
+    "upload.multi_tracker_upload is on; with no list, it asks which tracker.",
 )
 @click.option("--request", "-r", default=None, help="Pass a request URL or ID")
 @click.option(
@@ -340,7 +343,8 @@ async def up(
                 flac_group=flac_group,
                 skip_initial_review=skip_initial_review,
                 apply_ai_suggestions=apply_ai_suggestions,
-                trackers=list(trackers) if len(trackers) > 1 else None,
+                trackers=list(trackers),
+                offer_others=isinstance(trackers, salmon.trackers.UnnamedTrackers),
                 conversions=conversions,
             )
         except* DryRunRefused as refused:
@@ -403,31 +407,35 @@ def converted_from_note(conversion: dict[str, Any] | None, url: str | None) -> s
     return conversion_note(url or "", conversion.get("sample_rate"), cast("BitDepth", conversion.get("bit_depth", 16)))
 
 
-def _max_path_length_for_run(site_code: str, trackers: list[str] | None, flac_group: dict | None) -> int:
+def _max_path_length_for_run(
+    site_code: str, trackers: list[str] | None, flac_group: dict | None, offer_others: bool = False
+) -> int:
     """The run's path limit: this tracker's, or the strictest of all the run may reach (-t, multi_tracker_upload)."""
     if flac_group is not None or not (trackers or cfg.upload.multi_tracker_upload):
         return path_limit_for([site_code])
-    return path_limit_for(follow_up_trackers(trackers, site_code))
+    return path_limit_for(follow_up_trackers(trackers, site_code, offer_others))
 
 
-async def next_tracker(preselected: bool, remaining: list[str]) -> str | None:
-    """Next site to upload to: the next of the ones picked up front, else ask."""
-    if preselected:
+async def next_tracker(trackers: list[str] | None, remaining: list[str]) -> str | None:
+    """Next site to upload to: the next of the run's own trackers, else ask among the others."""
+    if trackers and remaining[0] in trackers:
         click.secho(f"\nNext tracker: {remaining[0]}", fg="magenta")
         return remaining[0]
     click.secho("\nWould you like to upload to another tracker? ", fg="magenta", nl=False)
     return await salmon.trackers.choose_tracker(remaining)
 
 
-def follow_up_trackers(trackers: list[str] | None, current: str) -> list[str]:
+def follow_up_trackers(trackers: list[str] | None, current: str, offer_others: bool = False) -> list[str]:
     """Sites available for the follow-up offer after uploading to `current`.
 
-    None means every configured site (what the CLI passes). Codes are deduped in
-    order — only one entry is removed per upload, so a repeat would be re-offered
-    and could upload to the same tracker twice. `current` stays in the list
+    None means every configured site. With `offer_others` (no -t named the trackers), the other configured
+    sites follow `trackers`, if multi_tracker_upload. Codes are deduped in order — only one entry is removed per
+    upload, so a repeat would be re-offered and could upload to the same tracker twice. `current` stays in the list
     because it is removed after its own upload.
     """
     sites = list(dict.fromkeys(trackers)) if trackers is not None else list(salmon.trackers.tracker_list)
+    if trackers is not None and offer_others and cfg.upload.multi_tracker_upload:
+        sites += [code for code in salmon.trackers.tracker_list if code not in sites]
     if current not in sites:
         sites.insert(0, current)
     return sites
@@ -459,6 +467,7 @@ async def upload(
     apply_ai_suggestions: bool = False,
     trackers: list[str] | None = None,
     conversions: tuple[str, ...] | None = None,
+    offer_others: bool = False,
 ) -> None:
     """Upload an album folder to Gazelle Site.
 
@@ -490,8 +499,9 @@ async def upload(
         skip_initial_review: Skip the first manual metadata review before AI review.
         apply_ai_suggestions: Automatically apply AI review suggestions when present.
         trackers: Restrict the follow-up tracker offer to these sites, in order;
-            duplicates are ignored. None offers every configured tracker, which
-            is what the CLI does; an empty list offers none.
+            duplicates are ignored. None offers every configured tracker; an empty list offers none.
+        offer_others: `trackers` were not named with -t (the config's default_trackers, or the tracker asked for):
+            after them, offer the other configured trackers, as configured.
         conversions: The conversion kinds selected by default after a FLAC; None follows upload.conversions.
     """
     path = os.path.abspath(path)
@@ -533,6 +543,7 @@ async def upload(
             skip_initial_review=skip_initial_review,
             apply_ai_suggestions=apply_ai_suggestions,
             trackers=trackers,
+            offer_others=offer_others,
             folder_type=folder_type,
             conversion=conversion,
             rename_into=rename_into,
@@ -579,9 +590,9 @@ def _warn_about_provenance(path: str) -> None:
             click.secho(f"  - {note}", fg="yellow")
 
 
-def _another_can_follow(trackers: list[str] | None, site_code: str) -> bool:
+def _another_can_follow(trackers: list[str] | None, site_code: str, offer_others: bool = False) -> bool:
     """Whether the run can go on to a tracker other than site_code."""
-    others = [site for site in follow_up_trackers(trackers, site_code) if site != site_code]
+    others = [site for site in follow_up_trackers(trackers, site_code, offer_others) if site != site_code]
     return bool(others) and bool(trackers or cfg.upload.multi_tracker_upload)
 
 
@@ -611,6 +622,7 @@ async def _upload_staged(
     skip_initial_review: bool,
     apply_ai_suggestions: bool,
     trackers: list[str] | None,
+    offer_others: bool,
     folder_type: str | None,
     conversion: dict[str, Any] | None,
     rename_into: str | None,
@@ -669,7 +681,7 @@ async def _upload_staged(
         tags_refusal = _do_not_upload_refusal(gazelle_site.site_code, rls_data)
         # The review keeps each file's depth and rate. With --skip-flac-upload only transcodes go up: no FLAC to refuse.
         rate_refused = flac_group is None and _sixteen_bit_refusal(gazelle_site.site_code, audio_info)
-        if rate_refused and not _another_can_follow(trackers, gazelle_site.site_code):
+        if rate_refused and not _another_can_follow(trackers, gazelle_site.site_code, offer_others):
             # Nothing the review changes could let these files go up.
             raise click.Abort
         if group_id is None and (tags_refusal or rate_refused):
@@ -684,7 +696,7 @@ async def _upload_staged(
                     weighed_against = dict(rls_data)
                 except RequestError as e:
                     # Skipped like a later tracker; a request is this tracker's, so with one the run ends.
-                    if request_id or not _another_can_follow(trackers, gazelle_site.site_code):
+                    if request_id or not _another_can_follow(trackers, gazelle_site.site_code, offer_others):
                         click.secho(
                             f"\nCould not search {gazelle_site.site_string} for dupes: {e}", fg="red", bold=True
                         )
@@ -712,7 +724,7 @@ async def _upload_staged(
             source_url = new_source_url
             click.secho(f"New Source URL: {source_url}", fg="yellow")
         # The strictest limit of every tracker this run may reach: its conversions are checked against it too.
-        run_path_limit = _max_path_length_for_run(gazelle_site.site_code, trackers, flac_group)
+        run_path_limit = _max_path_length_for_run(gazelle_site.site_code, trackers, flac_group, offer_others)
         path, metadata, tags, audio_info = await edit_metadata(
             path,
             tags,
@@ -740,7 +752,7 @@ async def _upload_staged(
         # Before the first tracker's group, cover and upload; spectrals go once for the run, so with a follower.
         if rate_refused or _do_not_upload_refusal(gazelle_site.site_code, metadata, said=tags_refusal) is not None:
             # With --skip-flac-upload, the FLAC's group is on this tracker alone.
-            if flac_group is not None or not _another_can_follow(trackers, gazelle_site.site_code):
+            if flac_group is not None or not _another_can_follow(trackers, gazelle_site.site_code, offer_others):
                 raise click.Abort
             skip_first = True
             if request_id:
@@ -812,7 +824,7 @@ async def _upload_staged(
     if cfg.upload.requests.last_minute_dupe_check and not skip_first:
         await last_min_dupe_check(gazelle_site, searchstrs, our_title)
 
-    remaining_gazelle_sites = follow_up_trackers(trackers, gazelle_site.site_code)
+    remaining_gazelle_sites = follow_up_trackers(trackers, gazelle_site.site_code, offer_others)
     tracker: str | None = gazelle_site.site_code
     if skip_first:
         remaining_gazelle_sites.remove(gazelle_site.site_code)
@@ -828,7 +840,7 @@ async def _upload_staged(
         while True:
             # Loop until we don't want to upload to any more sites.
             if not tracker:
-                tracker = await next_tracker(bool(trackers), remaining_gazelle_sites)
+                tracker = await next_tracker(trackers, remaining_gazelle_sites)
                 if not tracker:
                     click.secho("\nDone with this release.", fg="green")
                     break

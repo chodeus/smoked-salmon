@@ -10,7 +10,7 @@
       optional: Record<string, string | null>
     }
     trackers: string[]
-    default_tracker: string | null
+    default_trackers: string[]
     directories: Record<string, DirInfo>
   }
 
@@ -150,7 +150,7 @@
     <p>
       Tracker:
       {#each health.trackers as t}
-        <span class="chip ok" style="margin-right: 0.4rem">{t}{t === health.default_tracker ? ' (default)' : ''}</span>
+        <span class="chip ok" style="margin-right: 0.4rem">{t}{health.default_trackers.includes(t) ? ' (default)' : ''}</span>
       {:else}
         <span class="chip err">none configured</span>
       {/each}
