@@ -10,11 +10,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
+import asyncclick as click
 import pytest
 from test_uploader_shortened_conversions import _write_flac  # pyright: ignore[reportMissingImports]
 
 import salmon.uploader as uploader
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.converter import conversions
 from salmon.converter import downconverting as dc
 from salmon.converter import transcoding as tc
@@ -620,3 +621,38 @@ def test_a_refused_transcode_is_skipped_and_the_next_task_runs(monkeypatch, caps
 
     assert made == ["V0", "up /out [V0]"]
     assert "01.mp3 is missing" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("assume_defaults", "answer", "deleted"),
+    [(True, None, False), (False, False, False), (False, True, True)],
+    ids=["yyy_takes_the_default_no", "told_no", "told_yes"],
+)
+def test_a_folder_that_is_not_the_expected_transcode_goes_only_when_the_user_says_so(
+    made, tmp_path, monkeypatch, assume_defaults: bool, answer: bool | None, deleted: bool
+) -> None:
+    album = _album(tmp_path)
+    existing = Path(tc._build_output_path(str(album), "V0", str(tmp_path)))
+    existing.mkdir(parents=True)
+    # Not salmon's: e.g. a prior upload with another file template, which the user may be seeding.
+    (existing / "01 - seeding.mp3").write_bytes(b"seeded")
+    asked: list[str] = []
+
+    def confirm(text: str, **_kwargs: Any) -> bool | None:
+        asked.append(click.unstyle(text))
+        return answer
+
+    monkeypatch.setattr(click, "confirm", confirm)
+
+    async def run() -> str:
+        with interaction.assuming_defaults(assume_defaults):
+            return await tc.transcode_folder(str(album), "V0", output_dir=str(tmp_path))
+
+    if deleted:
+        anyio.run(run)
+        assert not (existing / "01 - seeding.mp3").exists()
+    else:
+        with pytest.raises(UploadError, match="Not overwriting"):
+            anyio.run(run)
+        assert (existing / "01 - seeding.mp3").read_bytes() == b"seeded"
+    assert len(asked) == (0 if assume_defaults else 1)
