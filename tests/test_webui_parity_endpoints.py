@@ -115,6 +115,7 @@ def test_compress_refuses_a_path_outside_the_roots(client):
 
 def test_cli_still_exposes_every_command_after_the_refactor() -> None:
     # checkconf and descgen were rewired onto shared helpers; the commands must survive.
+    import salmon.commands  # noqa: F401 (registers the commands, as salmon.run does)
     from salmon.common import commandgroup
 
     names = set(commandgroup.commands)

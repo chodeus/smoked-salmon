@@ -27,7 +27,7 @@ from starlette.websockets import WebSocketDisconnect
 from test_trackers_account import FakeTracker, _clients, _post  # pyright: ignore[reportMissingImports]
 from webui_client import reset_manager, web_client  # pyright: ignore[reportMissingImports]
 
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.checks.integrity import IntegrityResult
 from salmon.common.progress import report_progress
 from salmon.errors import UnknownOutcomeError
@@ -38,7 +38,6 @@ from salmon.uploader.frequency import SpectrumResult
 from salmon.uploader.spectrals import get_spectrals_path
 from salmon.webui import egress
 from salmon.webui import jobs as jobs_mod
-from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.jobs import (
     MAX_FINISHED_JOBS,
     MAX_JOBS,
@@ -389,7 +388,7 @@ async def test_a_cancel_as_a_jobs_thread_makes_its_task_is_not_lost(monkeypatch)
                 go.wait(15)
             return seen
 
-    class HeldInteraction(jobs_mod.WebInteraction):
+    class HeldAsker(jobs_mod._JobAsker):
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
             self.cancel_requested = HeldFlag()
@@ -413,7 +412,7 @@ async def test_a_cancel_as_a_jobs_thread_makes_its_task_is_not_lost(monkeypatch)
             super().__init__(*args, **kwargs)
             self._lock = LingeringLock()  # pyright: ignore[reportAttributeAccessIssue]
 
-    monkeypatch.setattr(jobs_mod, "WebInteraction", HeldInteraction)
+    monkeypatch.setattr(jobs_mod, "_JobAsker", HeldAsker)
     monkeypatch.setattr(jobs_mod, "Job", LingeringJob)
     ran = []
 
@@ -666,13 +665,12 @@ async def test_a_cancelled_jobs_worker_still_in_its_folder_holds_back_the_next_j
 
 
 async def test_a_worker_a_finished_job_left_cannot_ask_a_question():
-    install_interaction_patches()
     asked: list[str] = []
 
     def late_question() -> None:
         time.sleep(0.1)
         try:
-            click.confirm("Still there?")
+            asyncio.run(interaction.confirm("Still there?"))
         except BaseException as e:  # noqa: BLE001 - what the question raised is the result
             asked.append(type(e).__name__)
 
@@ -706,7 +704,7 @@ async def test_a_thread_that_fails_to_start_hands_its_slot_to_the_next_job():
         await finished(each)
 
     assert (c.status, c.error, c.finished_at is not None) == ("failed", "Failed to start the worker thread.", True)
-    assert c.interaction is not None and c.interaction.closed.is_set()
+    assert c.asker is not None and c.asker.closed.is_set()
     assert d.result == "through"
 
 

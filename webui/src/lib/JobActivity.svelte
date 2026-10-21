@@ -21,8 +21,8 @@
 {#if job.spectrals?.length}
   <div class="gallery">
     {#each job.spectrals as file}
-      <a href={`/api/jobs/${job.id}/spectral/${encodeURIComponent(file)}`} target="_blank" rel="noreferrer">
-        <img src={`/api/jobs/${job.id}/spectral/${encodeURIComponent(file)}`} alt={file} loading="lazy" />
+      <a href={`/api/jobs/${job.id}/spectrals/${encodeURIComponent(file)}`} target="_blank" rel="noreferrer">
+        <img src={`/api/jobs/${job.id}/spectrals/${encodeURIComponent(file)}`} alt={file} loading="lazy" />
         <span class="muted mono">{file}</span>
       </a>
     {/each}

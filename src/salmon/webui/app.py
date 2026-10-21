@@ -14,7 +14,6 @@ from salmon.trackers import account
 from salmon.webui import output
 from salmon.webui.auth import Auth, AuthMiddleware, auth_router, resolve_auth_token
 from salmon.webui.egress import EgressMiddleware
-from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.jobs import manager
 from salmon.webui.routers import browse, checks, convert, jobs, search, spectrals, system, tools, upload
 
@@ -41,7 +40,6 @@ async def _jobs_running(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | None = None) -> FastAPI:
-    install_interaction_patches()
     token = resolve_auth_token(auth_token)
     app = FastAPI(
         title="salmon web",

@@ -1,297 +1,149 @@
-"""Bridge between salmon's terminal prompts and browser questions.
+"""A salmon web job's questions, put to the browser (ADR 0004, section 2).
 
-Web upload jobs run the unmodified upload pipeline in a worker thread with its
-own event loop. Module-level patches on asyncclick (and a few salmon-internal
-seams) dispatch on a context variable: inside a web job every prompt becomes a
-question event that the browser answers via the jobs API; outside (the CLI)
-the original terminal behavior is untouched.
-
-asyncclick in the pinned version has an async ``prompt`` but synchronous
-``confirm``/``edit`` — the worker-thread architecture exists precisely so the
-sync ones may block their own loop while the server loop delivers the answer.
+The job's implementation of ``salmon.interaction``: each ``prompt``, ``confirm`` and ``edit`` becomes a question the
+browser answers, while the job waits in its own thread. Its text comes without the terminal's colour codes, as the
+job's log does. An answer is checked as the terminal checks it: the ``type`` or ``value_proc`` conversion, yes or no,
+the default for an empty answer; a wrong one is asked again with the error. ``show_spectrals`` serves the job's
+spectral images to the browser and waits until the user is done with them. Ported from the fork's
+``WebInteraction`` (styx-techno, chodeus), which patched asyncclick instead.
 """
 
-from __future__ import annotations
-
-import asyncio
-import concurrent.futures
-import contextvars
-import itertools
+import inspect
 import os
-import threading
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from typing import Any, Protocol
 
-import asyncclick
+import asyncclick as click
 
-import salmon.commands
-import salmon.uploader
-import salmon.uploader.spectrals
-from salmon.errors import NoAnswerError
-from salmon.webui import output
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
-_question_counter = itertools.count(1)
-
-# An unanswered browser question must not block its worker thread forever
-# (there is no TTY to fall back to). Long enough for a human to review spectrals.
-QUESTION_TIMEOUT_SECONDS = 30 * 60
+from salmon import interaction
 
 
-def no_answer() -> str:
-    return f"No answer for {round(QUESTION_TIMEOUT_SECONDS / 60)} minutes: the job stopped."
+class Asker(Protocol):
+    """Where a job's questions go: the job manager."""
+
+    async def ask(self, question: dict[str, Any]) -> Any:
+        """Put `question` to the browser and return the answer sent back."""
+        ...
+
+    def show_spectrals(self, folder: str, files: list[str]) -> None:
+        """Serve these images of `folder` to the browser, as this job's spectrals."""
+        ...
 
 
-_current: contextvars.ContextVar[WebInteraction | None] = contextvars.ContextVar("web_interaction", default=None)
+def _text(answer: Any) -> str:
+    """An answer as the line the user typed."""
+    if answer is None:
+        return ""
+    return answer if isinstance(answer, str) else str(answer)
 
 
-def current_interaction() -> WebInteraction | None:
-    return _current.get()
-
-
-def set_interaction(interaction: WebInteraction | None) -> contextvars.Token:
-    return _current.set(interaction)
+def _shown_default(default: Any) -> str | bool | None:
+    if default is None or isinstance(default, bool | str):
+        return default
+    return str(default)
 
 
 class WebInteraction:
-    """Routes prompts from a job thread to the browser and waits for answers."""
+    """Asks a job's questions in the browser."""
 
-    def __init__(
+    def __init__(self, asker: Asker) -> None:
+        self._asker = asker
+
+    async def prompt(
         self,
-        emit: Callable[[dict[str, Any]], None],
-        set_question: Callable[[dict[str, Any] | None], None],
-    ):
-        self._emit = emit
-        self._set_question = set_question
-        self._lock = threading.Lock()
-        self._pending: tuple[str, concurrent.futures.Future] | None = None
-        self.spectrals: dict[str, Any] | None = None
-        self.cancel_requested = threading.Event()
-        self.closed = threading.Event()
-        # What the job prints, as whole lines for its log (output.to sends it here).
-        self.lines = output.Lines(lambda line, _err: self.log(line))
-
-    def emit(self, event: dict[str, Any]) -> None:
-        if not self.closed.is_set():
-            self._emit(event)
-
-    def log(self, line: str) -> None:
-        self.emit({"event": "log", "line": line})
-
-    def flush_log(self) -> None:
-        self.lines.flush()
-
-    def _begin(
-        self,
-        kind: str,
         text: str,
         *,
         default: Any = None,
-        choices: list[str] | None = None,
-        initial: str | None = None,
-    ) -> tuple[str, concurrent.futures.Future]:
-        if self.cancel_requested.is_set() or self.closed.is_set():
-            raise concurrent.futures.CancelledError()
-        self.flush_log()
-        question = {
-            "id": f"q-{next(_question_counter)}",
-            "kind": kind,
-            "text": asyncclick.unstyle(text or "").strip(),
-            "default": default,
-            "choices": choices,
-            "initial": initial,
-        }
-        future: concurrent.futures.Future = concurrent.futures.Future()
-        with self._lock:
-            # Re-check under the lock: close() may have run since the early check, and
-            # would otherwise find _pending still None and cancel nothing.
-            if self.cancel_requested.is_set() or self.closed.is_set():
-                raise concurrent.futures.CancelledError()
-            self._pending = (question["id"], future)
-        self._set_question(question)
-        self.emit({"event": "question", "question": question})
-        return question["id"], future
+        type: Any = None,
+        value_proc: Callable[[str], Any] | None = None,
+        show_default: bool = True,
+    ) -> Any:
+        convert = value_proc if value_proc is not None else click.types.convert_type(type, default)
+        choices = [str(choice) for choice in type.choices] if isinstance(type, click.Choice) else None
+        error: str | None = None
+        while True:
+            answer = await self._asker.ask(
+                {
+                    "kind": "prompt",
+                    "text": click.unstyle(text),
+                    "default": _shown_default(default) if show_default else None,
+                    "choices": choices,
+                    "error": error,
+                }
+            )
+            value: Any = _text(answer)
+            if not value:
+                if default is None:
+                    # The terminal asks again, without a word.
+                    continue
+                value = default
+            try:
+                result = convert(value)
+                if inspect.isawaitable(result):
+                    result = await result
+            except click.UsageError as e:
+                error = f"Error: {e.message}"
+                click.echo(error)
+                continue
+            return result
 
-    def _finish(self, question_id: str) -> None:
-        with self._lock:
-            self._pending = None
-        self._set_question(None)
-        self.emit({"event": "question_answered", "question_id": question_id})
-
-    def ask_sync(self, kind: str, text: str, **kw: Any) -> Any:
-        """Ask from synchronous code; blocks the job thread until answered or timeout."""
-        question_id, future = self._begin(kind, text, **kw)
-        try:
-            return future.result(timeout=QUESTION_TIMEOUT_SECONDS)
-        except concurrent.futures.TimeoutError:
-            self.log(no_answer())
-            raise NoAnswerError() from None
-        finally:
-            self._finish(question_id)
-
-    async def ask_async(self, kind: str, text: str, **kw: Any) -> Any:
-        """Ask from the job's event loop without blocking it, until answered or timeout."""
-        question_id, future = self._begin(kind, text, **kw)
-        try:
-            return await asyncio.wait_for(asyncio.wrap_future(future), QUESTION_TIMEOUT_SECONDS)
-        except TimeoutError:
-            self.log(no_answer())
-            raise NoAnswerError() from None
-        finally:
-            self._finish(question_id)
-
-    def answer(self, question_id: str, value: Any) -> bool:
-        """Deliver an answer (called from the server loop). False if stale."""
-        with self._lock:
-            if self._pending is None or self._pending[0] != question_id:
-                return False
-            future = self._pending[1]
-        try:
-            future.set_result(value)
-        except concurrent.futures.InvalidStateError:
-            return False
-        return True
-
-    def cancel_pending(self) -> None:
-        """Request cancellation: fail the pending question and reject future ones."""
-        self.cancel_requested.set()
-        with self._lock:
-            if self._pending is not None:
-                self._pending[1].cancel()
-
-    def close(self) -> None:
-        """Stop emitting events and asking questions (job is finished)."""
-        self.closed.set()
-        with self._lock:
-            if self._pending is not None:
-                self._pending[1].cancel()
-
-
-# ---------------------------------------------------------------------------
-# Patches
-# ---------------------------------------------------------------------------
-
-_originals: dict[str, Any] = {}
-
-
-def _coerce_default(raw: Any, default: Any) -> Any | None:
-    """None or empty string means: take the prompt's default (if any)."""
-    if (raw is None or raw == "") and default is not None:
-        return default
-    return raw
-
-
-async def _web_prompt(text: str, default: Any = None, type: Any = None, value_proc: Any = None, **kw: Any) -> Any:
-    interaction = _current.get()
-    if interaction is None:
-        return await _originals["prompt"](text, default=default, type=type, value_proc=value_proc, **kw)
-    choices = list(type.choices) if isinstance(type, asyncclick.Choice) else None
-    while True:
-        raw = await interaction.ask_async("prompt", text, default=default, choices=choices)
-        value = _coerce_default(raw, default)
-        # click re-prompts on empty input unless a default exists.
-        if value is None or (value == "" and default is None):
-            interaction.log("An answer is required.")
-            continue
-        if not isinstance(value, str):
-            value = str(value)
-        try:
-            if value_proc is not None:
-                return value_proc(value)
-            if type is not None and isinstance(type, asyncclick.ParamType):
-                return type.convert(value, None, None)
-        except (asyncclick.UsageError, ValueError, TypeError) as e:
-            interaction.log(f"Invalid answer: {e}")
-            continue
+    async def confirm(self, text: str, *, default: bool | None = False, abort: bool = False) -> bool:
+        error: str | None = None
+        while True:
+            answer = await self._asker.ask(
+                {"kind": "confirm", "text": click.unstyle(text), "default": default, "error": error}
+            )
+            reply = _text(answer).strip().lower()
+            if answer is True or reply in ("y", "yes"):
+                value = True
+            elif answer is False or reply in ("n", "no"):
+                value = False
+            elif default is not None and reply == "":
+                value = default
+            else:
+                error = "Error: invalid input"
+                click.echo(error)
+                continue
+            break
+        if abort and not value:
+            raise click.Abort()
         return value
 
+    async def edit(self, text: str, *, editor: str | None = None, extension: str = ".txt") -> str | None:
+        error: str | None = None
+        while True:
+            answer = await self._asker.ask(
+                {
+                    "kind": "edit",
+                    "text": "Edit the text, then save it.",
+                    "initial": text,
+                    "extension": extension,
+                    "error": error,
+                }
+            )
+            # None: left unchanged, as when the user quits the editor without saving.
+            if answer is None or isinstance(answer, str):
+                return answer
+            error = "Send the edited text, or nothing to leave it unchanged."
 
-def _web_confirm(text: str, default: bool | None = False, abort: bool = False, **kw: Any) -> bool:
-    interaction = _current.get()
-    if interaction is None:
-        return _originals["confirm"](text, default=default, abort=abort, **kw)
-    while True:
-        raw = interaction.ask_sync("confirm", text, default=default)
-        if isinstance(raw, bool):
-            value = raw
-            break
-        answer = "" if raw is None else str(raw).strip().lower()
-        if answer == "" and default is not None:
-            value = default
-            break
-        if answer in ("y", "yes", "true", "1"):
-            value = True
-            break
-        if answer in ("n", "no", "false", "0"):
-            value = False
-            break
-        interaction.log("Please answer yes or no.")
-    if abort and not value:
-        raise asyncclick.Abort()
-    return value
+    async def show_spectrals(self, spectrals_path: str, all_spectral_ids: dict[int, str]) -> None:
+        files = sorted(
+            entry.name
+            for entry in os.scandir(spectrals_path)
+            # Not hidden ones, as the terminal's viewers: a compression's leftover copy would show as a broken image.
+            if entry.name.lower().endswith(".png")
+            and not entry.name.startswith(".")
+            and entry.is_file(follow_symlinks=False)
+        )
+        self._asker.show_spectrals(spectrals_path, files)
+        await self._asker.ask(
+            {
+                "kind": "spectrals",
+                "text": "Look at the spectrals, then go on.",
+                "files": files,
+                "tracks": {f"{spectral_id:02d}": name for spectral_id, name in all_spectral_ids.items()},
+            }
+        )
 
-
-def _web_edit(text: str | None = None, **kw: Any) -> str | None:
-    interaction = _current.get()
-    if interaction is None or kw.get("filename") is not None:
-        return _originals["edit"](text, **kw)
-    prompt_text = "Edit the text below and save, or discard to keep it unchanged."
-    raw = interaction.ask_sync("edit", prompt_text, initial=text or "")
-    if raw is None:
-        return None
-    raw = str(raw)
-    # click.edit guarantees a trailing newline on save; callers strip it.
-    return raw if raw.endswith("\n") else raw + "\n"
-
-
-async def _web_view_spectrals(
-    spectrals_path: str, all_spectral_ids: dict[int, str], wait_for_enter: Callable[[str], Awaitable[None]]
-) -> None:
-    interaction = _current.get()
-    if interaction is None:
-        await _originals["view_spectrals"](spectrals_path, all_spectral_ids, wait_for_enter)
-        return
-    files = sorted(f for f in os.listdir(spectrals_path) if f.lower().endswith(".png"))
-    interaction.spectrals = {"path": spectrals_path, "files": files}
-    interaction.emit({"event": "spectrals_ready", "files": files})
-    interaction.log("Spectrals are shown in the browser below.")
-
-
-async def _web_handle_spectrals_upload_and_deletion(*args: Any, **kw: Any) -> Any:
-    result = await _originals["handle_spectrals_upload_and_deletion"](*args, **kw)
-    interaction = _current.get()
-    if interaction is not None:
-        # The spectrals folder is gone now; stop advertising its images.
-        interaction.spectrals = None
-        interaction.emit({"event": "spectrals_ready", "files": []})
-    return result
-
-
-def _web_flush_stdin() -> None:
-    if _current.get() is None:
-        _originals["flush_stdin"]()
-
-
-def install_interaction_patches() -> None:
-    """Install the context-dispatching patches. Idempotent; call at server start."""
-    if _originals:
-        return
-    _originals.update(
-        prompt=asyncclick.prompt,
-        confirm=asyncclick.confirm,
-        edit=asyncclick.edit,
-        view_spectrals=salmon.uploader.spectrals.view_spectrals,
-        flush_stdin=salmon.uploader.spectrals.flush_stdin,
-        handle_spectrals_upload_and_deletion=salmon.uploader.spectrals.handle_spectrals_upload_and_deletion,
-    )
-    asyncclick.prompt = _web_prompt
-    asyncclick.confirm = _web_confirm
-    asyncclick.edit = _web_edit
-    salmon.uploader.spectrals.view_spectrals = _web_view_spectrals
-    salmon.uploader.spectrals.flush_stdin = _web_flush_stdin
-    # handle_spectrals_upload_and_deletion is imported by name into other
-    # modules; patch every namespace that holds a reference.
-    salmon.uploader.spectrals.handle_spectrals_upload_and_deletion = _web_handle_spectrals_upload_and_deletion
-    salmon.uploader.handle_spectrals_upload_and_deletion = _web_handle_spectrals_upload_and_deletion
-    salmon.commands.handle_spectrals_upload_and_deletion = _web_handle_spectrals_upload_and_deletion
+    async def assume_defaults(self) -> bool:
+        return interaction.run_assumes_defaults()

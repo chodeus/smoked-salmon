@@ -2,8 +2,8 @@
 
 Drives the UNMODIFIED salmon.uploader.upload() pipeline through
 JobManager.create_threaded — the same entry point the /api/upload router
-uses — with the module-level asyncclick interaction patches installed, so
-every terminal prompt surfaces as a browser question on the job.
+uses — where salmon.interaction puts every question to the browser, as a
+question on the job.
 
 The world is mocked at the narrowest seams of salmon/uploader/__init__.py
 (metadata gathering, tag/rename plumbing, spectral *generation*, image
@@ -13,7 +13,7 @@ lossy/selection prompts, the upload confirm, real torf torrent generation,
 prepare_and_upload against the fake tracker, and the multi-tracker loop.
 
 Tests answer questions exactly like the HTTP layer does: poll job.question
-and deliver values via WebInteraction.answer (plus two genuine HTTP-level
+and deliver values via the job's asker (plus two genuine HTTP-level
 tests for the answer endpoint and spectral image serving).
 """
 
@@ -22,6 +22,7 @@ import contextlib
 import io
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,9 +38,8 @@ import salmon.uploader.spectrals
 from salmon import cfg, interaction
 from salmon.constants import RELEASE_TYPES
 from salmon.uploader import upload as run_upload
-from salmon.webui import interaction as interaction_mod
+from salmon.webui import jobs as jobs_mod
 from salmon.webui import output
-from salmon.webui.interaction import install_interaction_patches
 from salmon.webui.jobs import JobConflictError, JobManager
 from salmon.webui.jobs import manager as global_manager
 
@@ -101,7 +101,7 @@ async def drive(job, script, timeout=DEADLINE):
             )
         seen.append(question)
         last_id = question["id"]
-        answered = job.interaction.answer(question["id"], answer)
+        answered = job.asker.answer(question["id"], answer)
         assert answered is True
         idx += 1
     else:
@@ -128,13 +128,8 @@ def wait_until(cond, message, timeout=DEADLINE):
 
 
 # ---------------------------------------------------------------------------
-# Fixtures: interaction patches, managers, fake tracker, mocked world
+# Fixtures: managers, fake tracker, mocked world
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _interaction_patches():
-    install_interaction_patches()  # idempotent
 
 
 @pytest.fixture
@@ -396,6 +391,7 @@ async def test_full_happy_path_uploads_to_fake_tracker(jm, tracker, album_dir, u
         [
             ("What is the source of this release?", "web"),
             ("Would you like to upload to an existing group?", "n"),
+            ("Look at the spectrals, then go on.", True),
             ("Is this release lossy mastered?", "n"),
             ("What spectral IDs would you like to upload", "*"),
             ("Would you like to upload the torrent?", True),
@@ -410,10 +406,10 @@ async def test_full_happy_path_uploads_to_fake_tracker(jm, tracker, album_dir, u
     assert job.result == {"album_path": path, "tracker": "RED"}
     assert path not in m._active_lock_keys
 
-    # asyncclick prompts arrive as async questions, confirms as sync ones.
     assert [q["kind"] for q in questions] == [
         "prompt",
         "prompt",
+        "spectrals",
         "prompt",
         "prompt",
         "confirm",
@@ -450,15 +446,14 @@ async def test_full_happy_path_uploads_to_fake_tracker(jm, tracker, album_dir, u
 
     # Spectrals surfaced to the browser instead of a native viewer, and the
     # selected ids were passed to the (stubbed) spectral uploader.
-    assert job.interaction.spectrals is not None
-    assert len(job.interaction.spectrals["files"]) == 6
+    assert job.asker.spectrals is not None
+    assert len(job.asker.spectrals["files"]) == 6
     assert upload_world.spectral_uploads == [
-        (job.interaction.spectrals["path"], {1: TRACK_FILES[0], 2: TRACK_FILES[1], 3: TRACK_FILES[2]})
+        (job.asker.spectrals["path"], {1: TRACK_FILES[0], 2: TRACK_FILES[1], 3: TRACK_FILES[2]})
     ]
 
     log = "\n".join(job.log_lines)
     assert "Uploading to a new torrent group." in log
-    assert "Spectrals are shown in the browser below." in log
     assert "Successfully uploaded https://redacted.sh/torrents.php?torrentid=1001" in log
     assert "Done with this release." in log
 
@@ -468,8 +463,8 @@ async def test_full_happy_path_uploads_to_fake_tracker(jm, tracker, album_dir, u
     while not queue.empty():
         events.append(queue.get_nowait())
     kinds = [e["event"] for e in events]
-    assert kinds.count("question") == 7
-    assert kinds.count("question_answered") == 7
+    assert kinds.count("question") == 8
+    assert kinds.count("question_answered") == 8
     assert "spectrals_ready" in kinds
     assert "log" in kinds
     assert kinds[0] == "created"
@@ -553,6 +548,7 @@ async def test_declining_a_coverless_new_group_skips_only_that_tracker(
         [
             ("What is the source of this release?", "web"),
             ("Would you like to upload to an existing group?", "n"),
+            ("Look at the spectrals, then go on.", True),
             ("Is this release lossy mastered?", "n"),
             ("What spectral IDs would you like to upload", "*"),
             ("Would you like to upload the torrent?", True),
@@ -580,24 +576,24 @@ async def test_answer_validation_wrong_id_rejected_right_id_accepted(jm):
     m = jm()
 
     async def factory(job):
-        return await click.prompt("The only question")
+        return await interaction.prompt("The only question")
 
     job = m.create_threaded("demo", "Demo", factory)
     question = await wait_for(lambda: job.question, "question to appear")
 
     answered = m.answer("job-does-not-exist", question["id"], "x")
     assert answered is False
-    answered = job.interaction.answer("q-bogus", "x")
+    answered = job.asker.answer("q-bogus", "x")
     assert answered is False
     assert job.question is not None  # still pending after bad answers
-    answered = job.interaction.answer(question["id"], "the answer")
+    answered = job.asker.answer(question["id"], "the answer")
     assert answered is True
 
     await join_job(job)
     assert job.status == "done"
     assert job.result == "the answer"
     # Stale answers after the question was consumed are rejected too.
-    answered = job.interaction.answer(question["id"], "late")
+    answered = job.asker.answer(question["id"], "late")
     assert answered is False
 
 
@@ -606,10 +602,10 @@ async def test_confirm_questions_accept_boolean_and_string_answers(jm):
 
     async def factory(job):
         return [
-            click.confirm("Boolean yes?"),
-            click.confirm("String yes?"),
-            click.confirm("Default yes?", default=True),
-            click.confirm("String no?"),
+            await interaction.confirm("Boolean yes?"),
+            await interaction.confirm("String yes?"),
+            await interaction.confirm("Default yes?", default=True),
+            await interaction.confirm("String no?"),
         ]
 
     job = m.create_threaded("demo", "Demo", factory)
@@ -629,16 +625,162 @@ async def test_confirm_questions_accept_boolean_and_string_answers(jm):
     assert all(q["kind"] == "confirm" for q in questions)
 
 
+async def test_a_prompt_is_asked_again_with_the_error_and_takes_its_default(jm):
+    m = jm()
+
+    async def factory(job):
+        return [
+            await interaction.prompt("How many discs?", type=int),
+            await interaction.prompt("Which?", type=click.Choice(["one", "two"])),
+            await interaction.prompt("Label", default="none"),
+        ]
+
+    job = m.create_threaded("demo", "Demo", factory)
+    questions = await drive(
+        job,
+        [("How many discs?", "many"), ("How many discs?", "2"), ("Which?", "three"), ("Which?", "two"), ("Label", "")],
+    )
+    await join_job(job)
+
+    assert job.status == "done", job.error
+    assert job.result == [2, "two", "none"]
+    assert (questions[0]["kind"], questions[0]["error"]) == ("prompt", None)
+    assert questions[1]["error"] == "Error: 'many' is not a valid integer."
+    assert questions[2]["choices"] == ["one", "two"]
+    assert questions[4]["default"] == "none"
+    # As the terminal does, the error is printed too.
+    assert "Error: 'many' is not a valid integer." in job.log_lines
+
+
+async def test_a_confirm_without_a_default_is_asked_again_on_an_empty_answer(jm):
+    m = jm()
+
+    async def factory(job):
+        return await interaction.confirm("Third?", default=None)
+
+    job = m.create_threaded("demo", "Demo", factory)
+    questions = await drive(job, [("Third?", ""), ("Third?", "N")])
+    await join_job(job)
+
+    assert job.result is False
+    assert (questions[0]["default"], questions[1]["error"]) == (None, "Error: invalid input")
+
+
+async def test_spectrals_whose_folder_the_job_deleted_are_no_longer_shown(jm, tmp_path):
+    m = jm()
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "01-full.png").write_bytes(b"PNG")
+    queue = m.subscribe()
+
+    async def factory(job):
+        await interaction.show_spectrals(str(specs), {1: TRACK_FILES[0]})
+        shown = job.to_dict()["spectrals"]
+        shutil.rmtree(specs)
+        await interaction.confirm("Upload?")
+        return shown, job.to_dict()["spectrals"]
+
+    job = m.create_threaded("demo", "Demo", factory)
+    await drive(job, [("Look at the spectrals", True), ("Upload?", True)])
+    await join_job(job)
+
+    # Gone by the next question, before the job ends.
+    assert job.result == (["01-full.png"], None)
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    assert [e["files"] for e in events if e["event"] == "spectrals_ready"] == [["01-full.png"], []]
+
+
+async def test_a_job_that_goes_on_after_its_cancel_is_stopped_at_its_next_question(jm):
+    m = jm()
+
+    async def factory(job):
+        # As a job whose cancel came back as an unknown outcome goes on.
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.sleep(30)
+        return await interaction.confirm("Still upload?")
+
+    job = m.create_threaded("demo", "Demo", factory)
+    await wait_for(lambda: job._thread_task is not None, "the job's task to start")
+    m.cancel(job.id)
+    await join_job(job)
+
+    assert (job.status, job.question, job.result) == ("cancelled", None, None)
+
+
+async def test_a_web_job_shows_the_spectrals_the_terminal_would(jm, tmp_path):
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "01 Full.png").write_bytes(b"PNG")
+    # A compression's leftover copy, which the terminal's viewers leave out.
+    (specs / ".01 Full.png.tmp.png").write_bytes(b"PNG")
+    m = jm()
+
+    async def factory(job):
+        await interaction.show_spectrals(str(specs), {1: TRACK_FILES[0]})
+
+    job = m.create_threaded("demo", "Demo", factory)
+    questions = await drive(job, [("Look at the spectrals", True)])
+    await join_job(job)
+
+    assert questions[0]["files"] == salmon.uploader.spectrals._spectral_images(str(specs)) == ["01 Full.png"]
+
+
+async def test_spectrals_deleted_after_the_last_question_are_gone_once_the_job_ends(jm, tmp_path):
+    m = jm()
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "01-full.png").write_bytes(b"PNG")
+
+    async def factory(job):
+        await interaction.show_spectrals(str(specs), {1: TRACK_FILES[0]})
+        shutil.rmtree(specs)
+
+    job = m.create_threaded("demo", "Demo", factory)
+    await drive(job, [("Look at the spectrals", True)])
+    await join_job(job)
+
+    assert job.to_dict()["spectrals"] is None
+
+
+def test_spectrals_shown_while_the_old_ones_are_withdrawn_stay_shown(monkeypatch, tmp_path):
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    events: list[dict] = []
+    asker = jobs_mod._JobAsker(emit=events.append, set_question=lambda _question: None)
+    asker.show_spectrals(str(old), ["01 Full.png"])
+    old.rmdir()
+    isdir = os.path.isdir
+    showers: list[threading.Thread] = []
+
+    def isdir_while_new_ones_are_shown(path) -> bool:
+        if not showers:
+            # The job's thread shows new spectrals while an image request withdraws the old ones.
+            showers.append(threading.Thread(target=asker.show_spectrals, args=(str(new), ["02 Full.png"])))
+            showers[0].start()
+            showers[0].join(0.2)
+        return isdir(path)
+
+    monkeypatch.setattr(jobs_mod.os.path, "isdir", isdir_while_new_ones_are_shown)
+    asker.withdraw_deleted_spectrals()
+    showers[0].join(5)
+
+    assert asker.spectrals is not None and list(asker.spectrals["files"]) == ["02 Full.png"]
+    assert events[-1] == {"event": "spectrals_ready", "files": ["02 Full.png"]}
+
+
 # ---------------------------------------------------------------------------
 # 4. Cancel while a question is pending
 # ---------------------------------------------------------------------------
 
 
-async def test_cancel_while_async_prompt_pending_cancels_job_and_frees_lock(jm):
+async def test_cancel_while_a_prompt_is_pending_cancels_job_and_frees_lock(jm):
     m = jm()
 
     async def factory(job):
-        return await click.prompt("Never answered?")  # async question
+        return await interaction.prompt("Never answered?")
 
     job = m.create_threaded("demo", "Demo", factory, lock_key="/albums/x")
     await wait_for(lambda: job.question, "question to appear")
@@ -660,32 +802,32 @@ async def test_cancel_while_async_prompt_pending_cancels_job_and_frees_lock(jm):
     assert second.status == "done"
 
 
-@pytest.mark.parametrize("asked", ["async prompt", "sync confirm"])
+@pytest.mark.parametrize("asked", ["prompt", "confirm"])
 async def test_an_unanswered_question_stops_the_job_and_frees_its_lock(jm, monkeypatch, asked):
     # Upstream's rule: a question left unanswered for QUESTION_TIMEOUT stops its job, which frees the folder.
-    monkeypatch.setattr(interaction_mod, "QUESTION_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(jobs_mod, "QUESTION_TIMEOUT", 0.3)
     m = jm()
 
     async def factory(job):
-        if asked == "async prompt":
-            return await click.prompt("Never answered?")
-        return click.confirm("Never answered?")
+        if asked == "prompt":
+            return await interaction.prompt("Never answered?")
+        return await interaction.confirm("Never answered?")
 
     job = m.create_threaded("demo", "Demo", factory, lock_key="/albums/z")
     await join_job(job)
 
     assert job.status == "failed"
-    assert job.error == interaction_mod.no_answer()
+    assert job.error == jobs_mod._no_answer()
     assert job.question is None
     assert "/albums/z" not in m._active_lock_keys
 
 
-async def test_cancel_while_sync_confirm_pending_clears_question_and_lock(jm):
-    """A sync question's future is a concurrent.futures one: its CancelledError still ends the job as cancelled."""
+async def test_cancel_while_a_confirm_is_pending_clears_question_and_lock(jm):
+    """A question's future is a concurrent.futures one: its CancelledError still ends the job as cancelled."""
     m = jm()
 
     async def factory(job):
-        click.confirm("Never answered?")  # sync: blocks the job thread
+        await interaction.confirm("Never answered?")
         return "unreachable"
 
     job = m.create_threaded("demo", "Demo", factory, lock_key="/albums/y")
@@ -717,10 +859,10 @@ async def test_same_path_conflicts_and_distinct_paths_run_concurrently(jm):
     m = jm()
 
     async def alpha(job):
-        return {"alpha": await click.prompt("Alpha question")}
+        return {"alpha": await interaction.prompt("Alpha question")}
 
     async def beta(job):
-        return {"beta": await click.prompt("Beta question")}
+        return {"beta": await interaction.prompt("Beta question")}
 
     job_a = m.create_threaded("demo", "A", alpha, lock_key="/albums/a")
     with pytest.raises(JobConflictError, match="/albums/a"):
@@ -735,12 +877,12 @@ async def test_same_path_conflicts_and_distinct_paths_run_concurrently(jm):
     assert "Alpha question" in job_a.question["text"]
     assert "Beta question" in job_b.question["text"]
     # Answers are scoped: job B rejects job A's question id.
-    answered = job_b.interaction.answer(job_a.question["id"], "x")
+    answered = job_b.asker.answer(job_a.question["id"], "x")
     assert answered is False
 
-    answered = job_a.interaction.answer(job_a.question["id"], "from a")
+    answered = job_a.asker.answer(job_a.question["id"], "from a")
     assert answered is True
-    answered = job_b.interaction.answer(job_b.question["id"], "from b")
+    answered = job_b.asker.answer(job_b.question["id"], "from b")
     assert answered is True
     await join_job(job_a)
     await join_job(job_b)
@@ -772,7 +914,7 @@ async def test_secho_goes_to_the_job_log_only_and_the_cli_prints_as_ever():
 
 
 # ---------------------------------------------------------------------------
-# 7. click.edit and the encoding prompt (pre_data)
+# 7. An edit, and the encoding prompt (pre_data)
 # ---------------------------------------------------------------------------
 
 
@@ -780,8 +922,8 @@ async def test_edit_and_encoding_prompt_seams(jm):
     m = jm()
 
     async def factory(job):
-        edited = click.edit("original text")
-        kept = click.edit("keep me")
+        edited = await interaction.edit("original text")
+        kept = await interaction.edit("keep me")
         encoding = await salmon.tagger.pre_data._prompt_encoding()
         return {"edited": edited, "kept": kept, "encoding": encoding}
 
@@ -789,8 +931,8 @@ async def test_edit_and_encoding_prompt_seams(jm):
     questions = await drive(
         job,
         [
-            ("Edit the text below", "rewritten body"),
-            ("Edit the text below", None),  # discard -> None
+            ("Edit the text, then save it.", "rewritten body"),
+            ("Edit the text, then save it.", None),  # discard -> None
             ("What is the encoding of this release?", "320"),
         ],
     )
@@ -800,8 +942,7 @@ async def test_edit_and_encoding_prompt_seams(jm):
     assert [q["kind"] for q in questions] == ["edit", "edit", "prompt"]
     assert questions[0]["initial"] == "original text"
     assert questions[1]["initial"] == "keep me"
-    # click.edit's contract: saved text gains a trailing newline; discard is None.
-    assert job.result == {"edited": "rewritten body\n", "kept": None, "encoding": ["320", False]}
+    assert job.result == {"edited": "rewritten body", "kept": None, "encoding": ["320", False]}
 
 
 # ---------------------------------------------------------------------------
@@ -832,30 +973,38 @@ def test_http_answer_endpoint_and_spectral_serving(client, tmp_path):
     (specs / "02-zoom.png").write_bytes(b"PNG-ZOOM")
 
     async def factory(job):
-        # Through the terminal viewer, which salmon web's patch replaces: the files go to the browser.
         await interaction.show_spectrals(str(specs), {1: TRACK_FILES[0]})
-        return {"confirmed": click.confirm("Ship it to the tracker?")}
+        return {"confirmed": await interaction.confirm("Ship it to the tracker?")}
 
     assert client.portal is not None
     job = client.portal.call(
         lambda: global_manager.create_threaded("upload", "Wizard", factory, lock_key="/albums/http")
     )
 
-    question = wait_until(lambda: job.question, "question to appear")
+    looked = wait_until(lambda: job.question, "the spectrals to be shown")
 
     data = client.get(f"/api/jobs/{job.id}").json()
-    assert data["question"]["text"] == "Ship it to the tracker?"
-    assert data["question"]["kind"] == "confirm"
+    assert data["question"]["kind"] == "spectrals"
+    assert data["question"]["files"] == ["01-full.png", "02-zoom.png"]
+    assert data["question"]["tracks"] == {"01": TRACK_FILES[0]}
     assert data["spectrals"] == ["01-full.png", "02-zoom.png"]
 
-    resp = client.get(f"/api/jobs/{job.id}/spectral/01-full.png")
+    resp = client.get(f"/api/jobs/{job.id}/spectrals/01-full.png")
     assert resp.status_code == 200
     assert resp.content == b"PNG-FULL"
     assert resp.headers["content-type"] == "image/png"
-    refused = client.get(f"/api/jobs/{job.id}/spectral/nope.png")
+    refused = client.get(f"/api/jobs/{job.id}/spectrals/nope.png")
     assert refused.status_code == 404
-    refused = client.get("/api/jobs/job-unknown/spectral/01-full.png")
+    refused = client.get("/api/jobs/job-unknown/spectrals/01-full.png")
     assert refused.status_code == 404
+
+    done = client.post(f"/api/jobs/{job.id}/answer", json={"question_id": looked["id"], "value": True})
+    assert done.status_code == 200
+    question = wait_until(
+        lambda: job.question if job.question and job.question["id"] != looked["id"] else None, "the next question"
+    )
+    assert question["text"] == "Ship it to the tracker?"
+    assert question["kind"] == "confirm"
 
     unknown_job = client.post("/api/jobs/job-unknown/answer", json={"question_id": question["id"], "value": True})
     assert unknown_job.status_code == 404
@@ -875,16 +1024,57 @@ def test_http_answer_endpoint_and_spectral_serving(client, tmp_path):
     assert final["question"] is None
 
 
-async def test_outside_a_job_the_spectrals_open_in_the_terminal_viewer(monkeypatch, tmp_path):
-    opened: list[tuple[str, dict[int, str], object]] = []
+def test_spectrals_the_job_deleted_are_not_found_and_no_longer_shown(client, tmp_path):
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "01 Full.png").write_bytes(b"PNG")
+    deleted, uploaded = threading.Event(), threading.Event()
 
-    async def terminal_viewer(spectrals_path: str, ids: dict[int, str], wait_for_enter: object) -> None:
-        opened.append((spectrals_path, ids, wait_for_enter))
+    async def factory(job):
+        await interaction.show_spectrals(str(specs), {1: TRACK_FILES[0]})
+        # As handle_spectrals_upload_and_deletion does, before the tracker upload and any next question.
+        shutil.rmtree(specs)
+        deleted.set()
+        await asyncio.to_thread(uploaded.wait, 10)
 
-    monkeypatch.setitem(interaction_mod._originals, "view_spectrals", terminal_viewer)
-    await interaction.show_spectrals(str(tmp_path), {1: TRACK_FILES[0]})
+    assert client.portal is not None
+    job = client.portal.call(lambda: global_manager.create_threaded("upload", "Wizard", factory))
+    looked = wait_until(lambda: job.question, "the spectrals question")
+    answered = client.post(f"/api/jobs/{job.id}/answer", json={"question_id": looked["id"], "value": True})
+    assert answered.status_code == 200
+    wait_until(deleted.is_set, "the spectrals folder to be deleted")
 
-    assert opened == [(str(tmp_path), {1: TRACK_FILES[0]}, interaction.TerminalInteraction._wait_for_enter)]
+    image = client.get(f"/api/jobs/{job.id}/spectrals/01%20Full.png")
+    listed = client.get(f"/api/jobs/{job.id}").json()["spectrals"]
+    uploaded.set()
+
+    assert (image.status_code, listed) == (404, None)
+
+
+def test_a_spectral_image_swapped_for_a_link_is_not_served(client, tmp_path):
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    image = specs / "01 Full.png"
+    image.write_bytes(b"PNG")
+    elsewhere = tmp_path / "elsewhere.png"
+    elsewhere.write_bytes(b"not a spectral")
+
+    async def factory(job):
+        await interaction.show_spectrals(str(specs), {1: TRACK_FILES[0]})
+
+    assert client.portal is not None
+    job = client.portal.call(lambda: global_manager.create_threaded("upload", "Wizard", factory))
+    looked = wait_until(lambda: job.question, "the spectrals question")
+    served = client.get(f"/api/jobs/{job.id}/spectrals/01%20Full.png")
+    image.unlink()
+    image.symlink_to(elsewhere)
+    linked = client.get(f"/api/jobs/{job.id}/spectrals/01%20Full.png")
+    answered = client.post(f"/api/jobs/{job.id}/answer", json={"question_id": looked["id"], "value": True})
+    wait_until(lambda: job.finished_at is not None, "the job to finish")
+
+    assert (served.status_code, served.content) == (200, b"PNG")
+    assert linked.status_code == 404
+    assert answered.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -931,6 +1121,7 @@ async def test_skip_flac_upload_sends_only_transcodes_linked_to_the_group_flac(
     await drive(
         job,
         [
+            ("Look at the spectrals, then go on.", True),
             ("Is this release lossy mastered?", "n"),
             ("What spectral IDs would you like to upload", "*"),
             ("Would you like to upload the torrent?", True),
@@ -1194,16 +1385,16 @@ async def test_an_unanswered_question_inside_the_upload_stops_the_job_as_unanswe
     jm, tracker, album_dir, upload_world, monkeypatch
 ):
     # salmon up catches its own aborts; one from an unanswered web question must still reach the job.
-    monkeypatch.setattr(interaction_mod, "QUESTION_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(jobs_mod, "QUESTION_TIMEOUT", 1.0)
     m = jm()
     path = str(album_dir)
     job = m.create_threaded("upload", "Upload", wizard_factory(tracker, path), lock_key=path)
     await wait_for(lambda: job.question and "source" in job.question["text"], "the source question")
-    answered = job.interaction.answer(job.question["id"], "web")
+    answered = job.asker.answer(job.question["id"], "web")
     assert answered is True
 
     # The next question (the existing group) is left unanswered.
     await join_job(job)
 
-    assert (job.status, job.error) == ("failed", interaction_mod.no_answer())
+    assert (job.status, job.error) == ("failed", jobs_mod._no_answer())
     assert path not in m._active_lock_keys

@@ -43,15 +43,25 @@ async def answer_question(job_id: str, req: AnswerRequest) -> dict:
     return {"answered": req.question_id}
 
 
-@router.get("/jobs/{job_id}/spectral/{filename}")
+@router.get("/jobs/{job_id}/spectrals/{filename}")
 async def job_spectral(job_id: str, filename: str) -> FileResponse:
     job = manager.jobs.get(job_id)
-    if job is None or job.interaction is None or job.interaction.spectrals is None:
+    asker = job.asker if job is not None else None
+    spectrals = asker.spectrals if asker is not None else None
+    if asker is None or spectrals is None:
         raise HTTPException(status_code=404, detail="No spectrals for this job.")
-    spectrals = job.interaction.spectrals
-    if filename not in spectrals["files"]:
+    # Looked up among the paths the job published: no path is made from what the request asks for.
+    path = spectrals["files"].get(filename)
+    if path is None:
         raise HTTPException(status_code=404, detail="Unknown spectral image.")
-    return FileResponse(os.path.join(spectrals["path"], filename))
+    if not os.path.isfile(path):
+        # The job has deleted them since its last question: the page stops showing them.
+        asker.withdraw_deleted_spectrals()
+        raise HTTPException(status_code=404, detail="The job has deleted its spectrals.")
+    # Its folder was resolved when published: a symlink put there since resolves elsewhere.
+    if os.path.realpath(path) != path:
+        raise HTTPException(status_code=404, detail="Unknown spectral image.")
+    return FileResponse(path)
 
 
 @router.post("/jobs/{job_id}/cancel")

@@ -8,11 +8,14 @@ export interface JobProgress {
 
 export interface Question {
   id: string
-  kind: 'confirm' | 'prompt' | 'edit'
+  kind: 'prompt' | 'confirm' | 'edit' | 'spectrals'
   text: string
-  default: unknown
-  choices: string[] | null
-  initial: string | null
+  default?: string | boolean | null
+  choices?: string[] | null
+  initial?: string
+  files?: string[]
+  tracks?: Record<string, string>
+  error?: string | null
 }
 
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled' | 'unknown_outcome'
