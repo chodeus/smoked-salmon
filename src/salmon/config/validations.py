@@ -355,7 +355,7 @@ class UploadSpectralsViewer(BaseStruct):
 
 class UploadRequests(BaseStruct):
     always_ask_for_request_fill: bool = False
-    check_recent_uploads: bool = False
+    check_recent_uploads: bool = True
     check_requests: bool = True
     last_minute_dupe_check: bool = False
 
