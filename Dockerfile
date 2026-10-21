@@ -74,6 +74,10 @@ RUN curl -fsSL -o /tmp/rclone.zip \
     && rm -rf /tmp/rclone.zip "/tmp/rclone-v${VERSION_RCLONE}-linux-amd64" \
     && rclone version
 
+# The base image's own pip bundles a certifi with compromised emSign roots (GHSA-6q48-6c7w-9gw2); 26.2.2 is the
+# first pip without it. salmon itself runs from the venv below.
+RUN python -m pip install --no-cache-dir --upgrade "pip>=26.2.2"
+
 # Copy the virtual environment from builder stage
 COPY --from=builder /app/.venv /app/.venv
 
