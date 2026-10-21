@@ -27,7 +27,7 @@ from bs4 import BeautifulSoup
 from torf import TorfError, Torrent, VerifyContentError
 
 import salmon.trackers
-from salmon import cfg, dryrun
+from salmon import cfg, dryrun, interaction
 from salmon.checks.do_not_upload import Candidate, do_not_upload_reason
 from salmon.checks.high_rate import sixteen_bit_notice
 from salmon.checks.tag_rules import SIXTEEN_BIT_ABOVE_48KHZ, path_limit_for
@@ -365,7 +365,7 @@ async def _run(
         click.secho("\nNothing to cross-upload.", fg="red")
         raise click.exceptions.Exit(1)
     _print_plan(releases, source, target, group_id, target_group_id)
-    if not cfg.upload.yes_all and not click.confirm(
+    if not await interaction.assume_defaults() and not await interaction.confirm(
         click.style(
             f"\nCross-upload {'this' if len(releases) == 1 else 'these'} to {target.site_string}?", fg="magenta"
         ),
@@ -844,7 +844,9 @@ async def _check_pieces(release: Release, given: Torrent | None, source: "BaseGa
         return
     differ = f"{differing} of {torrent.pieces} pieces differ from the {source.site_string} torrent"
     click.secho(f"{differ}: is the download complete?", fg="yellow", bold=True)
-    if cfg.upload.yes_all or not click.confirm(click.style("Cross-upload it anyway?", fg="magenta"), default=False):
+    if await interaction.assume_defaults() or not await interaction.confirm(
+        click.style("Cross-upload it anyway?", fg="magenta"), default=False
+    ):
         raise CrossUploadRefused(differ)
     release.notes.append(f"{differ}: going anyway")
 
@@ -1013,7 +1015,7 @@ async def _check_lossy_approval(release: Release, source: "BaseGazelleApi", targ
             f"lossy WEB.",
             fg="yellow",
         )
-        if cfg.upload.yes_all:
+        if await interaction.assume_defaults():
             click.secho(
                 f"Not reporting it as lossy on {target.site_string}: check {page}, and if it is approved, report the "
                 f"new torrent on {target.site_string} by hand.",
@@ -1021,7 +1023,7 @@ async def _check_lossy_approval(release: Release, source: "BaseGazelleApi", targ
             )
             release.notes.append(f"lossy approval unknown on {source.site_string}: no lossy report, check {page}")
             return
-        approved = click.confirm(
+        approved = await interaction.confirm(
             click.style(f"Report it as lossy on {target.site_string} after the upload?", fg="magenta"), default=False
         )
     if not approved:
@@ -1034,8 +1036,8 @@ async def _check_lossy_approval(release: Release, source: "BaseGazelleApi", targ
             fg="yellow",
         )
     comment = SPECTRALS_COMMENT if spectrals else ""
-    if not cfg.upload.yes_all:
-        comment = await click.prompt(
+    if not await interaction.assume_defaults():
+        comment = await interaction.prompt(
             click.style(
                 f"Comment for the lossy report on {target.site_string} (it already links the torrent on "
                 f"{source.site_string})",

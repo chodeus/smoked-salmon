@@ -6,7 +6,7 @@ from urllib import parse
 
 import asyncclick as click
 
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.common import RE_FEAT, make_searchstrs, normalize_accents, re_strip
 from salmon.common.strings import artist_keys, comparable
 from salmon.errors import AbortAndDeleteFolder, RequestError
@@ -159,7 +159,7 @@ async def _prompt_for_recent_upload_results(
             + f"{pick}aste a group URL, or [N]ew group / [a]bort {'/ [d]elete music folder ' if offer_deletion else ''}"
         )
 
-        group_id = await click.prompt(
+        group_id = await interaction.prompt(
             click.style(prompt_text, fg="magenta"),
             default="",
         )
@@ -391,7 +391,7 @@ async def _prompt_for_group_id(
     pick = "Type a group's number from the list above (1 is the first), or p" if results else "P"
     delete = "/ [d]elete music folder " if offer_deletion else ""
     while True:
-        group_id = await click.prompt(
+        group_id = await interaction.prompt(
             click.style(
                 "\nWould you like to upload to an existing group?\n"
                 f"{pick}aste a group URL, or [N]ew group / [a]bort {delete}",
@@ -617,7 +617,7 @@ async def _confirm_group_id(
         )
     while True:
         resp = (
-            await click.prompt(
+            await interaction.prompt(
                 click.style(
                     "\nAre you sure you would you like to upload this torrent to this group? [Y]es, "
                     f"[n]ew group, [a]bort{', [d]elete music folder' if offer_deletion else ''}",
@@ -654,7 +654,7 @@ async def choose_source_flac(group: dict, release: dict) -> dict | None:
     click.secho(f"\nGroup {group_id} has several {wanted} torrents in this edition:", fg="yellow", bold=True)
     for index, torrent in enumerate(flacs, 1):
         click.echo(f" {index:02d} >> {describe_torrent(torrent, group)}")
-    if cfg.upload.yes_all:
+    if await interaction.assume_defaults():
         click.secho(
             "Not picking the FLAC to transcode from with -yyy (upload.yes_all). Run without it to choose.", fg="red"
         )
@@ -662,7 +662,7 @@ async def choose_source_flac(group: dict, release: dict) -> dict | None:
     while True:
         choice = (
             (
-                await click.prompt(
+                await interaction.prompt(
                     click.style(
                         f"\nWhich one are these transcodes made from? [1-{len(flacs)}] or [a]bort", fg="magenta"
                     ),

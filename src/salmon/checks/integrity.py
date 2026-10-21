@@ -6,7 +6,7 @@ import anyio
 import asyncclick as click
 import msgspec
 
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.common.files import process_files, rewrite_refusal
 
 FLAC_IMPORTANT_REGEXES = [
@@ -166,7 +166,7 @@ async def handle_integrity_check(path: str) -> None:
         elif (
             not result.passed
             and path.lower().endswith(".flac")
-            and click.confirm(click.style(f"\n{sanitize_prompt(result)}", fg="magenta"), default=True)
+            and await interaction.confirm(click.style(f"\n{sanitize_prompt(result)}", fg="magenta"))
         ):
             await sanitize_and_verify(path)
     elif os.path.isdir(path):
@@ -175,9 +175,7 @@ async def handle_integrity_check(path: str) -> None:
 
         if not result.passed and refusal is not None:
             _no_sanitize(path, refusal)
-        elif not result.passed and click.confirm(
-            click.style(f"\n{sanitize_prompt(result)}", fg="magenta"), default=True
-        ):
+        elif not result.passed and await interaction.confirm(click.style(f"\n{sanitize_prompt(result)}", fg="magenta")):
             await sanitize_and_verify(path)
     else:
         raise click.Abort
@@ -211,7 +209,7 @@ async def resolve_integrity_for_upload(path: str, *, scene: bool, assume_yes: bo
         )
         raise click.Abort()
 
-    if assume_yes or click.confirm(click.style(f"\n{sanitize_prompt(result)}", fg="magenta"), default=True):
+    if assume_yes or await interaction.confirm(click.style(f"\n{sanitize_prompt(result)}", fg="magenta"), default=True):
         result = await sanitize_and_verify(path)
 
     # Outside the sanitize branch: declining to sanitize is not consent to upload files

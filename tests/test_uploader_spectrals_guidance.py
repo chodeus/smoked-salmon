@@ -157,3 +157,24 @@ async def test_yes_all_asks_the_question_only_when_told_to(monkeypatch):
         assert asked == ["asked"]
     finally:
         cfg.upload.yes_all = original
+
+
+async def test_yes_all_asks_for_the_lossy_comment_when_there_is_no_source_url(monkeypatch):
+    """With yes_all, a "yes" to the question led to a lossy comment it refused forever without a source URL."""
+    monkeypatch.setattr(sp.cfg.upload, "yes_all", True)
+    refusals: list[str] = []
+
+    def refuse(message="", **_kw):
+        refusals.append(message)
+        if len(refusals) > 3:
+            raise AssertionError("the empty comment is refused again and again")
+
+    async def fake_prompt(*_a, **_k):
+        return "Bought on the label's site."
+
+    monkeypatch.setattr(sp.click, "secho", refuse)
+    monkeypatch.setattr(sp.click, "prompt", fake_prompt)
+    comment = await sp.generate_lossy_approval_comment(None, ["01.flac"])
+    assert comment == "Bought on the label's site."
+    comment = await sp.generate_lossy_approval_comment("https://store.test/album", ["01.flac"])
+    assert comment == ""

@@ -3,7 +3,7 @@ from collections.abc import Callable, Sequence
 import anyio
 import asyncclick as click
 
-from salmon import cfg, dryrun
+from salmon import cfg, dryrun, interaction
 from salmon.common import AliasedCommands, commandgroup, copy_to_clipboard, is_http_url
 from salmon.config.validations import ARTWORK_ONLY_HOSTS, host_refusal, spectrals_refusal
 from salmon.errors import ImageUploadFailed
@@ -251,7 +251,7 @@ async def _handle_failed_spectrals(spectrals, successful) -> dict:
     """
     spec_hosts = {k: v for k, v in HOSTS.items() if spectrals_refusal(k) is None}
     while True:
-        host_input: str = await click.prompt(
+        host_input: str = await interaction.prompt(
             click.style(
                 "Some spectrals failed to upload. Which image host would you like to retry "
                 f"with, or {SKIP} to go on without them? (Options: {', '.join(spec_hosts)}, {SKIP})",

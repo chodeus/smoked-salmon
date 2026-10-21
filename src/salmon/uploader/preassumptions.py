@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 
 import asyncclick as click
 
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.common import get_audio_files
 from salmon.errors import RequestError, UploadError
 from salmon.tagger.pre_data import parse_format
@@ -102,7 +102,7 @@ async def confirm_group_upload(gazelle_site: "BaseGazelleApi", group_id: int, so
         source: Media source filter.
     """
     group = await print_group_info(gazelle_site, group_id, source)
-    click.confirm(
+    await interaction.confirm(
         click.style("\nWould you like to continue to upload to this group?", fg="magenta"),
         default=True,
         abort=True,
