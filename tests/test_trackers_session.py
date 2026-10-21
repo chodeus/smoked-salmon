@@ -14,7 +14,8 @@ import salmon.trackers
 from salmon import cfg
 from salmon.checks.connection import check_tracker_connection
 from salmon.errors import RequestFailedError, UnknownOutcomeError
-from salmon.trackers.base import BaseGazelleApi, SharedLimiter, _open_pools
+from salmon.trackers import account
+from salmon.trackers.base import BaseGazelleApi, SharedLimiter
 from salmon.webui.jobs import JobManager
 
 
@@ -241,7 +242,7 @@ async def test_the_connection_check_closes_its_pool(serve, monkeypatch):
 async def test_a_long_lived_context_keeps_no_tracker_once_its_pool_is_closed(serve):
     # The web UI's server context lives until shutdown; each connection check must not pile up on it.
     base = await serve(_answer_ok)
-    async with click.Context(click.Command("web")) as ctx:
+    async with account.requests_on_this_loop(), click.Context(click.Command("web")):
         refs = []
         for _ in range(3):
             api = FakeApi(base)
@@ -251,7 +252,6 @@ async def test_a_long_lived_context_keeps_no_tracker_once_its_pool_is_closed(ser
             del api
         gc.collect()
         assert all(ref() is None for ref in refs)
-        assert not _open_pools.get(ctx)
 
 
 async def test_a_pool_left_open_still_closes_with_its_context(serve):
@@ -263,24 +263,6 @@ async def test_a_pool_left_open_still_closes_with_its_context(serve):
         del api
         gc.collect()
     assert session is not None and session.closed
-
-
-async def test_closing_a_pool_never_walks_every_contexts_pools(serve, monkeypatch):
-    # Web UI job threads add their own contexts to the shared registry; walking it here can race them.
-    class NoWalking(weakref.WeakKeyDictionary):
-        def values(self):
-            raise AssertionError("close() walked the shared registry")
-
-        def items(self):
-            raise AssertionError("close() walked the shared registry")
-
-    monkeypatch.setattr("salmon.trackers.base._open_pools", NoWalking())
-    base = await serve(_answer_ok)
-    async with click.Context(click.Command("web")):
-        api = FakeApi(base)
-        await api._request("GET", f"{base}/ajax.php")
-        await api.close()
-    assert api._session is None
 
 
 @pytest.mark.parametrize("body", ['{"status": "failure"}', '["a", "b"]', '"nope"', "42"])

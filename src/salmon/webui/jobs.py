@@ -27,6 +27,7 @@ import asyncclick as click
 from salmon.common.progress import reset_progress_callback, set_progress_callback
 from salmon.common.redaction import redact_url
 from salmon.errors import AbortAndDeleteFolder, NoAnswerError, UnknownOutcomeError
+from salmon.trackers import account as accounts
 from salmon.uploader.record import recording
 from salmon.webui import egress, output
 from salmon.webui.interaction import WebInteraction, no_answer, set_interaction
@@ -104,7 +105,8 @@ async def _recorded(coro: Coroutine[Any, Any, Any]) -> Any:
 
 
 async def _in_click_context(coro: Coroutine[Any, Any, Any]) -> Any:
-    # Click's context stack is per thread; tracker pools close when this context exits.
+    # Click's context stack is per thread: a job's code that asks for one gets its own. Its tracker pools are not
+    # tied to it: they are salmon web's request loop's, closed when salmon web stops.
     async with click.Context(click.Command("job")):
         return await coro
 
@@ -347,8 +349,9 @@ class JobManager:
             with job._lock:
                 if interaction.cancel_requested.is_set():
                     raise asyncio.CancelledError()
-                # Before the task is made: it takes the context, and with it where its output goes.
-                with output.to(interaction.lines.write):
+                # Before the task is made: it takes the context, and with it where its output goes and the cancel its
+                # tracker requests see.
+                with output.to(interaction.lines.write), accounts.cancelled_with(interaction.cancel_requested):
                     task = loop.create_task(_in_click_context(_recorded(factory(job))))
                 job._thread_task = task
             result = loop.run_until_complete(task)
