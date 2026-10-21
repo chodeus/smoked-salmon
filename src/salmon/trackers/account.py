@@ -205,7 +205,8 @@ def begin_attempt() -> None:
     Called before each retry, ahead of the wait for it. A retry is only sent when the tracker did not act on the
     attempt before, so the call can stop there with nothing done, and a cancel stops it at once until it has its
     turn (see `commit`). Not called on a redirect hop, whose request the tracker has acted on: that one runs to
-    its end, and its outcome reaches the caller.
+    its end, and its outcome reaches the caller. A call committed across retries stays committed: its attempt
+    before may have reached the tracker, so a cancel during its retry waits for the answer.
 
     Raises:
         asyncio.CancelledError: If the caller was cancelled.
