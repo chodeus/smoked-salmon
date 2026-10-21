@@ -1328,9 +1328,13 @@ class BaseGazelleApi:
     async def _edit_torrent_description(self, torrent_id: int, description_addition: str) -> HttpResponse:
         """Send the torrent's edit form back with `description_addition` before its description; its answer."""
         if accounts.handing_over():
+            if accounts.caller_cancelled():
+                # As _request: a cancelled job whose cancel came back as an unknown outcome changes nothing.
+                raise asyncio.CancelledError(f"cancelled before editing the description of torrent {torrent_id}")
             # The account's lock is the request loop's: one taken on a job's loop would keep out only that job.
             return await accounts.run_on_request_loop(
-                lambda: self._edit_torrent_description(torrent_id, description_addition)
+                lambda: self._edit_torrent_description(torrent_id, description_addition),
+                what=f"the description edit of torrent {torrent_id} on {self.site_string}",
             )
         url = self.base_url + "/torrents.php"
         # Held from the read to the write, or another job's edit in between is lost. Both requests are
@@ -1350,6 +1354,8 @@ class BaseGazelleApi:
                 (name, description_addition + value if name == "release_desc" else value) for name, value in fields
             ]
             # Every field is the one the form showed, or the description above, so sending it twice is harmless.
+            # It may reach the tracker from here: a cancel or salmon web stopping says so instead of "not sent".
+            accounts.commit()
             return await self._request("POST", url, data=new_data, idempotent=True, needs_authkey=False)
 
     """The following three parsing functions are part of the gazelle class

@@ -56,15 +56,42 @@ def short_period(monkeypatch: pytest.MonkeyPatch) -> float:
     return 1.0
 
 
+EDIT_PAGE = (
+    '<html><body><form name="torrent" method="post"><input type="hidden" name="action" value="takeedit">'
+    '<input type="hidden" name="auth" value="AK"><input type="hidden" name="torrentid" value="7">'
+    '<textarea name="release_desc">Old</textarea></form></body></html>'
+)
+
+
 class Tracker(FakeTracker):
     """The fake tracker, which also answers a POST with action "fail" 500, one with "busy" 429, and one with "hold"
-    after a second."""
+    after a second, and serves torrent 7's edit form, whose edit it answers after a second."""
 
     def __init__(self) -> None:
         super().__init__()
         # The requests that are not idempotent the fake has finished answering, by action.
         self.answered: list[str] = []
         self.arrived = asyncio.Event()
+        self.edit_sent = asyncio.Event()
+
+    async def start(self) -> str:
+        app = web.Application()
+        app.router.add_route("*", "/ajax.php", self.handle)
+        app.router.add_route("*", "/torrents.php", self.edit)
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        await web.TCPSite(self.runner, "127.0.0.1", 0).start()
+        return f"http://127.0.0.1:{self.runner.addresses[0][1]}"
+
+    async def edit(self, request: web.Request) -> web.Response:
+        await request.read()
+        self.hits.append((time.monotonic(), request.headers["X-Site"], request.method, "edit"))
+        if request.method != "POST":
+            return web.Response(text=EDIT_PAGE, content_type="text/html")
+        self.edit_sent.set()
+        await asyncio.sleep(HELD)
+        self.answered.append("edit")
+        return web.Response(text="<html><body><h2>Edit successful</h2></body></html>", content_type="text/html")
 
     async def handle(self, request: web.Request) -> web.Response:
         self.arrived.set()
@@ -636,10 +663,8 @@ def test_a_cancel_around_a_429_to_a_post_stops_it_before_the_backoff_ends(
     assert stopped_after[0] < 1
 
 
-@pytest.mark.parametrize("from_a_task_it_starts", [False, True], ids=["itself", "from_a_task_it_starts"])
-def test_a_cancelled_job_that_goes_on_past_an_unknown_outcome_looks_up_but_changes_nothing(
-    from_a_task_it_starts: bool,
-) -> None:
+@pytest.mark.parametrize("then", ["post", "post_from_a_task_it_starts", "description_edit"])
+def test_a_cancelled_job_that_goes_on_past_an_unknown_outcome_looks_up_but_changes_nothing(then: str) -> None:
     # As the upload does, which looks a lost upload up by its infohash, and the lossy report and description edit
     # after it: the cancel came back as the unknown outcome, and the job goes on. Image uploads, the tracker's own
     # host's among them, go out from tasks a job starts.
@@ -655,11 +680,13 @@ def test_a_cancelled_job_that_goes_on_past_an_unknown_outcome_looks_up_but_chang
                 went_on.append("caught")
             await _get(api, "torrent")
             went_on.append("looked it up")
-            if from_a_task_it_starts:
+            if then == "post_from_a_task_it_starts":
                 await asyncio.ensure_future(_post(api))
+            elif then == "description_edit":
+                await api.append_to_torrent_description(7, "SPECTRALS ")
             else:
                 await _post(api)
-            went_on.append("sent the next POST")
+            went_on.append("changed something")
 
         each = Job(job)
         each.thread.start()
@@ -767,6 +794,31 @@ def test_salmon_web_stopping_during_a_call_says_whether_it_may_have_gone_out(
         await anyio.to_thread.run_sync(each.thread.join, 30)
         assert isinstance(each.error, error)
         assert str(each.error) == message
+
+    _serve(body)
+
+
+def test_salmon_web_stopping_during_a_description_edit_says_it_may_have_gone_out() -> None:
+    async def body(tracker: Tracker) -> None:
+        (api,) = _clients(await tracker.start(), "RED", unlimited=True)
+
+        async def job() -> None:
+            await api.append_to_torrent_description(7, "SPECTRALS ")
+
+        each = Job(job)
+        each.thread.start()
+        await tracker.edit_sent.wait()
+        # No one cancelled the job: salmon web stopping cancels the edit on its loop.
+        (edit,) = [
+            task
+            for task in asyncio.all_tasks()
+            if getattr(task.get_coro(), "__qualname__", "").endswith("_edit_torrent_description")
+        ]
+        edit.cancel()
+        await anyio.to_thread.run_sync(each.thread.join, 30)
+        assert isinstance(each.error, UnknownOutcomeError)
+        assert str(each.error) == "salmon web stopped before the description edit of torrent 7 on RED was answered"
+        await api.close()
 
     _serve(body)
 
