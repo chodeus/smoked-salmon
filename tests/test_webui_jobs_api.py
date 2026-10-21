@@ -40,7 +40,6 @@ from salmon.webui import egress
 from salmon.webui import jobs as jobs_mod
 from salmon.webui.jobs import (
     MAX_FINISHED_JOBS,
-    MAX_JOBS,
     SUBSCRIBER_QUEUE_SIZE,
     UNKNOWN_OUTCOME,
     Job,
@@ -440,7 +439,7 @@ async def test_cancelling_a_queued_job_ends_it_unrun_and_releases_its_lock():
     async def never(job):
         ran.append(job.id)
 
-    busy = [m.create_threaded("demo", f"Busy {n}", run) for n in range(MAX_JOBS)]
+    busy = [m.create_threaded("demo", f"Busy {n}", run) for n in range(m.max_jobs)]
     job = m.create_threaded("demo", "Demo", never, lock_key="/leaky")
     assert job.status == "queued"
     cancelled = m.cancel(job.id)
@@ -534,12 +533,23 @@ async def test_prune_finished_evicts_oldest_beyond_max_finished_jobs():
 # ---------------------------------------------------------------------------
 
 
-async def test_at_most_max_jobs_run_and_the_rest_wait_in_order():
+async def test_web_max_jobs_says_how_many_run_at_once(monkeypatch):
+    monkeypatch.setattr(cfg.web, "max_jobs", 1)
     m = JobManager()
+    gate, run = gated()
+    first, second = (m.create_threaded("demo", name, run) for name in "ab")
+
+    assert [first.status, second.status] == ["running", "queued"]
+    gate.set()
+    await finished(first)
+    await finished(second)
+
+
+async def test_at_most_max_jobs_run_and_the_rest_wait_in_order():
+    m = JobManager(max_jobs=2)
     gates = {name: gated() for name in "abcd"}
     a, b, c, d = (m.create_threaded("demo", name, gates[name][1]) for name in "abcd")
 
-    assert MAX_JOBS == 2
     assert [job.status for job in (a, b, c, d)] == ["running", "running", "queued", "queued"]
     gates["a"][0].set()
     await finished(a)
@@ -619,10 +629,10 @@ async def test_the_queue_is_bounded(monkeypatch):
     m = JobManager()
     gate, run = gated()
 
-    started = [m.create_threaded("demo", str(n), run) for n in range(MAX_JOBS + 2)]
+    started = [m.create_threaded("demo", str(n), run) for n in range(m.max_jobs + 2)]
     with pytest.raises(JobCapacityError, match="2 jobs are already waiting"):
         m.create_threaded("demo", "One too many", run)
-    assert len(m.jobs) == MAX_JOBS + 2
+    assert len(m.jobs) == m.max_jobs + 2
     gate.set()
     for each in started:
         await finished(each)
@@ -783,11 +793,11 @@ def test_stopping_the_server_cancels_its_jobs():
 
     with web_client() as c:
         assert c.portal is not None
-        jobs = [c.portal.call(manager.create_threaded, "demo", "Waits", waits) for _ in range(MAX_JOBS + 1)]
-        assert [job.status for job in jobs] == ["running"] * MAX_JOBS + ["queued"]
+        jobs = [c.portal.call(manager.create_threaded, "demo", "Waits", waits) for _ in range(manager.max_jobs + 1)]
+        assert [job.status for job in jobs] == ["running"] * manager.max_jobs + ["queued"]
 
     # Stopped with the server: the running jobs and the one waiting its turn.
-    assert [job.status for job in jobs] == ["cancelled"] * (MAX_JOBS + 1)
+    assert [job.status for job in jobs] == ["cancelled"] * (manager.max_jobs + 1)
 
 
 def test_what_a_jobs_worker_writes_as_the_server_stops_still_goes_to_its_log():
@@ -1101,9 +1111,7 @@ def test_an_unknown_outcomes_traceback_goes_to_the_servers_stderr_masked(monkeyp
 # The Host check (DNS rebinding)
 # ---------------------------------------------------------------------------
 
-HOST_REFUSED = {
-    "detail": "This host name is not allowed. Add it to allowed_hosts in the [upload.web_interface] config section."
-}
+HOST_REFUSED = {"detail": "This host name is not allowed. Add it to allowed_hosts in the [web] config section."}
 
 
 def test_default_loopback_bind_rejects_testserver_host_header():
@@ -1121,9 +1129,9 @@ def test_loopback_bind_rejects_evil_host_header(client):
 
 def test_a_wildcard_bind_checks_the_host_too(monkeypatch):
     # Upstream's rule: 0.0.0.0 names no machine, so a LAN bind needs its names in allowed_hosts.
-    monkeypatch.setattr(cfg.upload.web_interface, "allowed_hosts", [])
+    monkeypatch.setattr(cfg.web, "allowed_hosts", [])
     refused = web_client(base_url="http://testserver", host=LAN_BIND).get("/api/jobs")
-    monkeypatch.setattr(cfg.upload.web_interface, "allowed_hosts", ["testserver"])
+    monkeypatch.setattr(cfg.web, "allowed_hosts", ["testserver"])
     allowed = web_client(base_url="http://testserver", host=LAN_BIND).get("/api/jobs")
     assert refused.status_code == 403
     assert allowed.status_code == 200

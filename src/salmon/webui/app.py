@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from salmon import cfg
 from salmon.trackers import account
 from salmon.webui import output
-from salmon.webui.auth import Auth, AuthMiddleware, auth_router, resolve_auth_token
+from salmon.webui.auth import Auth, AuthMiddleware, auth_router
 from salmon.webui.egress import EgressMiddleware
 from salmon.webui.jobs import manager
 from salmon.webui.routers import browse, checks, convert, jobs, search, spectrals, system, tools, upload
@@ -20,8 +20,6 @@ from salmon.webui.routers import browse, checks, convert, jobs, search, spectral
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-
-LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 @asynccontextmanager
@@ -40,7 +38,7 @@ async def _jobs_running(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | None = None) -> FastAPI:
-    token = resolve_auth_token(auth_token)
+    token = auth_token
     app = FastAPI(
         title="salmon web",
         # API docs expose the whole surface; only in dev.
@@ -71,7 +69,7 @@ def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | Non
         AuthMiddleware,
         auth=app.state.auth,
         bind_host=host,
-        allowed_hosts=list(getattr(cfg.upload.web_interface, "allowed_hosts", []) or []),
+        allowed_hosts=list(cfg.web.allowed_hosts),
         dev=dev,
     )
 

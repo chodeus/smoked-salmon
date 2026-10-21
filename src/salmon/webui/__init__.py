@@ -13,34 +13,25 @@ from salmon.common import commandgroup
 
 
 @commandgroup.command()
-@click.option("--host", "-h", default="127.0.0.1", help="Host to bind the web interface to.")
-@click.option("--port", "-p", default=55155, help="Port to bind the web interface to.")
-@click.option("--dev", is_flag=True, help="Allow CORS from the Vite dev server (localhost:5173).")
-async def web(host: str, port: int, dev: bool) -> None:
-    """Start the salmon web interface."""
-    import secrets
-
+@click.option("--host", default=None, help="Address to listen on [default: [web] host, else 127.0.0.1]")
+@click.option(
+    "--port", type=click.IntRange(1, 65535), default=None, help="Port to listen on [default: [web] port, else 55155]"
+)
+@click.option("--dev", is_flag=True, help="Accept requests from the Vite dev server (http://localhost:5173)")
+async def web(host: str | None, port: int | None, dev: bool) -> None:
+    """Start the web interface"""
     import uvicorn
 
-    from salmon.webui.app import LOOPBACK_HOSTS, create_app
-    from salmon.webui.auth import ENV_VAR, resolve_auth_token
+    from salmon.webui.app import create_app
+    from salmon.webui.auth import resolve_token
 
-    token = resolve_auth_token()
-    made = not token
-    if made and host not in LOOPBACK_HOSTS:
-        # The UI can upload and delete with the account's cookies; never open on a LAN.
-        raise click.ClickException(
-            f"Refusing to serve on {host} without an auth token. Set the {ENV_VAR} env var or "
-            "[upload.web_interface] auth_token in your config, or bind to 127.0.0.1 for local-only use."
-        )
-    if made:
-        # Any local user, and any page the browser opens, can reach loopback: it gets a token too.
-        token = secrets.token_urlsafe(32)
-
+    host = host or cfg.web.host
+    port = port or cfg.web.port
+    token, made = resolve_token(host, cfg.web.token)
     app = create_app(dev=dev, host=host, auth_token=token)
-    if _names_no_machine(host) and not cfg.upload.web_interface.allowed_hosts:
+    if _names_no_machine(host) and not cfg.web.allowed_hosts:
         click.secho(
-            "No allowed_hosts are set under [upload.web_interface]: a browser on another machine is refused "
+            "No allowed_hosts are set under [web]: a browser on another machine is refused "
             '("This host name is not allowed") until they list the names you open salmon web by.',
             fg="yellow",
         )
