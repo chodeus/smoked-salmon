@@ -25,8 +25,10 @@ async def main() -> None:
     from aiohttp import web as aioweb
     from fake_gazelle import make_fake_gazelle  # pyright: ignore[reportMissingImports] - tests/ added to sys.path above
 
+    from salmon import cfg
     from salmon.trackers.red import RedApi
     from salmon.webui.app import create_app
+    from salmon.webui.auth import resolve_token
 
     fake = make_fake_gazelle(
         browse_results=[
@@ -59,9 +61,12 @@ async def main() -> None:
 
     RedApi.__init__ = patched_init
 
-    app = create_app(host="127.0.0.1")
+    token, made = resolve_token("127.0.0.1", cfg.web.token)
+    app = create_app(host="127.0.0.1", auth_token=token)
     config = uvicorn.Config(app, host="127.0.0.1", port=WEB_PORT, log_level="warning")
     print(f"salmon web (fake tracker mode): http://localhost:{WEB_PORT}")
+    if made:
+        print(f"Log in with: http://localhost:{WEB_PORT}/#token={token}")
     await uvicorn.Server(config).serve()
 
 

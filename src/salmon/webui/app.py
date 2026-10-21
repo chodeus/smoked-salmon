@@ -37,7 +37,8 @@ async def _jobs_running(app: FastAPI) -> AsyncIterator[None]:
                     app.state.kept_capture = capture.pop_all()
 
 
-def create_app(dev: bool = False, host: str = "127.0.0.1", auth_token: str | None = None) -> FastAPI:
+# auth_token comes from resolve_token: with None, every /api request is refused.
+def create_app(*, auth_token: str | None, dev: bool = False, host: str = "127.0.0.1") -> FastAPI:
     token = auth_token
     app = FastAPI(
         title="salmon web",

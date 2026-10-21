@@ -237,6 +237,16 @@ async def test_it_listens_where_web_says_unless_the_command_says_otherwise(monke
     assert listened == [("127.0.0.2", 55156), ("127.0.0.3", 55157)]
 
 
+@pytest.mark.parametrize(("host", "shown"), [("::1", "http://[::1]:55155/"), ("::", "http://localhost:55155/")])
+async def test_an_ipv6_bind_prints_a_url_a_browser_can_open(serve_nothing, monkeypatch, host: str, shown: str):
+    monkeypatch.setenv("SALMON_WEB_TOKEN", "x" * 32)
+
+    result = await CliRunner().invoke(web, ["--host", host])
+
+    assert result.exit_code == 0, result.output
+    assert f"salmon web interface: {shown}" in result.output
+
+
 def test_a_preflight_from_another_site_is_refused():
     _clean()
     with web_client(dev=True) as c:

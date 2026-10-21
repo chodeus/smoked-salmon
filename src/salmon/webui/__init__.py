@@ -35,14 +35,18 @@ async def web(host: str | None, port: int | None, dev: bool) -> None:
             '("This host name is not allowed") until they list the names you open salmon web by.',
             fg="yellow",
         )
-    display_host = "localhost" if host in {"0.0.0.0", "127.0.0.1"} else host
-    url = f"http://{display_host}:{port}"
+    display_host = "localhost" if host in {"0.0.0.0", "::", "127.0.0.1"} else host
+    url = _url(display_host, port)
     click.secho(f"salmon web interface: {url}", fg="cyan", bold=True)
     if made:
         # After the #, which a browser never sends: the page logs in with it, then drops it from the address bar.
-        click.secho(f"No auth token is set, so this run made one. Log in with: {url}/#token={token}", fg="yellow")
+        click.secho(f"No auth token is set, so this run made one. Log in with: {url}#token={token}", fg="yellow")
     config = uvicorn.Config(app, host=host, port=port, log_level="warning")
     await uvicorn.Server(config).serve()
+
+
+def _url(host: str, port: int) -> str:
+    return f"http://[{host}]:{port}/" if ":" in host else f"http://{host}:{port}/"
 
 
 def _names_no_machine(host: str) -> bool:
