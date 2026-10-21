@@ -130,19 +130,6 @@ def test_only_unreadable_pictures_means_no_cover_file(album_dir, monkeypatch) ->
     assert not any(Path(album_dir).glob("cover.*"))
 
 
-def test_download_step_prefers_embedded_art_over_the_url(album_dir, monkeypatch) -> None:
-    _fake_flac(monkeypatch, [_front()])
-
-    async def never(*_args):
-        raise AssertionError("nothing should be downloaded while the files carry the cover")
-
-    monkeypatch.setattr(cover, "_download_cover", never)
-
-    result = anyio.run(cover.download_cover_if_nonexistent, str(album_dir), "https://img.example/cover.jpg")
-
-    assert result == (str(album_dir / "cover.jpg"), True)
-
-
 def test_sanitize_saves_the_embedded_cover_before_re_encoding(tmp_path, monkeypatch) -> None:
     album = tmp_path / "album"
     album.mkdir()

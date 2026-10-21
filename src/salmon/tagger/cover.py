@@ -142,17 +142,16 @@ async def download_cover_if_nonexistent(path: str, cover_url: str | None) -> tup
     if cover_path:
         click.secho(f"\nUsing existing cover image found: {cover_path}...", fg="yellow")
         return cover_path, False
-    # the files usually carry the store's artwork already
-    cover_path = extract_embedded_cover(path)
-    if cover_path:
-        click.secho(f"\nUsing the cover embedded in the files: {cover_path}...", fg="yellow")
-        return cover_path, True
     # use url provided
     if cover_url:
         click.secho("\nDownloading Cover Image...", fg="yellow")
         cover_path = await _download_cover(path, cover_url)
         if cover_path:
             return cover_path, True
+    # fall back to an embedded FLAC front cover
+    cover_path = extract_embedded_cover(path)
+    if cover_path:
+        return cover_path, True
     click.secho("\nNo existing Cover Image found in Source Folder, no Cover Image downloaded", fg="red")
     return None, None
 
