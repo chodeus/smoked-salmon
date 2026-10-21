@@ -313,20 +313,18 @@ class UploadFormatting(BaseStruct):
     strip_useless_versions: bool = True
     strip_ep_from_title: bool = True
     add_edition_title_to_album_tag: bool = True
+    review_as_comment_tag: bool = True
+    fullwidth_replacements: bool = False
+    empty_track_comment_tag: bool = True
 
 
 class UploadDescription(BaseStruct):
     bitrates_in_t_desc: bool = False
     include_tracklist_in_t_desc: bool = False
     copy_uploaded_url_to_clipboard: bool = False
-    # TODO: should this be in description?
-    review_as_comment_tag: bool = True
     icons_in_descriptions: bool = True
-    # TODO: should this be in description?
-    fullwidth_replacements: bool = False
-    # TODO: should this be in description?
-    empty_track_comment_tag: bool = True
     artist_tags_in_tracklist: bool = False
+    lma_comment_in_t_desc: bool = False
 
 
 class UploadSpectralsViewer(BaseStruct):
@@ -359,8 +357,6 @@ class UploadRequests(BaseStruct):
 class UploadCompression(BaseStruct):
     flac_compression_level: Annotated[int, msgspec.Meta(ge=0, le=8)] = 8
     compress_spectrals: bool = True
-    # TODO: this probably should be in description
-    lma_comment_in_t_desc: bool = False
     use_upc_as_catno: bool = True
 
 

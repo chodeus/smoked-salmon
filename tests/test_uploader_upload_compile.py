@@ -101,7 +101,7 @@ def pinned_cfg(monkeypatch):
     monkeypatch.setattr(cfg.upload.description, "icons_in_descriptions", True)
     monkeypatch.setattr(cfg.upload.description, "include_tracklist_in_t_desc", False)
     monkeypatch.setattr(cfg.upload.description, "bitrates_in_t_desc", False)
-    monkeypatch.setattr(cfg.upload.compression, "lma_comment_in_t_desc", False)
+    monkeypatch.setattr(cfg.upload.description, "lma_comment_in_t_desc", False)
     monkeypatch.setattr(cfg.upload.compression, "use_upc_as_catno", True)
     # The footer is built in release_notification now, so pin the version there.
     monkeypatch.setattr(importlib.import_module("salmon.release_notification"), "get_version", lambda: "1.0.0-test")
@@ -516,9 +516,9 @@ def test_t_description_icons_disabled_uses_text_prefix(monkeypatch, pinned_cfg):
 
 
 def test_t_description_lossy_comment_included_only_when_cfg_enabled(monkeypatch, pinned_cfg):
-    monkeypatch.setattr(cfg.upload.compression, "lma_comment_in_t_desc", True)
+    monkeypatch.setattr(cfg.upload.description, "lma_comment_in_t_desc", True)
     assert "[u]Lossy Notes:[/u]\nSourced from tidal\n\n" in t_desc(lossy_comment="Sourced from tidal")
-    monkeypatch.setattr(cfg.upload.compression, "lma_comment_in_t_desc", False)
+    monkeypatch.setattr(cfg.upload.description, "lma_comment_in_t_desc", False)
     assert "Lossy Notes" not in t_desc(lossy_comment="Sourced from tidal")
 
 

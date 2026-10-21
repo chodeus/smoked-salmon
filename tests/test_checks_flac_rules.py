@@ -97,6 +97,6 @@ def test_plain_spaces_normalises_unicode_space_variants() -> None:
 
 
 def test_folder_names_lose_odd_spaces_before_the_blacklist_pass(monkeypatch) -> None:
-    monkeypatch.setattr(foldername.cfg.upload.description, "fullwidth_replacements", False)
+    monkeypatch.setattr(foldername.cfg.upload.formatting, "fullwidth_replacements", False)
 
     assert foldername._sub_illegal_characters("Live at the\u00a0Hall: Vol. 2") == "Live at the Hall_ Vol. 2"

@@ -228,18 +228,19 @@ session = 'get-from-site-cookie'
 # # inside a title ("The EP Sessions") is kept either way.
 # strip_ep_from_title = true
 # add_edition_title_to_album_tag = true
+# review_as_comment_tag = true
+# fullwidth_replacements = false
+# empty_track_comment_tag = true
 
 # # torrent description settings
 # [upload.description]
 # bitrates_in_t_desc = false
 # include_tracklist_in_t_desc = false
 # copy_uploaded_url_to_clipboard = false
-# review_as_comment_tag = true
 # icons_in_descriptions = true
-# fullwidth_replacements = false
-# empty_track_comment_tag = true
 # # Wrap artist names in [artist][/artist] BBCode in the group description's tracklist.
 # artist_tags_in_tracklist = false
+# lma_comment_in_t_desc = false
 
 # [upload.spectrals_viewer]
 # # the spectrals viewer salmon upload opens in the browser
@@ -262,7 +263,6 @@ session = 'get-from-site-cookie'
 # # compression settings
 # flac_compression_level = 8
 # compress_spectrals = true
-# lma_comment_in_t_desc = false
 # use_upc_as_catno = true
 
 # [upload.ai_review]

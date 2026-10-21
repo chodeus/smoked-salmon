@@ -46,6 +46,10 @@ OLD_KEYS: tuple[Moved | Removed, ...] = (
     Moved("upload.web_interface.port", "upload.spectrals_viewer.port"),
     Moved("upload.web_interface.display_host", "upload.spectrals_viewer.display_host"),
     Moved("upload.debug_tracker_connection", "tracker.debug_connection"),
+    Moved("upload.description.review_as_comment_tag", "upload.formatting.review_as_comment_tag"),
+    Moved("upload.description.fullwidth_replacements", "upload.formatting.fullwidth_replacements"),
+    Moved("upload.description.empty_track_comment_tag", "upload.formatting.empty_track_comment_tag"),
+    Moved("upload.compression.lma_comment_in_t_desc", "upload.description.lma_comment_in_t_desc"),
     Removed(
         "upload.web_interface.static_root_url",
         "the spectrals viewer now always serves its files at /static",
