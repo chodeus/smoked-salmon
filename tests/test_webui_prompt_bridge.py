@@ -30,9 +30,13 @@ def _imports(tree: ast.Module) -> Iterator[ast.ImportFrom]:
     return (node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
 
 
-def _top_level_imports(tree: ast.Module) -> Iterator[ast.ImportFrom]:
-    # One in a function runs once the patches are in, so it gets the replacement.
-    return (node for node in tree.body if isinstance(node, ast.ImportFrom))
+def _import_time_imports(tree: ast.AST) -> Iterator[ast.ImportFrom]:
+    # Not one in a function: it runs once the patches are in, so it gets the replacement.
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.ImportFrom):
+            yield node
+        elif not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield from _import_time_imports(node)
 
 
 def _top_level_names(tree: ast.Module) -> Iterator[str]:
@@ -77,12 +81,22 @@ def test_salmons_own_prompting_functions_are_bound_only_where_salmon_web_replace
     found = [
         (name, alias.name)
         for name, tree in _modules()
-        for node in _top_level_imports(tree)
+        for node in _import_time_imports(tree)
         for alias in node.names
         if alias.name in _BOUND_WHERE_REPLACED and name not in _BOUND_WHERE_REPLACED[alias.name]
     ]
 
     assert found == []
+
+
+def test_the_scan_sees_an_import_made_at_import_time_in_a_block_but_not_one_in_a_function() -> None:
+    tree = ast.parse(
+        "try:\n    from a import x\nexcept ImportError:\n    pass\n"
+        "if x:\n    from a import y\n"
+        "def f():\n    from a import z\n"
+    )
+
+    assert {alias.name for node in _import_time_imports(tree) for alias in node.names} == {"x", "y"}
 
 
 def test_input_is_called_only_where_salmon_web_shadows_it() -> None:
