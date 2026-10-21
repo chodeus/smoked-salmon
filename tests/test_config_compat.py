@@ -21,6 +21,7 @@ MOVES = [
     ("upload.web_interface.host", "upload.spectrals_viewer.host", "127.0.0.2"),
     ("upload.web_interface.port", "upload.spectrals_viewer.port", 55111),
     ("upload.web_interface.display_host", "upload.spectrals_viewer.display_host", "spectrals.lan"),
+    ("upload.debug_tracker_connection", "tracker.debug_connection", True),
 ]
 MOVE_IDS = [old for old, _, _ in MOVES]
 
@@ -82,11 +83,10 @@ def test_an_old_name_sets_the_new_key_and_warns(tmp_path: Path, capsys, old: str
 
 
 def test_the_warning_reads_as_the_brief_gives_it(tmp_path: Path, capsys) -> None:
-    _, warnings = _load(tmp_path, _put(_base(tmp_path), "upload.web_interface.port", 55111), capsys)
+    _, warnings = _load(tmp_path, _put(_base(tmp_path), "upload.debug_tracker_connection", True), capsys)
     assert warnings == [
-        "upload.web_interface.port is now upload.spectrals_viewer.port (under [upload.spectrals_viewer]): it still "
-        "works in 0.21, and stops salmon from 0.22.0. "
-        "See https://github.com/smokin-salmon/smoked-salmon/wiki/Upgrading-to-0.21"
+        "upload.debug_tracker_connection is now tracker.debug_connection (under [tracker]): it still works in "
+        "0.21, and stops salmon from 0.22.0. See https://github.com/smokin-salmon/smoked-salmon/wiki/Upgrading-to-0.21"
     ]
 
 
@@ -111,8 +111,8 @@ def test_an_old_name_still_works_before_0_22_0(
     tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch, version: str | None
 ) -> None:
     _version(monkeypatch, version)
-    cfg, _ = _load(tmp_path, _put(_base(tmp_path), "upload.web_interface.port", 55111), capsys)
-    assert cfg.upload.spectrals_viewer.port == 55111
+    cfg, _ = _load(tmp_path, _put(_base(tmp_path), "upload.debug_tracker_connection", True), capsys)
+    assert cfg.tracker.debug_connection is True
 
 
 def test_an_old_table_emptied_by_its_moves_is_no_unknown_key(tmp_path: Path, capsys) -> None:
@@ -146,7 +146,7 @@ def test_static_root_url_set_to_anything_else_is_refused(tmp_path: Path, capsys)
 
 
 def test_the_collected_warnings_hold_the_unknown_keys_too(tmp_path: Path, capsys) -> None:
-    raw = _put(_put(_base(tmp_path), "upload.qwertyuiop", True), "upload.web_interface.port", 55111)
+    raw = _put(_put(_base(tmp_path), "upload.qwertyuiop", True), "upload.debug_tracker_connection", True)
     _, warnings = _load(tmp_path, raw, capsys)
     assert len(warnings) == 2
     assert sorted(compat.config_warnings) == sorted(warnings)
@@ -154,7 +154,7 @@ def test_the_collected_warnings_hold_the_unknown_keys_too(tmp_path: Path, capsys
 
 
 def test_a_warning_is_printed_once_per_config_path(tmp_path: Path, capsys) -> None:
-    raw = _put(_base(tmp_path), "upload.web_interface.port", 55111)
+    raw = _put(_base(tmp_path), "upload.debug_tracker_connection", True)
     _, first = _load(tmp_path, raw, capsys)
     _, second = _load(tmp_path, raw, capsys)
     assert len(first) == 1

@@ -111,6 +111,8 @@ password = 'password'
 # ===============================
 [tracker]
 default_tracker = 'RED'       # If not set, you'll be prompted to choose when using multiple trackers
+# Print every tracker request and response, with secrets masked
+# debug_connection = false
 
 # Authentication (Replace with valid session keys or API keys)
 [tracker.red]
@@ -177,9 +179,6 @@ session = 'get-from-site-cookie'
 
 # # multi_tracker support
 # multi_tracker_upload = true
-
-# # debugging & logging
-# debug_tracker_connection = false
 
 # # update notifications
 # update_notification = true

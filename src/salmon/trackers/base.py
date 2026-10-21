@@ -575,7 +575,7 @@ class BaseGazelleApi:
         cookies = {} if use_api_key else self._get_cookies()
         signed = self._signs(params)
 
-        if cfg.upload.debug_tracker_connection:
+        if cfg.tracker.debug_connection:
             click.secho(f"[DEBUG] {method} {self._scrub(url)}", fg="cyan")
             shown_params = dict.fromkeys(params or {}, "[REDACTED]") if signed else params
             click.secho(
@@ -610,7 +610,7 @@ class BaseGazelleApi:
                                 text = ""
                             else:
                                 text = await resp.text()
-                        if cfg.upload.debug_tracker_connection:
+                        if cfg.tracker.debug_connection:
                             shown = text if text or not binary else f"<{len(content)} bytes>"
                             if resp.ok and params and params.get("action") == _IMAGE_AUTH_ACTION:
                                 # Its key is not known as a secret until this answer is read.
@@ -732,7 +732,7 @@ class BaseGazelleApi:
         return _SIGNED_IMAGE_QUERY.sub(r"\1[REDACTED]", text) if self.SIGNED_IMAGES else text
 
     def _debug_response(self, resp: aiohttp.ClientResponse, text: str) -> None:
-        """Print a tracker answer, redacted, for debug_tracker_connection."""
+        """Print a tracker answer, redacted, for tracker.debug_connection."""
         click.secho(f"[DEBUG] status: {resp.status}", fg="cyan")
         click.secho(
             f"[DEBUG] response headers: {self._scrub(msgspec.json.encode(dict(resp.headers)).decode())}", fg="cyan"

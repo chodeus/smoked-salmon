@@ -97,7 +97,7 @@ def _fixture(name: str) -> str:
 
 @pytest.fixture(autouse=True)
 def _fast(monkeypatch) -> None:
-    monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
+    monkeypatch.setattr(cfg.tracker, "debug_connection", False)
     monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))
     monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
 
@@ -296,7 +296,7 @@ def test_a_fresh_client_authenticates_before_reading_the_edit_page() -> None:
 def test_debug_output_never_shows_the_edit_forms_auth(monkeypatch, capsys) -> None:
     # The form's auth is the client's authkey, masked as a known secret once the client is authenticated.
     secret = "edit-form-auth-0123456789"
-    monkeypatch.setattr(cfg.upload, "debug_tracker_connection", True)
+    monkeypatch.setattr(cfg.tracker, "debug_connection", True)
     monkeypatch.setattr(FakeTracker, "authkey", secret, raising=False)
     fake = FakeTracker(_fixture("red_edit.html").replace('value="XXXX"', f'value="{secret}"'))
     _run_edit(fake, authenticated=False)
@@ -308,7 +308,7 @@ def test_debug_output_never_shows_the_edit_forms_auth(monkeypatch, capsys) -> No
 
 def test_debug_output_masks_a_form_auth_the_client_does_not_know(monkeypatch, capsys) -> None:
     secret = "edit-form-auth-0123456789"
-    monkeypatch.setattr(cfg.upload, "debug_tracker_connection", True)
+    monkeypatch.setattr(cfg.tracker, "debug_connection", True)
     monkeypatch.setattr(FakeTracker, "authkey", "another-authkey-9876543210", raising=False)
     fake = FakeTracker(_fixture("red_edit.html").replace('value="XXXX"', f'value="{secret}"'))
     _run_edit(fake, authenticated=False)

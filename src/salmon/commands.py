@@ -258,7 +258,7 @@ async def checkconf(tracker: str | None, metadata: bool, seedbox: bool, reset: b
         )
         return
 
-    cfg.upload.debug_tracker_connection = True
+    cfg.tracker.debug_connection = True
 
     # Test trackers if no specific test type is requested or if tracker is specified
     if not (metadata or seedbox) or tracker:

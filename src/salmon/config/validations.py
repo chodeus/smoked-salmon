@@ -251,6 +251,8 @@ class Tracker(BaseStruct):
     ops: GazelleTrackerSettings | None = None
     dic: GazelleTrackerSettings | None = None
     default_tracker: Literal["RED", "OPS", "DIC"] | None = None
+    # Print every tracker request and response, secrets masked.
+    debug_connection: bool = False
 
     def __post_init__(self):
         if (self.red is None) and (self.ops is None) and (self.dic is None):
@@ -412,8 +414,6 @@ class Upload(BaseStruct):
     windows_use_recycle_bin: bool = True
 
     multi_tracker_upload: bool = True
-    # TODO: should this be in tracker?
-    debug_tracker_connection: bool = False
 
     update_notification: bool = True
     update_notification_verbose: bool = True
