@@ -241,6 +241,7 @@ class Job:
         self._thread_task: asyncio.Task | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        spectrals = self.asker.spectrals if self.asker else None
         return {
             "id": self.id,
             "type": self.type,
@@ -254,7 +255,7 @@ class Job:
             "error": self.error,
             "question": self.question,
             "log": self.log_lines[-MAX_LOG_LINES:],
-            "spectrals": (self.asker.spectrals or {}).get("files") if self.asker else None,
+            "spectrals": list(spectrals["files"]) if spectrals else None,
         }
 
 
@@ -313,14 +314,19 @@ class _JobAsker:
             self._finish(question_id)
 
     def show_spectrals(self, folder: str, files: list[str]) -> None:
-        self.spectrals = {"path": folder, "files": files}
-        self.emit({"event": "spectrals_ready", "files": files})
+        folder = os.path.realpath(folder)
+        with self._lock:
+            # Each image's path, made here: the image route looks it up, and makes none from a request.
+            self.spectrals = {"path": folder, "files": {name: os.path.join(folder, name) for name in files}}
+            self.emit({"event": "spectrals_ready", "files": files})
 
     def withdraw_deleted_spectrals(self) -> None:
         """Stop showing spectrals whose folder the job has deleted since, whose images would no longer load."""
-        if self.spectrals is not None and not os.path.isdir(self.spectrals["path"]):
-            self.spectrals = None
-            self.emit({"event": "spectrals_ready", "files": []})
+        # Under the lock: the job's thread and an image request both call this, and the job may show new ones.
+        with self._lock:
+            if self.spectrals is not None and not os.path.isdir(self.spectrals["path"]):
+                self.spectrals = None
+                self.emit({"event": "spectrals_ready", "files": []})
 
     def answer(self, question_id: str, value: Any) -> bool:
         """Deliver an answer (called from the server loop). False if stale."""

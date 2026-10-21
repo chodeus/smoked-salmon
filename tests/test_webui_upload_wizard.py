@@ -744,6 +744,33 @@ async def test_spectrals_deleted_after_the_last_question_are_gone_once_the_job_e
     assert job.to_dict()["spectrals"] is None
 
 
+def test_spectrals_shown_while_the_old_ones_are_withdrawn_stay_shown(monkeypatch, tmp_path):
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    events: list[dict] = []
+    asker = jobs_mod._JobAsker(emit=events.append, set_question=lambda _question: None)
+    asker.show_spectrals(str(old), ["01 Full.png"])
+    old.rmdir()
+    isdir = os.path.isdir
+    showers: list[threading.Thread] = []
+
+    def isdir_while_new_ones_are_shown(path) -> bool:
+        if not showers:
+            # The job's thread shows new spectrals while an image request withdraws the old ones.
+            showers.append(threading.Thread(target=asker.show_spectrals, args=(str(new), ["02 Full.png"])))
+            showers[0].start()
+            showers[0].join(0.2)
+        return isdir(path)
+
+    monkeypatch.setattr(jobs_mod.os.path, "isdir", isdir_while_new_ones_are_shown)
+    asker.withdraw_deleted_spectrals()
+    showers[0].join(5)
+
+    assert asker.spectrals is not None and list(asker.spectrals["files"]) == ["02 Full.png"]
+    assert events[-1] == {"event": "spectrals_ready", "files": ["02 Full.png"]}
+
+
 # ---------------------------------------------------------------------------
 # 4. Cancel while a question is pending
 # ---------------------------------------------------------------------------
@@ -1013,9 +1040,8 @@ def test_spectrals_the_job_deleted_are_not_found_and_no_longer_shown(client, tmp
     assert client.portal is not None
     job = client.portal.call(lambda: global_manager.create_threaded("upload", "Wizard", factory))
     looked = wait_until(lambda: job.question, "the spectrals question")
-    assert (
-        client.post(f"/api/jobs/{job.id}/answer", json={"question_id": looked["id"], "value": True}).status_code == 200
-    )
+    answered = client.post(f"/api/jobs/{job.id}/answer", json={"question_id": looked["id"], "value": True})
+    assert answered.status_code == 200
     wait_until(deleted.is_set, "the spectrals folder to be deleted")
 
     image = client.get(f"/api/jobs/{job.id}/spectrals/01%20Full.png")
@@ -1023,6 +1049,32 @@ def test_spectrals_the_job_deleted_are_not_found_and_no_longer_shown(client, tmp
     uploaded.set()
 
     assert (image.status_code, listed) == (404, None)
+
+
+def test_a_spectral_image_swapped_for_a_link_is_not_served(client, tmp_path):
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    image = specs / "01 Full.png"
+    image.write_bytes(b"PNG")
+    elsewhere = tmp_path / "elsewhere.png"
+    elsewhere.write_bytes(b"not a spectral")
+
+    async def factory(job):
+        await interaction.show_spectrals(str(specs), {1: TRACK_FILES[0]})
+
+    assert client.portal is not None
+    job = client.portal.call(lambda: global_manager.create_threaded("upload", "Wizard", factory))
+    looked = wait_until(lambda: job.question, "the spectrals question")
+    served = client.get(f"/api/jobs/{job.id}/spectrals/01%20Full.png")
+    image.unlink()
+    image.symlink_to(elsewhere)
+    linked = client.get(f"/api/jobs/{job.id}/spectrals/01%20Full.png")
+    answered = client.post(f"/api/jobs/{job.id}/answer", json={"question_id": looked["id"], "value": True})
+    wait_until(lambda: job.finished_at is not None, "the job to finish")
+
+    assert (served.status_code, served.content) == (200, b"PNG")
+    assert linked.status_code == 404
+    assert answered.status_code == 200
 
 
 # ---------------------------------------------------------------------------
