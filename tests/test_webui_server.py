@@ -83,7 +83,7 @@ def test_a_config_without_web_gets_the_defaults(tmp_path: Path) -> None:
         2,
     )
     # The spectrals viewer keeps its own section.
-    assert cfg.upload.web_interface.port == 55110
+    assert cfg.upload.spectrals_viewer.port == 55110
 
 
 def test_the_documented_web_section_is_valid(tmp_path: Path) -> None:

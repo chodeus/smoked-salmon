@@ -8,7 +8,7 @@ from aiohttp_jinja2 import render_template
 from salmon import cfg
 from salmon.web import spectrals
 
-web_cfg = cfg.upload.web_interface
+web_cfg = cfg.upload.spectrals_viewer
 
 
 async def create_app_async(specs_path: str | None = None) -> web.AppRunner:
@@ -49,7 +49,7 @@ def add_routes(app: web.Application, specs_path: str | None = None) -> None:
     app.router.add_static("/static", join(dirname(__file__), "static"), follow_symlinks=True)
     app.router.add_route("GET", "/", handle_index)
     app.router.add_route("GET", "/spectrals", spectrals.handle_spectrals)
-    app[aiohttp_jinja2.static_root_key] = web_cfg.static_root_url
+    app[aiohttp_jinja2.static_root_key] = "/static"
 
 
 async def handle_index(request: web.Request) -> web.Response:

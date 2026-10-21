@@ -6,7 +6,8 @@ import msgspec
 import requests
 from packaging.version import Version
 
-from salmon import cfg
+# salmon, not salmon.cfg: the config's own checks read get_version() while salmon is still loading it.
+import salmon
 
 FORK_URL = "https://github.com/chodeus/smoked-salmon"
 UPSTREAM_URL = "https://github.com/smokin-salmon/smoked-salmon"
@@ -65,7 +66,7 @@ def get_version() -> str | None:
     """Returns the local installed version, cached after first read.
 
     Returns:
-        The current version string, or None if the version file is not found.
+        The current version string, or None if the version file is missing or unreadable.
     """
     global _cached_version
     if _cached_version is not None:
@@ -73,7 +74,8 @@ def get_version() -> str | None:
     try:
         _cached_version = msgspec.toml.decode(LOCAL_VERSION_FILE.read_bytes(), type=VersionData).current
         return _cached_version
-    except FileNotFoundError:
+    # The config's old-key check reads it at every start: a broken file must not stop salmon.
+    except (OSError, msgspec.DecodeError):
         return None
 
 
@@ -128,8 +130,8 @@ def show_release_notification() -> None:
     If a newer version exists, prints a notice and optionally the changelog.
     Does nothing if update_notification is disabled in config.
     """
-    notify = cfg.upload.update_notification
-    verbose = cfg.upload.update_notification_verbose
+    notify = salmon.cfg.upload.update_notification
+    verbose = salmon.cfg.upload.update_notification_verbose
 
     if not notify:
         return
