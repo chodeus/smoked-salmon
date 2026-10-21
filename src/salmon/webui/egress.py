@@ -16,7 +16,7 @@ from salmon.trackers.base import learned_secrets, session_cookie_forms
 from salmon.uploader.seedbox import seedbox_secrets
 
 # A setting whose name ends so holds a credential, wherever it sits in the config.
-_SECRET_SETTING = re.compile(r"(?:^|_)(?:key|token|secret|password|session|keeplogged)$")
+_SECRET_SETTING = re.compile(r"(?:^|_)(?:key|token|secret|password|session|keeplogged|userhash)$")
 # Shorter values are not masked: a three-letter secret would cut every word holding it.
 _SHORTEST = 4
 

@@ -4,6 +4,7 @@ from random import choice
 import aiohttp
 import anyio
 
+from salmon import cfg
 from salmon.common import is_http_url
 from salmon.constants import UAGENTS
 from salmon.errors import ImageUploadFailed
@@ -33,7 +34,7 @@ class ImageUploader(BaseImageUploader):
             file_data = await f.read()
         data = aiohttp.FormData()
         data.add_field("reqtype", "fileupload")
-        data.add_field("userhash", "")
+        data.add_field("userhash", cfg.image.catbox_userhash or "")
         data.add_field("fileToUpload", file_data, filename=Path(filename).name)
         url = "https://catbox.moe/user/api.php"
         try:

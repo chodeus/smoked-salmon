@@ -50,6 +50,8 @@ specs_uploader = "catbox"
 # "*" = all, "+" = randomized selection, "0" = none. Leave unset to use context-based default.
 # default_spectral_ids = "*"
 
+# catbox works without a key. Set your userhash (catbox.moe, My Account) to upload to your account.
+# catbox_userhash = 'userhash'
 # ptscreens API key (log into ptscreens, settings, API)
 ptscreens_key = 'api_key'
 # oeimg API key (log into imgoe, settings, API)

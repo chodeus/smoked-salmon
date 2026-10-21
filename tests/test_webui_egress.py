@@ -33,6 +33,7 @@ PASSKEY = "testpasskey0123456789abcdef0123"
 DIGITS = "12345678"
 RCLONE_PASS = "rclone-pass-0123"
 AI_PASSWORD = "ai-pass-0123"
+USERHASH = "test-userhash-0123"
 
 
 @pytest.fixture
@@ -42,6 +43,7 @@ def secrets_set(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     monkeypatch.setattr(cfg.tracker.red, "session", SESSION)
     monkeypatch.setattr(cfg.tracker.red, "api_key", API_KEY)
     monkeypatch.setattr(cfg.tracker.red, "keeplogged", KEEPLOGGED)
+    monkeypatch.setattr(cfg.image, "catbox_userhash", USERHASH)
     box = Seedbox(
         name="box", torrent_client=f"http://user:{BOX_PASSWORD}@127.0.0.1:8080", extra_args=["--sftp-pass", RCLONE_PASS]
     )
@@ -49,7 +51,7 @@ def secrets_set(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     monkeypatch.setattr(cfg.upload.ai_review, "base_url", f"https://user:{AI_PASSWORD}@ai.example/v1")
     monkeypatch.setattr(tracker_base, "_learned_secrets", {PASSKEY})
     egress._configured_secrets.cache_clear()
-    configured = [SESSION, unquote(SESSION), quote(SESSION, safe=""), API_KEY, KEEPLOGGED]
+    configured = [SESSION, unquote(SESSION), quote(SESSION, safe=""), API_KEY, KEEPLOGGED, USERHASH]
     yield [*configured, BOX_PASSWORD, RCLONE_PASS, AI_PASSWORD, PASSKEY]
     egress._configured_secrets.cache_clear()
 
@@ -77,6 +79,7 @@ def test_a_jobs_log_and_error_reach_the_browser_without_a_secret(secrets_set):
         click.echo(f"cookie {SESSION} as sent {quote(SESSION, safe='')} key {API_KEY} keeplogged {KEEPLOGGED}")
         click.echo(f"seedbox http://user:{BOX_PASSWORD}@127.0.0.1:8080 announce .../{PASSKEY}/announce")
         click.echo(f"rclone --sftp-pass {RCLONE_PASS}; review endpoint failed with {AI_PASSWORD}")
+        click.echo(f"catbox userhash {USERHASH}")
         raise RuntimeError(f"GET https://tracker.example/torrents.php?action=download&torrent_pass={PASSKEY}")
 
     with web_client() as client:
