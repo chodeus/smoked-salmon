@@ -31,7 +31,7 @@ from salmon.errors import NoAnswerError
 from salmon.webui import output
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
 _question_counter = itertools.count(1)
 
@@ -254,10 +254,12 @@ def _web_input(text: str = "") -> str:
     return "" if raw is None else str(raw)
 
 
-async def _web_view_spectrals(spectrals_path: str, all_spectral_ids: dict[int, str]) -> None:
+async def _web_view_spectrals(
+    spectrals_path: str, all_spectral_ids: dict[int, str], wait_for_enter: Callable[[str], Awaitable[None]]
+) -> None:
     interaction = _current.get()
     if interaction is None:
-        await _originals["view_spectrals"](spectrals_path, all_spectral_ids)
+        await _originals["view_spectrals"](spectrals_path, all_spectral_ids, wait_for_enter)
         return
     files = sorted(f for f in os.listdir(spectrals_path) if f.lower().endswith(".png"))
     interaction.spectrals = {"path": spectrals_path, "files": files}

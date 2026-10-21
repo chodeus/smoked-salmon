@@ -10,6 +10,7 @@ import pytest
 
 import salmon.trackers
 import salmon.uploader
+from salmon import interaction
 from salmon.errors import AbortAndDeleteFolder, RequestError, UnknownOutcomeError
 from salmon.uploader import dupe_checker, spectrals
 
@@ -392,7 +393,7 @@ def test_an_albums_own_spectrals_folder_survives_the_real_check(monkeypatch, tmp
 
     monkeypatch.setattr(spectrals, "generate_spectrals_all", generate)
     monkeypatch.setattr(spectrals, "print_frequency_guidance", lambda *_a: _done("ok"))
-    monkeypatch.setattr(spectrals, "view_spectrals", lambda *_a: _done(None))
+    monkeypatch.setattr(interaction, "show_spectrals", lambda *_a: _done(None))
     monkeypatch.setattr(spectrals, "prompt_lossy_master", lambda *_a, **_k: _done(False))
     monkeypatch.setattr(spectrals, "prompt_spectrals", lambda *_a, **_k: _done({}))
     anyio.run(lambda: spectrals.post_upload_spectral_check(FakeSite(), str(album), 1, None, {}, "WEB", None))  # type: ignore[arg-type]

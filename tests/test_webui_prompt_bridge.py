@@ -7,12 +7,12 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parent.parent / "src" / "salmon"
 # Replaced on the asyncclick module itself: reachable only as click.<name>.
 _CLICK_NAMES = {"prompt", "confirm", "edit", "echo", "secho"}
-# salmon's own, imported only by these modules, where install_interaction_patches replaces each but prompt_async:
-# that is awaited only under view_spectrals, which it replaces.
+# salmon's own, imported at import time only by these modules, where install_interaction_patches replaces each but
+# prompt_async: that is awaited only for the terminal's view_spectrals, which it replaces.
 _BOUND_WHERE_REPLACED = {
     "view_spectrals": {"uploader/spectrals.py"},
     "flush_stdin": {"uploader/spectrals.py"},
-    "prompt_async": {"uploader/spectrals.py"},
+    "prompt_async": {"interaction.py"},
     "handle_spectrals_upload_and_deletion": {"uploader/spectrals.py", "uploader/__init__.py", "commands.py"},
 }
 # The one module whose input() salmon web shadows with a module global.
@@ -30,12 +30,25 @@ def _imports(tree: ast.Module) -> Iterator[ast.ImportFrom]:
     return (node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
 
 
+def _top_level_imports(tree: ast.Module) -> Iterator[ast.ImportFrom]:
+    # One in a function runs once the patches are in, so it gets the replacement.
+    return (node for node in tree.body if isinstance(node, ast.ImportFrom))
+
+
 def _top_level_names(tree: ast.Module) -> Iterator[str]:
     for node in tree.body:
         if isinstance(node, ast.ImportFrom):
             yield from (alias.name for alias in node.names)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             yield node.name
+
+
+def _referrers(tree: ast.Module, attribute: str) -> Iterator[str]:
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+            isinstance(node, ast.Attribute) and node.attr == attribute for node in ast.walk(fn)
+        ):
+            yield fn.name
 
 
 def _callers(tree: ast.Module, callee: str) -> Iterator[str]:
@@ -64,7 +77,7 @@ def test_salmons_own_prompting_functions_are_bound_only_where_salmon_web_replace
     found = [
         (name, alias.name)
         for name, tree in _modules()
-        for node in _imports(tree)
+        for node in _top_level_imports(tree)
         for alias in node.names
         if alias.name in _BOUND_WHERE_REPLACED and name not in _BOUND_WHERE_REPLACED[alias.name]
     ]
@@ -87,9 +100,12 @@ def test_input_is_called_only_where_salmon_web_shadows_it() -> None:
 def test_prompt_async_is_awaited_only_under_view_spectrals() -> None:
     modules = dict(_modules())
     awaits = {(name, fn) for name, tree in modules.items() for fn in _callers(tree, "prompt_async")}
+    hands_over = {(name, fn) for name, tree in modules.items() for fn in _referrers(tree, "_wait_for_enter")}
     opens = {(name, fn) for name, tree in modules.items() for fn in _callers(tree, "_open_specs_in_web_server")}
 
-    assert awaits == {("uploader/spectrals.py", "_open_specs_in_web_server")}
+    assert awaits == {("interaction.py", "_wait_for_enter")}
+    # To view_spectrals only, which salmon web replaces.
+    assert hands_over == {("interaction.py", "show_spectrals")}
     assert opens == {("uploader/spectrals.py", "view_spectrals")}
 
 
