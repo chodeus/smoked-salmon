@@ -12,7 +12,8 @@ from tenacity import wait_none
 from salmon import cfg
 from salmon.errors import RequestError, RequestFailedError
 from salmon.trackers import base
-from salmon.trackers.base import BaseGazelleApi, SharedLimiter
+from salmon.trackers.account import SlidingWindowLimiter
+from salmon.trackers.base import BaseGazelleApi
 
 KEY = "Im4geH0stK3yMarker"
 EXPIRY = "4102444800"
@@ -56,7 +57,7 @@ class Tracker:
 
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(base, "_tracker_limiter", lambda _code: SharedLimiter(100, 1))
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))
     monkeypatch.setattr(base, "_learned_secrets", set())
     monkeypatch.setattr(BaseGazelleApi._send.retry, "wait", wait_none())  # type: ignore[attr-defined]
 

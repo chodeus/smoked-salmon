@@ -9,8 +9,9 @@ import pytest
 from aiohttp import web
 
 from salmon.errors import RequestFailedError
-from salmon.trackers import base
-from salmon.trackers.base import BaseGazelleApi, SharedLimiter
+from salmon.trackers import account
+from salmon.trackers.account import SlidingWindowLimiter
+from salmon.trackers.base import BaseGazelleApi
 
 
 class FakeApi(BaseGazelleApi):
@@ -27,8 +28,7 @@ class FakeApi(BaseGazelleApi):
 
 @pytest.fixture(autouse=True)
 def _fresh_account(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(base, "_tracker_limiter", lambda _code: SharedLimiter(100, 1))
-    monkeypatch.setattr(base, "_account_locks", {})
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))
 
 
 class Tracker:
@@ -158,6 +158,29 @@ def _at_once(*jobs: Callable[[], None]) -> list[BaseException]:
     return errors
 
 
+@pytest.fixture
+def request_loop() -> Iterator[None]:
+    """salmon web's request loop, in a thread of its own: each job's tracker requests are handed over to it."""
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+    stop: list[asyncio.Event] = []
+
+    async def main() -> None:
+        stop.append(asyncio.Event())
+        async with account.requests_on_this_loop():
+            ready.set()
+            await stop[0].wait()
+
+    thread = threading.Thread(target=loop.run_until_complete, args=(main(),))
+    thread.start()
+    assert ready.wait(5)
+    yield
+    loop.call_soon_threadsafe(stop[0].set)
+    thread.join(10)
+    loop.close()
+
+
+@pytest.mark.usefixtures("request_loop")
 def test_two_jobs_uploads_to_one_account_never_overlap(serve) -> None:
     tracker = Tracker()
     url = serve(tracker)
@@ -179,6 +202,7 @@ def test_reads_are_not_held_back_by_the_lock(serve) -> None:
     assert tracker.peak == 2
 
 
+@pytest.mark.usefixtures("request_loop")
 def test_two_jobs_editing_one_description_keep_both_additions(serve) -> None:
     tracker = EditTracker()
     url = serve(tracker)
@@ -200,12 +224,12 @@ def test_a_failed_upload_lets_the_next_one_go(serve) -> None:
     assert tracker.handled == 2
 
 
-def test_the_rate_window_waits_past_the_trackers_ten_seconds_for_a_sixth_request(monkeypatch) -> None:
-    monkeypatch.undo()
-    monkeypatch.setattr(base, "_limiters", {})
-    limiter = base._tracker_limiter("MARGIN")
+def test_the_rate_window_waits_past_the_trackers_ten_seconds_for_a_sixth_request() -> None:
+    async def wait_for_a_sixth() -> float:
+        limiter = account.TrackerAccount().limiter
+        for _ in range(5):
+            async with limiter:
+                pass
+        return limiter._wait()
 
-    waits = [limiter._wait() for _ in range(6)]
-
-    assert waits[:5] == [0.0] * 5
-    assert waits[5] > 10.0
+    assert anyio.run(wait_for_a_sixth) > 10.0

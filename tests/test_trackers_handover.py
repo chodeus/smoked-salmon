@@ -32,7 +32,7 @@ from test_trackers_account import (  # pyright: ignore[reportMissingImports]
 
 from salmon import cfg, dryrun
 from salmon.errors import DryRunRefused, RequestFailedError, UnknownOutcomeError
-from salmon.trackers import account, base
+from salmon.trackers import account
 from salmon.trackers.base import BaseGazelleApi
 from salmon.webui import output
 
@@ -51,7 +51,8 @@ def no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def short_period(monkeypatch: pytest.MonkeyPatch) -> float:
     """A rate limit period of one second, with a margin as large for it as the real one is for 10 s."""
-    monkeypatch.setattr(base, "_RATE_PERIOD", 1.2)
+    monkeypatch.setattr(account, "RATE_LIMIT_PERIOD", 1.0)
+    monkeypatch.setattr(account, "RATE_LIMIT_MARGIN", 0.2)
     return 1.0
 
 
@@ -282,7 +283,7 @@ def test_two_jobs_share_one_budget(short_period: float) -> None:
 
     tracker = _serve(body)
     assert len(tracker.hits) == 12
-    assert _most_within(tracker.times(), short_period) == base._tracker_limiter("RED")._max_rate
+    assert _most_within(tracker.times(), short_period) == account.RATE_LIMIT_REQUESTS
 
 
 def test_two_jobs_send_one_request_that_is_not_idempotent_at_a_time() -> None:
@@ -578,7 +579,8 @@ def test_a_cancel_while_a_posts_retry_waits_for_its_turn_stops_it_at_once() -> N
     stopped_after: list[float] = []
 
     async def body(tracker: Tracker) -> None:
-        (api,) = _clients(await tracker.start(), "RED", unlimited=True)
+        # The account's own limiter, which the 429 pauses.
+        (api,) = _clients(await tracker.start(), "RED")
         tracker.limit_once["upload"] = "2"
 
         async def job() -> None:

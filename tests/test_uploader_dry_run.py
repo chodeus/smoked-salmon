@@ -31,7 +31,8 @@ from salmon.common.redaction import redact_tracker_fields
 from salmon.config.validations import Seedbox
 from salmon.errors import DryRunRefused
 from salmon.images.base import BaseImageUploader
-from salmon.trackers.base import BaseGazelleApi, SharedLimiter
+from salmon.trackers.account import SlidingWindowLimiter
+from salmon.trackers.base import BaseGazelleApi
 from salmon.trackers.ops import OpsApi
 from salmon.trackers.red import RedApi
 from salmon.uploader import staging
@@ -166,10 +167,7 @@ def _client(cls: type[BaseGazelleApi], tracker: FakeTracker, torrents: Path) -> 
 @pytest.fixture(autouse=True)
 def _loose_rate_limit(monkeypatch) -> None:
     """Shadow the shared 5-per-10s limiter: the run sends a few dozen requests."""
-    limiters: dict[str, SharedLimiter] = {}
-    monkeypatch.setattr(
-        "salmon.trackers.base._tracker_limiter", lambda code: limiters.setdefault(code, SharedLimiter(1000, 1))
-    )
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(1000, 1))
 
 
 # A fake image host

@@ -11,7 +11,8 @@ from tenacity import wait_fixed
 
 from salmon import cfg
 from salmon.errors import LoginError, RequestError
-from salmon.trackers.base import BaseGazelleApi, SharedLimiter
+from salmon.trackers.account import SlidingWindowLimiter
+from salmon.trackers.base import BaseGazelleApi
 
 # RED's and OPS's edit pages come from real pages, DIC's is reconstructed; each expected POST is what a browser sends.
 FIXTURES = Path(__file__).parent / "fixtures" / "torrent_edit"
@@ -94,15 +95,10 @@ def _fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
-class _LooseLimiter(SharedLimiter):
-    def __init__(self, *_args) -> None:
-        super().__init__(100, 1)
-
-
 @pytest.fixture(autouse=True)
 def _fast(monkeypatch) -> None:
     monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
-    monkeypatch.setattr("salmon.trackers.base.SharedLimiter", _LooseLimiter)
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))
     monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
 
 

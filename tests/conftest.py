@@ -116,14 +116,6 @@ def album_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def _fresh_tracker_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Each test starts with unspent tracker rate limits; the real ones are shared process-wide."""
-    import salmon.trackers.base as tracker_base
-
-    monkeypatch.setattr(tracker_base, "_limiters", {})
-
-
-@pytest.fixture(autouse=True)
 def _no_lost_upload_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     """Look a lost upload up without waiting, except in the tests that time the waits."""
     import salmon.trackers.base as tracker_base

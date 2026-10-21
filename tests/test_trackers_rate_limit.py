@@ -21,7 +21,8 @@ from tenacity import wait_none
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from salmon.common import urls
 from salmon.errors import RateLimitedError, RequestError, RequestFailedError, UnknownOutcomeError
-from salmon.trackers.base import BaseGazelleApi, RetryableError, SharedLimiter
+from salmon.trackers.account import SlidingWindowLimiter
+from salmon.trackers.base import BaseGazelleApi, RetryableError
 
 
 class FakeApi(BaseGazelleApi):
@@ -46,11 +47,8 @@ def no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
 def waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     """The waits the requests make: the limiter's pauses, recorded instead of applied."""
     recorded: list[float] = []
-    limiters: dict[str, SharedLimiter] = {}
-    monkeypatch.setattr(
-        "salmon.trackers.base._tracker_limiter", lambda code: limiters.setdefault(code, SharedLimiter(100, 1))
-    )
-    monkeypatch.setattr(SharedLimiter, "pause", lambda _self, seconds: recorded.append(seconds))
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))
+    monkeypatch.setattr(SlidingWindowLimiter, "pause", lambda _self, seconds: recorded.append(seconds))
     return recorded
 
 

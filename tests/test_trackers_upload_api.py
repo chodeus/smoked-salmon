@@ -29,11 +29,11 @@ from salmon.errors import (
     UnknownOutcomeError,
     UploadError,
 )
+from salmon.trackers.account import SlidingWindowLimiter
 from salmon.trackers.base import (
     BaseGazelleApi,
     HttpResponse,
     RetryableError,
-    SharedLimiter,
 )
 from salmon.trackers.ops import OpsApi
 from salmon.trackers.red import RedApi
@@ -56,7 +56,7 @@ class DummyGazelleApi(BaseGazelleApi):
 def _deterministic_cfg(monkeypatch):
     """Keep debug output off and neutralize the shared tracker rate limiter."""
     monkeypatch.setattr(cfg.upload, "debug_tracker_connection", False)
-    monkeypatch.setattr("salmon.trackers.base.SharedLimiter", lambda *_a, **_k: SharedLimiter(100_000, 1))
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100_000, 1))
 
 
 @pytest.fixture
@@ -1169,7 +1169,7 @@ async def test_a_429_pauses_the_tracker_for_any_retry_after_form(api, monkeypatc
     monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
     pauses: list[float] = []
     # Recorded, not applied, so the retry is not held for real time.
-    monkeypatch.setattr(SharedLimiter, "pause", lambda _self, seconds: pauses.append(seconds))
+    monkeypatch.setattr(SlidingWindowLimiter, "pause", lambda _self, seconds: pauses.append(seconds))
     headers = {"Retry-After": retry_after} if retry_after else {}
     install_fake_aiohttp(
         monkeypatch, [FakeAiohttpResponse(status=429, headers=headers), FakeAiohttpResponse(text="ok")]

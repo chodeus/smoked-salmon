@@ -11,7 +11,8 @@ from aiohttp import web
 from tenacity import wait_none
 
 from salmon.errors import LoginError
-from salmon.trackers.base import BaseGazelleApi, RetryableError, SharedLimiter
+from salmon.trackers.account import SlidingWindowLimiter
+from salmon.trackers.base import BaseGazelleApi, RetryableError
 
 
 class FakeApi(BaseGazelleApi):
@@ -214,7 +215,4 @@ def test_cancelling_every_waiting_request_cancels_the_attempt() -> None:
 @pytest.fixture(autouse=True)
 def _loose_rate_limit(monkeypatch) -> None:
     """A budget of its own per test: the shared one would hold each test to 5 requests in 10 s."""
-    limiters: dict[str, SharedLimiter] = {}
-    monkeypatch.setattr(
-        "salmon.trackers.base._tracker_limiter", lambda code: limiters.setdefault(code, SharedLimiter(100, 1))
-    )
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))
