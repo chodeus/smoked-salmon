@@ -7,6 +7,7 @@ import random
 import re
 import shutil
 import textwrap
+from collections.abc import Awaitable, Callable
 from functools import partial
 from subprocess import DEVNULL
 from typing import TYPE_CHECKING, Any
@@ -22,8 +23,8 @@ try:
 except ImportError:
     oxipng = None
 
-from salmon import cfg, dryrun
-from salmon.common import flush_stdin, get_audio_files, prompt_async
+from salmon import cfg, dryrun, interaction
+from salmon.common import flush_stdin, get_audio_files
 from salmon.common.files import process_files
 from salmon.errors import (
     AbortAndDeleteFolder,
@@ -84,7 +85,7 @@ async def check_spectrals(
         if lossy_master is None and check_lma:
             measured = await print_frequency_guidance(path, spectrals_path)
         while True:
-            await view_spectrals(spectrals_path, all_spectral_ids)
+            await interaction.show_spectrals(spectrals_path, all_spectral_ids)
             if lossy_master is None and check_lma:
                 lossy_master = await prompt_lossy_master(
                     force_prompt_lossy_master or measured == "suspect",
@@ -510,15 +511,21 @@ def calculate_zoom_startpoint(track_data):
     return 0
 
 
-async def view_spectrals(spectrals_path: str, all_spectral_ids: dict[int, str]) -> None:
-    """Open the generated spectrals in an image viewer.
+async def view_spectrals(
+    spectrals_path: str,
+    all_spectral_ids: dict[int, str],
+    wait_for_enter: Callable[[str], Awaitable[None]],
+) -> None:
+    """Open the generated spectrals in an image viewer: the terminal's way of showing them.
 
     Args:
         spectrals_path: Path to spectrals folder.
         all_spectral_ids: Dict mapping spectral IDs to filenames.
+        wait_for_enter: Shows the text it is given and returns once the user pressed enter, for the viewer
+            that runs in the browser.
     """
     if not cfg.upload.native_spectrals_viewer:
-        await _open_specs_in_web_server(spectrals_path, all_spectral_ids)
+        await _open_specs_in_web_server(spectrals_path, all_spectral_ids, wait_for_enter)
     elif platform.system() == "Darwin":
         await _open_specs_in_preview(spectrals_path)
     elif platform.system() == "Windows":
@@ -571,7 +578,11 @@ def _open_specs_in_windows(spectrals_path):
     os.startfile(png_files[0])
 
 
-async def _open_specs_in_web_server(specs_path, all_spectral_ids):
+async def _open_specs_in_web_server(
+    specs_path: str,
+    all_spectral_ids: dict[int, str],
+    wait_for_enter: Callable[[str], Awaitable[None]],
+):
     spectrals.set_active_spectrals(all_spectral_ids)
 
     runner = None
@@ -602,7 +613,7 @@ async def _open_specs_in_web_server(specs_path, all_spectral_ids):
                 )
             return
         url = f"http://{cfg.upload.web_interface.effective_host}:{cfg.upload.web_interface.port}/spectrals"
-        await prompt_async(
+        await wait_for_enter(
             click.style(
                 f"\nSpectrals are available at {click.style(url, fg='blue', underline=True)}\n"
                 f"""{
@@ -614,8 +625,6 @@ async def _open_specs_in_web_server(specs_path, all_spectral_ids):
                 }""",
                 fg="magenta",
             ),
-            end=" ",
-            flush=True,
         )
     finally:
         if runner is not None:

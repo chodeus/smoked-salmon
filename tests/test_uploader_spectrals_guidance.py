@@ -2,7 +2,7 @@
 
 import pytest
 
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.uploader import spectrals as sp
 from salmon.uploader.frequency import SpectrumResult
 
@@ -67,7 +67,7 @@ def flow(monkeypatch, tmp_path):
     monkeypatch.setattr(sp, "generate_spectrals_ids", generate_ids)
     monkeypatch.setattr(sp, "generate_frequency_plots", frequency)
     monkeypatch.setattr(sp, "get_audio_files", lambda path, *_a: ["01.flac"])
-    monkeypatch.setattr(sp, "view_spectrals", view)
+    monkeypatch.setattr(interaction, "show_spectrals", view)
     monkeypatch.setattr(sp, "prompt_lossy_master", prompt)
     monkeypatch.setattr(sp, "prompt_spectrals", prompt_spectrals)
     monkeypatch.setattr(sp.click, "secho", lambda message="", **_kw: printed.append(str(message)))

@@ -34,7 +34,7 @@ from webui_client import reset_manager, web_client  # pyright: ignore[reportMiss
 import salmon.tagger.pre_data
 import salmon.trackers
 import salmon.uploader.spectrals
-from salmon import cfg
+from salmon import cfg, interaction
 from salmon.constants import RELEASE_TYPES
 from salmon.uploader import upload as run_upload
 from salmon.webui import interaction as interaction_mod
@@ -826,8 +826,8 @@ def test_http_answer_endpoint_and_spectral_serving(client, tmp_path):
     (specs / "02-zoom.png").write_bytes(b"PNG-ZOOM")
 
     async def factory(job):
-        # The patched view_spectrals publishes the files to the browser.
-        await salmon.uploader.spectrals.view_spectrals(str(specs), {1: TRACK_FILES[0]})
+        # Through the terminal viewer, which salmon web's patch replaces: the files go to the browser.
+        await interaction.show_spectrals(str(specs), {1: TRACK_FILES[0]})
         return {"confirmed": click.confirm("Ship it to the tracker?")}
 
     assert client.portal is not None
@@ -867,6 +867,18 @@ def test_http_answer_endpoint_and_spectral_serving(client, tmp_path):
     assert final["status"] == "done"
     assert final["result"] == {"confirmed": True}
     assert final["question"] is None
+
+
+async def test_outside_a_job_the_spectrals_open_in_the_terminal_viewer(monkeypatch, tmp_path):
+    opened: list[tuple[str, dict[int, str], object]] = []
+
+    async def terminal_viewer(spectrals_path: str, ids: dict[int, str], wait_for_enter: object) -> None:
+        opened.append((spectrals_path, ids, wait_for_enter))
+
+    monkeypatch.setitem(interaction_mod._originals, "view_spectrals", terminal_viewer)
+    await interaction.show_spectrals(str(tmp_path), {1: TRACK_FILES[0]})
+
+    assert opened == [(str(tmp_path), {1: TRACK_FILES[0]}, interaction.TerminalInteraction._wait_for_enter)]
 
 
 # ---------------------------------------------------------------------------
