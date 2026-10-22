@@ -120,7 +120,7 @@ SPECTRALS_REFUSED = {
 # unchanged. Only bare: RED's per-viewer signed URLs 403 once the signature expires.
 RED_IMAGE_PROXY_TARGETS = frozenset({"OPS"})
 # "*" (all), "+" (a random third), "0" (none), or track IDs separated by spaces, such as "3" or "1 5 9".
-SpectralSelection = Annotated[str, msgspec.Meta(pattern=r"^(\*|\+|0|0*[1-9]\d*( +0*[1-9]\d*)*)$")]
+SpectralSelection = Annotated[str, msgspec.Meta(pattern=r"^(\*|\+|0|0*[1-9]\d*( +0*[1-9]\d*)*)\Z")]
 
 
 def spectrals_refusal(host: str) -> str | None:
