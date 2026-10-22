@@ -43,7 +43,7 @@ class _FakeRed:
         self.form = {options["name"]: value for options, _headers, value in data._fields}
         return HttpResponse(text=msgspec.json.encode(self.payload).decode(), url=url, status=200)
 
-    def _scrub(self, text: str) -> str:
+    def _redact(self, text: str) -> str:
         return text
 
     async def close(self) -> None:
@@ -224,7 +224,7 @@ def test_a_failed_upload_does_not_chain_the_raw_error(monkeypatch, tmp_path) -> 
         raise RequestFailedError("rejected SYNTH-RAW-SECRET")
 
     monkeypatch.setattr(_FakeRed, "_request", refuse)
-    monkeypatch.setattr(_FakeRed, "_scrub", lambda _self, text: text.replace("SYNTH-RAW-SECRET", "[REDACTED]"))
+    monkeypatch.setattr(_FakeRed, "_redact", lambda _self, text: text.replace("SYNTH-RAW-SECRET", "[REDACTED]"))
     image = tmp_path / "cover.jpg"
     image.write_bytes(b"\xff\xd8\xff")
 

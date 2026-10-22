@@ -766,7 +766,9 @@ async def test_a_long_api_upload_error_is_capped(api):
 
     with pytest.raises(RequestError) as excinfo:
         await api.api_key_upload({}, UploadFiles(torrent_data=b"torrent"))
-    assert "[truncated]" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert message.endswith(" [...]")
+    assert len(message) < 600
 
 
 async def test_site_page_upload_bounced_to_login_raises_login_error(api, monkeypatch):

@@ -147,7 +147,7 @@ class FakeTracker:
 
 
 def _scrubbed(text: str, secrets: list[str]) -> str:
-    """What BaseGazelleApi._scrub shows: tracker fields masked, then each known secret of 8+ chars, longest first."""
+    """What BaseGazelleApi._redact shows: tracker fields masked, then each known secret of 8+ chars, longest first."""
     text = redact_tracker_fields(text)
     for secret in sorted((s for s in secrets if s and len(s) >= 8), key=len, reverse=True):
         text = text.replace(secret, "[REDACTED]")

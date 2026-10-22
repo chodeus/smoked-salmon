@@ -169,8 +169,18 @@ def _build_tracker_cookies(session_cookie: str, keeplogged_cookie: str | None = 
 
 
 def _form_parts(files: UploadFiles, data: dict[str, Any]) -> list[tuple[str, Any, str | None]]:
-    """The upload form's (name, value, file name or None) parts, in the order they are sent."""
-    # aiohttp FormData only takes str/bytes/IO: True goes as "on", an int as its digits, False and None not at all.
+    """Give the parts of an upload form, in the order they are sent.
+
+    aiohttp FormData only accepts str/bytes/IO types, so True is sent as "on" and an int as
+    its digits. False and None are not sent. A list sends one part per item.
+
+    Args:
+        files: The UploadFiles object containing file uploads.
+        data: Dictionary of field names and values to add.
+
+    Returns:
+        (name, value, file name) for each part; the file name is None for a part that is not a file.
+    """
     parts: list[tuple[str, Any, str | None]] = [("file_input", files.torrent_data, "meowmeow.torrent")]
     parts += [("logfiles[]", log_data, log_name) for log_name, log_data in files.log_files]
     for key, value in data.items():
@@ -187,7 +197,15 @@ def _form_parts(files: UploadFiles, data: dict[str, Any]) -> list[tuple[str, Any
 
 
 def _compose_form_data(files: UploadFiles, data: dict[str, Any]) -> FormData:
-    """The upload's FormData, built from _form_parts."""
+    """Compose FormData by converting UploadFiles and adding data fields: see _form_parts.
+
+    Args:
+        files: The UploadFiles object containing file uploads.
+        data: Dictionary of field names and values to add.
+
+    Returns:
+        A new FormData object with all files and fields added.
+    """
     form = FormData()
     for name, value, filename in _form_parts(files, data):
         if filename is None:
@@ -202,7 +220,20 @@ _UNSUBMITTED_INPUT_TYPES = frozenset({"file", "submit", "button", "reset", "imag
 
 
 def _submitted_fields(form: Tag) -> list[tuple[str, str]]:
-    """The form's (name, value) pairs in page order, disabled fields kept: RED's onsubmit enables them all."""
+    """Get the fields a browser submits for a form as the page shows it, in page order.
+
+    An unchecked checkbox or radio is not sent, a checked one without a value sends "on".
+    A select sends its selected option, or its first one when none is, and an option
+    without a value sends its text. Entities are decoded once, as the tracker expects the
+    text itself. Disabled fields are sent too: RED's edit form enables them all before it
+    submits, and a field sent with the value it shows is left as it is.
+
+    Args:
+        form: The form element.
+
+    Returns:
+        The (name, value) pairs, in page order.
+    """
     fields: list[tuple[str, str]] = []
     for control in form.find_all(["input", "select", "textarea"]):
         if not isinstance(control, Tag) or not control.get("name"):
@@ -279,6 +310,8 @@ _MAX_REDIRECTS = 3
 # The most a binary answer (an image on the tracker's own host) may hold. Reading stops there.
 _MAX_BINARY_BODY = 25 * 1024 * 1024
 _BINARY_READ_CHUNK = 64 * 1024
+# The most of a tracker's answer an error message shows, in characters.
+_MAX_EXCERPT = 500
 # Image host credentials are got again this many seconds before they expire: more than a release's images take.
 _IMAGE_AUTH_MARGIN = 60
 _IMAGE_AUTH_ACTION = "imgauth"
@@ -701,7 +734,7 @@ class BaseGazelleApi:
             )
         # A dry run only reads from the tracker; each sending step skips itself, and this stops any that was missed.
         if method != "GET" and dryrun.active():
-            dryrun.refuse(f"send {method} {self._scrub(url)} to {self.site_string}")
+            dryrun.refuse(f"send {method} {self._redact(url)} to {self.site_string}")
         # An api key request that sends no auth field needs no index call for the authkey.
         # Outside _send's retries: the attempt makes its own tries, which a retried request would repeat.
         if needs_authkey and not (params and params.get("action") == "index"):
@@ -757,10 +790,10 @@ class BaseGazelleApi:
         signed = self._signs(params)
 
         if _dumping():
-            _secho(f"[DEBUG] {method} {self._scrub(url)}", fg="cyan")
-            # A signed image URL: its user id and expiry are numbers _scrub cannot mask, shown as no more.
+            _secho(f"[DEBUG] {method} {self._redact(url)}", fg="cyan")
+            # A signed image URL: its user id and expiry are numbers _redact cannot mask, shown as no more.
             shown_params = dict.fromkeys(params or {}, "[REDACTED]") if signed else params
-            _secho(f"[DEBUG] params: {self._scrub(msgspec.json.encode(shown_params).decode())}", fg="cyan")
+            _secho(f"[DEBUG] params: {self._redact(msgspec.json.encode(shown_params).decode())}", fg="cyan")
             _secho(f"[DEBUG] use_api_key: {use_api_key}", fg="cyan")
 
         try:
@@ -798,7 +831,7 @@ class BaseGazelleApi:
 
                         if _dumping():
                             _secho(f"[DEBUG] status: {resp.status}", fg="cyan")
-                            headers_shown = redact_tracker_headers(resp.headers.items(), self._scrub)
+                            headers_shown = redact_tracker_headers(resp.headers.items(), self._redact)
                             _secho(
                                 f"[DEBUG] response headers: {msgspec.json.encode(headers_shown).decode()}", fg="cyan"
                             )
@@ -808,7 +841,7 @@ class BaseGazelleApi:
                                 # Its key is not known as a secret until this answer is read.
                                 body_shown = "<the image host's credentials>"
                             else:
-                                body_shown = self._scrub(text)
+                                body_shown = self._redact(text)
                             _secho(f"[DEBUG] response body: {body_shown}", fg="green")
 
                         if not resp.ok:
@@ -824,7 +857,7 @@ class BaseGazelleApi:
                                 if isinstance(decoded, dict) and "error" in decoded:
                                     error_msg = msgspec.json.encode(decoded["error"]).decode()
                             # Printed and raised: an error page carries the authkey in its links and forms.
-                            shown = safe_response_excerpt(self._scrub(error_msg))
+                            shown = safe_response_excerpt(self._redact(error_msg))
 
                             if resp.status == HTTPStatus.TOO_MANY_REQUESTS or "rate limit" in error_msg.lower():
                                 wait = _rate_limit_wait(resp.headers.get(aiohttp.hdrs.RETRY_AFTER))
@@ -949,11 +982,11 @@ class BaseGazelleApi:
                 reason = getattr(certificate, "verify_message", None) or str(certificate)
                 host = urlparse(url).hostname or url
                 # Not chained, as below.
-                raise TLSCertificateError(host, safe_response_excerpt(self._scrub(reason)), self.site_code) from None
+                raise TLSCertificateError(host, safe_response_excerpt(self._redact(reason)), self.site_code) from None
             # By type: a ConnectionTimeoutError is also a TimeoutError, and never connected is safe to resend.
             # Not chained: an aiohttp error can repeat the URL and its query, and a traceback would print it.
             # The body read's own timeout raises a TimeoutError with no message.
-            reason = safe_response_excerpt(self._scrub(str(err))) or f"no full answer within {timeout_secs} s"
+            reason = safe_response_excerpt(self._redact(str(err))) or f"no full answer within {timeout_secs} s"
             raise failure(f"Network error: {reason}", not_acted_on=isinstance(err, _NOT_SENT_ERRORS)) from None
 
     @property
@@ -1006,7 +1039,7 @@ class BaseGazelleApi:
             # scrub_secrets, which salmon web's filter also uses, masks a value only from 8 characters on.
             raise RequestFailedError(f"{self.site_string} gave no usable key for its image host")
         # The key is the credential, masked by value wherever salmon prints; the expiry and user id are masked
-        # only in a URL's query (_scrub), as masking numbers by value would cut them out of every other number.
+        # only in a URL's query (_redact), as masking numbers by value would cut them out of every other number.
         self._image_auth = auth
         with _learned_secrets_lock:
             _learned_secrets.add(auth["h"])
@@ -1030,11 +1063,16 @@ class BaseGazelleApi:
                 raise too_large
         return bytes(body)
 
-    def _scrub(self, text: str) -> str:
-        """redact_tracker_fields, plus this client's own credentials wherever a tracker answer repeats them."""
+    def _redact(self, text: str) -> str:
+        """Mask this tracker's secrets in text about to be printed or raised."""
         text = scrub_secrets(text, self._secrets())
         # Its answers carry image URLs signed for this account, not only the ones image_auth() gives.
         return _SIGNED_IMAGE_QUERY.sub(r"\1[REDACTED]", text) if self.SIGNED_IMAGES else text
+
+    def _excerpt(self, text: str) -> str:
+        """Redact text, then cut it to _MAX_EXCERPT characters: a tracker's answer may be a whole page."""
+        shown = self._redact(text)
+        return shown if len(shown) <= _MAX_EXCERPT else shown[:_MAX_EXCERPT] + " [...]"
 
     async def api_call(self, action: str, params: dict[str, Any] | None = None) -> dict:
         """Make a request to the site API with rate limiting.
@@ -1063,7 +1101,7 @@ class BaseGazelleApi:
             resp_json = {"status": "error", "error": resp.text}
 
         if resp_json.get("status") != "success":
-            raise RequestFailedError(safe_response_excerpt(self._scrub(str(resp_json.get("error", resp.text)))))
+            raise RequestFailedError(safe_response_excerpt(self._redact(str(resp_json.get("error", resp.text)))))
         return cast("dict", resp_json["response"])
 
     async def torrentgroup(self, group_id: int) -> dict:
@@ -1252,7 +1290,7 @@ class BaseGazelleApi:
             files: UploadFiles containing files to upload.
 
         Returns:
-            Tuple of (torrent_id, group_id).
+            Tuple of (torrent_id, group_id). In a dry run, what _dry_run_upload gives.
 
         Raises:
             RequestError: If upload fails.
@@ -1272,16 +1310,15 @@ class BaseGazelleApi:
         try:
             resp = msgspec.json.decode(response.text)
         except (msgspec.DecodeError, ValueError):
-            # The tracker may have taken it before answering with a page.
-            excerpt = safe_response_excerpt(self._scrub(response.text))
-            reason = f"its answer was not JSON ({response.status}): {excerpt}"
+            # The tracker may have stored the torrent before answering with something else: OPS's Gazelle prints
+            # a failed request fill's error ahead of the upload's JSON, for one.
+            reason = f"its answer was not JSON ({response.status}): {self._excerpt(response.text)}"
             return await self._find_lost_upload(files, UnknownOutcomeError(reason))
 
         try:
             if resp["status"] != "success":
-                raise RequestError(
-                    f"API upload failed: {safe_response_excerpt(self._scrub(str(resp.get('error', resp))))}"
-                )
+                # An answer without an error key still fails as the upload's, not as a KeyError.
+                raise RequestError(f"API upload failed: {self._excerpt(str(resp.get('error', resp)))}")
             if ("requestid" in resp["response"] and resp["response"]["requestid"]) or (
                 "fillRequest" in resp["response"]
                 and resp["response"]["fillRequest"]
@@ -1306,16 +1343,26 @@ class BaseGazelleApi:
                 group_id = resp["response"].get("groupId")
             elif "requestid" not in resp["response"] and "fillRequest" not in resp["response"]:
                 raise UploadError(
-                    "API upload succeeded but returned no torrent id, response: "
-                    f"{safe_response_excerpt(self._scrub(str(resp)))}"
+                    f"API upload succeeded but returned no torrent id, response: {self._excerpt(str(resp))}"
                 )
             # Sent into a known group, the torrent is there whether or not the answer says so.
             return torrent_id, group_id or int(data.get("groupid") or 0)
         except TypeError as err:
-            raise RequestError(f"API upload failed, response: {safe_response_excerpt(self._scrub(str(resp)))}") from err
+            raise RequestError(f"API upload failed, response: {self._excerpt(str(resp))}") from err
 
     def upload_form_fields(self, metadata: dict[str, Any], track_data: dict[str, Any]) -> dict[str, str]:
-        """Upload form fields only this tracker has, for one torrent; UploadRefusedError if none describes it."""
+        """Give the upload form fields only this tracker has, for one torrent.
+
+        Args:
+            metadata: Release metadata of the torrent being uploaded.
+            track_data: Track information of the files in that torrent.
+
+        Returns:
+            Field names and values to add to the upload form data; none by default.
+
+        Raises:
+            UploadRefusedError: If the tracker's form has no value that describes the torrent.
+        """
         return {}
 
     async def site_page_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
@@ -1326,7 +1373,7 @@ class BaseGazelleApi:
             files: UploadFiles containing files to upload.
 
         Returns:
-            Tuple of (torrent_id, group_id).
+            Tuple of (torrent_id, group_id). In a dry run, what _dry_run_upload gives.
 
         Raises:
             RequestError: If upload fails.
@@ -1349,16 +1396,15 @@ class BaseGazelleApi:
         if self.announce in resp_text:
             match = re.search(r'<p style="color: red; text-align: center;">(.+)<\/p>', resp_text)
             if match:
-                raise RequestError(
-                    f"Site upload failed: {safe_response_excerpt(self._scrub(match[1]))} ({response.status})"
-                )
+                raise RequestError(f"Site upload failed: {self._excerpt(match[1])} ({response.status})")
         if "requests.php" in resp_url:
             return await self._request_fill_result(data, files, resp_text, resp_url)
         try:
             return self.parse_most_recent_torrent_and_group_id_from_group_page(resp_text)
         except TypeError:
-            # Neither an error the form shows nor the group page: the tracker may have taken it.
-            reason = f"its answer was not the group page: {safe_response_excerpt(self._scrub(resp_text))}"
+            # Neither the form's error nor the group page: Gazelle shows other pages once it has stored the
+            # torrent (its warnings about the upload, for one), so it is looked up.
+            reason = f"its answer was not the group page: {self._excerpt(resp_text)}"
             return await self._find_lost_upload(files, UnknownOutcomeError(reason))
 
     async def _request_fill_result(
@@ -1368,7 +1414,7 @@ class BaseGazelleApi:
         query = parse_qs(urlparse(resp_url).query)
         try:
             torrent_id = self.parse_torrent_id_from_filled_request_page(resp_text)
-            click.secho(f"Filled request: {self._scrub(resp_url)}", fg="green")
+            click.secho(f"Filled request: {self._redact(resp_url)}", fg="green")
         except (TypeError, ValueError):
             reason = self._request_fill_error(resp_text)
             stored = query.get("torrentid", [""])[0]
@@ -1392,13 +1438,28 @@ class BaseGazelleApi:
         soup = BeautifulSoup(resp_text, "lxml")
         error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
         if error and error.parent and error.parent.parent and (p_tag := error.parent.parent.find("p")):
-            return safe_response_excerpt(self._scrub(p_tag.text))
-        return safe_response_excerpt(self._scrub(resp_text))
+            return safe_response_excerpt(self._redact(p_tag.text))
+        return safe_response_excerpt(self._redact(resp_text))
 
     async def _find_lost_upload(self, files: UploadFiles, err: UnknownOutcomeError) -> tuple[int, int]:
-        """Look an upload whose answer was lost up by its infohash, after a wait and once more if not found yet."""
+        """Look up an upload whose answer was lost, by the torrent's infohash.
+
+        The tracker may still be handling the upload, so the lookup waits for it first. If the
+        tracker answers that it does not have the torrent, it is looked up once more after a
+        second wait, and no more.
+
+        Args:
+            files: UploadFiles that were uploaded.
+            err: Why the outcome of the upload is unknown.
+
+        Returns:
+            Tuple of (torrent_id, group_id) if the tracker has the torrent.
+
+        Raises:
+            UnknownOutcomeError: If the torrent is not found: the upload may still have gone through.
+        """
         try:
-            # Gazelle's API documentation asks for the hash in uppercase.
+            # Uppercase, as Gazelle's API documentation asks for the hash.
             infohash = Torrent.read_stream(files.torrent_data).infohash.upper()
             click.secho(
                 f"Could not tell whether {self.site_string} took the upload ({err}). "
@@ -1409,10 +1470,10 @@ class BaseGazelleApi:
             await asyncio.sleep(_LOST_UPLOAD_FIRST_WAIT)
             try:
                 found = await self.api_call("torrent", params={"hash": infohash})
-            except RequestFailedError as unconfirmed:
-                # Not-found answers differ by tracker, so only a login or network failure skips the second lookup.
+            except RequestFailedError as not_found:
+                # The tracker answered, without the torrent. Any other failure is not worth another request.
                 click.secho(
-                    f"{self.site_string} did not find it ({safe_response_excerpt(self._scrub(str(unconfirmed)))}). "
+                    f"{self.site_string} does not have it yet ({not_found}). "
                     f"Waiting {_LOST_UPLOAD_SECOND_WAIT} s more, then looking it up one last time...",
                     fg="yellow",
                 )
@@ -1421,10 +1482,10 @@ class BaseGazelleApi:
             torrent_id, group_id = int(found["torrent"]["id"]), int(found["group"]["id"])
         except (RequestError, TorfError, KeyError, TypeError, ValueError) as lookup_err:
             # A non-JSON answer arrives here whole, and a logged-in page's links carry secrets.
-            reason = safe_response_excerpt(self._scrub(str(lookup_err)))
             raise UnknownOutcomeError(
-                f"Could not tell whether {self.site_string} took the upload ({err}), and looking it up by "
-                f"its infohash did not confirm it ({reason}). The upload may still have gone through: "
+                f"Could not tell whether {self.site_string} took the upload ({err}), and looking the torrent up "
+                f"by its infohash did not confirm it ({self._excerpt(str(lookup_err))}). The upload may still have "
+                "gone through: "
                 f"check your uploads on {self.site_string} before uploading it again."
             ) from lookup_err
         except asyncio.CancelledError:
@@ -1454,12 +1515,24 @@ class BaseGazelleApi:
         return await self.site_page_upload(data, files)
 
     def _dry_run_upload(self, url: str, data: dict, files: UploadFiles, prefer_api_key: bool) -> tuple[int, int]:
-        """Print the upload a dry run does not send, part by part, and return the IDs it stands in for."""
-        # Every value is redacted as the debug output is: the form holds the authkey.
+        """Print the upload a dry run does not send, part by part as it would go out, and the torrent it holds.
+
+        Every value is redacted as the debug output is: the form holds the authkey.
+
+        Args:
+            url: The URL the upload would be sent to.
+            data: Upload form data, complete.
+            files: UploadFiles the upload would send.
+            prefer_api_key: Whether the upload would authenticate with the API key, as _request takes it.
+
+        Returns:
+            The IDs the upload stands in for: NEW_TORRENT_ID, and the group it goes into, or NEW_GROUP_ID
+            for a new one.
+        """
         auth = "the API key" if prefer_api_key and self.api_key else "the session cookie"
-        dryrun.say(f"not uploading to {self.site_string}. It would send POST {self._scrub(url)} with {auth}:")
+        dryrun.say(f"not uploading to {self.site_string}. It would send POST {self._redact(url)} with {auth}:")
         for name, value, filename in _form_parts(files, data):
-            shown = f"{filename} ({format_size(len(value), binary=True)})" if filename else self._scrub(str(value))
+            shown = f"{filename} ({format_size(len(value), binary=True)})" if filename else self._redact(str(value))
             first, *more = shown.split("\n")
             click.echo(f"  {name}: {first}")
             for line in more:
@@ -1519,7 +1592,7 @@ class BaseGazelleApi:
         edit_error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
         if edit_error and edit_error.parent and edit_error.parent.parent:
             p_tag = edit_error.parent.parent.find("p")
-            error_message = safe_response_excerpt(self._scrub(p_tag.text)) if p_tag else "Unknown error"
+            error_message = safe_response_excerpt(self._redact(p_tag.text)) if p_tag else "Unknown error"
             raise RequestError(f"Failed to edit torrent: {error_message}")
         else:
             click.secho("Added spectrals to the torrent description.", fg="green")
@@ -1540,7 +1613,7 @@ class BaseGazelleApi:
         # idempotent: _session_for must not take this lock again, as it isn't re-entrant.
         async with self._account().non_idempotent_lock:
             # Send the tracker's own edit form back with only the description changed (a rebuilt one loses fields).
-            # Authenticated first: the page holds the authkey, and _scrub masks only a known one.
+            # Authenticated first: the page holds the authkey, and _redact masks only a known one.
             page = await self._request("GET", url, params={"action": "edit", "id": torrent_id})
             try:
                 fields = _torrent_edit_fields(page.text, torrent_id)

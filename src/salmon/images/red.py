@@ -67,11 +67,11 @@ class ImageUploader(BaseImageUploader):
                 timeout_secs=30,
             )
             # Decoded while the client still knows its credentials, so an echoed one is masked.
-            payload = _decode_response(resp.text, site._scrub)
+            payload = _decode_response(resp.text, site._redact)
         except RequestError as error:
             # Not chained: the original message isn't scrubbed, and a traceback would print it.
             raise ImageUploadFailed(
-                f"RED image upload failed: {safe_response_excerpt(site._scrub(str(error)))}"
+                f"RED image upload failed: {safe_response_excerpt(site._redact(str(error)))}"
             ) from None
         finally:
             if self.api is None:

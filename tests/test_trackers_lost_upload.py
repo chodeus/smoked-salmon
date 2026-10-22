@@ -280,3 +280,27 @@ def test_ctrl_c_while_waiting_for_a_lost_upload_sends_nothing_more(
     assert posts == ["upload"]
     assert lookups == []
     assert unclosed == []
+
+
+def test_a_failed_lookups_error_is_masked_in_the_unknown_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The lookup's error can hold a page whose links carry the client's own credentials.
+    _wait_before_lookups(monkeypatch, 0, 0)
+    files, _ = _upload_files(tmp_path)
+    api = FakeApi("http://127.0.0.1:9")
+    secret = "SYNTH-COOKIE-0123456789"
+    api.cookie = secret
+
+    async def page_with_the_cookie(*_args: object, **_kwargs: object) -> object:
+        raise RequestError(f"<a href='x?session={secret}'>")
+
+    monkeypatch.setattr(api, "api_call", page_with_the_cookie)
+
+    async def run() -> UnknownOutcomeError:
+        with pytest.raises(UnknownOutcomeError) as caught:
+            await api._find_lost_upload(files, UnknownOutcomeError("answer lost"))
+        return caught.value
+
+    error = anyio.run(run)
+    assert secret not in str(error)
