@@ -224,15 +224,18 @@ async def test_clients_of_one_tracker_share_one_budget(api_for):
 class FakeLog:
     """A tracker whose log.php needs the session cookie "good", else bounces to login.php."""
 
-    def __init__(self) -> None:
+    def __init__(self, missing_page: int | None = None) -> None:
         self.hits: list[str] = []
         self.requested_when_page_one_answered: list[str] = []
+        self.missing_page = missing_page
 
     async def log(self, request: web.Request) -> web.Response:
         self.hits.append(request.path_qs)
         if request.cookies.get("session") != "good":
             raise web.HTTPFound("/login.php")
         page = int(request.query["page"])
+        if page == self.missing_page:
+            raise web.HTTPNotFound()
         if page == 1:
             # Slow enough for pages requested alongside page 1 to arrive before it is answered.
             await asyncio.sleep(0.2)
@@ -259,12 +262,12 @@ async def test_no_session_cookie_skips_the_site_log(serve, api_for, capsys):
     assert "needs a session cookie" in out
 
 
-async def test_an_expired_cookie_costs_one_request(serve, api_for):
+async def test_an_expired_cookie_costs_one_request_and_stops_the_check(serve, api_for):
     tracker = FakeLog()
     url = await serve(log=tracker.log, login=tracker.login)
 
-    uploads = await api_for(url, cookie="expired").get_uploads_from_log()
-    assert uploads == []
+    with pytest.raises(LoginError):
+        await api_for(url, cookie="expired").get_uploads_from_log()
     assert tracker.hits == ["/log.php?page=1"]
 
 
@@ -276,6 +279,14 @@ async def test_a_valid_cookie_reads_every_page_after_the_first(serve, api_for):
     assert tracker.requested_when_page_one_answered == ["/log.php?page=1"]
     assert sorted(tracker.hits) == sorted(f"/log.php?page={page}" for page in range(1, 11))
     assert sorted(uploads) == sorted((str(page), "Artist", f"Title {page}") for page in range(1, 11))
+
+
+async def test_a_page_that_fails_mid_crawl_stops_the_check(serve, api_for):
+    tracker = FakeLog(missing_page=5)
+    url = await serve(log=tracker.log, login=tracker.login)
+
+    with pytest.raises(RequestFailedError):
+        await api_for(url, cookie="good").get_uploads_from_log()
 
 
 _SECRETS = ("SYNTH-API-KEY", "SYNTH-SESSION-COOKIE", "SYNTH-AUTHKEY")

@@ -263,8 +263,7 @@ session = 'get-from-site-cookie'
 # [upload.requests]
 # # request handling
 # always_ask_for_request_fill = false
-# # Crawls the site log with your session cookie; leave off unless you need it (#432)
-# check_recent_uploads = false
+# check_recent_uploads = true
 # check_requests = true
 # last_minute_dupe_check = false
 
