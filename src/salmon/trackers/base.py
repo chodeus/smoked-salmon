@@ -1026,33 +1026,14 @@ class BaseGazelleApi:
                 fg="yellow",
             )
             return []
-        # Probe page 1 alone: an invalid cookie must not fan out into N redirect chains (#432)
-        try:
-            first_page = await self.fetch_log(1)
-        except (LoginError, RequestError) as e:
-            click.secho(
-                f"Skipping the recent-uploads check: could not read the {self.site_string} site log ({e}). "
-                "This check requires a valid session cookie.",
-                fg="yellow",
-                bold=True,
-            )
-            return []
-        recent_uploads = self.parse_uploads_from_log_html(first_page)
-        tasks = [self.fetch_log(i) for i in range(2, max_pages + 1)]
-        # gather does not cancel siblings on error; tolerate a mid-crawl failure (#432)
-        unread = 0
-        for page_text in await asyncio.gather(*tasks, return_exceptions=True):
-            if isinstance(page_text, str):
-                recent_uploads += self.parse_uploads_from_log_html(page_text)
-            else:
-                unread += 1
-        if unread:
-            click.secho(
-                f"Could not read {unread} of the {self.site_string} site log's {max_pages} pages: "
-                "recent uploads listed there were not checked.",
-                fg="yellow",
-                bold=True,
-            )
+        # Page 1 goes alone first: if the log cannot be read, that costs one request,
+        # not one per page (#432).
+        pages = [await self.fetch_log(1)]
+        # A page that cannot be read raises, as upstream's: a partial log must not pass for a clean one.
+        pages += await asyncio.gather(*(self.fetch_log(i) for i in range(2, max_pages + 1)))
+        recent_uploads = []
+        for page_text in pages:
+            recent_uploads += self.parse_uploads_from_log_html(page_text)
         return recent_uploads
 
     async def api_key_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:

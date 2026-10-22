@@ -1064,6 +1064,35 @@ async def test_check_existing_group_no_results_uses_recent_log_flow(fake_tracker
     assert actual == 777
 
 
+async def test_an_unreadable_site_log_stops_the_dupe_check(fake_tracker, install_prompt, monkeypatch):
+    # As upstream's: a transient failure must not let the upload go on as a new group.
+    monkeypatch.setattr(cfg.upload.requests, "check_recent_uploads", True)
+    queue = install_prompt("n")
+    fake_tracker.api_responses["browse"] = {"results": []}
+
+    async def unreadable():
+        raise RequestFailedError("Server error 503")
+
+    fake_tracker.get_uploads_from_log = unreadable
+
+    with pytest.raises(RequestFailedError):
+        await check_existing_group(fake_tracker, ["artist album"])
+    assert queue.calls == 0
+
+
+async def test_an_unreadable_site_log_aborts_the_last_minute_check(fake_tracker, capsys) -> None:
+    from salmon.uploader import last_min_dupe_check
+
+    async def unreadable():
+        raise RequestFailedError("Server error 503")
+
+    fake_tracker.get_uploads_from_log = unreadable
+
+    with pytest.raises(click.Abort):
+        await last_min_dupe_check(fake_tracker, ["artist album"], "Album")
+    assert "site log: Server error 503" in capsys.readouterr().out
+
+
 async def test_check_existing_group_no_results_recent_flow_new_group(fake_tracker, install_prompt, monkeypatch):
     monkeypatch.setattr(cfg.upload.requests, "check_recent_uploads", True)
     monkeypatch.setattr(cfg.upload, "log_dupe_tolerance", 0.5)
