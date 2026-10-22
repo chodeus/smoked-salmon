@@ -1172,7 +1172,7 @@ async def test_a_group_id_given_as_text_reuses_the_group_just_fetched(fake_track
 
 
 def test_reading_recent_uploads_is_on_by_default() -> None:
-    # As upstream's: the site log is read when the search finds nothing.
+    # As upstream's: with a session cookie, the site log is read when the search finds nothing.
     from salmon.config.validations import UploadRequests
 
     assert UploadRequests().check_recent_uploads is True

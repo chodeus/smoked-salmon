@@ -1040,9 +1040,19 @@ class BaseGazelleApi:
         recent_uploads = self.parse_uploads_from_log_html(first_page)
         tasks = [self.fetch_log(i) for i in range(2, max_pages + 1)]
         # gather does not cancel siblings on error; tolerate a mid-crawl failure (#432)
+        unread = 0
         for page_text in await asyncio.gather(*tasks, return_exceptions=True):
             if isinstance(page_text, str):
                 recent_uploads += self.parse_uploads_from_log_html(page_text)
+            else:
+                unread += 1
+        if unread:
+            click.secho(
+                f"Could not read {unread} of the {self.site_string} site log's {max_pages} pages: "
+                "recent uploads listed there were not checked.",
+                fg="yellow",
+                bold=True,
+            )
         return recent_uploads
 
     async def api_key_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
