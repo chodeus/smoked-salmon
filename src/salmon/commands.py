@@ -256,6 +256,9 @@ async def checkconf(tracker: str | None, metadata: bool, seedbox: bool, reset: b
             "A new config.toml file has been created from the template. Please update it with your custom settings.",
             fg="green",
         )
+        click.echo(
+            f"Every other setting is in {os.path.join(os.path.dirname(config_template), 'config.reference.toml')}."
+        )
         return
 
     cfg.tracker.debug_connection = True

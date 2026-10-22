@@ -70,6 +70,20 @@ OLD_KEYS: tuple[Moved | Removed, ...] = (
     ),
 )
 
+_TRACKER_CODES = ("red", "ops", "dic")
+_SESSION_PLACEHOLDER = "get-from-site-cookie"
+
+# Values the old config.default.toml shipped (and the older Qobuz ones), by setting: none of them is a real value.
+PLACEHOLDERS: dict[str, str] = {
+    **{f"tracker.{code}.session": _SESSION_PLACEHOLDER for code in _TRACKER_CODES},
+    **{f"image.{key}": "api_key" for key in ("ptscreens_key", "oeimg_key", "imgbb_key", "ra_key")},
+    "metadata.discogs_token": "discogs-token",
+    "metadata.beatport.username": "username",
+    "metadata.beatport.password": "password",
+    "metadata.qobuz.app_id": "app-id",
+    "metadata.qobuz.user_auth_token": "user_auth_token",
+}
+
 # Every warning about the config, unknown keys included, in the order printed: for salmon web's Dashboard.
 config_warnings: list[str] = []
 # (config file, message) pairs already printed, so each is printed once per config path.
@@ -85,6 +99,11 @@ def warn(config_path: Path, message: str) -> None:
     _warned.add((str(config_path), message))
     config_warnings.append(message)
     click.secho(message, fg="yellow", err=True)
+
+
+def placeholder(path: str) -> str | None:
+    """The old template's placeholder for the setting at the dotted ``path``, if it had one."""
+    return PLACEHOLDERS.get(path)
 
 
 def _salmon_version() -> Version | None:
@@ -173,8 +192,63 @@ def _drop_removed(raw: dict[str, Any], entry: Removed, value: Any, config_path: 
     warn(config_path, f"{entry.old} is no longer used, remove it: {entry.reason}. See {UPGRADE_PAGE}")
 
 
+def _drop_placeholder_trackers(raw: dict[str, Any], config_path: Path) -> None:
+    """Leave out each tracker whose session is the old template's placeholder, and each default naming one.
+
+    RED and OPS take an API key on its own, so one that has a key stays, with no cookie. DIC takes none.
+    """
+    tracker = raw.get("tracker")
+    if not isinstance(tracker, dict):
+        return
+    dropped: list[str] = []
+    for code in _TRACKER_CODES:
+        table = tracker.get(code)
+        if not isinstance(table, dict) or table.get("session") != _SESSION_PLACEHOLDER:
+            continue
+        api_key = table.get("api_key")
+        if code != "dic" and isinstance(api_key, str) and api_key.strip():
+            table["session"] = ""
+            warn(
+                config_path,
+                f"tracker.{code}.session is still the old template's placeholder '{_SESSION_PLACEHOLDER}': "
+                f"salmon treats it as unset, so {code.upper()} uses only its API key.",
+            )
+            continue
+        del tracker[code]
+        dropped.append(code)
+        warn(
+            config_path,
+            f"tracker.{code}.session is still the old template's placeholder '{_SESSION_PLACEHOLDER}'. "
+            f"{code.upper()} is left out: set its cookie or remove [tracker.{code}].",
+        )
+    defaults = tracker.get("default_trackers")
+    if not isinstance(defaults, list):
+        return
+    left_out = [code for code in defaults if isinstance(code, str) and code.strip().lower() in dropped]
+    if not left_out:
+        return
+    tracker["default_trackers"] = kept = [code for code in defaults if code not in left_out]
+    then = "the run uploads to the others it names" if kept else "salmon asks which tracker to upload to"
+    for code in dict.fromkeys(code.strip().upper() for code in left_out):
+        warn(config_path, f"tracker.default_trackers names {code}, which is left out: it is ignored, so {then}.")
+
+
+def _drop_placeholders(raw: dict[str, Any], config_path: Path) -> None:
+    _drop_placeholder_trackers(raw, config_path)
+    for path, value in PLACEHOLDERS.items():
+        if path.startswith("tracker.") or _get(raw, path) != value:
+            continue
+        *parents, leaf = path.split(".")
+        del _get(raw, ".".join(parents))[leaf]
+        warn(
+            config_path,
+            f"{path} is still the old template's placeholder '{value}': salmon treats it as unset. "
+            "Set it or remove the line.",
+        )
+
+
 def apply(raw: dict[str, Any], config_path: Path) -> None:
-    """Rewrite the decoded config in place: old keys under their new names.
+    """Rewrite the decoded config in place: old keys under their new names, old placeholders unset.
 
     Raises:
         ValueError: A moved key is set with its new name, or this salmon no longer honours its old name, or a
@@ -189,3 +263,4 @@ def apply(raw: dict[str, Any], config_path: Path) -> None:
             _move(raw, entry, value, version, config_path)
         else:
             _drop_removed(raw, entry, value, config_path)
+    _drop_placeholders(raw, config_path)

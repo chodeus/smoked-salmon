@@ -2,9 +2,7 @@
 
 import json
 import re
-import tomllib
 from functools import cache
-from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -12,6 +10,7 @@ import msgspec
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from salmon.common.redaction import scrub_secrets
+from salmon.config.compat import placeholder
 from salmon.trackers.base import learned_secrets, session_cookie_forms
 from salmon.uploader.seedbox import seedbox_secrets
 
@@ -19,13 +18,6 @@ from salmon.uploader.seedbox import seedbox_secrets
 _SECRET_SETTING = re.compile(r"(?:^|_)(?:key|token|secret|password|session|keeplogged|userhash)$")
 # Shorter values are not masked: a three-letter secret would cut every word holding it.
 _SHORTEST = 4
-
-
-@cache
-def _template() -> dict[str, Any]:
-    """The default config: a setting still at its placeholder holds no secret."""
-    path = Path(__file__).resolve().parent.parent / "data" / "config.default.toml"
-    return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
 def _url_password(value: str) -> list[str]:
@@ -40,22 +32,23 @@ def config_secrets(config: Any) -> list[str]:
     """Every credential the config holds: settings named as one, URL passwords and seedbox secrets, not placeholders."""
     found: list[str] = []
 
-    def walk(node: Any, template: Any) -> None:
+    def walk(node: Any, path: tuple[str, ...] | None) -> None:
         if isinstance(node, list):
             for item in node:
                 walk(item, None)
         if not isinstance(node, dict):
             return
         for name, value in node.items():
-            placeholder = template.get(name) if isinstance(template, dict) else None
+            setting = None if path is None else (*path, name)
             if not isinstance(value, str):
-                walk(value, placeholder)
-            elif value != placeholder:
+                walk(value, setting)
+            # The old template's placeholder for this same setting is no secret.
+            elif setting is None or value != placeholder(".".join(setting)):
                 if _SECRET_SETTING.search(name):
                     found.extend(session_cookie_forms(value))
                 found.extend(_url_password(value))
 
-    walk(msgspec.to_builtins(config), _template())
+    walk(msgspec.to_builtins(config), ())
     for seedbox in config.seedbox:
         found.extend(seedbox_secrets(seedbox))
     return list(dict.fromkeys(secret for secret in found if secret))
