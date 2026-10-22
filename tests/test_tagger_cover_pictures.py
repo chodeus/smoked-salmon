@@ -481,8 +481,9 @@ def test_a_truncated_cover_is_not_embedded(tmp_path, capsys) -> None:
 
     cover.embed_missing_cover(str(tmp_path))
 
+    output = capsys.readouterr().out
     assert FLAC(tmp_path / "01.flac").pictures == []
-    assert "Could not read cover file" in capsys.readouterr().out
+    assert "Could not read cover file" in output
 
 
 def test_a_32_bit_picture_that_has_no_8_bit_scale_is_kept_embedded(tmp_path) -> None:
@@ -526,5 +527,6 @@ def test_a_cover_file_that_is_not_an_image_keeps_the_embedded_artwork(tmp_path, 
     cover.check_embedded_pictures(str(tmp_path))
 
     assert [picture.data for picture in FLAC(tmp_path / "01.flac").pictures] == [FRONT]
+    output = capsys.readouterr().out
     assert (tmp_path / "cover.jpg").read_bytes() == b"<html>403 Forbidden</html>"
-    assert "could not be read as a JPEG or PNG image" in capsys.readouterr().out
+    assert "could not be read as a JPEG or PNG image" in output
