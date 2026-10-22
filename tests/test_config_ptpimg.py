@@ -61,7 +61,8 @@ def test_per_tracker_ptpimg_uploader_fails_with_a_clear_message(tmp_path: Path, 
 
 
 def test_leftover_ptpimg_key_is_ignored_when_another_host_is_used(tmp_path: Path) -> None:
-    text = _base_config(tmp_path) + "\nptpimg_key = 'leftover-key'\n"
+    text = _base_config(tmp_path).replace("\n[image]\n", "\n[image]\nptpimg_key = 'leftover-key'\n")
+    assert text.count("ptpimg_key = 'leftover-key'") == 1
     path = _write_config(tmp_path, text)
     cfg = _parse_config(path)
     assert cfg.image.image_uploader == "catbox"
