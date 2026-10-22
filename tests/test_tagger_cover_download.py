@@ -10,9 +10,10 @@ from mutagen.flac import FLAC, Picture
 from mutagen.id3 import PictureType
 from PIL import Image
 
-import salmon.uploader.cover
+import salmon.uploader
 from salmon import cfg
 from salmon.tagger import cover
+from salmon.trackers.red import RedApi
 
 KIB = 1024
 AUDIO = b"\xff\xf8 not really audio " * 1000
@@ -135,15 +136,15 @@ def test_an_unreadable_embedded_picture_is_skipped_not_used(tmp_path) -> None:
 def test_embedded_cover_is_removed_after_upload_through_resolve_cover_url(tmp_path, monkeypatch) -> None:
     _write_flac(tmp_path / "01.flac", pictures=((PictureType.COVER_FRONT, FRONT),))
 
-    async def fake_upload_cover(cover_path: str | None, site_code: str) -> str:
+    async def fake_upload_cover(cover_path: str | None, host: str | None = None, red_api: object = None) -> str:
         assert cover_path == str(tmp_path / "cover.jpg")
         assert cover_path is not None
         assert Path(cover_path).exists()
-        return "https://host.test/uploaded.jpg"
+        return f"https://{host}/uploaded.jpg"
 
-    monkeypatch.setattr(salmon.uploader.cover, "upload_cover", fake_upload_cover)
+    monkeypatch.setattr(salmon.uploader, "upload_cover", fake_upload_cover)
 
-    result = anyio.run(salmon.uploader.cover.resolve_cover_url, "RED", None, {}, str(tmp_path), None, True)
+    result = anyio.run(salmon.uploader.resolve_cover_url, RedApi(), None, {}, str(tmp_path), None, True)
 
-    assert result == (True, "https://host.test/uploaded.jpg")
+    assert result == (True, "https://catbox/uploaded.jpg")
     assert not (tmp_path / "cover.jpg").exists()

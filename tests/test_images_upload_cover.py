@@ -21,7 +21,7 @@ def _stub_host(monkeypatch, url: str | None) -> None:
 
 
 def test_no_path_reports_failure_without_touching_any_host() -> None:
-    result = anyio.run(upload_cover, None, "OPS")
+    result = anyio.run(upload_cover, None, "catbox")
     assert result is None
 
 
@@ -29,7 +29,7 @@ def test_a_real_url_is_returned(monkeypatch, tmp_path) -> None:
     _stub_host(monkeypatch, "https://files.catbox.moe/abc.jpg")
     image = tmp_path / "cover.jpg"
     image.write_bytes(b"data")
-    result = anyio.run(upload_cover, str(image), "OPS")
+    result = anyio.run(upload_cover, str(image), "catbox")
     assert result == "https://files.catbox.moe/abc.jpg"
 
 
@@ -40,5 +40,5 @@ def test_an_unusable_url_is_treated_as_a_failure_not_a_success(monkeypatch, tmp_
     _stub_host(monkeypatch, url)
     image = tmp_path / "cover.jpg"
     image.write_bytes(b"data")
-    result = anyio.run(upload_cover, str(image), "OPS")
+    result = anyio.run(upload_cover, str(image), "catbox")
     assert result is None

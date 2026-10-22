@@ -272,7 +272,7 @@ def upload_world(monkeypatch, tmp_path):
     async def fake_download_cover(path, cover_url):
         return os.path.join(path, "cover.jpg"), False
 
-    async def fake_upload_cover(cover_path, site_code=None):
+    async def fake_upload_cover(cover_path, host=None, red_api=None):
         return "https://img.example/cover"
 
     async def fake_generate_spectrals_all(path, spectrals_path, audio_info):
@@ -300,8 +300,8 @@ def upload_world(monkeypatch, tmp_path):
 
     monkeypatch.setattr("salmon.uploader.rename_folder", fake_rename_folder)
     monkeypatch.setattr("salmon.uploader.check_folder_structure", fake_check_folder_structure)
-    monkeypatch.setattr("salmon.uploader.cover.download_cover_if_nonexistent", fake_download_cover)
-    monkeypatch.setattr("salmon.uploader.cover.upload_cover", fake_upload_cover)
+    monkeypatch.setattr("salmon.uploader.download_cover_if_nonexistent", fake_download_cover)
+    monkeypatch.setattr("salmon.uploader.upload_cover", fake_upload_cover)
     monkeypatch.setattr("salmon.uploader.spectrals.generate_spectrals_all", fake_generate_spectrals_all)
     monkeypatch.setattr("salmon.uploader.handle_spectrals_upload_and_deletion", fake_handle_spectrals)
 
