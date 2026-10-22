@@ -89,13 +89,13 @@ def test_image_upload_refuses_files_outside_the_roots(client):
     assert r.status_code == 403
 
 
-def test_the_tools_upload_neither_offers_nor_takes_an_artwork_only_host(client, album):
+def test_the_tools_upload_neither_offers_nor_takes_a_host_for_some_trackers_only(client, album):
     offered = client.get("/api/tools/options").json()["image_hosts"]
     resp = client.post("/api/images/upload", json={"paths": [album], "host": "red"})
 
     assert "red" not in offered
     assert resp.status_code == 422
-    assert "album artwork" in resp.json()["detail"]
+    assert "only display on RED/OPS" in resp.json()["detail"]
 
 
 def test_image_upload_rejects_unknown_host(client, album):

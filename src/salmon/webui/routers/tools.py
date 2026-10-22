@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 import salmon.trackers
 from salmon import cfg
-from salmon.config.validations import ARTWORK_ONLY_HOSTS
+from salmon.config.image_hosts import display_refusal
 from salmon.constants import SOURCES as SOURCE_CODES
 from salmon.constants import TAG_ENCODINGS
 from salmon.cross_upload import cross_upload as cross_upload_command
@@ -89,8 +89,8 @@ async def options() -> dict:
         "trackers": salmon.trackers.tracker_list,
         "sources": list(SOURCE_CODES.values()),
         "encodings": list(TAG_ENCODINGS),
-        # An artwork-only host needs a tracker, which the Tools upload has no way to name.
-        "image_hosts": sorted(host for host in HOSTS if host not in ARTWORK_ONLY_HOSTS),
+        # A host that displays on some trackers only needs a tracker, which the Tools upload has no way to name.
+        "image_hosts": sorted(host for host in HOSTS if display_refusal(host) is None),
         "transcodes": ["320", "V0"],
     }
 
@@ -113,10 +113,10 @@ async def images_upload(req: ImageUploadRequest) -> dict:
     host_name = req.host or cfg.image.image_uploader
     if host_name not in HOSTS:
         raise HTTPException(status_code=422, detail=f"Unknown image host: {host_name}")
-    if host_name in ARTWORK_ONLY_HOSTS:
+    if (reason := display_refusal(host_name)) is not None:
         raise HTTPException(
             status_code=422,
-            detail=f"{host_name} is only for a tracker's own album artwork: use salmon images up -t from a terminal.",
+            detail=f"{host_name} can't be used without a tracker: {reason}. Use salmon images up -t from a terminal.",
         )
 
     resolved = []

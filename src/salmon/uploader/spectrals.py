@@ -661,7 +661,7 @@ async def upload_spectrals(
         )
 
     if dryrun.active():
-        host = cfg.image.resolve(None, "specs_uploader")
+        host = cfg.image.host_for(None, "specs_uploader")
         dryrun.say(f"not uploading the spectrals of {len(spectrals_list)} track(s) to {host}.")
         return {sid: [dryrun.image_url(path, host) for path in paths] for sid, _filename, paths in spectrals_list}
     try:

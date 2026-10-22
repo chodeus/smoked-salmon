@@ -87,15 +87,15 @@
 #   uploaded once per host, and trackers sharing a host reuse that upload.
 # - image_uploader: description images for the tracker. salmon up uploads none yet; for now it is the
 #   default host of `salmon images up -t <tracker>`.
-# red (RED's own image host) is for album artwork only, so it is only allowed as cover_uploader under
-# [image.red]. It always authenticates with tracker.red.api_key.
+# red (RED's own image host) only displays on RED and OPS, so it is only allowed here, under
+# [image.red] or [image.ops], and never for spectrals. It always authenticates with tracker.red.api_key.
 [image.red]
 # image_uploader = "catbox"
 # cover_uploader = "red"
 # specs_uploader = "catbox"
 [image.ops]
 # image_uploader = "catbox"
-# cover_uploader = "imgbox"
+# cover_uploader = "red"
 # specs_uploader = "catbox"
 [image.dic]
 # image_uploader = "imgbox"

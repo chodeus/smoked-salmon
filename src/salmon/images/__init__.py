@@ -5,7 +5,7 @@ import asyncclick as click
 
 from salmon import cfg, dryrun, interaction
 from salmon.common import AliasedCommands, commandgroup, copy_to_clipboard, is_http_url
-from salmon.config.validations import ARTWORK_ONLY_HOSTS, host_refusal, spectrals_refusal
+from salmon.config.image_hosts import cover_refusal, display_refusal, spectrals_refusal
 from salmon.errors import ImageUploadFailed
 from salmon.images import catbox, imgbb, imgbox, oeimg, ptscreens, ra, red
 from salmon.images.base import BaseImageUploader
@@ -39,11 +39,10 @@ def validate_image_host(ctx: click.Context, param: click.Parameter, value: str |
 
 
 def image_host_for_tracker(tracker: str, explicit_host: str | None = None) -> str:
-    """The host for `tracker`'s images: its image_uploader, or explicit_host if the cover rule allows it there."""
+    """The host for `tracker`'s images: its image_uploader, or explicit_host if that host displays on it."""
     if explicit_host is None:
-        return cfg.image.resolve(tracker, "image_uploader")
-    # A host picked by hand is held to the cover rule, the most a tracker's own pages allow.
-    if (reason := host_refusal(tracker.lower(), "cover_uploader", explicit_host)) is not None:
+        return cfg.image.host_for(tracker, "image_uploader")
+    if (reason := cover_refusal(explicit_host, tracker)) is not None:
         raise ImageHostRefused(f"{explicit_host} can't be used for {tracker.upper()}'s images: {reason}")
     return explicit_host
 
@@ -96,11 +95,10 @@ async def up(filepaths: tuple[str, ...], image_host: str | None, tracker: str | 
             image_host = image_host_for_tracker(tracker, image_host)
         except ImageHostRefused as error:
             raise click.BadParameter(str(error), param_hint="'--image-host'") from None
-    elif image_host in ARTWORK_ONLY_HOSTS:
-        # Only a tracker's own album artwork may go there, so the tracker has to be named.
+    elif image_host is not None and (reason := display_refusal(image_host)) is not None:
+        # As [image] refuses it: name a tracker its images display on.
         raise click.BadParameter(
-            f"{image_host} is only for a tracker's own album artwork: name it with --tracker (e.g. -t RED).",
-            param_hint="'--image-host'",
+            f"{image_host} can't be used without --tracker: {reason}.", param_hint="'--image-host'"
         )
     await upload_images(filepaths, HOSTS[image_host or cfg.image.image_uploader])
 
@@ -187,7 +185,7 @@ async def upload_cover(cover_path: str | None, site_code: str | None = None) -> 
     if not cover_path:
         click.secho("\nNo Cover Image Path was provided to upload...", fg="red", nl=False)
         return None
-    host = cfg.image.resolve(site_code, "cover_uploader")
+    host = cfg.image.host_for(site_code, "cover_uploader")
     click.secho(f"Uploading cover to {host}...", fg="yellow", nl=False)
     try:
         uploader = HOSTS[host].ImageUploader()

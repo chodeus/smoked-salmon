@@ -13,7 +13,7 @@ from salmon import cfg
 from salmon.checks.provenance import gather_provenance
 from salmon.checks.report import build_report
 from salmon.common.files import get_audio_files
-from salmon.config.validations import spectrals_refusal
+from salmon.config.image_hosts import spectrals_refusal
 from salmon.images import HOSTS, upload_images
 from salmon.images.files import NotAnImage, check_image
 from salmon.tagger.audio_info import gather_audio_info

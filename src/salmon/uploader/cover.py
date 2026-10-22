@@ -3,23 +3,15 @@ import os
 import asyncclick as click
 
 from salmon import cfg, dryrun, interaction
-from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
 from salmon.images import upload_cover
 from salmon.tagger.cover import download_cover_if_nonexistent
-
-
-def _cover_host_for_new_group(site_code: str, stored_cover_urls: dict[str, str]) -> str:
-    """Image host for this tracker's new-group cover: a cached RED cover if the tracker proxies it."""
-    if site_code in RED_IMAGE_PROXY_TARGETS and "red" in stored_cover_urls:
-        return "red"
-    return cfg.image.resolve(site_code, "cover_uploader")
 
 
 async def _new_group_cover_url(
     site_code: str, stored_cover_urls: dict[str, str], path: str, cover_source: str | None, remove_downloaded: bool
 ) -> str | None:
     """Cover URL for a new group on this tracker, uploading it unless its host already has it."""
-    cover_host = _cover_host_for_new_group(site_code, stored_cover_urls)
+    cover_host = cfg.image.host_for(site_code, "cover_uploader")
     if cover_host not in stored_cover_urls:
         cover_path, is_downloaded = await download_cover_if_nonexistent(path, cover_source)
         if dryrun.active() and cover_path:
@@ -53,7 +45,7 @@ async def resolve_cover_url(
     if cover_url:
         return True, cover_url
 
-    host = _cover_host_for_new_group(site_code, stored_cover_urls)
+    host = cfg.image.host_for(site_code, "cover_uploader")
     click.secho(
         f"\nNo cover image for this new group on {site_code}: none was found, its download failed, or the upload to "
         f"{host} failed.",

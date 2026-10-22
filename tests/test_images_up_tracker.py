@@ -78,21 +78,18 @@ def test_explicit_host_wins_over_the_trackers(monkeypatch, tmp_path, uploads) ->
     assert uploads == ["catbox"]
 
 
-@pytest.mark.parametrize("tracker", ["DIC", "OPS"])
-def test_red_host_is_refused_for_another_tracker_and_nothing_is_uploaded(
-    monkeypatch, tmp_path, uploads, tracker
-) -> None:
-    # OPS gets RED-hosted images only from a cross-upload or a run uploading to both, never by choice.
+def test_red_host_is_refused_for_a_tracker_it_does_not_display_on(monkeypatch, tmp_path, uploads) -> None:
     _config(monkeypatch)
-    result = _up(tmp_path, "-i", "red", "-t", tracker)
+    result = _up(tmp_path, "-i", "red", "-t", "DIC")
     assert result.exit_code == 2
-    assert f"red can't be used for {tracker}'s images: RED's image host is for album artwork only" in result.output
+    assert "red can't be used for DIC's images: its images only display on RED/OPS" in result.output
     assert uploads == []
 
 
-def test_red_host_is_accepted_for_red(monkeypatch, tmp_path, uploads) -> None:
+@pytest.mark.parametrize("tracker", ["RED", "OPS"])
+def test_red_host_is_accepted_for_the_trackers_it_displays_on(monkeypatch, tmp_path, uploads, tracker) -> None:
     _config(monkeypatch)
-    result = _up(tmp_path, "-i", "red", "-t", "RED")
+    result = _up(tmp_path, "-i", "red", "-t", tracker)
     assert result.exit_code == 0, result.output
     assert uploads == ["red"]
 
@@ -101,7 +98,7 @@ def test_red_host_needs_the_tracker_named(monkeypatch, tmp_path, uploads) -> Non
     _config(monkeypatch)
     result = _up(tmp_path, "-i", "red")
     assert result.exit_code == 2
-    assert "red is only for a tracker's own album artwork" in result.output
+    assert "red can't be used without --tracker: its images only display on RED/OPS" in result.output
     assert uploads == []
 
 
@@ -140,6 +137,6 @@ def test_a_trackers_host_and_a_hand_picked_one_resolve_by_the_cover_rule(monkeyp
     assert images.image_host_for_tracker("DIC") == "catbox"
     assert images.image_host_for_tracker("RED") == "imgbox"
     assert images.image_host_for_tracker("RED", "red") == "red"
-    for tracker in ("OPS", "DIC"):
-        with pytest.raises(images.ImageHostRefused, match="album artwork only"):
-            images.image_host_for_tracker(tracker, "red")
+    assert images.image_host_for_tracker("OPS", "red") == "red"
+    with pytest.raises(images.ImageHostRefused, match="only display on RED/OPS"):
+        images.image_host_for_tracker("DIC", "red")

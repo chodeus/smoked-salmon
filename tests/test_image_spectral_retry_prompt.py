@@ -7,7 +7,7 @@ import msgspec
 import pytest
 
 import salmon.images as images
-from salmon.config.validations import SPECTRALS_REFUSED, ImageUploader, ImgUploaderLiteral
+from salmon.config.validations import ImageUploader, ImgUploaderLiteral
 from salmon.images.base import BaseImageUploader
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -67,6 +67,11 @@ def _run_retry_prompt(spectrals) -> dict:
     return anyio.run(run)
 
 
+# The tests below only reach salmon.images and salmon.config.validations, never
+# salmon.config.image_hosts directly, so on master's src/ (which has no such shared table)
+# they fail because red/ra actually receive the upload, not with an ImportError.
+
+
 def test_retry_prompt_refuses_red_and_ra_then_uploads_with_an_allowed_host(monkeypatch: pytest.MonkeyPatch) -> None:
     red_calls: list[str] = []
     ra_calls: list[str] = []
@@ -113,32 +118,56 @@ def test_retry_prompt_unknown_host_keeps_the_existing_message(monkeypatch: pytes
     assert any("notahost is an invalid image host" in message for message in printed)
 
 
-def test_a_host_newly_refused_for_spectrals_is_refused_by_both(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setitem(SPECTRALS_REFUSED, "imgbb", "a made-up reason")
+# The tests below exercise salmon.config.image_hosts (the shared table) directly. Imported
+# locally, not at module level, so a missing table only fails these two tests at call time
+# instead of an ImportError that would stop the whole module, including the tests above, from
+# collecting at all.
+
+
+def test_a_host_newly_added_to_host_rules_is_refused_by_both(monkeypatch: pytest.MonkeyPatch) -> None:
+    from salmon.config import image_hosts
+    from salmon.config.image_hosts import HostRules
+
+    # Simulate two kinds of new rows in HOST_RULES: one tracker-only (like red), one refused
+    # outright with no display restriction (like ra). Reuse imgbox and imgbb, which are
+    # otherwise plain allowed hosts, so no other test is affected.
+    monkeypatch.setitem(image_hosts.HOST_RULES, "imgbox", HostRules(displays_on=("dic",)))
+    monkeypatch.setitem(image_hosts.HOST_RULES, "imgbb", HostRules(spectrals_refused="a made-up reason"))
+
     catbox_calls: list[str] = []
+    imgbox_calls: list[str] = []
     imgbb_calls: list[str] = []
     monkeypatch.setattr(images, "HOSTS", dict(images.HOSTS))
     monkeypatch.setitem(images.HOSTS, "catbox", _fake_host_module(catbox_calls))
+    monkeypatch.setitem(images.HOSTS, "imgbox", _fake_host_module(imgbox_calls))
     monkeypatch.setitem(images.HOSTS, "imgbb", _fake_host_module(imgbb_calls))
 
-    prompt_messages, printed = _capture_prompt(monkeypatch, ["imgbb", "catbox"])
+    prompt_messages, printed = _capture_prompt(monkeypatch, ["imgbox", "imgbb", "catbox"])
 
     result = _run_retry_prompt([(1, "track1.flac", ["spec1.png"])])
 
     assert result == {1: ["https://fake/spec1.png"]}
+    assert imgbox_calls == []
     assert imgbb_calls == []
     assert catbox_calls == ["spec1.png"]
+    assert any("its images only display on DIC" in message for message in printed)
     assert any("a made-up reason" in message for message in printed)
     for message in prompt_messages:
-        assert "imgbb" not in _offered_hosts(message)
+        offered = _offered_hosts(message)
+        assert "imgbox" not in offered
+        assert "imgbb" not in offered
 
-    # Config validation refuses the same host, for the same reason.
+    # Config validation refuses the same hosts, for the same reasons.
+    with pytest.raises(msgspec.ValidationError, match="its images only display on DIC"):
+        msgspec.convert({"specs_uploader": "imgbox"}, ImageUploader)
     with pytest.raises(msgspec.ValidationError, match="a made-up reason"):
         msgspec.convert({"specs_uploader": "imgbb", "imgbb_key": "key"}, ImageUploader)
 
 
-def test_every_refused_host_is_a_valid_image_host() -> None:
+def test_every_host_rules_key_is_a_valid_image_host() -> None:
+    from salmon.config.image_hosts import HOST_RULES
+
     valid_hosts = set(get_args(ImgUploaderLiteral))
-    for host in SPECTRALS_REFUSED:
+    for host in HOST_RULES:
         assert host in images.HOSTS
         assert host in valid_hosts
