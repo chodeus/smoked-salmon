@@ -1,6 +1,6 @@
 import pytest
 
-from salmon.common.redaction import redact_tracker_fields, scrub_secrets
+from salmon.common.redaction import redact_tracker_fields, redact_tracker_headers, scrub_secrets
 
 
 @pytest.mark.parametrize(("shortest", "kept", "masked"), [(4, "abc", "abcd"), (8, "abcdefg", "abcdefgh")])
@@ -49,3 +49,27 @@ def test_redact_tracker_fields_masks_an_input_a_cut_off_value_runs_into() -> Non
     shown = redact_tracker_fields("{'authkey': 'FAKEKEYEIGHT <input value='FAKEKEYNINE' name='auth'>")
 
     assert "FAKEKEY" not in shown
+
+
+def test_response_headers_mask_cookie_values_credentials_and_known_secrets() -> None:
+    headers = [
+        ("Set-Cookie", "session=new-session-0123; path=/; HttpOnly"),
+        ("Set-Cookie", "keeplogged=keep-0123; path=/"),
+        ("Set-Cookie", "cf_clearance=clear-0123; path=/"),
+        ("X-Api-Token", "token-0123"),
+        ("Location", "/torrents.php?id=1&authkey=key-0123"),
+        ("Server", "nginx known-secret-0123"),
+    ]
+
+    shown = redact_tracker_headers(headers, lambda text: scrub_secrets(text, {"known-secret-0123"}))
+
+    # A newly issued cookie is no known secret, yet its value is masked; the name and attributes stay.
+    assert shown["Set-Cookie"].startswith("session=[REDACTED]")
+    assert ", keeplogged=[REDACTED]" in shown["Set-Cookie"]
+    assert "path=/" in shown["Set-Cookie"]
+    assert "new-session-0123" not in shown["Set-Cookie"] and "keep-0123" not in shown["Set-Cookie"]
+    # A cookie the scrub knows nothing about: only the header rule masks it.
+    assert ", cf_clearance=[REDACTED]; path=/" in shown["Set-Cookie"]
+    assert shown["X-Api-Token"] == "[REDACTED]"
+    assert shown["Location"] == "/torrents.php?id=1&authkey=[REDACTED]"
+    assert shown["Server"] == "nginx [REDACTED]"

@@ -15,7 +15,7 @@ import salmon.uploader
 import salmon.webui
 from salmon import cfg
 from salmon.common import commandgroup
-from salmon.errors import FilterError, LoginError, UploadError
+from salmon.errors import FilterError, LoginError, TLSCertificateError, UploadError
 from salmon.release_notification import show_release_notification
 
 # Every salmon command runs this at startup, including one launched while
@@ -83,6 +83,14 @@ def main():
         commandgroup(obj={})
     except (UploadError, FilterError) as e:
         click.secho(f"There was an error: {e}", fg="red", bold=True)
+    except TLSCertificateError as e:
+        # Where an upload ends when its first request to the tracker fails on it (the dupe check).
+        click.secho(f"There was an error: {e}", fg="red", bold=True)
+        click.secho(
+            "Your session cookie and API key are not the cause: the certificate is checked against this machine's "
+            "CA certificates and clock.",
+            fg="yellow",
+        )
     except ImportError as e:
         click.secho(f"You are missing required dependencies: {e}", fg="red")
 

@@ -33,7 +33,7 @@ from test_trackers_account import (  # pyright: ignore[reportMissingImports]
 from salmon import cfg, dryrun
 from salmon.errors import DryRunRefused, RequestFailedError, UnknownOutcomeError
 from salmon.trackers import account
-from salmon.trackers.base import BaseGazelleApi
+from salmon.trackers.base import BaseGazelleApi, hold_request_messages
 from salmon.webui import output
 
 # Read by the code a request runs on the request loop: the job's value must arrive there.
@@ -948,3 +948,27 @@ def test_the_cli_command_still_closes_its_pool() -> None:
     command(args=[], standalone_mode=False)
     assert pools[0] is not None
     assert pools[0].closed
+
+
+def test_what_a_request_prints_is_held_for_the_job_that_sent_it(short_period: float) -> None:
+    # The 429's message goes to the job holding its messages, not to the other job or the terminal.
+    held: dict[str, list[str]] = {}
+
+    async def body(tracker: Tracker) -> None:
+        limited, other = _clients(await tracker.start(), "RED", "RED")
+        tracker.limit_once["limited"] = "2"
+
+        def holding(name: str, api: FakeApi, action: str) -> Callable[[], Awaitable[None]]:
+            async def job() -> None:
+                with hold_request_messages() as messages:
+                    await _get(api, action)
+                held[name] = [message for message, _ in messages]
+
+            return job
+
+        await _in_threads(Job(holding("limited", limited, "limited")), Job(holding("other", other, "other")))
+        await limited.close()
+        await other.close()
+
+    _serve(body)
+    assert held == {"limited": ["Rate limit exceeded, waited 2 seconds"], "other": []}

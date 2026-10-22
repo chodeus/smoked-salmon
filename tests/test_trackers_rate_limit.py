@@ -237,7 +237,7 @@ def test_upload_answered_another_status_naming_the_rate_limit_is_an_unknown_outc
     assert waits == [paused]
     assert hits == ["POST"]
     assert isinstance(err, UnknownOutcomeError)
-    assert f"the next request waits {paused} seconds" in capsys.readouterr().out
+    assert f"the next request to it waits {paused} seconds" in capsys.readouterr().out
 
 
 def test_get_answered_another_status_naming_the_rate_limit_is_waited_for(waits: list[float]) -> None:
