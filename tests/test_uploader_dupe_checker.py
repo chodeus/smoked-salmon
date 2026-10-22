@@ -1090,7 +1090,8 @@ async def test_an_unreadable_site_log_aborts_the_last_minute_check(fake_tracker,
 
     with pytest.raises(click.Abort):
         await last_min_dupe_check(fake_tracker, ["artist album"], "Album")
-    assert "site log: Server error 503" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "site log: Server error 503" in output
 
 
 async def test_check_existing_group_no_results_recent_flow_new_group(fake_tracker, install_prompt, monkeypatch):
