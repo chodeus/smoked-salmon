@@ -162,8 +162,9 @@ class ImageUploader(BaseStruct):
     imgbb_key: str | None = None
     ra_key: str | None = None
     remove_auto_downloaded_cover_image: bool = False
-    # Embed the front cover, shrunk to fit, in every FLAC with no picture.
-    embed_missing_cover: bool = False
+    # Embed the folder cover, shrunk to fit, in every FLAC with no picture; the cover file is never changed.
+    embed_missing_cover: bool = True
+    strip_oversized_pictures: bool = True
     default_spectral_ids: SpectralSelection | None = None
     red: ImageHostOverride | None = None
     ops: ImageHostOverride | None = None

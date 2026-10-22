@@ -282,6 +282,7 @@ def upload_world(monkeypatch, tmp_path):
     monkeypatch.setattr("salmon.uploader.gather_audio_info", lambda path: dict(world.audio_info))
     monkeypatch.setattr("salmon.uploader.standardize_tags", lambda path: None)
     monkeypatch.setattr("salmon.uploader.gather_tags", lambda path: dict(world.tags))
+    monkeypatch.setattr("salmon.uploader.check_embedded_pictures", lambda path: None)
 
     async def fake_check_tags(path):
         return dict(world.tags)
@@ -1178,7 +1179,7 @@ def skip_flac_run(jm, tracker, upload_world, monkeypatch, tmp_path):
     """Run --skip-flac-upload with the real steps that write into the folder, on a source with 1.1 MiB art."""
     from salmon.converter.conversions import record_conversion
     from salmon.converter.transcoding import _build_output_path
-    from salmon.tagger import audio_info, retagger, tags
+    from salmon.tagger import audio_info, cover, retagger, tags
     from salmon.tagger.foldername import generate_folder_name, rename_folder
 
     downloads = tmp_path / "downloads"
@@ -1192,6 +1193,7 @@ def skip_flac_run(jm, tracker, upload_world, monkeypatch, tmp_path):
         "tag_files": retagger.tag_files,
         "rename_files": retagger.rename_files,
         "rename_folder": rename_folder,
+        "check_embedded_pictures": cover.check_embedded_pictures,
     }.items():
         monkeypatch.setattr(f"salmon.uploader.{fn_name}", real)
     upload_world.metadata["tracks"] = {

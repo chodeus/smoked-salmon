@@ -65,7 +65,13 @@ from salmon.tagger.audio_info import (
     gather_audio_info,
     recompress_path,
 )
-from salmon.tagger.cover import compress_pictures, strip_oversized_pictures
+from salmon.tagger.cover import (
+    check_embedded_pictures,
+    download_cover_if_nonexistent,
+    embed_missing_cover,
+    get_cover_from_path,
+    has_flac_without_picture,
+)
 from salmon.tagger.foldername import rename_folder
 from salmon.tagger.folderstructure import check_folder_structure
 from salmon.tagger.metadata import get_metadata
@@ -774,6 +780,20 @@ async def _upload_staged(
             source_flac = await choose_source_flac(flac_group, metadata)
             if source_flac is None:
                 raise click.Abort
+        if not scene:
+            # Before any torrent or transcode is made from the folder, so they all get the same files.
+            check_embedded_pictures(path)
+            if cfg.image.embed_missing_cover:
+                # A missing cover is downloaded from the metadata first, as the per-tracker step used to.
+                cover_path, downloaded = None, False
+                if has_flac_without_picture(path) and not get_cover_from_path(path):
+                    cover_path, downloaded = await download_cover_if_nonexistent(path, metadata["cover"])
+                embed_missing_cover(path, cover_path)
+                if downloaded and remove_downloaded_cover_image and cover_path:
+                    # Not in the torrents; the cover upload downloads it again.
+                    os.remove(cover_path)
+            # The upload rules read each file's tag size, which the steps above can change.
+            track_data = refresh_track_data(path, tags)
     except NoAnswerError:
         # A web question left unanswered stops the job, which reports it as such.
         raise
@@ -895,15 +915,6 @@ async def _upload_staged(
                 if last_site:
                     break
                 continue
-
-            if not scene:
-                rewritten = bool(strip_oversized_pictures(path, track_data))
-                if cfg.image.embed_missing_cover:
-                    compress_pictures(path)
-                    rewritten = True
-                if rewritten:
-                    # Both steps rewrite metadata in the files; everything below describes what is on disk now.
-                    track_data = refresh_track_data(path, tags)
 
             if source_flac is None and not request_id and cfg.upload.requests.check_requests:
                 request_id = await check_requests(gazelle_site, searchstrs)

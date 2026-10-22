@@ -281,8 +281,7 @@ def _run_up(monkeypatch, tmp_path: Path, broken, track_data, convert_folder=None
         "get_metadata": _returning_async((metadata, None)),
         "edit_metadata": _returning_async(("/release", metadata, {}, {})),
         "concat_track_data": _returning(track_data),
-        # The fork strips oversized pictures in the tracker loop, always on.
-        "strip_oversized_pictures": _returning([]),
+        "check_embedded_pictures": _returning(),
         "resolve_cover_url": _returning_async((True, None)),
         "UploadManager": lambda: manager,
         "check_requests": _returning_async(None),
