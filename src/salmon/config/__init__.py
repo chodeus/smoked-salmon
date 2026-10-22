@@ -14,19 +14,47 @@ from . import compat
 from .validations import Cfg, ImgUploaderLiteral, host_allowed
 
 APPNAME = "smoked-salmon"
-# Containers mount a single /config; platformdirs would bury the file under an
-# app-name subdirectory of the mount.
+
+# Containers mount a single directory for config; platformdirs would otherwise bury
+# config.toml under an app-name subdirectory of that mount.
 CONFIG_DIR_ENV = "SALMON_CONFIG_DIR"
 
 _PKG_DIR = Path(__file__).parent.parent
 
+_warned_legacy_config_fallback = False
+
+
+def _platform_cfg_path() -> Path:
+    return Path(user_config_dir(APPNAME)) / "config.toml"
+
 
 def get_user_cfg_path() -> Path:
-    """config.toml location: $SALMON_CONFIG_DIR when set, else the platform config dir."""
+    """config.toml location: $SALMON_CONFIG_DIR when set, else the platform config dir.
+
+    If SALMON_CONFIG_DIR is set but no config.toml exists there yet, and the platform
+    config dir does have one, fall back to that older path instead. This keeps a
+    container upgraded from the old image (which mounted the platform config dir
+    directly) working without a config change.
+    """
+    global _warned_legacy_config_fallback
+
     override = os.environ.get(CONFIG_DIR_ENV)
-    if override:
-        return Path(override).expanduser() / "config.toml"
-    return Path(user_config_dir(APPNAME)) / "config.toml"
+    if not override:
+        return _platform_cfg_path()
+
+    override_path = Path(override).expanduser() / "config.toml"
+    legacy_path = _platform_cfg_path()
+    if not override_path.exists() and legacy_path.exists():
+        if not _warned_legacy_config_fallback:
+            click.secho(
+                f"{CONFIG_DIR_ENV} is set to {override!r} but {override_path} does not exist; "
+                f"using the existing config at {legacy_path} instead.",
+                fg="yellow",
+                err=True,
+            )
+            _warned_legacy_config_fallback = True
+        return legacy_path
+    return override_path
 
 
 def get_default_config_path() -> Path:
@@ -174,6 +202,11 @@ def _try_creating_config(src: Path, dest: Path) -> None:
 def find_config_path() -> Path:
     config_dir_path = get_user_cfg_path()
     root_config_path = _PKG_DIR.parent.parent / "config.toml"
+
+    # An explicitly set SALMON_CONFIG_DIR beats the repo-root config.toml: it says
+    # exactly where to look, so it should win over that implicit dev convenience.
+    if os.environ.get(CONFIG_DIR_ENV) and config_dir_path.exists():
+        return config_dir_path
 
     # You can put a config.toml in the root directory for development purposes
     if root_config_path.exists():

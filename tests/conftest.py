@@ -2,9 +2,12 @@
 
 Importing ``salmon`` parses the config at import time and exits if none is
 found. To keep the test suite hermetic (CI, fresh checkouts), a minimal config
-is generated in a temporary XDG_CONFIG_HOME before the first salmon import —
-unless a developer config.toml exists at the repo root, which takes precedence
-in salmon's own discovery order.
+is generated in a temporary XDG_CONFIG_HOME before the first salmon import.
+
+This also keeps a developer's real config out of the test run: it sets
+``SALMON_CONFIG_DIR`` to that temporary location, which ``find_config_path()``
+prefers over a repo-root ``config.toml`` (a documented dev convenience) since
+an explicitly set ``SALMON_CONFIG_DIR`` beats that implicit fallback.
 """
 
 import os
@@ -17,8 +20,6 @@ sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 
 def _ensure_config() -> None:
-    if (_REPO_ROOT / "config.toml").exists():
-        return
     tmp = Path(tempfile.mkdtemp(prefix="salmon-test-config-"))
     os.environ["XDG_CONFIG_HOME"] = str(tmp)
     cfg_dir = tmp / "smoked-salmon"
@@ -32,6 +33,7 @@ def _ensure_config() -> None:
         f'[directory]\ndownload_directory = "{music}"\ndottorrents_dir = "{torrents}"\ntmp_dir = "{tmpdir}"\n\n'
         f'[tracker.red]\nsession = "test-session"\n\n[tracker]\ndefault_trackers = ["RED"]\n'
     )
+    os.environ["SALMON_CONFIG_DIR"] = str(cfg_dir)
 
 
 _ensure_config()
