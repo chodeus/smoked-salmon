@@ -8,7 +8,8 @@ import anyio
 import asyncclick as click
 import msgspec
 import pytest
-from test_config_unknown_keys import _DEFAULT_CONFIG, _template  # pyright: ignore[reportMissingImports]
+from shipped_config import REFERENCE_CONFIG as _REFERENCE_CONFIG  # pyright: ignore[reportMissingImports]
+from shipped_config import shipped_config  # pyright: ignore[reportMissingImports]
 
 from salmon import cfg
 from salmon.config import _parse_config
@@ -68,8 +69,12 @@ def test_a_short_environment_token_is_refused(monkeypatch: pytest.MonkeyPatch) -
 
 
 def _parse(tmp_path: Path, section: str):
+    music, torrents = tmp_path / "music", tmp_path / "torrents"
+    music.mkdir()
+    torrents.mkdir()
+    text = shipped_config(music, torrents)
     path = tmp_path / "config.toml"
-    path.write_text(_template(tmp_path) + "\n" + section, encoding="utf-8")
+    path.write_text(text + "\n" + section, encoding="utf-8")
     return _parse_config(path).web
 
 
@@ -87,10 +92,10 @@ def test_a_config_without_web_gets_the_defaults(tmp_path: Path) -> None:
 
 
 def test_the_documented_web_section_is_valid(tmp_path: Path) -> None:
-    text = _DEFAULT_CONFIG.read_text(encoding="utf-8")
-    section = text[text.index("\n# [web]\n") :]
+    text = _REFERENCE_CONFIG.read_text(encoding="utf-8")
+    section = text[text.index("\n[web]\n") :]
     uncommented = "\n".join(
-        line.removeprefix("# ") for line in section.splitlines() if re.match(r"# (\w+ = |\[web\])", line)
+        line.removeprefix("# ") for line in section.splitlines() if re.match(r"(# \w+ = |\[web\])", line)
     )
     web_cfg = _parse(tmp_path, uncommented)
     assert web_cfg.port == 55155

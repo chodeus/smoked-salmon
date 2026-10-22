@@ -1,18 +1,28 @@
-"""Old config keys (salmon.config.compat, ADR 0005).
+"""Old config keys and old template values (salmon.config.compat, ADR 0005).
 
 Each test writes a config in its tmp dir and loads it through ``salmon.config._parse_config``, the path a user's
 config goes through.
 """
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
+import anyio
 import msgspec
 import pytest
+from aiohttp import web
 
 import salmon.release_notification
+import salmon.trackers.ops
+import salmon.trackers.red
 from salmon.config import _parse_config, compat
 from salmon.config.validations import Cfg
+from salmon.trackers.account import SlidingWindowLimiter
+from salmon.trackers.base import BaseGazelleApi
+from salmon.uploader import dupe_checker
 
 UPGRADE_PAGE = "https://github.com/smokin-salmon/smoked-salmon/wiki/Upgrading-to-0.21"
 
@@ -163,6 +173,123 @@ def test_tidal_token_is_warned_about_whatever_its_value_and_version(
     assert "client_id" in warnings[0] and "client_secret" in warnings[0]
 
 
+def test_a_placeholder_session_leaves_that_tracker_out(tmp_path: Path, capsys) -> None:
+    raw = _base(tmp_path)
+    raw["tracker"]["dic"] = {"session": "get-from-site-cookie", "api_key": "x"}
+    cfg, warnings = _load(tmp_path, raw, capsys)
+    assert cfg.tracker.dic is None
+    assert cfg.tracker.red is not None and cfg.tracker.red.session == "a-real-cookie"
+    assert len(warnings) == 1
+    assert "DIC is left out: set its cookie or remove [tracker.dic]" in warnings[0]
+
+
+@pytest.mark.parametrize("code", ["red", "ops"])
+def test_a_placeholder_session_with_an_api_key_keeps_that_tracker_without_a_cookie(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch, code: str
+) -> None:
+    raw = _base(tmp_path)
+    raw["tracker"][code] = {"session": "get-from-site-cookie", "api_key": "a-real-key"}
+    cfg, warnings = _load(tmp_path, raw, capsys)
+    kept = getattr(cfg.tracker, code)
+    assert kept is not None and (kept.session, kept.api_key) == ("", "a-real-key")
+    assert warnings == [
+        f"tracker.{code}.session is still the old template's placeholder 'get-from-site-cookie': "
+        f"salmon treats it as unset, so {code.upper()} uses only its API key."
+    ]
+    monkeypatch.setattr(salmon.trackers.red, "cfg", cfg)
+    monkeypatch.setattr(salmon.trackers.ops, "cfg", cfg)
+    api = salmon.trackers.red.RedApi() if code == "red" else salmon.trackers.ops.OpsApi()
+    assert api.api_key == "a-real-key"
+    assert api.has_session_cookie is False
+
+
+@pytest.mark.parametrize("api_key", [None, "", "  "], ids=["no key", "empty key", "blank key"])
+def test_a_placeholder_session_without_an_api_key_still_leaves_that_tracker_out(
+    tmp_path: Path, capsys, api_key: str | None
+) -> None:
+    raw = _base(tmp_path)
+    raw["tracker"]["ops"] = {"session": "get-from-site-cookie", **({} if api_key is None else {"api_key": api_key})}
+    cfg, warnings = _load(tmp_path, raw, capsys)
+    assert cfg.tracker.ops is None
+    assert "OPS is left out" in warnings[0]
+
+
+class _LogTracker:
+    """A local tracker: the API answers, and log.php (a site page, which needs a cookie) bounces to login.php."""
+
+    def __init__(self) -> None:
+        self.hits: list[str] = []
+
+    async def start(self) -> str:
+        app = web.Application()
+        app.router.add_get("/ajax.php", self.answer)
+        app.router.add_get("/log.php", self.bounce)
+        app.router.add_get("/login.php", self.bounce)
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        await web.TCPSite(self.runner, "127.0.0.1", 0).start()
+        return f"http://127.0.0.1:{self.runner.addresses[0][1]}"
+
+    async def answer(self, request: web.Request) -> web.Response:
+        self.hits.append(request.path)
+        return web.json_response({"status": "success", "response": {"results": []}})
+
+    async def bounce(self, request: web.Request) -> web.Response:
+        self.hits.append(request.path)
+        raise web.HTTPFound("/login.php" if request.path == "/log.php" else "/log.php")
+
+
+async def _a_kept_tracker_without_a_cookie_sends_no_cookie_only_request(api: BaseGazelleApi) -> None:
+    tracker = _LogTracker()
+    api.base_url = await tracker.start()
+    api._rate_limiter = SlidingWindowLimiter(100, 1)
+    api._authenticated = True
+    try:
+        await dupe_checker.check_existing_group(api, ["artist title"])
+        assert tracker.hits == ["/ajax.php"]
+    finally:
+        await api.close()
+        await tracker.runner.cleanup()
+
+
+def test_a_kept_tracker_without_a_cookie_skips_cookie_only_requests(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = _base(tmp_path)
+    raw["tracker"]["red"] = {"session": "get-from-site-cookie", "api_key": "a-real-key"}
+    cfg, _ = _load(tmp_path, raw, capsys)
+    monkeypatch.setattr(salmon.trackers.red, "cfg", cfg)
+
+    async def new_group(*args, **kwargs) -> str:
+        return "n"
+
+    monkeypatch.setattr(dupe_checker.click, "prompt", new_group)
+    anyio.run(_a_kept_tracker_without_a_cookie_sends_no_cookie_only_request, salmon.trackers.red.RedApi())
+    assert "needs a session cookie" in capsys.readouterr().out
+
+
+def test_a_placeholder_tracker_is_not_offered(tmp_path: Path) -> None:
+    """salmon.trackers.tracker_list, the trackers a run offers, as a fresh salmon builds it from the config."""
+    raw = _base(tmp_path)
+    raw["tracker"]["ops"] = {"session": "get-from-site-cookie"}
+    raw["tracker"]["dic"] = {"session": "another-real-cookie"}
+    (tmp_path / "config.toml").write_bytes(msgspec.toml.encode(raw))
+    env = {**os.environ, "SALMON_CONFIG_DIR": str(tmp_path)}
+    script = "import salmon.trackers; print(salmon.trackers.tracker_list)"
+    result = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=60, check=True
+    )
+    assert result.stdout.strip() == "['RED', 'DIC']"
+    assert "OPS is left out" in result.stderr
+
+
+def test_every_tracker_a_placeholder_is_no_tracker(tmp_path: Path, capsys) -> None:
+    raw = _base(tmp_path)
+    raw["tracker"] = {code: {"session": "get-from-site-cookie"} for code in ("red", "ops", "dic")}
+    with pytest.raises(msgspec.ValidationError, match="You need a tracker session cookie"):
+        _load(tmp_path, raw, capsys)
+
+
 def test_the_old_default_tracker_is_a_list_of_one_with_a_warning(tmp_path: Path, capsys) -> None:
     raw = _base(tmp_path)
     raw["tracker"]["default_tracker"] = "RED"
@@ -189,6 +316,38 @@ def test_the_old_default_tracker_is_refused_from_0_22_0(tmp_path: Path, capsys, 
         _load(tmp_path, raw, capsys)
 
 
+def test_an_old_default_tracker_left_out_is_dropped_with_a_warning(tmp_path: Path, capsys) -> None:
+    raw = _base(tmp_path)
+    raw["tracker"]["ops"] = {"session": "get-from-site-cookie"}
+    raw["tracker"]["default_tracker"] = "OPS"
+    cfg, warnings = _load(tmp_path, raw, capsys)
+    assert cfg.tracker.default_trackers == []
+    assert (
+        "tracker.default_trackers names OPS, which is left out: it is ignored, so salmon asks which tracker to "
+        "upload to." in warnings
+    )
+
+
+def test_a_default_tracker_left_out_leaves_the_others(tmp_path: Path, capsys) -> None:
+    raw = _base(tmp_path)
+    raw["tracker"]["ops"] = {"session": "get-from-site-cookie"}
+    raw["tracker"]["default_trackers"] = ["OPS", "RED"]
+    cfg, warnings = _load(tmp_path, raw, capsys)
+    assert cfg.tracker.default_trackers == ["RED"]
+    assert (
+        "tracker.default_trackers names OPS, which is left out: it is ignored, so the run uploads to the others it "
+        "names." in warnings
+    )
+
+
+def test_a_default_tracker_kept_stays(tmp_path: Path, capsys) -> None:
+    raw = _base(tmp_path)
+    raw["tracker"]["ops"] = {"session": "get-from-site-cookie"}
+    raw["tracker"]["default_tracker"] = "RED"
+    cfg, _ = _load(tmp_path, raw, capsys)
+    assert cfg.tracker.default_trackers == ["RED"]
+
+
 def test_default_trackers_are_upper_cased_each_once_in_order(tmp_path: Path, capsys) -> None:
     raw = _base(tmp_path)
     raw["tracker"]["ops"] = {"session": "another-real-cookie"}
@@ -213,6 +372,48 @@ def test_a_default_tracker_salmon_cannot_upload_to_is_refused(
     raw["tracker"]["default_trackers"] = codes
     with pytest.raises(msgspec.ValidationError, match=message):
         _load(tmp_path, raw, capsys)
+
+
+def test_a_chosen_image_host_with_the_placeholder_key_is_refused(tmp_path: Path, capsys) -> None:
+    raw = _base(tmp_path)
+    raw["image"] = {"image_uploader": "imgbb", "imgbb_key": "api_key"}
+    with pytest.raises(msgspec.ValidationError, match="imgbb key not specified"):
+        _load(tmp_path, raw, capsys)
+
+
+def test_an_unchosen_image_host_with_the_placeholder_key_loads(tmp_path: Path, capsys) -> None:
+    raw = _base(tmp_path)
+    raw["image"] = {"image_uploader": "catbox", "imgbb_key": "api_key"}
+    cfg, warnings = _load(tmp_path, raw, capsys)
+    assert cfg.image.imgbb_key is None
+    assert len(warnings) == 1
+    assert "image.imgbb_key is still the old template's placeholder 'api_key'" in warnings[0]
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("metadata.discogs_token", "discogs-token"),
+        ("metadata.beatport.username", "username"),
+        ("metadata.beatport.password", "password"),
+        ("metadata.qobuz.app_id", "app-id"),
+        ("metadata.qobuz.user_auth_token", "user_auth_token"),
+        ("image.ptscreens_key", "api_key"),
+        ("image.oeimg_key", "api_key"),
+        ("image.ra_key", "api_key"),
+    ],
+)
+def test_an_old_placeholder_is_unset_with_a_warning(tmp_path: Path, capsys, path: str, value: str) -> None:
+    cfg, warnings = _load(tmp_path, _put(_base(tmp_path), path, value), capsys)
+    assert _read(cfg, path) is None
+    assert len(warnings) == 1
+    assert warnings[0].startswith(f"{path} is still the old template's placeholder '{value}'")
+
+
+def test_a_real_value_is_kept(tmp_path: Path, capsys) -> None:
+    cfg, warnings = _load(tmp_path, _put(_base(tmp_path), "metadata.discogs_token", "a-real-token"), capsys)
+    assert cfg.metadata.discogs_token == "a-real-token"
+    assert warnings == []
 
 
 def test_the_collected_warnings_hold_the_unknown_keys_too(tmp_path: Path, capsys) -> None:
