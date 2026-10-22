@@ -148,6 +148,6 @@ class OpsApi(BaseGazelleApi):
         if "torrents.php" in resp.url:
             return True
         raise RequestError(
-            f"Failed to report torrent for lossy master: unexpected redirect to {self._scrub(resp.url)} "
+            f"Failed to report torrent for lossy master: unexpected redirect to {self._redact(resp.url)} "
             f"(status {resp.status})"
         )
