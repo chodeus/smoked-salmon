@@ -97,9 +97,8 @@ async def mqa(path):
 async def mqa_test(path: str, all_files: bool = True) -> None:
     """Check whether any audio file in a release carries the MQA syncword.
 
-    Every file, not just the first: MQA on a later track is as much of a trump as
-    on track one, and this is the gate the upload itself runs — it must not be
-    weaker than the advisory album check, which has always scanned them all.
+    Every file by default: MQA on a later track is as much of a trump as on track one,
+    and this is the gate the upload itself runs.
 
     Args:
         path: Path to the FLAC file or directory to check.
