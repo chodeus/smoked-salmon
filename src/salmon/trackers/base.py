@@ -119,24 +119,24 @@ def hold_request_messages() -> Iterator[list[tuple[str, dict[str, Any]]]]:
 
 
 def _normalize_session_cookie(cookie: str) -> str:
-    """Normalize session cookies so aiohttp sends them in a browser-like form.
+    """Percent-encode a session cookie the way browsers send it.
 
-    RED-style session cookies often contain characters like `/`, `+`, `:`, and `=`.
-    If we pass the decoded value directly into aiohttp's cookie jar, it gets wrapped
-    in quotes when serialized into the Cookie header. Normalizing to a canonical
-    percent-encoded form keeps the header unquoted and matches what browsers send.
+    Some cookie editors show the session in decoded form (`abc/def+ghi:jkl==`). aiohttp
+    quotes a value containing `/ + : =`, and PHP url-decodes cookies, so Gazelle would
+    read the quotes and a space for every `+` and reject the session. An already
+    encoded value is unchanged.
 
     Args:
-        cookie: Raw or already-encoded session cookie value from config.
+        cookie: Session cookie value from config, decoded or encoded.
 
     Returns:
-        Canonical percent-encoded cookie value.
+        The percent-encoded cookie value.
     """
     return quote(unquote(cookie.strip()), safe="")
 
 
 def session_cookie_forms(cookie: str | None) -> list[str]:
-    """A session cookie as configured, decoded, and as sent: a tracker answer or an error may repeat any of them."""
+    """A session cookie as configured, decoded and as sent: what a tracker's answer may repeat."""
     if not cookie:
         return []
     return list(dict.fromkeys([cookie, cookie.strip(), unquote(cookie.strip()), _normalize_session_cookie(cookie)]))
@@ -148,6 +148,7 @@ _learned_secrets_lock = threading.Lock()
 
 
 def learned_secrets() -> list[str]:
+    """The authkeys, passkeys and image host keys of the tracker accounts this process has used."""
     with _learned_secrets_lock:
         return list(_learned_secrets)
 
@@ -638,15 +639,17 @@ class BaseGazelleApi:
         self.authkey = acctinfo["authkey"]
         self.passkey = acctinfo["passkey"]
         with _learned_secrets_lock:
-            _learned_secrets.update(secret for secret in (self.authkey, self.passkey) if secret)
+            _learned_secrets.update(key for key in (self.authkey, self.passkey) if key)
         self._authenticated = True
 
     async def ensure_authenticated(self) -> None:
         """Ensure we are authenticated before making requests.
 
-        Requests that go out together on a fresh client share one authentication attempt, so one index call
-        instead of one each. If it fails, each of them gets its error; a call made once it is over tries again.
-        The attempt runs on its own, and is cancelled only when no request waits for it any more.
+        Requests that go out together on a fresh client share one authentication attempt,
+        so one index call, instead of each sending its own (#468). If it fails, each of them
+        gets its error; none tries again for itself. A call made once it is over tries again.
+        The attempt runs on its own, so cancelling one request leaves it to the others, and
+        is cancelled only when no request waits for it any more.
         """
         if self._authenticated:
             return
@@ -994,23 +997,39 @@ class BaseGazelleApi:
         """Whether a session cookie is configured. Site pages outside the API need one."""
         return bool(self.cookie.strip())
 
-    def _secrets(self) -> set[str | None]:
-        """This client's own credentials, as configured and as sent, which a tracker answer may repeat."""
-        return {
+    def _secrets(self) -> list[str | None]:
+        """This tracker's secrets, as what it sends back may repeat them.
+
+        The session cookie as configured, decoded and as sent, the api key, the authkey and
+        passkey once authenticated, and the image host's key once got.
+        """
+        return [
+            *session_cookie_forms(self.cookie),
+            # The keeplogged cookie goes out beside the session.
+            *session_cookie_forms(self.keeplogged),
             self.api_key,
             self.authkey,
             self.passkey,
-            self.cookie,
-            *self._get_cookies().values(),
             self._image_auth.get("h"),
-        }
+        ]
 
     def _signs(self, params: dict[str, Any] | None) -> bool:
         """Whether a request's query carries this client's image host credentials."""
         return bool(params and self._image_auth and params.get("h") == self._image_auth["h"])
 
     async def image_auth(self) -> dict[str, str]:
-        """Its image host's credentials (h, e, u) from one imgauth call, kept until near expiry; {} if it signs none."""
+        """The credentials this tracker's own image host takes, as the query parameters of an image URL.
+
+        One ajax.php?action=imgauth call, with the API key when one is set: no session cookie needed. Kept until a
+        minute before they expire, so a run fetching images for several releases calls it once; not sent again but
+        as _send retries a GET. No request when SIGNED_IMAGES is False.
+
+        Returns:
+            h (the key), e (its expiry) and u (the user id): {} when the image host needs none.
+
+        Raises:
+            RequestError: If the call fails, or its answer does not give them all.
+        """
         if not self.SIGNED_IMAGES:
             return {}
         if self._image_auth and int(self._image_auth["e"]) - _IMAGE_AUTH_MARGIN > time.time():
@@ -1036,7 +1055,7 @@ class BaseGazelleApi:
                 "serves its images"
             ) from None
         if len(auth["h"]) < 8:
-            # scrub_secrets, which salmon web's filter also uses, masks a value only from 8 characters on.
+            # Masked by value wherever salmon prints: a shorter one would cut itself out of ordinary text.
             raise RequestFailedError(f"{self.site_string} gave no usable key for its image host")
         # The key is the credential, masked by value wherever salmon prints; the expiry and user id are masked
         # only in a URL's query (_redact), as masking numbers by value would cut them out of every other number.

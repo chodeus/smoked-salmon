@@ -73,3 +73,22 @@ def test_response_headers_mask_cookie_values_credentials_and_known_secrets() -> 
     assert shown["X-Api-Token"] == "[REDACTED]"
     assert shown["Location"] == "/torrents.php?id=1&authkey=[REDACTED]"
     assert shown["Server"] == "nginx [REDACTED]"
+
+
+@pytest.mark.parametrize(
+    ("text", "marker"),
+    [
+        pytest.param("<input name=auth value=MARK-UNQUOTED-01>", "MARK-UNQUOTED-01", id="input unquoted"),
+        pytest.param('<input name = "authkey" value = "MARK-SPACED-02">', "MARK-SPACED-02", id="input spaced"),
+        pytest.param("ajax.php?apikey=MARK-APIKEY-03&action=index", "MARK-APIKEY-03", id="apikey query"),
+        pytest.param("x.php?authorization=MARK-AUTHZ-04", "MARK-AUTHZ-04", id="authorization query"),
+        pytest.param("https://user:MARK-USERINFO-05@tracker.test/x", "MARK-USERINFO-05", id="url userinfo"),
+    ],
+)
+def test_redact_tracker_fields_masks_the_shapes_upstreams_patterns_cover(text: str, marker: str) -> None:
+    assert marker not in redact_tracker_fields(text)
+
+
+def test_redact_tracker_fields_keeps_a_cookies_delimiter_and_leaves_a_masked_value_alone() -> None:
+    assert redact_tracker_fields("session=MARK-COOKIE-06; path=/") == "session=[REDACTED]; path=/"
+    assert redact_tracker_fields("session=[REDACTED]; path=/") == "session=[REDACTED]; path=/"

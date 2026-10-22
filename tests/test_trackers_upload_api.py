@@ -1454,3 +1454,9 @@ async def test_a_failed_lookup_cannot_leak_credentials(api, tmp_path):
     assert "SYNTHETIC-AUTHKEY" not in message
     assert "SYNTHETIC-PASS" not in message
     assert "may still have gone through" in message
+
+
+def test_redact_masks_the_clients_own_keeplogged_cookie_wherever_it_appears(api):
+    # Sent beside the session, so a tracker answer may repeat it bare, with no name before it.
+    api.keeplogged = "KEEP-MARK-0123456789"
+    assert "KEEP-MARK-0123456789" not in api._redact("the page repeats KEEP-MARK-0123456789 in free text")
