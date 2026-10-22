@@ -3,9 +3,12 @@
 import asyncio
 import time
 import traceback
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, cast
 
+import aiohttp
 import pytest
 from aiohttp import web
 from tenacity import stop_after_attempt
@@ -461,8 +464,8 @@ async def test_only_a_429_lets_a_post_naming_the_rate_limit_be_sent_again(
     url = await serve(upload=upload)
     twice = cast("Any", BaseGazelleApi._send).retry_with(stop=stop_after_attempt(2))
 
-    with pytest.raises(error, match=f"Rate limit exceeded \\({status}\\)"):
-        await twice(api_for(url), "POST", f"{url}/upload.php", data={"a": "b"})
+    with pytest.raises(error, match="Rate limit exceeded"):
+        await twice(api_for(url), "POST", f"{url}/upload.php", None, {"a": "b"}, 10, False, None, (), [])
     assert len(posts) == sends
     # The limiter waits before a resend, or before the next request when not resent; never less than its spacing.
     assert pauses == waits
@@ -494,7 +497,9 @@ async def test_a_429_pauses_the_tracker_for_every_client(serve, api_for, monkeyp
     url = await serve(ajax=ajax)
     first, second = api_for(url), api_for(url)
     once = cast("Any", BaseGazelleApi._send).retry_with(stop=stop_after_attempt(1))
-    rate_limited = asyncio.create_task(once(first, "GET", f"{url}/ajax.php", params={"action": "a"}))
+    rate_limited = asyncio.create_task(
+        once(first, "GET", f"{url}/ajax.php", {"action": "a"}, None, 10, False, None, (), [])
+    )
     while not hits:
         await asyncio.sleep(0.01)
     # Sent while the first client is still handling its 429.
@@ -503,3 +508,42 @@ async def test_a_429_pauses_the_tracker_for_every_client(serve, api_for, monkeyp
         await rate_limited
     # The other client waited out the pause the first one was told about.
     assert hits[1] - hits[0] >= 0.9
+
+
+async def test_an_expected_error_status_is_returned_not_raised(serve, api_for):
+    async def ajax(_request: web.Request) -> web.Response:
+        return web.json_response({"status": "failure", "error": "bad image"}, status=400)
+
+    url = await serve(ajax=ajax)
+    api = api_for(url)
+    try:
+        resp = await api._request(
+            "GET", f"{url}/ajax.php", params={"action": "x"}, needs_authkey=False, expected_error_statuses=(400,)
+        )
+        assert resp.status == 400
+        assert "bad image" in resp.text
+        with pytest.raises(RequestFailedError, match="bad image"):
+            await api._request("GET", f"{url}/ajax.php", params={"action": "x"}, needs_authkey=False)
+    finally:
+        await api.close()
+
+
+async def test_a_network_error_never_chains_the_raw_aiohttp_error(api_for, monkeypatch):
+    # The raw error can repeat the client's own credentials; only the scrubbed message may reach a traceback.
+    cookie = "SYNTH-SESSION-0099"
+
+    class Raising:
+        def request(self, method: str, url: str, **_kwargs: Any) -> Any:
+            raise aiohttp.ClientConnectionError(f"connection lost, sent with session={cookie}")
+
+    @asynccontextmanager
+    async def session_for(self, idempotent: bool) -> AsyncIterator[Any]:
+        yield Raising()
+
+    monkeypatch.setattr(BaseGazelleApi, "_session_for", session_for)
+    api = api_for("http://127.0.0.1:9", cookie=cookie)
+
+    with pytest.raises(RequestError) as caught:
+        await api._request("POST", "http://127.0.0.1:9/upload.php", data={"a": "b"}, needs_authkey=False)
+
+    assert cookie not in "".join(traceback.format_exception(caught.value))

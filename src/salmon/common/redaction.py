@@ -2,7 +2,7 @@ import ipaddress
 import re
 import shlex
 import string
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 _URL_USERINFO = re.compile(r"(://)[^/\s@]+@")
@@ -107,6 +107,27 @@ def redact_tracker_fields(text: str) -> str:
     text = _ANNOUNCE_PASSKEY.sub("/[REDACTED]", text)
     # Last: a value with no closing quote runs to the next quote, which can open another pattern's match.
     return _SENSITIVE_KEYS.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]{m.group(3)}", text)
+
+
+# A response header naming a credential. A cookie keeps its name and attributes, only its value is masked.
+_SECRET_HEADER_NAME = re.compile(r"auth|token|key|session|pass", re.IGNORECASE)
+_COOKIE_VALUE = re.compile(r"^(\s*[^=;\s]+=)[^;]*")
+
+
+def redact_tracker_headers(
+    headers: Iterable[tuple[str, str]], scrub: Callable[[str], str] = redact_tracker_fields
+) -> dict[str, str]:
+    """A tracker's response headers for the log, with credentials and cookie values masked."""
+    shown: dict[str, str] = {}
+    for name, value in headers:
+        if "cookie" in name.lower():
+            value = _COOKIE_VALUE.sub(r"\1[REDACTED]", value)
+        elif _SECRET_HEADER_NAME.search(name):
+            value = "[REDACTED]"
+        value = scrub(value)
+        # A header sent more than once (Set-Cookie) is shown once, its values joined as HTTP folds them.
+        shown[name] = f"{shown[name]}, {value}" if name in shown else value
+    return shown
 
 
 def safe_response_excerpt(text: str, limit: int = 500) -> str:
