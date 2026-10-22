@@ -196,6 +196,10 @@ session = 'get-from-site-cookie'
 # # [] makes none. Every possible one is still offered at the prompt. salmon up --conversions overrides it.
 # conversions = ["24bit", "16bit", "320", "V0"]
 
+# # Check every FLAC file for an MQA marker before uploading (reads the first second of each).
+# # false checks only the first file: faster, but MQA on a track other than the first is not caught.
+# mqa_check_all_tracks = true
+
 # # enable seedbox uploading
 # upload_to_seedbox = true
 # # "NFC" / "NFD" (""/"none": as on disk): the form your client's copied file names are in. rclone keeps names as

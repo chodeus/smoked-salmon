@@ -94,15 +94,16 @@ async def mqa(path):
                         click.secho("Did not find MQA syncword", fg="green")
 
 
-async def mqa_test(path: str) -> None:
+async def mqa_test(path: str, all_files: bool = True) -> None:
     """Check whether any audio file in a release carries the MQA syncword.
 
-    Every file, not just the first: MQA on a later track is as much of a trump as
-    on track one, and this is the gate the upload itself runs — it must not be
-    weaker than the advisory album check, which has always scanned them all.
+    Every file by default: MQA on a later track is as much of a trump as on track one,
+    and this is the gate the upload itself runs.
 
     Args:
         path: Path to the FLAC file or directory to check.
+        all_files: Check every file in a directory; False checks only the first FLAC by path
+            (upload.mqa_check_all_tracks).
 
     Raises:
         click.Abort: If MQA syncword is detected.
@@ -113,6 +114,14 @@ async def mqa_test(path: str) -> None:
             raise click.Abort
         return
     if not os.path.isdir(path):
+        return
+    if not all_files:
+        flacs = sorted(
+            os.path.join(root, f) for root, _, files in os.walk(path) for f in files if f.lower().endswith(".flac")
+        )
+        if flacs and await check_mqa(flacs[0]):
+            click.secho(f"MQA syncword present in '{flacs[0]}'", fg="red", bold=True)
+            raise click.Abort
         return
 
     from salmon.checks.album import run_mqa_check

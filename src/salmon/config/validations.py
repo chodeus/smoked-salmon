@@ -425,6 +425,10 @@ class Upload(BaseStruct):
     # "V0". [] makes none. Every possible one is still offered at the prompt. Stored in canonical case.
     conversions: list[str] = msgspec.field(default_factory=lambda: list(CONVERSION_KINDS))
 
+    # Check every FLAC file for an MQA marker before uploading. False checks only the first one: faster,
+    # but MQA on another track is not caught.
+    mqa_check_all_tracks: bool = True
+
     upload_to_seedbox: bool = True
 
     # Normalize file names in generated .torrent files: "" or "none" (default) keeps them as on disk.
