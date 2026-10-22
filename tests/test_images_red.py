@@ -94,6 +94,21 @@ def test_red_returns_the_bare_image_url(monkeypatch, tmp_path) -> None:
     assert site.closed
 
 
+def test_a_client_handed_in_is_used_and_left_open(monkeypatch, tmp_path) -> None:
+    # The cover step keeps using the client it passes; closing it here would break the next upload.
+    _patch_red_env(monkeypatch)
+    image = tmp_path / "image.png"
+    image.write_bytes(b"png-data")
+    client = _FakeRed()
+
+    result = anyio.run(red.ImageUploader(client).upload_file, str(image))  # type: ignore[arg-type]
+
+    assert result == ("https://redacted.sh/i/image.png", None)
+    assert _FakeRed.made == [client]
+    assert client.calls[-1] == ("POST", "https://redacted.sh/ajax.php", {"action": "upload_image"})
+    assert not client.closed
+
+
 def test_with_an_api_key_the_upload_uses_it_and_skips_the_authkey(monkeypatch, tmp_path) -> None:
     _patch_red_env(monkeypatch)
     monkeypatch.setattr(_FakeRed, "api_key", "red-api-key")

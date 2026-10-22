@@ -33,6 +33,11 @@ def bare_image_url(url: str) -> str:
 class ImageUploader(BaseImageUploader):
     """Upload images to RED with the tracker's API key, or its session cookie and authkey without one."""
 
+    def __init__(self, api: RedApi | None = None) -> None:
+        """Upload through `api`, as upstream's does; without one, through a client of its own, closed after."""
+        super().__init__()
+        self.api = api
+
     async def upload_file(self, filename: str) -> tuple[str, None]:
         """Upload an image and return its bare RED image URL."""
         self.validate_file(filename)
@@ -43,7 +48,7 @@ class ImageUploader(BaseImageUploader):
             file_data = await file_handle.read()
 
         # A RED client, so these requests spend RED's rate limit like any other.
-        site = RedApi()
+        site = self.api or RedApi()
         use_api_key = bool(site.api_key)
         try:
             form = aiohttp.FormData()
@@ -69,7 +74,8 @@ class ImageUploader(BaseImageUploader):
                 f"RED image upload failed: {safe_response_excerpt(site._scrub(str(error)))}"
             ) from None
         finally:
-            await site.close()
+            if self.api is None:
+                await site.close()
 
         try:
             image_url = str(payload["response"]["url"])

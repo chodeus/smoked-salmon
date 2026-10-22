@@ -1,8 +1,10 @@
 from typing import Any
 
+import anyio
 import msgspec
 import pytest
 
+import salmon.uploader
 from salmon.config import image_hosts
 from salmon.config.image_hosts import cover_refusal
 from salmon.config.validations import Cfg, ImageUploader
@@ -150,6 +152,40 @@ def test_red_image_host_needs_the_red_api_key(tmp_path, code: str, kind: Kind) -
         msgspec.convert(_cfg(tmp_path, code, {"session": "cookie"}, kind), Cfg)
     cfg = msgspec.convert(_cfg(tmp_path, code, {"session": "cookie", "api_key": "key"}, kind), Cfg)
     assert cfg.image.host_for(code.upper(), kind) == "red"
+
+
+def test_each_cover_host_gets_its_own_upload_reused_across_trackers(monkeypatch) -> None:
+    uploads: list[str | None] = []
+
+    async def fake_download(path: str, cover_source: str | None) -> tuple[str, bool]:
+        return "cover.jpg", False
+
+    async def fake_upload(cover_path: str | None, host: str | None = None, red_api: object = None) -> str | None:
+        uploads.append(host)
+        # The first RED upload fails, so the next RED upload must retry it.
+        if host == "red" and uploads.count("red") == 1:
+            return None
+        return f"https://{host}/cover.jpg"
+
+    monkeypatch.setattr(salmon.uploader.cfg, "image", _image(cover_uploader="imgbox", red={"cover_uploader": "red"}))
+    monkeypatch.setattr(salmon.uploader, "download_cover_if_nonexistent", fake_download)
+    monkeypatch.setattr(salmon.uploader, "upload_cover", fake_upload)
+
+    async def run() -> list[str | None]:
+        cover_urls: dict[str, str | None] = {}
+        results = []
+        for tracker in ("OPS", "RED", "DIC", "RED"):
+            url, _ = await salmon.uploader.get_cover_url(tracker, cover_urls, "/release", None, False)
+            results.append(url)
+        return results
+
+    assert anyio.run(run) == [
+        "https://imgbox/cover.jpg",
+        None,
+        "https://imgbox/cover.jpg",
+        "https://red/cover.jpg",
+    ]
+    assert uploads == ["imgbox", "red", "red"]
 
 
 @pytest.mark.parametrize("tracker", ["RED", "OPS", "red", "ops"])

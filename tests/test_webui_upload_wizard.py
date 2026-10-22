@@ -299,7 +299,7 @@ def upload_world(monkeypatch, tmp_path):
     async def fake_download_cover(path, cover_url):
         return os.path.join(path, "cover.jpg"), False
 
-    async def fake_upload_cover(cover_path, site_code=None):
+    async def fake_upload_cover(cover_path, host=None, red_api=None):
         return "https://img.example/cover"
 
     async def fake_generate_spectrals_all(path, spectrals_path, audio_info):
@@ -327,8 +327,8 @@ def upload_world(monkeypatch, tmp_path):
 
     monkeypatch.setattr("salmon.uploader.rename_folder", fake_rename_folder)
     monkeypatch.setattr("salmon.uploader.check_folder_structure", fake_check_folder_structure)
-    monkeypatch.setattr("salmon.uploader.cover.download_cover_if_nonexistent", fake_download_cover)
-    monkeypatch.setattr("salmon.uploader.cover.upload_cover", fake_upload_cover)
+    monkeypatch.setattr("salmon.uploader.download_cover_if_nonexistent", fake_download_cover)
+    monkeypatch.setattr("salmon.uploader.upload_cover", fake_upload_cover)
     monkeypatch.setattr("salmon.uploader.spectrals.generate_spectrals_all", fake_generate_spectrals_all)
     monkeypatch.setattr("salmon.uploader.handle_spectrals_upload_and_deletion", fake_handle_spectrals)
 
@@ -535,10 +535,14 @@ async def test_declining_a_coverless_new_group_skips_only_that_tracker(
     ops.ensure_authenticated = ensure_authenticated
     monkeypatch.setattr(salmon.trackers, "get_class", lambda site: lambda: ops)
 
-    async def cover_fails_on_red(cover_path, site_code=None):
-        return None if site_code == "RED" else "https://img.example/ops-cover"
+    calls: list[str | None] = []
 
-    monkeypatch.setattr("salmon.uploader.cover.upload_cover", cover_fails_on_red)
+    async def cover_fails_on_red(cover_path, host=None, red_api=None):
+        # RED's upload comes first and fails; OPS shares the host, so its cover is uploaded again.
+        calls.append(host)
+        return None if len(calls) == 1 else "https://img.example/ops-cover"
+
+    monkeypatch.setattr("salmon.uploader.upload_cover", cover_fails_on_red)
 
     m = jm()
     path = str(album_dir)
@@ -553,7 +557,7 @@ async def test_declining_a_coverless_new_group_skips_only_that_tracker(
             ("Is this release lossy mastered?", "n"),
             ("What spectral IDs would you like to upload", "*"),
             ("Would you like to upload the torrent?", True),
-            ("Continue upload without a cover image?", "n"),
+            ("Continue without a cover image?", "n"),
             ("Your choices are OPS or [n]one.", "OPS"),
             ("Would you like to upload to an existing group?", "n"),
             ("Would you like to check downconversion options?", False),

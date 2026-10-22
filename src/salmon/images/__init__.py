@@ -9,6 +9,7 @@ from salmon.config.image_hosts import cover_refusal, display_refusal, spectrals_
 from salmon.errors import ImageUploadFailed
 from salmon.images import catbox, imgbb, imgbox, oeimg, ptscreens, ra, red
 from salmon.images.base import BaseImageUploader
+from salmon.trackers.red import RedApi
 
 HOSTS = {
     "catbox": catbox,
@@ -180,15 +181,24 @@ async def _upload_groups(
     return [group_urls if index in started and index not in failed else None for index, group_urls in enumerate(urls)]
 
 
-async def upload_cover(cover_path: str | None, site_code: str | None = None) -> str | None:
-    """Upload cover image to the image host configured for this tracker (or the global one)."""
+async def upload_cover(cover_path: str | None, host: str | None = None, red_api: RedApi | None = None) -> str | None:
+    """Upload cover image to an image host.
+
+    Args:
+        cover_path: Path to the cover image file.
+        host: The image host to upload to. Defaults to the configured cover_uploader.
+        red_api: The RED client that RED's image host uploads through. Without one, it makes its own.
+
+    Returns:
+        The uploaded image URL, or None if upload failed.
+    """
     if not cover_path:
         click.secho("\nNo Cover Image Path was provided to upload...", fg="red", nl=False)
         return None
-    host = cfg.image.host_for(site_code, "cover_uploader")
+    host = host or cfg.image.cover_uploader
     click.secho(f"Uploading cover to {host}...", fg="yellow", nl=False)
     try:
-        uploader = HOSTS[host].ImageUploader()
+        uploader = red.ImageUploader(red_api) if host == "red" else HOSTS[host].ImageUploader()
         url, _ = await uploader.upload_file(cover_path)
         # A host can return without raising and still hand back nothing usable; treat that as a failure too.
         if not is_http_url(url):
