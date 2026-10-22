@@ -19,7 +19,7 @@ def _uploads(monkeypatch, *urls: str | None) -> list[str | None]:
         return "cover.jpg", False
 
     async def fake_upload(cover_path: str | None, site_code: str | None = None) -> str | None:
-        hosts.append(cover.cfg.image.resolve(site_code, "cover_uploader"))
+        hosts.append(cover.cfg.image.host_for(site_code, "cover_uploader"))
         return urls[len(hosts) - 1]
 
     monkeypatch.setattr(cover, "download_cover_if_nonexistent", fake_download)
@@ -129,8 +129,10 @@ def test_reload_does_not_upload_again_to_a_host_that_has_the_cover(monkeypatch) 
     assert hosts == ["imgbox", "red", "red"]
 
 
-def test_ops_reuses_the_red_cover_without_uploading(monkeypatch) -> None:
-    _use_hosts(monkeypatch, {"cover_uploader": "imgbox", "red": {"cover_uploader": "red"}})
+def test_ops_set_to_reds_host_reuses_the_red_cover_without_uploading(monkeypatch) -> None:
+    _use_hosts(
+        monkeypatch, {"cover_uploader": "imgbox", "red": {"cover_uploader": "red"}, "ops": {"cover_uploader": "red"}}
+    )
     hosts = _uploads(monkeypatch, "https://red/i/cover.jpg")
     asked = _answers(monkeypatch)
 

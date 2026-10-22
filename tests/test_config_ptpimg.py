@@ -74,3 +74,24 @@ def test_ptpimg_in_a_setting_that_is_not_a_host_keeps_its_own_error(tmp_path: Pa
     path = _write_config(tmp_path, text)
     with pytest.raises(msgspec.ValidationError, match="default_spectral_ids"):
         _parse_config(path)
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "hosts"),
+    [
+        ("image.dic", "cover_uploader", "ptscreens, oeimg, catbox, imgbb, imgbox, ra"),
+        ("image.ops", "cover_uploader", "ptscreens, oeimg, catbox, imgbb, imgbox, ra, red"),
+        ("image", "specs_uploader", "ptscreens, oeimg, catbox, imgbb, imgbox"),
+    ],
+)
+def test_the_ptpimg_error_names_only_the_hosts_allowed_in_that_setting(
+    tmp_path: Path, section: str, field: str, hosts: str
+) -> None:
+    if section == "image":
+        text = _base_config(tmp_path).replace("\n[image]\n", f'\n[image]\n{field} = "ptpimg"\n')
+    else:
+        text = _base_config(tmp_path) + f'\n[{section}]\n{field} = "ptpimg"\n'
+    path = _write_config(tmp_path, text)
+    with pytest.raises(ValueError, match="ptpimg has shut down") as excinfo:
+        _parse_config(path)
+    assert f"({hosts});" in str(excinfo.value)

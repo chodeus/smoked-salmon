@@ -11,7 +11,8 @@ import requests
 from platformdirs import user_config_dir
 
 from . import compat
-from .validations import Cfg, ImgUploaderLiteral, host_allowed
+from .image_hosts import display_refusal, spectrals_refusal
+from .validations import Cfg, ImgUploaderLiteral
 
 APPNAME = "smoked-salmon"
 
@@ -187,7 +188,8 @@ def _parse_config(config_path: Path) -> Cfg:
             raise
         parts = location.strip("`").split(".")  # $.image.<kind> or $.image.<tracker>.<kind>
         code = parts[2] if len(parts) == 4 else None
-        hosts = ", ".join(h for h in get_args(ImgUploaderLiteral) if host_allowed(code, parts[-1], h))
+        refusal = spectrals_refusal if parts[-1] == "specs_uploader" else display_refusal
+        hosts = ", ".join(h for h in get_args(ImgUploaderLiteral) if refusal(h, code) is None)
         raise ValueError(
             f"ptpimg has shut down and is no longer a supported image host. Choose another one for {location} "
             f"in your config ({hosts}); catbox needs no API key."

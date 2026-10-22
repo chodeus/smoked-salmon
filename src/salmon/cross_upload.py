@@ -32,7 +32,7 @@ from salmon.checks.do_not_upload import Candidate, do_not_upload_reason
 from salmon.checks.high_rate import sixteen_bit_notice
 from salmon.checks.tag_rules import SIXTEEN_BIT_ABOVE_48KHZ, path_limit_for
 from salmon.common import commandgroup, invisible_chars, show_invisible
-from salmon.config.validations import RED_IMAGE_PROXY_TARGETS
+from salmon.config.image_hosts import HOST_RULES
 from salmon.constants import ARTIST_IMPORTANCES, ENCODINGS, FORMATS, SOURCES
 from salmon.errors import (
     DryRunRefused,
@@ -98,6 +98,9 @@ TRACKER_HOSTS = {
     # DIC's site, and the domain its announces are on (tracker.52dic.vip).
     "DIC": ("dicmusic.com", "52dic.vip"),
 }
+# The HOST_RULES row of a tracker's own image host, which says where its images show. A tracker with none shows
+# only its own images.
+TRACKER_IMAGE_HOSTS = {"RED": "red"}
 # The media a tracker names otherwise than SOURCES does: OPS's BD is RED's and DIC's Blu-Ray.
 TRACKER_MEDIA = {"OPS": {"Blu-Ray": "BD"}, "RED": {"BD": "Blu-Ray"}, "DIC": {"BD": "Blu-Ray"}}
 # The trackers whose API gives descriptions HTML-escaped. DIC is assumed to be like RED: no sample of its answers
@@ -938,8 +941,10 @@ def _tracker_of(url: str, sites: tuple["BaseGazelleApi", ...]) -> str | None:
 
 def _shows_on(tracker: str, target: str) -> bool:
     """Whether an image on tracker's own host shows on target's pages, as its bare URL (cover and descriptions)."""
-    # RED's images show on the trackers that proxy them; any other tracker's on its own pages only.
-    return tracker == target or (tracker == "RED" and target in RED_IMAGE_PROXY_TARGETS)
+    if tracker == target:
+        return True
+    rules = HOST_RULES.get(TRACKER_IMAGE_HOSTS.get(tracker, ""))
+    return rules is not None and (rules.displays_on is None or target.lower() in rules.displays_on)
 
 
 def _bare(url: str) -> str:
@@ -1317,7 +1322,7 @@ async def _rehost_images(
     signature = await _source_image_auth(source) if rehost else {}
     for field_name, url in rehost:
         host = (
-            cfg.image.resolve(target.site_code, "cover_uploader")
+            cfg.image.host_for(target.site_code, "cover_uploader")
             if field_name == "image"
             else image_host_for_tracker(target.site_code)
         )

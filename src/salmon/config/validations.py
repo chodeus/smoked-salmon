@@ -1,8 +1,10 @@
 import os
 from collections.abc import Iterable, Iterator
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
 import msgspec
+
+from .image_hosts import spectrals_refusal, tracker_only_hosts
 
 
 class BaseStruct(msgspec.Struct, forbid_unknown_fields=False):
@@ -105,48 +107,19 @@ class Directory(BaseStruct):
 
 
 ImgUploaderLiteral = Literal["ptscreens", "oeimg", "catbox", "imgbb", "imgbox", "ra", "red"]
-_HOST_KINDS = ("image_uploader", "cover_uploader", "specs_uploader")
-_TRACKER_CODES = ("red", "ops", "dic")
-# A tracker's own image host is for its album artwork only: opt in under [image.<tracker>], and it
-# is refused in every other slot (description images, spectrals, other trackers' covers).
-_OWN_COVER_HOSTS = {"red": "red"}
-ARTWORK_ONLY_HOSTS = frozenset(_OWN_COVER_HOSTS.values())
-# Hosts never used for spectrals, in any slot or prompt, and why.
-SPECTRALS_REFUSED = {
-    "red": "RED's rules forbid spectrals on its image host",
-    "ra": "Ra's owner asks not to use it for spectrals",
-}
-# Trackers that fetch and cache RED-hosted images themselves, so a BARE RED URL renders there
-# unchanged. Only bare: RED's per-viewer signed URLs 403 once the signature expires.
-RED_IMAGE_PROXY_TARGETS = frozenset({"OPS"})
 # "*" (all), "+" (a random third), "0" (none), or track IDs separated by spaces, such as "3" or "1 5 9".
 SpectralSelection = Annotated[str, msgspec.Meta(pattern=r"^(\*|\+|0|0*[1-9]\d*( +0*[1-9]\d*)*)\Z")]
 
+_TRACKER_CODES = ("red", "ops", "dic")
 
-def spectrals_refusal(host: str) -> str | None:
-    """Why `host` may not take spectrals: its own spectral rule first, else the [image] specs_uploader rule."""
-    return SPECTRALS_REFUSED.get(host) or host_refusal(None, "specs_uploader", host)
-
-
-def host_refusal(code: str | None, kind: str, host: str) -> str | None:
-    """Why `host` may not fill `kind` under [image] (code None) or [image.<code>], or None if it may."""
-    if host in ARTWORK_ONLY_HOSTS and not (kind == "cover_uploader" and _OWN_COVER_HOSTS.get(code or "") == host):
-        owner = next(tracker for tracker, own in _OWN_COVER_HOSTS.items() if own == host)
-        return (
-            f"{owner.upper()}'s image host is for album artwork only, "
-            f"so it is valid solely as cover_uploader under [image.{owner}]"
-        )
-    if kind == "specs_uploader":
-        return SPECTRALS_REFUSED.get(host)
-    return None
+# The settings that choose an image host: for description images (salmon images up), covers and spectrals.
+ImageKind = Literal["image_uploader", "cover_uploader", "specs_uploader"]
+_IMAGE_KINDS: tuple[ImageKind, ...] = get_args(ImageKind)
 
 
-def host_allowed(code: str | None, kind: str, host: str) -> bool:
-    """Whether `host` may fill `kind` under [image] (code None) or [image.<code>]."""
-    return host_refusal(code, kind, host) is None
+class TrackerImageSettings(BaseStruct):
+    """Per-tracker image settings, overriding [image] for uploads to that tracker."""
 
-
-class ImageHostOverride(BaseStruct):
     image_uploader: ImgUploaderLiteral | None = None
     cover_uploader: ImgUploaderLiteral | None = None
     specs_uploader: ImgUploaderLiteral | None = None
@@ -166,48 +139,54 @@ class ImageUploader(BaseStruct):
     embed_missing_cover: bool = True
     strip_oversized_pictures: bool = True
     default_spectral_ids: SpectralSelection | None = None
-    red: ImageHostOverride | None = None
-    ops: ImageHostOverride | None = None
-    dic: ImageHostOverride | None = None
+    red: TrackerImageSettings | None = None
+    ops: TrackerImageSettings | None = None
+    dic: TrackerImageSettings | None = None
 
-    def resolve(self, site_code: str | None, kind: str) -> str:
-        """Host for a tracker + kind: the per-tracker override if set, else the global setting."""
-        code = site_code.lower() if site_code else None
-        if code:
-            override = getattr(self, code, None)
-            if override is not None and getattr(override, kind) is not None:
-                return getattr(override, kind)
-        return getattr(self, kind)
+    def host_for(self, site_code: str | None, kind: ImageKind) -> str:
+        """Get a tracker's image host for one kind of image: its [image.<tracker>] setting, else the [image] one.
 
-    def _selections(self) -> list[tuple[str | None, str, str]]:
-        """Every configured (tracker code or None for global, kind, host) triple."""
-        selections: list[tuple[str | None, str, str]] = [(None, kind, getattr(self, kind)) for kind in _HOST_KINDS]
+        A site_code of None, for images that are not for one tracker, gets the [image] setting.
+        """
+        override: TrackerImageSettings | None = getattr(self, site_code.lower(), None) if site_code else None
+        host = getattr(override, kind) if override is not None else None
+        return host if host is not None else getattr(self, kind)
+
+    def selections(self) -> list[tuple[str, ImageKind, str]]:
+        """Get every configured (setting name, kind, host), per-tracker ones included (as "red.cover_uploader")."""
+        selections: list[tuple[str, ImageKind, str]] = [(kind, kind, getattr(self, kind)) for kind in _IMAGE_KINDS]
         for code in _TRACKER_CODES:
-            override = getattr(self, code)
-            if override is None:
-                continue
-            for kind in _HOST_KINDS:
-                host = getattr(override, kind)
-                if host:
-                    selections.append((code, kind, host))
+            override: TrackerImageSettings | None = getattr(self, code)
+            if override is not None:
+                for kind in _IMAGE_KINDS:
+                    if (host := getattr(override, kind)) is not None:
+                        selections.append((f"{code}.{kind}", kind, host))
         return selections
 
     def __post_init__(self):
-        selections = self._selections()
-        hosts = {host for _, _, host in selections}
-        if "ptscreens" in hosts and self.ptscreens_key is None:
+        selections = self.selections()
+        uploader_selections = {host for _, _, host in selections}
+        if "ptscreens" in uploader_selections and self.ptscreens_key is None:
             raise ValueError("PTScreens key not specified")
-        if "oeimg" in hosts and self.oeimg_key is None:
+        if "oeimg" in uploader_selections and self.oeimg_key is None:
             raise ValueError("oeimage key not specified")
-        if "imgbb" in hosts and self.imgbb_key is None:
+        if "imgbb" in uploader_selections and self.imgbb_key is None:
             raise ValueError("imgbb key not specified")
-        if "ra" in hosts and self.ra_key is None:
+        if "ra" in uploader_selections and self.ra_key is None:
             raise ValueError("ra key not specified")
-        for code, kind, host in selections:
-            if (reason := host_refusal(code, kind, host)) is None:
-                continue
-            section = f"[image.{code}]" if code else "[image]"
-            raise ValueError(f'{section} {kind} = "{host}": {reason}. Use another host here.')
+        tracker_only = tracker_only_hosts()
+        for setting, kind, host in selections:
+            # The tracker a per-tracker setting is for; None for the [image] ones, which every tracker shares.
+            tracker = setting.rpartition(".")[0] or None
+            if kind == "specs_uploader" and (refusal := spectrals_refusal(host, tracker)) is not None:
+                raise ValueError(f'image.{setting} = "{host}": {refusal}; choose another specs_uploader')
+            trackers = tracker_only.get(host)
+            if trackers is not None and tracker not in trackers:
+                sections = " or ".join(f"[image.{code}]" for code in trackers)
+                raise ValueError(
+                    f'image.{setting} = "{host}": the {host} image host only displays on '
+                    f"{'/'.join(code.upper() for code in trackers)}, so it can only be set under {sections}"
+                )
 
 
 class TidalSettings(BaseStruct):
@@ -499,6 +478,10 @@ class Cfg(BaseStruct):
     web: Web = msgspec.field(default_factory=Web)
 
     def __post_init__(self):
+        # Uploads to RED's image host authenticate with the RED API key, whichever tracker the image is for.
+        red_host_users = [setting for setting, _kind, host in self.image.selections() if host == "red"]
+        if red_host_users and not (self.tracker.red and self.tracker.red.api_key):
+            raise ValueError(f'image.{red_host_users[0]} = "red" needs tracker.red.api_key to be set')
         # A tracker's own dottorrents_dir gets .torrent files written with overwrite, like the global one.
         for code in ("red", "ops", "dic"):
             settings = getattr(self.tracker, code)

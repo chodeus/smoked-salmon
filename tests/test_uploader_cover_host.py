@@ -1,26 +1,46 @@
-"""_cover_host_for_new_group: whether a tracker reuses a cached RED cover or uploads its own."""
+"""A new group's cover goes to its tracker's cover_uploader; a cover already on that host this run is reused."""
+
+import anyio
 
 from salmon import cfg
-from salmon.uploader.cover import _cover_host_for_new_group
+from salmon.config.validations import TrackerImageSettings
+from salmon.uploader import cover
+
+RED_COVER = "https://redacted.sh/i/x.jpg"
 
 
-def test_reuses_the_cached_red_cover_for_a_proxy_target() -> None:
-    # OPS proxies and caches RED-hosted images, so a re-upload would be redundant.
-    stored = {"red": "https://redacted.sh/i/x.jpg"}
-    assert _cover_host_for_new_group("OPS", stored) == "red"
+def _uploads(monkeypatch) -> list[str | None]:
+    uploaded: list[str | None] = []
+
+    async def download(path: str, url: str | None) -> tuple[str, bool]:
+        return f"{path}/cover.jpg", False
+
+    async def upload(cover_path: str | None, site_code: str | None = None) -> str:
+        uploaded.append(site_code)
+        return "https://files.catbox.moe/new.jpg"
+
+    monkeypatch.setattr(cover, "download_cover_if_nonexistent", download)
+    monkeypatch.setattr(cover, "upload_cover", upload)
+    return uploaded
 
 
-def test_falls_back_to_the_tracker_default_without_a_cached_red_cover() -> None:
-    assert _cover_host_for_new_group("OPS", {}) == cfg.image.resolve("OPS", "cover_uploader")
+def test_ops_uploads_to_its_own_host_though_a_red_hosted_cover_is_at_hand(monkeypatch) -> None:
+    monkeypatch.setattr(cfg.image, "ops", None)
+    uploaded = _uploads(monkeypatch)
+    stored = {"red": RED_COVER}
+
+    url = anyio.run(cover._new_group_cover_url, "OPS", stored, "/album", None, False)
+
+    assert url == "https://files.catbox.moe/new.jpg"
+    assert uploaded == ["OPS"]
 
 
-def test_a_non_proxy_target_never_reuses_reds_cover() -> None:
-    # DIC has no proxy arrangement with RED, so it still needs its own upload.
-    stored = {"red": "https://redacted.sh/i/x.jpg"}
-    assert _cover_host_for_new_group("DIC", stored) == cfg.image.resolve("DIC", "cover_uploader")
+def test_ops_set_to_reds_host_reuses_the_red_hosted_cover(monkeypatch) -> None:
+    monkeypatch.setattr(cfg.image, "ops", TrackerImageSettings(cover_uploader="red"))
+    uploaded = _uploads(monkeypatch)
+    stored = {"red": RED_COVER}
 
+    url = anyio.run(cover._new_group_cover_url, "OPS", stored, "/album", None, False)
 
-def test_red_follows_its_configured_host() -> None:
-    # No [image.red] section in the test config, so RED uses the global cover host.
-    host = _cover_host_for_new_group("RED", {})
-    assert host == cfg.image.resolve("RED", "cover_uploader")
+    assert url == RED_COVER
+    assert uploaded == []
