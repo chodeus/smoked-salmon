@@ -5,7 +5,8 @@ import string
 from collections.abc import Callable, Iterable
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
-_URL_USERINFO = re.compile(r"(://)[^/\s@]+@")
+# Up to the authority's end: a "@" later in the query or fragment is no userinfo.
+_URL_USERINFO = re.compile(r"(://)[^/?#\s@]+@")
 _USERINFO_PASSWORD = re.compile(r"://[^/\s@:]*:([^/\s@']+)@")
 _SECRET_WORDS = r"(?:pass|password|token|secret|key|session|header|cookie|auth)"
 # A quoted value is masked whole, doubled quotes included: rclone quotes values with spaces (a PEM key).
@@ -62,23 +63,29 @@ _CONNECTION_SECRET = re.compile(
 
 
 # The names a secret goes by, in a JSON field, a URL query, a cookie header or a form input: one list for all three.
-_SECRET_NAMES = "authkey|passkey|torrent_pass|auth|api_key|session|keeplogged|imgauth_[hue]"
+_SECRET_NAMES = "authkey|passkey|torrent_pass|auth|api_?key|authorization|session|keeplogged|imgauth_[hue]"
 # "authkey": "..." in JSON or a Python repr of it, authkey = "..." in a page's script. A value ends at its closing
 # quote, or at its line's end when an excerpt cut it off; a backslash escapes the next character.
 _SENSITIVE_KEYS = re.compile(
     rf"""(["']?\b(?:{_SECRET_NAMES}|Authorization)["']?\s*[:=]\s*)(["'])(?:(?!\2)[^\\\n]|\\.)*(\2?)""", re.IGNORECASE
 )
-_SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=[^&\"'\s<>]+", re.IGNORECASE)
+# A value ends at "; ", a cookie's attribute separator; a ";" with no space after stays in it, as in a URL query.
+_SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=(?:[^&;\"'\s<>]|;(?!\s))+", re.IGNORECASE)
 # The passkey in an announce URL, wherever the text holds one and however short, as in redact_url.
 _ANNOUNCE_PASSKEY = re.compile(r"/[A-Za-z0-9]+(?=/announce)")
 
-_SECRET_INPUT_NAME = rf"""\bname=["'](?:{_SECRET_NAMES})["']"""
-# A form's hidden inputs, value before or after the name: <input name="auth" value="...">.
-_SENSITIVE_INPUTS = re.compile(
-    rf"""(<input\b[^>]*{_SECRET_INPUT_NAME}[^>]*\bvalue=["'])[^"']*"""
-    rf"""|(<input\b[^>]*\bvalue=["'])[^"']*(?=["'][^>]*{_SECRET_INPUT_NAME})""",
-    re.IGNORECASE,
-)
+# A form field carrying one, <input name="auth" value="...">, its attributes in any order, quoted or not.
+# Quote-aware: a ">" inside a quoted attribute does not end the tag.
+_INPUT_TAG = re.compile(r"""<input\b(?:[^>"']|"[^"]*"|'[^']*')*>""", re.IGNORECASE)
+_SECRET_FIELD_NAME = re.compile(rf"""\bname\s*=\s*(["']?)(?:{_SECRET_NAMES})\1(?=[\s/>])""", re.IGNORECASE)
+_FIELD_VALUE = re.compile(r"""(\bvalue\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s"'>]+)""", re.IGNORECASE)
+
+
+def _mask_secret_field(match: re.Match[str]) -> str:
+    tag = match[0]
+    if not _SECRET_FIELD_NAME.search(tag):
+        return tag
+    return _FIELD_VALUE.sub(r'\1"[REDACTED]"', tag)
 
 
 def _mask_known(text: str, secrets: Iterable[str | None], shortest: int) -> str:
@@ -101,10 +108,11 @@ def redact_secrets(text: str, known: Iterable[str | None] = ()) -> str:
 
 
 def redact_tracker_fields(text: str) -> str:
-    """Redact sensitive values (quoted fields and assignments, URL query params, form inputs, announce passkeys)."""
-    text = _SENSITIVE_INPUTS.sub(lambda m: f"{m.group(1) or m.group(2)}[REDACTED]", text)
+    """Redact sensitive values (quoted fields and assignments, URL query params and userinfo, form inputs, passkeys)."""
+    text = _INPUT_TAG.sub(_mask_secret_field, text)
     text = _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
     text = _ANNOUNCE_PASSKEY.sub("/[REDACTED]", text)
+    text = _URL_USERINFO.sub(r"\1[REDACTED]@", text)
     # Last: a value with no closing quote runs to the next quote, which can open another pattern's match.
     return _SENSITIVE_KEYS.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]{m.group(3)}", text)
 
