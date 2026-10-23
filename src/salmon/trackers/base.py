@@ -264,7 +264,22 @@ def _submitted_fields(form: Tag) -> list[tuple[str, str]]:
 
 
 def _torrent_edit_fields(page: str, torrent_id: int) -> list[tuple[str, str]]:
-    """The torrent edit form's fields as a browser submits them; RequestError unless it is exactly this torrent's."""
+    """Read a torrent's edit form, as a browser would submit it.
+
+    The page also holds forms that move the torrent to another group. The edit form is
+    the one named "torrent" that posts action=takeedit, and it must be the only one.
+
+    Args:
+        page: The HTML of torrents.php?action=edit.
+        torrent_id: The torrent the form must edit.
+
+    Returns:
+        The form's (name, value) pairs, in page order.
+
+    Raises:
+        RequestError: If the page does not hold exactly one edit form for this torrent,
+            with a description and an auth field (a login or an error page, say).
+    """
     soup = BeautifulSoup(page, "lxml")
     # The page also holds forms that move the torrent to another group; only one posts action=takeedit.
     forms = [
@@ -457,6 +472,12 @@ def _rate_limit_wait(retry_after: str | None) -> int:
     if wait is None:
         return _RATE_LIMIT_WAIT
     return max(math.ceil(wait), _MIN_RATE_LIMIT_WAIT)
+
+
+def _query_id(query: dict[str, list[str]], name: str) -> int | None:
+    """Get an ID from a parsed URL query: None unless the parameter is there and holds ASCII digits only."""
+    value = query.get(name, [""])[0]
+    return int(value) if value.isascii() and value.isdigit() else None
 
 
 class HttpResponse(msgspec.Struct, frozen=True):
@@ -1429,36 +1450,58 @@ class BaseGazelleApi:
     async def _request_fill_result(
         self, data: dict, files: UploadFiles, resp_text: str, resp_url: str
     ) -> tuple[int, int]:
-        """The ids of an upload that went on to fill a request; Gazelle stores the torrent before it tries the fill."""
+        """Get the IDs of an upload that went on to fill a request.
+
+        Gazelle stores the torrent before it redirects to the fill, so the upload stands whether or not the
+        fill works. A fill it refuses (already filled, the wrong format) leaves an error page at the fill's
+        URL, which names the torrent.
+
+        Args:
+            data: Upload form data.
+            files: UploadFiles that were uploaded.
+            resp_text: The page the upload ended on.
+            resp_url: That page's URL, on requests.php. It may carry the authkey.
+
+        Returns:
+            Tuple of (torrent_id, group_id). The group is 0 if it could not be looked up.
+
+        Raises:
+            UnknownOutcomeError: If the page names no torrent and looking it up by its infohash does not find it.
+        """
         query = parse_qs(urlparse(resp_url).query)
         try:
             torrent_id = self.parse_torrent_id_from_filled_request_page(resp_text)
-            click.secho(f"Filled request: {self._redact(resp_url)}", fg="green")
         except (TypeError, ValueError):
             reason = self._request_fill_error(resp_text)
-            stored = query.get("torrentid", [""])[0]
-            if not stored.isdigit():
+            stored = _query_id(query, "torrentid")
+            if stored is None:
                 return await self._find_lost_upload(files, UnknownOutcomeError(f"filling the request failed: {reason}"))
-            torrent_id = int(stored)
-            request = query.get("requestid", [""])[0]
-            where = self.request_url(int(request)) if request.isdigit() else "the request"
+            torrent_id = stored
+            request_id = _query_id(query, "requestid")
+            where = self.request_url(request_id) if request_id is not None else "the request"
             click.secho(f"The upload went through, but filling {where} failed: {reason}", fg="red", bold=True)
+        else:
+            click.secho(f"Filled request: {self._redact(resp_url)}", fg="green")
         if data.get("groupid"):
+            # Sent into a known group: no need to ask.
             return torrent_id, int(data["groupid"])
         try:
-            return torrent_id, await self.get_redirect_torrentgroupid(torrent_id) or 0
+            group_id = await self.get_redirect_torrentgroupid(torrent_id)
         except RequestError as err:
-            # _request has already retried this GET. The torrent is up: raising would report it failed, unseeded.
-            click.secho(f"Could not look up the group of torrent {torrent_id}: {err}", fg="yellow")
+            # The torrent is up: raising would report it failed, and it would go unseeded.
+            click.secho(f"Could not look up the group of torrent {torrent_id}: {self._excerpt(str(err))}", fg="yellow")
             return torrent_id, 0
+        return torrent_id, group_id or 0
 
     def _request_fill_error(self, resp_text: str) -> str:
-        """The error a request page shows, redacted and capped."""
+        """Get the error a request page shows, or the page itself, redacted and cut short."""
         soup = BeautifulSoup(resp_text, "lxml")
-        error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
-        if error and error.parent and error.parent.parent and (p_tag := error.parent.parent.find("p")):
-            return safe_response_excerpt(self._redact(p_tag.text))
-        return safe_response_excerpt(self._redact(resp_text))
+        error = soup.find("h2", string="Error")
+        if error and error.parent and error.parent.parent:
+            p_tag = error.parent.parent.find("p")
+            if p_tag:
+                return self._excerpt(p_tag.text)
+        return self._excerpt(resp_text)
 
     async def _find_lost_upload(self, files: UploadFiles, err: UnknownOutcomeError) -> tuple[int, int]:
         """Look up an upload whose answer was lost, by the torrent's infohash.
@@ -1603,7 +1646,21 @@ class BaseGazelleApi:
         raise RequestError(f"Failed to report the torrent for lossy master, code {resp.status}.")
 
     async def append_to_torrent_description(self, torrent_id: int, description_addition: str) -> None:
-        """Prepend text to a torrent's description; RequestError if the form is unreadable or the edit refused."""
+        """Add text to start of torrent description.
+
+        The edit form sets every field of the torrent, and one it lacks is cleared or unset:
+        rebuilt from the API, it lost the edition, flags and marks the API does not give (#357).
+        So the tracker's own edit form is read and sent back as a browser would, with only the
+        description changed. It also holds the auth, so a fresh client needs no index call.
+
+        Args:
+            torrent_id: The torrent ID.
+            description_addition: Text to prepend to description.
+
+        Raises:
+            RequestError: If the edit form cannot be read, in which case nothing is sent,
+                or if the edit fails.
+        """
         resp = await self._edit_torrent_description(torrent_id, description_addition)
         resp_text = resp.text
 

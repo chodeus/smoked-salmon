@@ -718,6 +718,16 @@ async def test_a_fill_that_fails_after_the_torrent_was_stored_is_still_an_upload
     assert "test-auth-0001" not in out
 
 
+async def test_a_fill_url_whose_torrent_id_is_not_ascii_digits_is_looked_up(api):
+    # "²" is a digit to str.isdigit() but not to int(): it is no torrent id, so the upload is looked up.
+    fill_error_html = "<html><body><div><div><h2>Error</h2></div><p>Request already filled</p></div></body></html>"
+    takefill = "https://dummy.example/requests.php?action=takefill&requestid=77&torrentid=%C2%B2"
+    script_requests(api, [http(text=fill_error_html, url=takefill)])
+
+    with pytest.raises(UnknownOutcomeError):
+        await api.site_page_upload({"groupid": "456"}, UploadFiles(torrent_data=b"torrent"))
+
+
 async def test_a_request_fill_into_a_known_group_needs_no_lookup(api):
     fill_html = '<html><body><a href="torrents.php?torrentid=789">Yes</a></body></html>'
     calls = script_requests(api, [http(text=fill_html, url="https://dummy.example/requests.php?action=view&id=77")])
@@ -758,7 +768,9 @@ async def test_a_long_request_fill_error_is_capped(api):
 
     with pytest.raises(RequestError) as excinfo:
         await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
-    assert "[truncated]" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert " [...]" in message
+    assert "x" * 600 not in message
 
 
 async def test_a_long_api_upload_error_is_capped(api):
