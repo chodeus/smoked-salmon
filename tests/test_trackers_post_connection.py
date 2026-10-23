@@ -415,7 +415,9 @@ def test_a_slow_but_moving_post_goes_through() -> None:
         api.base_url = await raw.start()
         try:
             started = asyncio.get_running_loop().time()
-            resp = await api._request("POST", api.base_url + "/upload.php", data=b"x" * (4 << 20), timeout_secs=2)
+            # 3 s, not upstream's 2: under a full test run's load, a 2 s read sometimes timed out. Sending still
+            # takes over twice as long, so the test still shows a slow upload is never cut off.
+            resp = await api._request("POST", api.base_url + "/upload.php", data=b"x" * (4 << 20), timeout_secs=3)
             assert resp.text == str(4 << 20)
             assert asyncio.get_running_loop().time() - started > 4
             assert raw.connections == 1
