@@ -467,7 +467,11 @@ def _failed_certificate_check(err: BaseException) -> ssl.SSLCertVerificationErro
 
 
 def _rate_limit_wait(retry_after: str | None) -> int:
-    """How long to wait, in whole seconds, before sending a rate limited request again."""
+    """How long to wait, in whole seconds, before sending a rate limited request again.
+
+    Args:
+        retry_after: The Retry-After header of the tracker's answer, if any.
+    """
     wait = parse_retry_after(retry_after)
     if wait is None:
         return _RATE_LIMIT_WAIT
@@ -711,34 +715,45 @@ class BaseGazelleApi:
             url: The URL to request.
             params: Query parameters.
             data: POST body data.
-            timeout_secs: Request timeout in seconds.
+            timeout_secs: How long, in seconds, connecting, each read and reading the whole
+                answer may take, and how long sending the body may stall.
             prefer_api_key: If True and api_key is set, use Authorization header
                 only (no cookie). If False or api_key is empty, use cookie only
                 (no Authorization header).
-            idempotent: Whether sending the request twice does no more than sending it
-                once. Defaults to True for everything but POST.
+            idempotent: Whether sending the request twice leaves the tracker as sending
+                it once. Defaults to False for POST and True otherwise.
+            needs_authkey: Whether the request needs the authkey, which a fresh client
+                fetches with an index call first. An api key request that sends no auth
+                field does not.
             expected_error_statuses: Error statuses the endpoint answers with a body the
                 caller reads itself: the response is returned instead of raising. Not on a
                 later hop of a request that is not idempotent, which the tracker has acted on.
             binary: Read a successful answer as bytes, into the response's content, streamed and
-                capped at 25 MiB; its text is then empty.
+                stopped once it holds more than 25 MiB. Its text is then empty. Error and redirect
+                answers are read as text, as without it.
+
+        Redirects within the site are followed, up to three hops, each one through the
+        rate limiter. A redirect to the login page raises LoginError without requesting it.
 
         Returns:
             HttpResponse with text, url, status, and headers.
 
         Raises:
-            UnknownOutcomeError: A request that is not idempotent failed after it may have
-                reached the tracker, so it is not sent again.
-            RateLimitedError: The tracker rate limits it and asks for more than 60 s of waits in all.
-            RequestFailedError: With binary, if the answer holds more than 25 MiB. Not retried.
+            RetryableError: If the request still fails after its retries.
+            RateLimitedError: If the tracker rate limits the request and asks to wait
+                longer than the request's rate limit waits may add up to.
+            UnknownOutcomeError: If a request that is not idempotent fails after it may
+                have reached the tracker.
             TLSCertificateError: If the TLS certificate of the host does not verify. Not retried.
+            DryRunRefused: If the request is not a GET and a dry run is running. Nothing is sent.
+            RequestFailedError: With binary, if the answer holds more than 25 MiB. Not retried.
         """
         if accounts.handing_over():
             if method != "GET" and accounts.caller_cancelled():
                 # A cancelled job whose cancel came back as an unknown outcome may look things up, but changes nothing.
                 raise asyncio.CancelledError(f"cancelled before sending {method} {urlparse(url).path}")
-            # salmon web: the request runs on its request loop, where each tracker account has its one pool
-            # (ADR 0004), with this context's variables (dry run, job output).
+            # salmon web: the request runs on its request loop, where each tracker account has its one rate
+            # limit, lock and pool (ADR 0004), with this context's variables (dry run, held messages, job output).
             action = f"?action={params['action']}" if params and "action" in params else ""
             return await accounts.run_on_request_loop(
                 partial(
@@ -756,11 +771,12 @@ class BaseGazelleApi:
                 ),
                 what=f"{method} {urlparse(url).path}{action} to {self.site_string}",
             )
-        # A dry run only reads from the tracker; each sending step skips itself, and this stops any that was missed.
+        # A dry run only reads from the tracker. Each step that would send something skips itself; this
+        # stops any that was missed, before anything goes out.
         if method != "GET" and dryrun.active():
             dryrun.refuse(f"send {method} {self._redact(url)} to {self.site_string}")
-        # An api key request that sends no auth field needs no index call for the authkey.
-        # Outside _send's retries: the attempt makes its own tries, which a retried request would repeat.
+        # Before the retries, not within them: the index call has retries of its own, and
+        # authenticating again on each retry would send up to 25 index calls per request.
         if needs_authkey and not (params and params.get("action") == "index"):
             await self.ensure_authenticated()
         # One list for every attempt, so the rate limit waits add up across the retries.
@@ -1127,8 +1143,7 @@ class BaseGazelleApi:
         Raises:
             LoginError: If authentication fails.
             RequestFailedError: If the request fails.
-            RetryableError: If network error persists after retries
-                (a RequestError subclass).
+            RetryableError: If network error persists after retries.
         """
         url = self.base_url + "/ajax.php"
         params = {"action": action, **(params or {})}
@@ -1141,7 +1156,7 @@ class BaseGazelleApi:
             resp_json = {"status": "error", "error": resp.text}
 
         if resp_json.get("status") != "success":
-            raise RequestFailedError(safe_response_excerpt(self._redact(str(resp_json.get("error", resp.text)))))
+            raise RequestFailedError(self._excerpt(str(resp_json.get("error", resp.text))))
         return cast("dict", resp_json["response"])
 
     async def torrentgroup(self, group_id: int) -> dict:
@@ -1165,6 +1180,7 @@ class BaseGazelleApi:
             The torrent group ID as int, or None if not found.
         """
         url = self.base_url + "/torrents.php"
+        # _request raises a timeout as a RequestError, after its retries.
         resp = await self._request("GET", url, params={"torrentid": torrentid}, timeout_secs=5)
         parsed = urlparse(resp.url)
         query = parse_qs(parsed.query)
