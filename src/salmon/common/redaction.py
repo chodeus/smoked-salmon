@@ -69,8 +69,8 @@ _SECRET_NAMES = "authkey|passkey|torrent_pass|auth|api_?key|authorization|sessio
 _SENSITIVE_KEYS = re.compile(
     rf"""(["']?\b(?:{_SECRET_NAMES}|Authorization)["']?\s*[:=]\s*)(["'])(?:(?!\2)[^\\\n]|\\.)*(\2?)""", re.IGNORECASE
 )
-# A value ends at a cookie's ";" too.
-_SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=[^&;\"'\s<>]+", re.IGNORECASE)
+# A value ends at "; ", a cookie's attribute separator; a ";" with no space after stays in it, as in a URL query.
+_SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=(?:[^&;\"'\s<>]|;(?!\s))+", re.IGNORECASE)
 # The passkey in an announce URL, wherever the text holds one and however short, as in redact_url.
 _ANNOUNCE_PASSKEY = re.compile(r"/[A-Za-z0-9]+(?=/announce)")
 

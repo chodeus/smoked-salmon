@@ -84,6 +84,7 @@ def test_response_headers_mask_cookie_values_credentials_and_known_secrets() -> 
         pytest.param("x.php?authorization=MARK-AUTHZ-04", "MARK-AUTHZ-04", id="authorization query"),
         pytest.param("https://user:MARK-USERINFO-05@tracker.test/x", "MARK-USERINFO-05", id="url userinfo"),
         pytest.param('<input name=auth value="MARK-GT-07>TAIL">', "MARK-GT-07", id="input value holding >"),
+        pytest.param("x.php?authorization=MARK-SEMI-08;MARK-SEMI-09&id=1", "MARK-SEMI-09", id="query value holding ;"),
     ],
 )
 def test_redact_tracker_fields_masks_the_shapes_upstreams_patterns_cover(text: str, marker: str) -> None:
