@@ -124,7 +124,7 @@ def _normalize_session_cookie(cookie: str) -> str:
     Some cookie editors show the session in decoded form (`abc/def+ghi:jkl==`). aiohttp
     quotes a value containing `/ + : =`, and PHP url-decodes cookies, so Gazelle would
     read the quotes and a space for every `+` and reject the session. An already
-    encoded value is unchanged.
+    encoded value keeps its meaning: only the case of its escapes may change.
 
     Args:
         cookie: Session cookie value from config, decoded or encoded.

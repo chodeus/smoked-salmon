@@ -5,7 +5,8 @@ import string
 from collections.abc import Callable, Iterable
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
-_URL_USERINFO = re.compile(r"(://)[^/\s@]+@")
+# Up to the authority's end: a "@" later in the query or fragment is no userinfo.
+_URL_USERINFO = re.compile(r"(://)[^/?#\s@]+@")
 _USERINFO_PASSWORD = re.compile(r"://[^/\s@:]*:([^/\s@']+)@")
 _SECRET_WORDS = r"(?:pass|password|token|secret|key|session|header|cookie|auth)"
 # A quoted value is masked whole, doubled quotes included: rclone quotes values with spaces (a PEM key).
@@ -74,7 +75,8 @@ _SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=[^&;\"'\s<>]+", re.IGN
 _ANNOUNCE_PASSKEY = re.compile(r"/[A-Za-z0-9]+(?=/announce)")
 
 # A form field carrying one, <input name="auth" value="...">, its attributes in any order, quoted or not.
-_INPUT_TAG = re.compile(r"<input\b[^>]*>", re.IGNORECASE)
+# Quote-aware: a ">" inside a quoted attribute does not end the tag.
+_INPUT_TAG = re.compile(r"""<input\b(?:[^>"']|"[^"]*"|'[^']*')*>""", re.IGNORECASE)
 _SECRET_FIELD_NAME = re.compile(rf"""\bname\s*=\s*(["']?)(?:{_SECRET_NAMES})\1(?=[\s/>])""", re.IGNORECASE)
 _FIELD_VALUE = re.compile(r"""(\bvalue\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s"'>]+)""", re.IGNORECASE)
 
