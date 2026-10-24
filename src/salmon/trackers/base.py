@@ -264,7 +264,22 @@ def _submitted_fields(form: Tag) -> list[tuple[str, str]]:
 
 
 def _torrent_edit_fields(page: str, torrent_id: int) -> list[tuple[str, str]]:
-    """The torrent edit form's fields as a browser submits them; RequestError unless it is exactly this torrent's."""
+    """Read a torrent's edit form, as a browser would submit it.
+
+    The page also holds forms that move the torrent to another group. The edit form is
+    the one named "torrent" that posts action=takeedit, and it must be the only one.
+
+    Args:
+        page: The HTML of torrents.php?action=edit.
+        torrent_id: The torrent the form must edit.
+
+    Returns:
+        The form's (name, value) pairs, in page order.
+
+    Raises:
+        RequestError: If the page does not hold exactly one edit form for this torrent,
+            with a description and an auth field (a login or an error page, say).
+    """
     soup = BeautifulSoup(page, "lxml")
     # The page also holds forms that move the torrent to another group; only one posts action=takeedit.
     forms = [
@@ -452,11 +467,21 @@ def _failed_certificate_check(err: BaseException) -> ssl.SSLCertVerificationErro
 
 
 def _rate_limit_wait(retry_after: str | None) -> int:
-    """How long to wait, in whole seconds, before sending a rate limited request again."""
+    """How long to wait, in whole seconds, before sending a rate limited request again.
+
+    Args:
+        retry_after: The Retry-After header of the tracker's answer, if any.
+    """
     wait = parse_retry_after(retry_after)
     if wait is None:
         return _RATE_LIMIT_WAIT
     return max(math.ceil(wait), _MIN_RATE_LIMIT_WAIT)
+
+
+def _query_id(query: dict[str, list[str]], name: str) -> int | None:
+    """Get an ID from a parsed URL query: None unless the parameter is there and holds ASCII digits only."""
+    value = query.get(name, [""])[0]
+    return int(value) if value.isascii() and value.isdigit() else None
 
 
 class HttpResponse(msgspec.Struct, frozen=True):
@@ -690,34 +715,45 @@ class BaseGazelleApi:
             url: The URL to request.
             params: Query parameters.
             data: POST body data.
-            timeout_secs: Request timeout in seconds.
+            timeout_secs: How long, in seconds, connecting, each read and reading the whole
+                answer may take, and how long sending the body may stall.
             prefer_api_key: If True and api_key is set, use Authorization header
                 only (no cookie). If False or api_key is empty, use cookie only
                 (no Authorization header).
-            idempotent: Whether sending the request twice does no more than sending it
-                once. Defaults to True for everything but POST.
+            idempotent: Whether sending the request twice leaves the tracker as sending
+                it once. Defaults to False for POST and True otherwise.
+            needs_authkey: Whether the request needs the authkey, which a fresh client
+                fetches with an index call first. An api key request that sends no auth
+                field does not.
             expected_error_statuses: Error statuses the endpoint answers with a body the
                 caller reads itself: the response is returned instead of raising. Not on a
                 later hop of a request that is not idempotent, which the tracker has acted on.
             binary: Read a successful answer as bytes, into the response's content, streamed and
-                capped at 25 MiB; its text is then empty.
+                stopped once it holds more than 25 MiB. Its text is then empty. Error and redirect
+                answers are read as text, as without it.
+
+        Redirects within the site are followed, up to three hops, each one through the
+        rate limiter. A redirect to the login page raises LoginError without requesting it.
 
         Returns:
             HttpResponse with text, url, status, and headers.
 
         Raises:
-            UnknownOutcomeError: A request that is not idempotent failed after it may have
-                reached the tracker, so it is not sent again.
-            RateLimitedError: The tracker rate limits it and asks for more than 60 s of waits in all.
-            RequestFailedError: With binary, if the answer holds more than 25 MiB. Not retried.
+            RetryableError: If the request still fails after its retries.
+            RateLimitedError: If the tracker rate limits the request and asks to wait
+                longer than the request's rate limit waits may add up to.
+            UnknownOutcomeError: If a request that is not idempotent fails after it may
+                have reached the tracker.
             TLSCertificateError: If the TLS certificate of the host does not verify. Not retried.
+            DryRunRefused: If the request is not a GET and a dry run is running. Nothing is sent.
+            RequestFailedError: With binary, if the answer holds more than 25 MiB. Not retried.
         """
         if accounts.handing_over():
             if method != "GET" and accounts.caller_cancelled():
                 # A cancelled job whose cancel came back as an unknown outcome may look things up, but changes nothing.
                 raise asyncio.CancelledError(f"cancelled before sending {method} {urlparse(url).path}")
-            # salmon web: the request runs on its request loop, where each tracker account has its one pool
-            # (ADR 0004), with this context's variables (dry run, job output).
+            # salmon web: the request runs on its request loop, where each tracker account has its one rate
+            # limit, lock and pool (ADR 0004), with this context's variables (dry run, held messages, job output).
             action = f"?action={params['action']}" if params and "action" in params else ""
             return await accounts.run_on_request_loop(
                 partial(
@@ -735,11 +771,12 @@ class BaseGazelleApi:
                 ),
                 what=f"{method} {urlparse(url).path}{action} to {self.site_string}",
             )
-        # A dry run only reads from the tracker; each sending step skips itself, and this stops any that was missed.
+        # A dry run only reads from the tracker. Each step that would send something skips itself; this
+        # stops any that was missed, before anything goes out.
         if method != "GET" and dryrun.active():
             dryrun.refuse(f"send {method} {self._redact(url)} to {self.site_string}")
-        # An api key request that sends no auth field needs no index call for the authkey.
-        # Outside _send's retries: the attempt makes its own tries, which a retried request would repeat.
+        # Before the retries, not within them: the index call has retries of its own, and
+        # authenticating again on each retry would send up to 25 index calls per request.
         if needs_authkey and not (params and params.get("action") == "index"):
             await self.ensure_authenticated()
         # One list for every attempt, so the rate limit waits add up across the retries.
@@ -1106,8 +1143,7 @@ class BaseGazelleApi:
         Raises:
             LoginError: If authentication fails.
             RequestFailedError: If the request fails.
-            RetryableError: If network error persists after retries
-                (a RequestError subclass).
+            RetryableError: If network error persists after retries.
         """
         url = self.base_url + "/ajax.php"
         params = {"action": action, **(params or {})}
@@ -1120,7 +1156,7 @@ class BaseGazelleApi:
             resp_json = {"status": "error", "error": resp.text}
 
         if resp_json.get("status") != "success":
-            raise RequestFailedError(safe_response_excerpt(self._redact(str(resp_json.get("error", resp.text)))))
+            raise RequestFailedError(self._excerpt(str(resp_json.get("error", resp.text))))
         return cast("dict", resp_json["response"])
 
     async def torrentgroup(self, group_id: int) -> dict:
@@ -1144,6 +1180,7 @@ class BaseGazelleApi:
             The torrent group ID as int, or None if not found.
         """
         url = self.base_url + "/torrents.php"
+        # _request raises a timeout as a RequestError, after its retries.
         resp = await self._request("GET", url, params={"torrentid": torrentid}, timeout_secs=5)
         parsed = urlparse(resp.url)
         query = parse_qs(parsed.query)
@@ -1429,36 +1466,58 @@ class BaseGazelleApi:
     async def _request_fill_result(
         self, data: dict, files: UploadFiles, resp_text: str, resp_url: str
     ) -> tuple[int, int]:
-        """The ids of an upload that went on to fill a request; Gazelle stores the torrent before it tries the fill."""
+        """Get the IDs of an upload that went on to fill a request.
+
+        Gazelle stores the torrent before it redirects to the fill, so the upload stands whether or not the
+        fill works. A fill it refuses (already filled, the wrong format) leaves an error page at the fill's
+        URL, which names the torrent.
+
+        Args:
+            data: Upload form data.
+            files: UploadFiles that were uploaded.
+            resp_text: The page the upload ended on.
+            resp_url: That page's URL, on requests.php. It may carry the authkey.
+
+        Returns:
+            Tuple of (torrent_id, group_id). The group is 0 if it could not be looked up.
+
+        Raises:
+            UnknownOutcomeError: If the page names no torrent and looking it up by its infohash does not find it.
+        """
         query = parse_qs(urlparse(resp_url).query)
         try:
             torrent_id = self.parse_torrent_id_from_filled_request_page(resp_text)
-            click.secho(f"Filled request: {self._redact(resp_url)}", fg="green")
         except (TypeError, ValueError):
             reason = self._request_fill_error(resp_text)
-            stored = query.get("torrentid", [""])[0]
-            if not stored.isdigit():
+            stored = _query_id(query, "torrentid")
+            if stored is None:
                 return await self._find_lost_upload(files, UnknownOutcomeError(f"filling the request failed: {reason}"))
-            torrent_id = int(stored)
-            request = query.get("requestid", [""])[0]
-            where = self.request_url(int(request)) if request.isdigit() else "the request"
+            torrent_id = stored
+            request_id = _query_id(query, "requestid")
+            where = self.request_url(request_id) if request_id is not None else "the request"
             click.secho(f"The upload went through, but filling {where} failed: {reason}", fg="red", bold=True)
+        else:
+            click.secho(f"Filled request: {self._redact(resp_url)}", fg="green")
         if data.get("groupid"):
+            # Sent into a known group: no need to ask.
             return torrent_id, int(data["groupid"])
         try:
-            return torrent_id, await self.get_redirect_torrentgroupid(torrent_id) or 0
+            group_id = await self.get_redirect_torrentgroupid(torrent_id)
         except RequestError as err:
-            # _request has already retried this GET. The torrent is up: raising would report it failed, unseeded.
-            click.secho(f"Could not look up the group of torrent {torrent_id}: {err}", fg="yellow")
+            # The torrent is up: raising would report it failed, and it would go unseeded.
+            click.secho(f"Could not look up the group of torrent {torrent_id}: {self._excerpt(str(err))}", fg="yellow")
             return torrent_id, 0
+        return torrent_id, group_id or 0
 
     def _request_fill_error(self, resp_text: str) -> str:
-        """The error a request page shows, redacted and capped."""
+        """Get the error a request page shows, or the page itself, redacted and cut short."""
         soup = BeautifulSoup(resp_text, "lxml")
-        error = soup.find("h2", string="Error")  # pyright: ignore[reportCallIssue, reportArgumentType] - bs4 stubs reject name+string
-        if error and error.parent and error.parent.parent and (p_tag := error.parent.parent.find("p")):
-            return safe_response_excerpt(self._redact(p_tag.text))
-        return safe_response_excerpt(self._redact(resp_text))
+        error = soup.find("h2", string="Error")
+        if error and error.parent and error.parent.parent:
+            p_tag = error.parent.parent.find("p")
+            if p_tag:
+                return self._excerpt(p_tag.text)
+        return self._excerpt(resp_text)
 
     async def _find_lost_upload(self, files: UploadFiles, err: UnknownOutcomeError) -> tuple[int, int]:
         """Look up an upload whose answer was lost, by the torrent's infohash.
@@ -1603,7 +1662,21 @@ class BaseGazelleApi:
         raise RequestError(f"Failed to report the torrent for lossy master, code {resp.status}.")
 
     async def append_to_torrent_description(self, torrent_id: int, description_addition: str) -> None:
-        """Prepend text to a torrent's description; RequestError if the form is unreadable or the edit refused."""
+        """Add text to start of torrent description.
+
+        The edit form sets every field of the torrent, and one it lacks is cleared or unset:
+        rebuilt from the API, it lost the edition, flags and marks the API does not give (#357).
+        So the tracker's own edit form is read and sent back as a browser would, with only the
+        description changed. It also holds the auth, so a fresh client needs no index call.
+
+        Args:
+            torrent_id: The torrent ID.
+            description_addition: Text to prepend to description.
+
+        Raises:
+            RequestError: If the edit form cannot be read, in which case nothing is sent,
+                or if the edit fails.
+        """
         resp = await self._edit_torrent_description(torrent_id, description_addition)
         resp_text = resp.text
 
