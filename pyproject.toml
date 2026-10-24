@@ -4,16 +4,16 @@ version = "0.11.0"
 description = "An uploading script for Gazelle-based music trackers."
 license = "Apache-2.0"
 readme = "README.md"
-requires-python = ">=3.13.16"
+requires-python = ">=3.13.17"
 dependencies = [
     "aiohttp>=3.14.5",
     "aiohttp-jinja2>=1.6",
     "anyio>=4.15.1",
     "asyncclick>=8.4.2.1",
-    "av>=19.0.1",
+    "av>=19.0.2",
     "backports-zstd>=1.8.0; python_full_version < '3.14' and platform_python_implementation == 'CPython'",
     "beautifulsoup4[lxml]>=4.15.0",
-    "brotli>=1.2.0 ; platform_python_implementation == 'CPython'",
+    "brotli>=1.2.1; platform_python_implementation == 'CPython'",
     "deluge-client>=1.10.2",
     "fastapi>=0.146.0",
     "humanfriendly>=10.0",
@@ -29,7 +29,7 @@ dependencies = [
     "pyimgbox>=1.0.7",
     "pyoxipng>=9.1.1 ; python_version < '3.14'",
     "pyperclip>=1.11.0",
-    "qbittorrent-api>=2026.10.0",
+    "qbittorrent-api>=2026.10.1",
     "requests>=2.34.2",
     "send2trash>=2.1.0",
     "tenacity>=9.2.1",
@@ -45,7 +45,7 @@ dependencies = [
 salmon = "salmon.run:main"
 
 [build-system]
-requires = ["uv_build>=0.13.1,<0.13.2"]
+requires = ["uv_build>=0.13.5,<0.13.6"]
 build-backend = "uv_build"
 
 [dependency-groups]
@@ -54,7 +54,7 @@ dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
-    "ruff>=0.17.1",
+    "ruff>=0.17.2",
 ]
 
 [tool.pytest.ini_options]
