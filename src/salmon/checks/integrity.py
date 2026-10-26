@@ -10,64 +10,79 @@ from salmon import cfg, interaction
 from salmon.common.files import process_files, rewrite_refusal
 
 FLAC_IMPORTANT_REGEXES = [
-    re.compile(r"(.+\.flac: testing,.*)\x08ok"),
+    # A warning, then flac's "ok" for the decode.
     re.compile(r"(.+\.flac:.+)\nok\s*", re.MULTILINE),
+    # What stopped the decode: "a.flac: ERROR while decoding data".
+    re.compile(r"^(.+: ERROR.*?)\s*$", re.MULTILINE),
 ]
 
 FLAC_MD5_UNSET_RE = re.compile(r"WARNING.*MD5 signature.*STREAMINFO", re.IGNORECASE)
 
-# What an unset MD5 actually means, said once per album rather than once per file.
-# Worth spelling out because the files are fine: flac verifies the frame CRCs and
-# prints "ok" — there is simply no whole-file checksum stored to check against.
+# flac prints "ok" only once the audio has decoded: "a.flac: ok" for a clean file, the MD5 warning then a
+# bare "ok" when the MD5 is unset, and no "ok" at all when decoding fails.
+FLAC_OK_RE = re.compile(r"^(?:.*: )?ok\s*$", re.MULTILINE)
+
+# Said once for the whole album rather than once per file.
 MD5_UNSET_NOTE = (
-    "The audio decodes cleanly; there is just no checksum stored to verify it against. "
-    "Normal for WEB / web-store downloads.\n"
-    "Sanitize re-encodes the album losslessly to set the MD5 (this also strips embedded art); "
-    'note it in the release description: "WEB download, re-encoded to set MD5".'
+    "The audio decodes cleanly; there is no checksum stored to verify it against, "
+    "which is common for WEB downloads.\n"
+    "Sanitizing re-encodes the files losslessly to set the MD5 (this also strips embedded art)."
 )
 
-# flac prints "ok" only once the stream has actually decoded, so its presence is a
-# positive signal rather than the absence of an error. Verified shapes: a clean file
-# gives "name.flac: ok", an unset MD5 gives the warning then a bare "ok", and a
-# truncated file gives "ERROR while decoding metadata" and no "ok" at all.
-FLAC_OK_RE = re.compile(r"(?m)^(?:.*: )?ok\s*$")
+# mp3val exits 0 whatever it finds, so its messages are the verdict. It reports each finding as
+# `WARNING: "<path>" (offset 0x...): <message>` or `ERROR: "<path>": <message>`, then one
+# `INFO: "<path>": <summary>` line for a file it could analyse.
+MP3VAL_LINE_RE = re.compile(r'^(INFO|WARNING|ERROR): ".*"(?: \((offset 0x[0-9a-fA-F]+)\))?: (.*)$')
 
-# mp3val prefixes every line it cares about. Each prefix has exactly one home:
-# INFO and ERROR describe the file and belong in details, WARNING is a concern
-# the UI chips separately — putting a line in both shows it to the reader twice.
-MP3_INFO_PREFIX = "INFO:"
-MP3_ERROR_PREFIX = "ERROR:"
-MP3_WARNING_PREFIX = "WARNING:"
+# The file is not MPEG audio at all: nothing to repair, the upload stops.
+MP3VAL_NOT_AUDIO = (
+    "Unknown file format",
+    "This is a RIFF file, not MPEG stream",
+    "Too few MPEG frames",
+)
+
+# About tags or seeking, not the audio: reported, but the file passes.
+MP3VAL_INFORMATIONAL = (
+    "No supported tags in the file",
+    "VBR detected, but no VBR header is present",
+    "Several APEv2 tags in one file",
+)
 
 
 class IntegrityResult(msgspec.Struct, frozen=True):
-    """Whether the files decoded, and anything the tools said short of failing.
+    """Whether the files passed, and what the tools said.
 
-    The two are separate on purpose: a file that will not decode is a different
-    state from one that decodes with a complaint, and reporting the second as
-    "decodes cleanly" is how an unearned green tick happens.
+    Args:
+        passed: True if every file passed.
+        details: The tools' messages worth reading, one per line.
+        concerns: Informational messages about files that still passed.
+        md5_unset: Names of FLAC files with no MD5 signature in STREAMINFO. The explanation is
+            MD5_UNSET_NOTE, shown once for all of them.
+        decode_failures: Names of files that are not usable audio. These block an upload even when the
+            user declines to sanitize; a failed file not listed here can be acknowledged.
+        checked: How many files were checked.
     """
 
     passed: bool
     details: str = ""
     concerns: tuple[str, ...] = ()
-    # Names only. The explanation is MD5_UNSET_NOTE, rendered once for the whole set —
-    # repeating it per file is what turned one fact about 17 tracks into 34 lines.
     md5_unset: tuple[str, ...] = ()
-    # Files that failed for any reason other than a bare missing MD5. Kept separate so
-    # the two can never be conflated: "3 of 17" is a part-WEB album, a decode failure is
-    # a broken file, and only the first is safe to wave through.
     decode_failures: tuple[str, ...] = ()
     checked: int = 0
 
 
 def _resolve_overstrikes(text: str) -> str:
-    """Apply flac's progress backspaces instead of carrying them into the output.
+    """Apply the backspaces flac prints over its progress instead of passing them on.
 
-    flac erases "testing, N% complete" with a run of \\x08 before writing the next
-    message. Passed through raw, those bytes eat the characters in front of them
-    wherever the details are rendered — "Eye of the Storm" + a warning became
-    "Eye of the Stormgnature unset in STREAMINFO".
+    flac 1.3 erases "testing, N% complete" with a run of \\x08 before writing its next message, even when
+    its output is not a terminal. Passed through raw, they eat the characters in front of them wherever
+    the details are shown.
+
+    Args:
+        text: flac's output.
+
+    Returns:
+        The text as a terminal would have left it.
     """
     out: list[str] = []
     for char in text:
@@ -83,33 +98,24 @@ def _resolve_overstrikes(text: str) -> str:
 
 
 def md5_unset_summary(count: int, checked: int) -> str:
-    """ "3 of 17" reads differently from "17 of 17" — one is a part-WEB album."""
-    return (
-        f"{count} of {checked} file(s) have no stored MD5 signature"
-        if checked
-        else (f"{count} file(s) have no stored MD5 signature")
-    )
+    """Say how many files have no MD5, out of how many were checked."""
+    if checked:
+        return f"{count} of {checked} file(s) have no MD5 signature stored"
+    return f"{count} file(s) have no MD5 signature stored"
 
 
 def sanitize_prompt(result: IntegrityResult) -> str:
-    """The question asked at the point of decision, naming the reason it is being asked.
-
-    Lives here so the prompt and the explanation above it cannot drift apart.
-    """
+    """The sanitize question, naming the reason it is asked when it is only a missing MD5."""
     if result.md5_unset and not result.decode_failures:
         return (
             f"{md5_unset_summary(len(result.md5_unset), result.checked)}. "
-            "Re-encode the album losslessly to set it? (also strips embedded art)"
+            "Re-encode them losslessly to set it? (also strips embedded art)"
         )
     return "Do you want to sanitize this upload?"
 
 
 def _describe_md5_unset(names: tuple[str, ...], checked: int) -> str:
-    """The unset-MD5 section, once for the whole set.
-
-    Names only when there are few of them — a whole album listed track by track is
-    the wall of text this replaced, and the count already says everything.
-    """
+    """The unset-MD5 section, once for the whole set, naming the files only when there are few."""
     head = md5_unset_summary(len(names), checked)
     if len(names) <= 3:
         head += f": {', '.join(names)}"
@@ -117,22 +123,27 @@ def _describe_md5_unset(names: tuple[str, ...], checked: int) -> str:
 
 
 def format_integrity(result: IntegrityResult) -> str:
-    """Format the integrity check result for display."""
+    """Format the integrity check result for display.
+
+    Args:
+        result: The integrity check result.
+
+    Returns:
+        Styled string indicating pass or fail with optional details.
+    """
     integrities, integrities_out = result.passed, result.details
     if integrities:
         if result.concerns:
             return click.style(
-                f"Passed integrity check, with {len(result.concerns)} warning(s):\n" + "\n".join(result.concerns),
+                f"Passed integrity check, with {len(result.concerns)} note(s):\n" + "\n".join(result.concerns),
                 fg="yellow",
             )
         return click.style("Passed integrity check", fg="green")
     else:
-        # Name the reason in the headline. A missing checksum and a file that will not
-        # decode both stop the upload, but only one of them means the audio is suspect.
-        # Gated on decode_failures, not on details: a failure that parsed to no detail
-        # text would otherwise be announced as a clean "no MD5 signature".
+        # A missing checksum and a file that will not decode both fail the check, but only the second
+        # means the audio is suspect: say which in the headline.
         if result.md5_unset and not result.decode_failures:
-            output = click.style("Integrity check not passed — no MD5 signature stored", fg="red", bold=True)
+            output = click.style("Integrity check not passed: no MD5 signature stored", fg="red", bold=True)
         else:
             output = click.style("Failed integrity check", fg="red", bold=True)
         if result.md5_unset:
@@ -189,10 +200,18 @@ def _no_sanitize(path: str, refusal: str) -> None:
 
 
 async def resolve_integrity_for_upload(path: str, *, scene: bool, assume_yes: bool) -> IntegrityResult:
-    """Check the folder, offer to sanitize, and abort if anything still will not decode.
+    """Check the folder before an upload, offer to sanitize, and abort if a file still will not decode.
 
-    Owns the whole "is this folder fit to upload?" decision so the CLI has one gate
-    rather than a condition the caller can accidentally re-order.
+    Args:
+        path: The release folder.
+        scene: Whether this is a scene release, which must not be sanitized.
+        assume_yes: Sanitize without asking (upload.yes_all).
+
+    Returns:
+        The last integrity result: after sanitizing, the re-check's.
+
+    Raises:
+        click.Abort: If a scene release fails the check, or a file does not decode.
     """
     click.secho("\nChecking integrity of audio files...", fg="cyan", bold=True)
     result = await check_integrity(path)
@@ -202,7 +221,7 @@ async def resolve_integrity_for_upload(path: str, *, scene: bool, assume_yes: bo
 
     if scene:
         click.secho(
-            "Some files failed sanitization, and this a scene release. "
+            "Some files failed the integrity check, and this is a scene release. "
             "You need to sanitize and de-scene before uploading. Aborting.",
             fg="red",
             bold=True,
@@ -212,24 +231,32 @@ async def resolve_integrity_for_upload(path: str, *, scene: bool, assume_yes: bo
     if assume_yes or await interaction.confirm(click.style(f"\n{sanitize_prompt(result)}", fg="magenta"), default=True):
         result = await sanitize_and_verify(path)
 
-    # Outside the sanitize branch: declining to sanitize is not consent to upload files
-    # that will not decode. Ungated by assume_yes too — that means "take the default
-    # answer", not "upload anything".
+    # Declining to sanitize is not consent to upload files that do not decode, and yes_all takes the
+    # default answer, not "upload anything".
     if result.decode_failures:
-        click.secho(f"{len(result.decode_failures)} file(s) do not decode. Aborting.", fg="red", bold=True)
+        click.secho(
+            f"{len(result.decode_failures)} file(s) do not decode: {', '.join(result.decode_failures)}. Aborting.",
+            fg="red",
+            bold=True,
+        )
         raise click.Abort()
     return result
 
 
 async def sanitize_and_verify(path: str) -> IntegrityResult:
-    """Sanitize, then re-check, and report what the re-check found.
+    """Sanitize, then check again and report what the re-check found.
 
-    The re-check is the point. Callers are about to act on "the MD5 is set now" —
-    the upload even says so in the release description — so the claim has to be
-    verified rather than inferred from sanitize_integrity's return value.
+    sanitize_integrity succeeding is not evidence that the files now pass: the re-check is.
+
+    Args:
+        path: Path to a FLAC/MP3 file or a directory containing audio files.
+
+    Returns:
+        The re-check's result.
     """
-    click.secho("\nSanitizing...", fg="cyan", bold=True)
+    click.secho("\nSanitizing files...", fg="cyan", bold=True)
     reported_ok = await sanitize_integrity(path)
+    click.secho("\nChecking integrity again...", fg="cyan", bold=True)
     result = await check_integrity(path)
     click.echo(format_integrity(result))
     if not result.passed:
@@ -249,7 +276,7 @@ async def check_integrity(path: str, _: int | None = None) -> IntegrityResult:
         _: Unused index parameter for process_files compatibility.
 
     Returns:
-        An IntegrityResult: whether everything decoded, plus anything worth reading.
+        The combined result for every file checked.
 
     Raises:
         click.Abort: If no audio files found or path is invalid.
@@ -273,23 +300,20 @@ async def check_integrity(path: str, _: int | None = None) -> IntegrityResult:
         concerns: list[str] = []
         md5_unset: list[str] = []
         decode_failures: list[str] = []
-        checked = 0
         for result in results:
             integrities = integrities and result.passed
-            # Skip empties, or a clean album joins into a run of blank lines.
             if result.details:
                 integrities_out.append(result.details)
             concerns.extend(result.concerns)
             md5_unset.extend(result.md5_unset)
             decode_failures.extend(result.decode_failures)
-            checked += result.checked
         return IntegrityResult(
             integrities,
             "\n".join(integrities_out),
             tuple(concerns),
             tuple(md5_unset),
             tuple(decode_failures),
-            checked,
+            checked=sum(result.checked for result in results),
         )
     raise click.Abort
 
@@ -301,86 +325,98 @@ async def _check_flac_integrity(path: str) -> IntegrityResult:
         path: Path to the FLAC file.
 
     Returns:
-        An IntegrityResult built from the tool's output.
+        The file's result.
     """
+    name = os.path.basename(path)
     try:
         result = await anyio.run_process(["flac", "-wt", path], check=False)
-        result_text = result.stdout.decode() if result.stdout else ""
-        if result.stderr:
-            result_text += result.stderr.decode()
-        result_text = _resolve_overstrikes(result_text)
-        important_matches: list[str] = []
-        for important_re in FLAC_IMPORTANT_REGEXES:
-            important_matches.extend(m.strip() for m in important_re.findall(result_text))
-        md5_unset = FLAC_MD5_UNSET_RE.search(result_text)
-        # The warning line is the same fact md5_unset already carries; keeping both is
-        # how one file produced two identical-looking lines.
-        important_matches = [m for m in important_matches if not FLAC_MD5_UNSET_RE.search(m)]
-        passed = result.returncode == 0 and not md5_unset
-        name = os.path.basename(path)
-        # -w makes the MD5 warning exit non-zero, so the return code alone cannot say
-        # whether the audio decoded. flac saying "ok" can, and its absence fails closed.
-        md5_only = bool(md5_unset) and bool(FLAC_OK_RE.search(result_text))
-        return IntegrityResult(
-            passed,
-            "\n".join(important_matches),
-            md5_unset=(name,) if md5_unset else (),
-            decode_failures=() if passed or md5_only else (name,),
-            checked=1,
-        )
     except Exception:
-        name = os.path.basename(path)
         return IntegrityResult(
-            False,
-            click.style(f"{name}: Failed integrity", fg="red", bold=True),
-            decode_failures=(name,),
-            checked=1,
+            False, click.style(f"{name}: Failed integrity", fg="red", bold=True), decode_failures=(name,), checked=1
         )
+    result_text = result.stdout.decode(errors="replace") if result.stdout else ""
+    if result.stderr:
+        result_text += result.stderr.decode(errors="replace")
+    result_text = _resolve_overstrikes(result_text)
+    important_matches: list[str] = []
+    for important_re in FLAC_IMPORTANT_REGEXES:
+        important_matches.extend(m.strip() for m in important_re.findall(result_text))
+    md5_unset = bool(FLAC_MD5_UNSET_RE.search(result_text))
+    # md5_unset carries that fact; keeping flac's warning line too shows it twice.
+    important_matches = [m for m in important_matches if not FLAC_MD5_UNSET_RE.search(m)]
+    passed = result.returncode == 0 and not md5_unset
+    # -w makes the MD5 warning exit non-zero, so only flac's "ok" says the audio decoded.
+    md5_only = md5_unset and bool(FLAC_OK_RE.search(result_text))
+    return IntegrityResult(
+        passed,
+        "\n".join(important_matches),
+        md5_unset=(name,) if md5_unset else (),
+        decode_failures=() if passed or md5_only else (name,),
+        checked=1,
+    )
 
 
 async def _check_mp3_integrity(path: str) -> IntegrityResult:
     """Check the integrity of a single MP3 file using mp3val.
 
+    mp3val's findings sort three ways: a file that is not MPEG audio fails and blocks the upload, stream
+    damage (truncation, resynchronisation, garbage, CRC or VBR header mismatches) fails but can be
+    repaired by sanitizing or acknowledged, and notes about tags or seeking pass. A run that analysed
+    nothing fails too, so an unreadable file cannot pass.
+
     Args:
         path: Path to the MP3 file.
 
     Returns:
-        An IntegrityResult built from the tool's output.
+        The file's result.
     """
+    name = os.path.basename(path)
     try:
         result = await anyio.run_process(["mp3val", path], check=False)
-        result_text = result.stdout.decode() if result.stdout else ""
-        name = os.path.basename(path)
-        lines = [line.strip() for line in result_text.splitlines() if line.strip()]
-
-        info = [line for line in lines if line.startswith(MP3_INFO_PREFIX)]
-        errors = [line for line in lines if line.startswith(MP3_ERROR_PREFIX)]
-        warnings = [line for line in lines if line.startswith(MP3_WARNING_PREFIX)]
-
-        # mp3val exits 0 with the damage described in its output, so the text is
-        # the verdict. An unreadable or empty file gets no prefix at all — just
-        # "Cannot open input file" — and a run that produced no analysis proves
-        # nothing, so it must not count as a pass either.
-        passed = result.returncode == 0 and not errors and bool(info)
-        described = info + errors
-        details = "\n".join(f"{name}: {line}" for line in described) or f"{name}: {result_text.strip()}"
-        # An mp3 has no MD5 state, so any failure here is a decode failure — without
-        # this, a broken mp3 beside unset-MD5 flacs would ride their downgrade.
-        return IntegrityResult(
-            passed,
-            details,
-            tuple(f"{name}: {line}" for line in warnings),
-            decode_failures=() if passed else (name,),
-            checked=1,
-        )
     except Exception:
-        name = os.path.basename(path)
         return IntegrityResult(
-            False,
-            click.style(f"{name}: Failed integrity", fg="red", bold=True),
-            decode_failures=(name,),
-            checked=1,
+            False, click.style(f"{name}: Failed integrity", fg="red", bold=True), decode_failures=(name,), checked=1
         )
+    result_text = result.stdout.decode(errors="replace") if result.stdout else ""
+    if result.stderr:
+        result_text += result.stderr.decode(errors="replace")
+
+    details: list[str] = []
+    concerns: list[str] = []
+    analysed = False
+    damaged = False
+    not_audio = False
+    for line in result_text.splitlines():
+        match = MP3VAL_LINE_RE.match(line.strip())
+        if not match:
+            continue
+        level, offset, message = match.groups()
+        described = f"{name} ({offset}): {message}" if offset else f"{name}: {message}"
+        if level == "INFO":
+            analysed = True
+            if message.startswith("No MPEG frames"):
+                not_audio = True
+                details.append(described)
+        elif level == "ERROR" or message.startswith(MP3VAL_NOT_AUDIO):
+            not_audio = True
+            details.append(described)
+        elif message.startswith(MP3VAL_INFORMATIONAL):
+            concerns.append(described)
+        else:
+            damaged = True
+            details.append(described)
+
+    if not analysed and not not_audio:
+        not_audio = True
+        details.append(f"{name}: mp3val did not analyse the file: {result_text.strip() or 'no output'}")
+    passed = result.returncode == 0 and not damaged and not not_audio
+    return IntegrityResult(
+        passed,
+        "\n".join(details),
+        tuple(concerns),
+        decode_failures=(name,) if not_audio or (not passed and not damaged) else (),
+        checked=1,
+    )
 
 
 async def sanitize_integrity(path: str, _: int | None = None) -> bool:
@@ -498,11 +534,12 @@ async def _sanitize_flac(path: str) -> bool:
         )
         if result.returncode != 0:
             raise Exception("Failed to add FLAC padding")
-        os.remove(backup_path)  # only drop the backup once every step has succeeded
+        os.remove(backup_path)
         return True
     except Exception as e:
         click.secho(f"Failed to sanitize {path}, {e}", fg="red", bold=True)
-        # Restore the original if the re-encode failed with it renamed aside (#12).
+        # Put the original back whichever step failed. flac deletes its output when the re-encode fails, so
+        # without this the file is gone from the release and the check after sanitizing passes without it.
         _restore_backup(path, backup_path, moved, clobber_partial=True)
         return False
     except BaseException:
@@ -549,7 +586,7 @@ async def _sanitize_mp3(path: str) -> bool:
 
     except Exception as e:
         click.secho(f"Failed to sanitize {path}, {e}", fg="red", bold=True)
-        # Ensure we restore the original file if something went wrong.
+        # Ensure we restore the original file if something went wrong
         _restore_backup(path, backup_path, moved, clobber_partial=False)
         return False
     except BaseException:

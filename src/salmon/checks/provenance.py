@@ -1,4 +1,11 @@
-"""Who made these files, and which of their tag markers ('EAC FLAC -8', 'QOBUZ') the audio contradicts."""
+"""Who made these files, and does what they claim match what they are.
+
+Ported from chodeus's fork (`checks/provenance.py`), plus the CD ripper check (#538).
+
+Rippers, stores and resellers stamp their own markers into the tags: 'EAC FLAC -8', 'QOBUZ',
+'hd24bit.com'. A marker alone is ordinary and says nothing; one the audio contradicts (a 24bit claim
+on a 16bit file, a CD ripper on a 96 kHz file) is worth a look before uploading. This only warns.
+"""
 
 import os
 import re
@@ -33,8 +40,9 @@ _URL_RE = re.compile(
 )
 _DEPTH_CLAIM_RE = re.compile(r"(\d{2})\s*-?\s*bit", re.IGNORECASE)
 
-# Programs that only rip CDs (16 bit / 44.1 kHz). XLD, dBpoweramp, CUETools, fre:ac and EZ CD Audio Converter
-# also convert downloads, so their marker on a hi-res WEB release is no contradiction.
+# Programs that only rip CDs, so their marker means the audio was 16 bit / 44.1 kHz when it was made.
+# XLD, dBpoweramp, CUETools, fre:ac and EZ CD Audio Converter are left out on purpose: they also convert
+# downloaded files, and their marker on a clean hi-res WEB release would be a false alarm.
 _CD_RIPPER_RE = re.compile(r"\b(?:exact\s+audio\s+copy|eac|whipper|morituri|rubyripper|cueripper)\b", re.IGNORECASE)
 _CD_DEPTH = 16
 _CD_RATE = 44100
@@ -43,7 +51,6 @@ _CD_RATE = 44100
 def lossless_depth(info: Any) -> int | None:
     """The bit depth of a FLAC or ALAC file; None for a lossy one, whose depth says nothing about its source."""
     if isinstance(info, FlacStreamInfo) or getattr(info, "codec", None) == "alac":
-        # 0 is mutagen's "not read" (MP4Info's default), never a depth to compare a claim with.
         return getattr(info, "bits_per_sample", None) or None
     return None
 
@@ -67,7 +74,7 @@ def _file_provenance(filename: str, tagfile: Any) -> dict[str, Any]:
         "vendor": getattr(tags, "vendor", None),
         "markers": markers,
         "bitdepth": lossless_depth(info),
-        "samplerate": getattr(info, "sample_rate", None) or None,  # 0: not read, as above
+        "samplerate": getattr(info, "sample_rate", None) or None,
     }
 
 
@@ -81,7 +88,9 @@ def _contradictions(files: list[dict[str, Any]]) -> list[str]:
     for entry in files:
         depth, rate = entry["bitdepth"], entry["samplerate"]
         for field, text in entry["markers"].items():
-            # A depth inside a domain names whoever ripped it ("hd24bit.com"), not this file; it stays a marker.
+            # A depth inside a domain is part of the name of whoever ripped it
+            # ("hd24bit.com"), not an assertion about this file. The URL still
+            # shows up as a marker, so nothing is hidden: it just isn't a claim.
             text = _URL_RE.sub(" ", text)
             if depth:
                 for claim in _DEPTH_CLAIM_RE.findall(text):
