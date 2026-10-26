@@ -718,6 +718,24 @@ async def test_a_fill_that_fails_after_the_torrent_was_stored_is_still_an_upload
     assert "test-auth-0001" not in out
 
 
+@pytest.mark.parametrize("torrentid", ["%C2%B2", "0"])
+async def test_a_fill_url_naming_no_torrent_id_is_looked_up(api, monkeypatch, torrentid):
+    # "²" is a digit to str.isdigit() but not to int(), and no torrent has the id 0.
+    fill_error_html = "<html><body><div><div><h2>Error</h2></div><p>Request already filled</p></div></body></html>"
+    takefill = f"https://dummy.example/requests.php?action=takefill&requestid=77&torrentid={torrentid}"
+    script_requests(api, [http(text=fill_error_html, url=takefill)])
+    lookups = []
+
+    async def found(_files, error):
+        lookups.append(error)
+        return 9, 5
+
+    monkeypatch.setattr(api, "_find_lost_upload", found)
+
+    assert await api.site_page_upload({"groupid": "456"}, UploadFiles(torrent_data=b"torrent")) == (9, 5)
+    assert len(lookups) == 1
+
+
 async def test_a_request_fill_into_a_known_group_needs_no_lookup(api):
     fill_html = '<html><body><a href="torrents.php?torrentid=789">Yes</a></body></html>'
     calls = script_requests(api, [http(text=fill_html, url="https://dummy.example/requests.php?action=view&id=77")])
@@ -758,7 +776,9 @@ async def test_a_long_request_fill_error_is_capped(api):
 
     with pytest.raises(RequestError) as excinfo:
         await api.site_page_upload({}, UploadFiles(torrent_data=b"torrent"))
-    assert "[truncated]" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert " [...]" in message
+    assert "x" * 600 not in message
 
 
 async def test_a_long_api_upload_error_is_capped(api):
