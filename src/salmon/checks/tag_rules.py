@@ -1,8 +1,9 @@
-"""Pre-upload path and sample-rate rules for RED/OPS.
+"""Fix or warn about tagging problems that would otherwise go unnoticed until upload.
 
-Owns the path *measurement* for the whole codebase. The warnings here are advisory,
-but folderstructure's blocking check measures the same way — two measurements that
-disagree is how a folder passed one gate and failed the other.
+An ID3 tag inside a FLAC is stripped in place, the same way an oversized embedded picture is
+stripped by default; a scene release is never touched, so it only gets a warning instead. An
+uncompressed FLAC and an MP3 with a dual ID3 tag set are only ever warned about. Blocking checks
+(folder structure, decode integrity, required tags) live elsewhere.
 """
 
 import os
@@ -11,76 +12,24 @@ from mutagen import MutagenError
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3
 
+import salmon.trackers
 from salmon.common import get_audio_files
 from salmon.constants import TAG_TRUMP_SIZE
-from salmon.tagger.audio_info import has_id3_tag
+from salmon.trackers.base import TagRules
 
-# Max full in-torrent path: the top-level torrent folder, any subfolders, and the
-# filename — nested folders and long classical filenames all count against it.
-MAX_PATH_LENGTH = {"RED": 180, "OPS": 255}
-# The folder is prepared once, before a tracker is chosen, so it has to satisfy the
-# strictest destination it might go to.
-STRICTEST_PATH_LENGTH = min(MAX_PATH_LENGTH.values())
-# What each tracker does with 16bit files above 48 kHz: refuses them, or lets them be trumped.
-SIXTEEN_BIT_ABOVE_48KHZ = {"RED": "trumpable", "OPS": "refused"}
-STANDARD_SAMPLE_RATES = {44100, 48000, 88200, 96000, 176400, 192000}
-# A FLAC storing verbatim frames reaches raw PCM; the margin allows for the frame headers' own overhead.
+# A FLAC storing verbatim, uncompressed frames still leaves a small margin below the raw PCM
+# rate for the frame headers' own overhead.
 UNCOMPRESSED_RATIO = 0.99
+STANDARD_SAMPLE_RATES = {44100, 48000, 88200, 96000, 176400, 192000}
 
 
-def in_torrent_path(folder_name: str, relative_path: str) -> str:
-    """The path a tracker counts: the torrent's top-level folder plus what sits under it.
-
-    Not the on-disk path. Measuring from download_directory only coincides with this
-    when the album happens to live there, and under-counts everywhere else.
-    """
-    return f"{folder_name}/{relative_path}" if relative_path not in ("", ".") else folder_name
-
-
-def is_uncompressed(track: dict) -> bool:
-    """True when the file's audio bit rate is within a per cent of the raw PCM rate for its format."""
-    rate, bits, channels = track.get("sample rate"), track.get("precision"), track.get("channels")
-    bit_rate = track.get("bit rate")
-    if not (rate and bits and channels and bit_rate):
-        return False
-    # mutagen measures from the end of the metadata blocks, so pictures and padding are already out of it.
-    return bit_rate >= UNCOMPRESSED_RATIO * rate * bits * channels
-
-
-def path_limit_warning(site_code: str, full_path: str) -> str | None:
-    """The trump warning for an in-torrent path past the tracker's limit, or None."""
-    limit = MAX_PATH_LENGTH.get(site_code)
-    if not limit or len(full_path) <= limit:
-        return None
-    return f"{len(full_path)}-char path exceeds {site_code}'s {limit} limit (2.3.12, a trump reason): {full_path}"
-
-
-def collect_upload_warnings(site_code: str, folder_name: str, track_data: dict) -> list[str]:
-    """Return human-readable rule warnings for this upload; empty when clean."""
-    warnings = []
-    for filename, track in track_data.items():
-        if too_long := path_limit_warning(site_code, in_torrent_path(folder_name, filename)):
-            warnings.append(too_long)
-        tag_size = track.get("tag size")
-        if tag_size is not None and tag_size > TAG_TRUMP_SIZE:
-            warnings.append(
-                f"{tag_size} bytes of embedded tag exceeds the {TAG_TRUMP_SIZE}-byte limit "
-                f"(2.3.19, a trump reason): {filename}"
-            )
-        if filename.lower().endswith(".flac"):
-            if track.get("id3"):
-                warnings.append(f"ID3 tag inside a FLAC (2.2.10.8, a trump reason), left in place: {filename}")
-            if is_uncompressed(track):
-                warnings.append(f"Uncompressed FLAC (2.2.10.10, not allowed); recompress it (salmon up -c): {filename}")
-        sample_rate = track.get("sample rate")
-        if sample_rate and sample_rate not in STANDARD_SAMPLE_RATES:
-            warnings.append(f"Non-standard sample rate {sample_rate} Hz may be rejected: {filename}")
-    return warnings
-
-
-def path_limit_for(site_codes) -> int:
-    """The strictest in-torrent path limit among these trackers; the strictest of all for an unknown one."""
-    return min((MAX_PATH_LENGTH.get(code, STRICTEST_PATH_LENGTH) for code in site_codes), default=STRICTEST_PATH_LENGTH)
+def _has_id3v1_block(filepath: str) -> bool:
+    with open(filepath, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() < 128:
+            return False
+        handle.seek(-128, os.SEEK_END)
+        return handle.read(3) == b"TAG"
 
 
 def _id3v1_holds_text(filepath: str) -> bool:
@@ -101,8 +50,28 @@ def _has_id3v2_header(filepath: str) -> bool:
         return handle.read(3) == b"ID3"
 
 
+def has_id3_tag(filepath: str) -> bool:
+    """True when an ID3v2 header sits at the start of the file, or an ID3v1 block at its end.
+
+    Ordinary for an MP3, which keeps its tags this way; not for a FLAC, which keeps its metadata
+    in Vorbis comments and FLAC metadata blocks instead. A cheap probe: it reads a few bytes from
+    each end of the file rather than parsing it fully.
+    """
+    return _has_id3v2_header(filepath) or _has_id3v1_block(filepath)
+
+
 def has_blank_id3v2_alongside_id3v1(filepath: str) -> bool:
-    """True for an MP3 with a filled-in ID3v1 tag beside a frameless ID3v2 tag; MutagenError or OSError if unread."""
+    """True for an MP3 with a filled-in ID3v1 tag next to an ID3v2 tag that carries no frames.
+
+    Reading only the ID3v1 tag, or only a filled-in ID3v2 tag, is ordinary and not flagged; nor is
+    an ID3v2 tag with real content sitting next to an ID3v1 tag. When both a v1 tag and a v2
+    header exist, mutagen reads the v2 tag: it is the blank one that matters here, not the
+    presence of v1 by itself, so both a v1 block and a v2 header must be found on disk first.
+
+    Raises:
+        MutagenError, OSError: If the ID3v2 tag cannot be read: mutagen raises the same error for a
+            malformed tag and a failed read, so neither is taken for a clean file.
+    """
     if not (_id3v1_holds_text(filepath) and _has_id3v2_header(filepath)):
         return False
     # load_v1=False: mutagen otherwise reads the v1 fields into the v2 tag, and a blank v2 looks filled.
@@ -110,37 +79,180 @@ def has_blank_id3v2_alongside_id3v1(filepath: str) -> bool:
     return not any(tags.getall(key) for key in tags)
 
 
-def process_tag_issues(path: str, *, scene: bool) -> list[str]:
-    """Strip FLACs' ID3 tags (a scene release only gets a note) and note dual-ID3 MP3s; one line per file."""
+def is_uncompressed(track: dict) -> bool:
+    """True when the file's reported audio bit rate is within a per cent of the raw PCM rate.
+
+    mutagen measures the bit rate from the audio frames alone, after the metadata blocks, so
+    embedded pictures and padding are already excluded from it: no need to subtract them again.
+    """
+    rate = track.get("sample rate")
+    bits = track.get("precision")
+    channels = track.get("channels")
+    bit_rate = track.get("bit rate")
+    if not (rate and bits and channels and bit_rate):
+        return False
+    return bit_rate >= UNCOMPRESSED_RATIO * rate * bits * channels
+
+
+def in_torrent_path(folder_name: str, relative_path: str) -> str:
+    """The path exactly as it sits inside the torrent: the release folder, any sub-folders, and the file.
+
+    Used to measure path length the same way everywhere it matters, whether the result blocks the
+    upload or only informs an advisory.
+    """
+    if relative_path in ("", "."):
+        return folder_name
+    return f"{folder_name}/{relative_path}"
+
+
+def _id3_in_flac(filename: str) -> str:
+    return f"{filename}: FLAC file contains an ID3 tag (RED and OPS do not allow ID3 tags in FLAC files)."
+
+
+def _uncompressed(filename: str) -> str:
+    return f"{filename}: FLAC file looks uncompressed (RED and OPS can trump it); recompress it with salmon up -c."
+
+
+def _dual_id3(filename: str, filepath: str) -> str | None:
+    """The line for an MP3 with a dual ID3 tag set, or for one whose ID3v2 tag cannot be read; None if neither."""
+    try:
+        dual = has_blank_id3v2_alongside_id3v1(filepath)
+    except (MutagenError, OSError) as e:
+        return f"{filename}: could not read its ID3v2 tag ({e}); check it by hand."
+    if dual:
+        return f"{filename}: MP3 file has a filled-in ID3v1 tag and a blank ID3v2 tag (RED and OPS can trump it)."
+    return None
+
+
+def find_tag_issues(path: str, audio_info: dict) -> list[str]:
+    """The tagging problems process_tag_issues fixes or warns about, without fixing any: it changes no file.
+
+    Args:
+        path: Path to the release folder.
+        audio_info: Mapping of filename to the technical info `gather_audio_info` collects.
+
+    Returns:
+        One line per problem found; empty when there is none.
+    """
     messages: list[str] = []
     for filename in get_audio_files(path):
         filepath = os.path.join(path, filename)
         lower = filename.lower()
-        if lower.endswith(".flac") and has_id3_tag(filepath):
-            if scene:
-                messages.append(
-                    f"{filename}: FLAC file contains an ID3 tag (RED and OPS do not allow ID3 tags in FLAC files)."
-                )
-                continue
-            try:
-                flac = FLAC(filepath)
-                padding = sum(block.length for block in flac.metadata_blocks if block.code == 1)
-                # The original padding, not the freed ID3 bytes too, which would count against the 1 MiB rule.
-                flac.save(deleteid3=True, padding=lambda _info, keep=padding: keep)
-            except (MutagenError, OSError) as e:
-                messages.append(f"{filename}: could not remove its ID3 tag ({e}); remove it by hand.")
-            else:
-                messages.append(
-                    f"Removed an ID3 tag from {filename} (RED and OPS do not allow ID3 tags in FLAC files)."
-                )
-        elif lower.endswith(".mp3"):
-            try:
-                dual = has_blank_id3v2_alongside_id3v1(filepath)
-            except (MutagenError, OSError) as e:
-                messages.append(f"{filename}: could not read its ID3v2 tag ({e}); check it by hand.")
-                continue
-            if dual:
-                messages.append(
-                    f"{filename}: MP3 file has a filled-in ID3v1 tag and a blank ID3v2 tag (RED and OPS can trump it)."
-                )
+        if lower.endswith(".flac"):
+            if has_id3_tag(filepath):
+                messages.append(_id3_in_flac(filename))
+            track = audio_info.get(filename)
+            if track and is_uncompressed(track):
+                messages.append(_uncompressed(filename))
+        elif lower.endswith(".mp3") and (message := _dual_id3(filename, filepath)):
+            messages.append(message)
     return messages
+
+
+def process_tag_issues(path: str, audio_info: dict, *, scene: bool, recompress: bool) -> list[str]:
+    """Fix or warn about the tagging problems RED and OPS can act on.
+
+    A FLAC's ID3 tag is stripped in place, unless this is a scene release, which is never touched
+    and only gets a warning. An uncompressed FLAC is not worth warning about when the release is
+    about to be recompressed anyway (recompress). Neither the uncompressed-FLAC nor the dual-ID3
+    MP3 case is ever fixed automatically, only warned about.
+
+    Args:
+        path: Path to the release folder.
+        audio_info: Mapping of filename to the technical info `gather_audio_info` collects.
+        scene: Whether this is a scene release: its files are never modified.
+        recompress: Whether the release is about to be recompressed, which also fixes an
+            uncompressed FLAC.
+
+    Returns:
+        Lines to print, one per file fixed or warned about; empty when nothing to report.
+    """
+    messages: list[str] = []
+    for filename in get_audio_files(path):
+        filepath = os.path.join(path, filename)
+        lower = filename.lower()
+        if lower.endswith(".flac"):
+            if has_id3_tag(filepath):
+                if scene:
+                    messages.append(_id3_in_flac(filename))
+                else:
+                    try:
+                        flac = FLAC(filepath)
+                        padding = sum(block.length for block in flac.metadata_blocks if block.code == 1)
+                        # The padding the file had: the bytes the ID3 tag took go, rather than becoming padding.
+                        flac.save(deleteid3=True, padding=lambda _info, keep=padding: keep)
+                    except (MutagenError, OSError) as e:
+                        messages.append(f"{filename}: could not remove its ID3 tag ({e}); remove it by hand.")
+                    else:
+                        messages.append(
+                            f"Removed an ID3 tag from {filename} (RED and OPS do not allow ID3 tags in FLAC files)."
+                        )
+            if not recompress:
+                track = audio_info.get(filename)
+                if track and is_uncompressed(track):
+                    messages.append(_uncompressed(filename))
+        elif lower.endswith(".mp3") and (message := _dual_id3(filename, filepath)):
+            messages.append(message)
+    return messages
+
+
+def path_limit_warning(site_code: str, full_path: str) -> str | None:
+    """The trump warning for an in-torrent path past the tracker's limit, or None."""
+    tracker = salmon.trackers.tracker_classes.get(site_code)
+    if tracker is None or len(full_path) <= (limit := tracker.TAG_RULES.max_path_length):
+        return None
+    return f"{len(full_path)}-char path exceeds {site_code}'s {limit} limit (2.3.12, a trump reason): {full_path}"
+
+
+def path_limit_for(site_codes) -> int:
+    """The strictest in-torrent path limit among these trackers; TagRules' default for an unknown one, or none."""
+    classes = salmon.trackers.tracker_classes
+    default = TagRules().max_path_length
+    return min(
+        (classes[code].TAG_RULES.max_path_length if code in classes else default for code in site_codes),
+        default=default,
+    )
+
+
+def _tag_size_warning(filename: str, track: dict) -> str | None:
+    tag_size = track.get("tag size")
+    if tag_size is None or tag_size <= TAG_TRUMP_SIZE:
+        return None
+    return (
+        f"{tag_size} bytes of embedded tag exceeds the {TAG_TRUMP_SIZE}-byte limit (2.3.19, a trump reason): {filename}"
+    )
+
+
+def _sample_rate_warning(filename: str, track: dict) -> str | None:
+    sample_rate = track.get("sample rate")
+    if not sample_rate or sample_rate in STANDARD_SAMPLE_RATES:
+        return None
+    return f"Non-standard sample rate {sample_rate} Hz may be rejected: {filename}"
+
+
+def upload_warnings(track_data: dict) -> list[str]:
+    """The tag-size and sample-rate warnings an upload prints; its other rules are checked before it."""
+    return [
+        warning
+        for filename, track in track_data.items()
+        for warning in (_tag_size_warning(filename, track), _sample_rate_warning(filename, track))
+        if warning
+    ]
+
+
+def collect_upload_warnings(site_code: str, folder_name: str, track_data: dict) -> list[str]:
+    """Every rule warning for this tracker, as salmon web's checks page shows them; empty when clean."""
+    warnings = []
+    for filename, track in track_data.items():
+        if too_long := path_limit_warning(site_code, in_torrent_path(folder_name, filename)):
+            warnings.append(too_long)
+        if too_big := _tag_size_warning(filename, track):
+            warnings.append(too_big)
+        if filename.lower().endswith(".flac"):
+            if track.get("id3"):
+                warnings.append(f"ID3 tag inside a FLAC (2.2.10.8, a trump reason), left in place: {filename}")
+            if is_uncompressed(track):
+                warnings.append(f"Uncompressed FLAC (2.2.10.10, not allowed); recompress it (salmon up -c): {filename}")
+        if odd_rate := _sample_rate_warning(filename, track):
+            warnings.append(odd_rate)
+    return warnings

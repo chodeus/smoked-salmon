@@ -5,7 +5,7 @@ import asyncclick as click
 from salmon import cfg, interaction
 from salmon.common import UploadFiles
 from salmon.errors import UploadRefusedError
-from salmon.trackers.base import BaseGazelleApi
+from salmon.trackers.base import BaseGazelleApi, TagRules
 
 SAMPLE_RATES = {
     44100: "44.1kHz",
@@ -38,6 +38,8 @@ def _khz(rate: int) -> str:
 class DICApi(BaseGazelleApi):
     # DIC's upload form has no Arranger role (unconfirmed whether it ever will).
     unsupported_artist_roles = frozenset({"arranger"})
+    # Path limit unconfirmed for DIC; kept at the same value as before this was per-tracker.
+    TAG_RULES = TagRules(max_path_length=180)
 
     def __init__(self):
         self.site_code = "DIC"

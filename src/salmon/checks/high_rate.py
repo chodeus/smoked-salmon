@@ -21,7 +21,7 @@ def sixteen_bit_notice(tracker: str, rule: str, audio_info: Mapping[str, dict[st
 
     Args:
         tracker: The site code.
-        rule: Its tag_rules.SIXTEEN_BIT_ABOVE_48KHZ: "refused", "trumpable", or "" for no rule.
+        rule: Its TagRules.sixteen_bit_above_48khz: "refused", "trumpable", or "" for no rule.
     """
     files = sixteen_bit_above_48khz(audio_info)
     if not files or rule not in ("refused", "trumpable"):

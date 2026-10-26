@@ -503,7 +503,7 @@ def test_rules_row_reports_a_path_that_would_be_trumped():
 
 @pytest.mark.parametrize(
     ("tracker", "paths"),
-    [("RED", "Paths are within RED's 180-character limit"), ("DIC", "DIC sets no path limit")],
+    [("RED", "Paths are within RED's 180-character limit"), ("DIC", "Paths are within DIC's 180-character limit")],
 )
 def test_rules_row_is_green_when_nothing_breaks_a_rule(tracker: str, paths: str):
     row = pf.rules_row(tracker, "Folder", {"01.flac": {"sample rate": 44100, "precision": 16}})

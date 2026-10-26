@@ -21,12 +21,7 @@ from salmon.checks.integrity import resolve_integrity_for_upload
 from salmon.checks.logs import check_log_cambia
 from salmon.checks.provenance import gather_provenance
 from salmon.checks.source import detect_source
-from salmon.checks.tag_rules import (
-    SIXTEEN_BIT_ABOVE_48KHZ,
-    collect_upload_warnings,
-    path_limit_for,
-    process_tag_issues,
-)
+from salmon.checks.tag_rules import path_limit_for, process_tag_issues, upload_warnings
 from salmon.checks.upconverts import upload_upconvert_test
 from salmon.common import AlbumPath, commandgroup, copy_to_clipboard, decade_tag, tagify
 from salmon.config.image_hosts import cover_refusal
@@ -753,7 +748,8 @@ def _sixteen_bit_refusal(tracker: str, audio_info: dict[str, Any]) -> bool:
 
     A tracker that only trumps them gets a warning and the upload goes on. Nothing skips a refusal, -yyy included.
     """
-    rule = SIXTEEN_BIT_ABOVE_48KHZ.get(tracker, "")
+    site_class = salmon.trackers.tracker_classes.get(tracker)
+    rule = site_class.TAG_RULES.sixteen_bit_above_48khz if site_class else ""
     notice = sixteen_bit_notice(tracker, rule, audio_info)
     if notice is None:
         return False
@@ -1100,7 +1096,7 @@ async def _upload_staged(
             if source_flac is None and not request_id and cfg.upload.requests.check_requests:
                 request_id = await check_requests(gazelle_site, searchstrs)
 
-            for rule_warning in collect_upload_warnings(gazelle_site.site_code, os.path.basename(path), track_data):
+            for rule_warning in upload_warnings(track_data):
                 click.secho(f"⚠ {rule_warning}", fg="yellow", bold=True)
 
             group_link = f"{gazelle_site.base_url}/torrents.php?id={group_id}" if group_id else source_url
@@ -1249,7 +1245,7 @@ async def edit_metadata(
     apply_ai_suggestions: bool = False,
     rls_type_hint: str | None = None,
     rename_into: str | None = None,
-    max_path_length: int | None = None,
+    max_path_length: int = 180,
     original: str | None = None,
 ) -> tuple[str, dict[str, Any], dict[str, "TagFile"], dict[str, dict[str, Any]]]:
     """Edit release metadata in an interactive loop until the user confirms.
@@ -1271,7 +1267,7 @@ async def edit_metadata(
         skip_initial_review: Skip the first manual metadata review before AI review.
         apply_ai_suggestions: Automatically apply AI review suggestions when present.
         rename_into: Directory the renamed folder goes into instead of download_directory.
-        max_path_length: The run's path limit, which the folder is checked against.
+        max_path_length: The longest in-torrent path the folder structure check allows.
         original: The folder the user gave, when path is the run's copy of it: the rename says why it is kept.
 
     Returns:
@@ -1294,7 +1290,12 @@ async def edit_metadata(
             await tag_files(path, tags, metadata, auto_rename)
 
         tags = await check_tags(path)
-        tag_messages = process_tag_issues(path, scene=metadata["scene"])
+        tag_messages = process_tag_issues(
+            path,
+            gather_audio_info(path),
+            scene=metadata["scene"],
+            recompress=recompress and not metadata["scene"],
+        )
         if tag_messages:
             click.secho("\nTag notes:", fg="yellow", bold=True)
             for message in tag_messages:

@@ -30,7 +30,6 @@ import salmon.trackers
 from salmon import cfg, dryrun, interaction
 from salmon.checks.do_not_upload import Candidate, do_not_upload_reason
 from salmon.checks.high_rate import sixteen_bit_notice
-from salmon.checks.tag_rules import SIXTEEN_BIT_ABOVE_48KHZ, path_limit_for
 from salmon.common import commandgroup, invisible_chars, show_invisible
 from salmon.config.image_hosts import HOST_RULES
 from salmon.constants import ARTIST_IMPORTANCES, ENCODINGS, FORMATS, SOURCES
@@ -444,7 +443,7 @@ async def _prepare(
         await _check_lossy_approval(release, source, target)
         return release
     # Any FLAC, whatever its label: no tracker's torrent says its sample rate, and a label can be wrong.
-    rule = SIXTEEN_BIT_ABOVE_48KHZ.get(target.site_code, "") if release.torrent["format"] == "FLAC" else ""
+    rule = target.TAG_RULES.sixteen_bit_above_48khz if release.torrent["format"] == "FLAC" else ""
     if rule and (notice := sixteen_bit_notice(target.site_code, rule, _track_data(release))):
         if rule == "refused":
             raise CrossUploadRefused(notice)
@@ -793,7 +792,7 @@ def _verify_release_files(response: dict[str, Any], folder: Path, target: "BaseG
     if differences:
         more = f" (and {len(differences) - 3} more)" if len(differences) > 3 else ""
         raise CrossUploadRefused(f"the files at {folder} are not the torrent's: {'; '.join(differences[:3])}{more}")
-    limit = path_limit_for([target.site_code])
+    limit = target.TAG_RULES.max_path_length
     too_long = [name for name in expected if len(f"{folder.name}/{name}") > limit]
     if too_long:
         raise CrossUploadRefused(f"{len(too_long)} path(s) are longer than {target.site_string}'s {limit} characters")
@@ -1456,4 +1455,6 @@ async def _upload_conversions(
         source=release.torrent["media"],
         base_url=url,
         uploaded=uploaded,
+        # The limit the album folder was held to: a cross-upload goes to TARGET alone.
+        max_path_length=target.TAG_RULES.max_path_length,
     )
