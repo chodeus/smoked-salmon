@@ -479,9 +479,9 @@ def _rate_limit_wait(retry_after: str | None) -> int:
 
 
 def _query_id(query: dict[str, list[str]], name: str) -> int | None:
-    """Get an ID from a parsed URL query: None unless the parameter is there and holds ASCII digits only."""
+    """Get an ID from a parsed URL query: None unless the parameter is there and holds ASCII digits above zero."""
     value = query.get(name, [""])[0]
-    return int(value) if value.isascii() and value.isdigit() else None
+    return (int(value) or None) if value.isascii() and value.isdigit() else None
 
 
 class HttpResponse(msgspec.Struct, frozen=True):

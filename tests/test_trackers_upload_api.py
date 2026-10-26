@@ -718,14 +718,22 @@ async def test_a_fill_that_fails_after_the_torrent_was_stored_is_still_an_upload
     assert "test-auth-0001" not in out
 
 
-async def test_a_fill_url_whose_torrent_id_is_not_ascii_digits_is_looked_up(api):
-    # "²" is a digit to str.isdigit() but not to int(): it is no torrent id, so the upload is looked up.
+@pytest.mark.parametrize("torrentid", ["%C2%B2", "0"])
+async def test_a_fill_url_naming_no_torrent_id_is_looked_up(api, monkeypatch, torrentid):
+    # "²" is a digit to str.isdigit() but not to int(), and no torrent has the id 0.
     fill_error_html = "<html><body><div><div><h2>Error</h2></div><p>Request already filled</p></div></body></html>"
-    takefill = "https://dummy.example/requests.php?action=takefill&requestid=77&torrentid=%C2%B2"
+    takefill = f"https://dummy.example/requests.php?action=takefill&requestid=77&torrentid={torrentid}"
     script_requests(api, [http(text=fill_error_html, url=takefill)])
+    lookups = []
 
-    with pytest.raises(UnknownOutcomeError):
-        await api.site_page_upload({"groupid": "456"}, UploadFiles(torrent_data=b"torrent"))
+    async def found(_files, error):
+        lookups.append(error)
+        return 9, 5
+
+    monkeypatch.setattr(api, "_find_lost_upload", found)
+
+    assert await api.site_page_upload({"groupid": "456"}, UploadFiles(torrent_data=b"torrent")) == (9, 5)
+    assert len(lookups) == 1
 
 
 async def test_a_request_fill_into_a_known_group_needs_no_lookup(api):
