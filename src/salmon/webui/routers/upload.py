@@ -134,7 +134,8 @@ async def start(req: UploadStartRequest) -> dict:
             essential_only=req.essential_only,
             flac_group=flac_group,
             skip_initial_review=req.skip_initial_review,
-            trackers=req.trackers or None,
+            # req.tracker first, and once: the run removes each tracker from this list as it uploads to it.
+            trackers=list(dict.fromkeys(sites)) if req.trackers else None,
             apply_ai_suggestions=req.apply_ai_suggestions,
         )
 

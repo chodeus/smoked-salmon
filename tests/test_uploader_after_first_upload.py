@@ -526,7 +526,7 @@ def test_a_pick_is_weighed_as_the_tags_had_it_though_the_scrape_edits_them(flow,
     monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
     weighed_years: list[int] = []
 
-    async def get_metadata(_path, _tags, rls_data):
+    async def get_metadata(_path, _tags, rls_data, **_kwargs):
         # As combine_metadatas does with its base: the chosen scrape lands in the tags' release itself.
         rls_data["year"] = 2005
         return rls_data, None

@@ -343,6 +343,13 @@ To start an upload (with the WEB source):
 salmon up /data/path/to/album -s WEB
 ```
 
+If you know the store page of the release, give it with `--source-url` and add `--skip-search` to take the
+metadata from that page without searching the stores (the review that follows is unchanged). If the page is
+not one salmon scrapes, or the scrape fails, salmon searches as usual:
+```bash
+salmon up /data/path/to/album -s WEB --source-url https://www.qobuz.com/us-en/album/... --skip-search
+```
+
 To rehearse an upload without posting anything — everything is gathered, checked and built, then stopped at the last step:
 ```bash
 salmon up /data/path/to/album -s WEB --dry-run

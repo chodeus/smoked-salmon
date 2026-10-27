@@ -15,6 +15,7 @@ import salmon.uploader as uploader
 from salmon import cfg
 from salmon.errors import NoncompliantFolderStructure
 from salmon.tagger.folderstructure import DEFAULT_MAX_PATH_LENGTH, _check_path_lengths
+from salmon.trackers.dic import DICApi
 from salmon.trackers.ops import OpsApi
 from salmon.trackers.red import RedApi
 
@@ -61,15 +62,15 @@ def test_a_single_configured_tracker_run_uses_that_trackers_own_limit(monkeypatc
     monkeypatch.setattr(cfg.upload, "multi_tracker_upload", True)
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["OPS"])
 
-    assert uploader._max_path_length_for_run("OPS", None, None) == 255
+    assert uploader._max_path_length_for_run(OpsApi()) == 255
 
 
 def test_a_run_with_red_and_ops_configured_uses_the_strictest(monkeypatch) -> None:
     monkeypatch.setattr(cfg.upload, "multi_tracker_upload", True)
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
 
-    assert uploader._max_path_length_for_run("OPS", None, None) == 180
-    assert uploader._max_path_length_for_run("RED", None, None) == 180
+    assert uploader._max_path_length_for_run(OpsApi()) == 180
+    assert uploader._max_path_length_for_run(RedApi()) == 180
 
 
 def test_multi_tracker_upload_disabled_uses_only_this_trackers_limit(monkeypatch) -> None:
@@ -78,24 +79,14 @@ def test_multi_tracker_upload_disabled_uses_only_this_trackers_limit(monkeypatch
     monkeypatch.setattr(cfg.upload, "multi_tracker_upload", False)
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
 
-    assert uploader._max_path_length_for_run("OPS", None, None) == 255
-
-
-@pytest.mark.parametrize(("trackers", "limit"), [([], 255), (["OPS", "RED"], 180)])
-def test_an_explicit_tracker_list_is_the_runs_reach_even_when_empty(monkeypatch, trackers, limit) -> None:
-    monkeypatch.setattr(cfg.upload, "multi_tracker_upload", True)
-    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
-
-    result = uploader._max_path_length_for_run("OPS", trackers, None)
-
-    assert result == limit
+    assert uploader._max_path_length_for_run(OpsApi()) == 255
 
 
 def test_dic_keeps_the_180_default_pending_confirmation(monkeypatch) -> None:
     monkeypatch.setattr(cfg.upload, "multi_tracker_upload", True)
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["DIC"])
 
-    assert uploader._max_path_length_for_run("DIC", None, None) == 180
+    assert uploader._max_path_length_for_run(DICApi()) == 180
 
 
 def test_truncation_that_cannot_fit_raises_instead_of_leaving_the_path_too_long(tmp_path) -> None:

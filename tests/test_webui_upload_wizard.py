@@ -288,7 +288,7 @@ def upload_world(monkeypatch, tmp_path):
     async def fake_check_tags(path):
         return dict(world.tags)
 
-    async def fake_get_metadata(path, tags, rls_data):
+    async def fake_get_metadata(path, tags, rls_data, **_kwargs):
         return dict(world.metadata), None
 
     async def fake_review_metadata_with_ai(metadata, *args, **kwargs):
@@ -479,6 +479,34 @@ async def test_full_happy_path_uploads_to_fake_tracker(jm, tracker, album_dir, u
     assert "log" in kinds
     assert kinds[0] == "created"
     assert kinds[-1] == "finished"
+
+
+async def test_a_job_without_a_trackers_list_offers_no_other_without_multi_tracker_upload(
+    jm, tracker, album_dir, upload_world, monkeypatch
+):
+    # Such a job passes only its tracker: only multi_tracker_upload lets the run go on to another.
+    monkeypatch.setattr(cfg.upload, "multi_tracker_upload", False)
+    m = jm()
+    path = str(album_dir)
+    job = m.create_threaded("upload", "Upload to RED", wizard_factory(tracker, path), lock_key=path)
+
+    await drive(
+        job,
+        [
+            ("What is the source of this release?", "web"),
+            ("Would you like to upload to an existing group?", "n"),
+            ("Look at the spectrals, then go on.", True),
+            ("Is this release lossy mastered?", "n"),
+            ("What spectral IDs would you like to upload", "*"),
+            ("Would you like to upload the torrent?", True),
+            ("Would you like to check downconversion options?", False),
+        ],
+    )
+    await join_job(job)
+
+    assert job.status == "done", job.error
+    assert len(tracker.uploads) == 1
+    assert "Done uploading this release." in "\n".join(job.log_lines)
 
 
 # ---------------------------------------------------------------------------
