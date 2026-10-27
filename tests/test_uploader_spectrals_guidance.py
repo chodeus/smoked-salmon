@@ -5,6 +5,7 @@ import os
 import pytest
 
 from salmon import cfg, interaction
+from salmon.uploader import frequency
 from salmon.uploader import spectrals as sp
 from salmon.uploader.frequency import SpectrumResult
 
@@ -43,7 +44,7 @@ def flow(monkeypatch, tmp_path):
         events.append("spectrograms-all")
         return {1: "01.flac"}
 
-    async def frequency(path, files, plot_paths):
+    async def measure(path, files, plot_paths):
         events.append("measure")
         state["plot_paths"] = plot_paths
         return state["spectra"]
@@ -69,7 +70,7 @@ def flow(monkeypatch, tmp_path):
     monkeypatch.setattr(sp, "create_specs_folder", lambda path, spectrals_path=None: str(tmp_path))
     monkeypatch.setattr(sp, "generate_spectrals_all", generate_all)
     monkeypatch.setattr(sp, "generate_spectrals_ids", generate_ids)
-    monkeypatch.setattr(sp, "generate_frequency_plots", frequency)
+    monkeypatch.setattr(frequency, "generate_frequency_plots", measure)
     monkeypatch.setattr(sp, "get_audio_files", lambda path, *_a: ["01.flac"])
     monkeypatch.setattr(interaction, "show_spectrals", view)
     monkeypatch.setattr(sp, "prompt_lossy_master", prompt)
@@ -161,7 +162,7 @@ async def test_a_failed_measurement_does_not_cost_the_upload(flow, monkeypatch):
     async def boom(path, files, out_dir):
         raise RuntimeError("decoder exploded")
 
-    monkeypatch.setattr(sp, "generate_frequency_plots", boom)
+    monkeypatch.setattr(frequency, "generate_frequency_plots", boom)
     lossy, _ids = await sp.check_spectrals("/album", {"01.flac": {}}, None, None)
     assert lossy is False
     assert "prompt" in events
