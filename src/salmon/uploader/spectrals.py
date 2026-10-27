@@ -111,7 +111,8 @@ async def check_spectrals(
         spectral_ids = await generate_spectrals_ids(path, spectral_ids, spectrals_path, audio_info)
         if lossy_master is None:
             marks_found = await print_frequency_analysis(path, spectrals_path, spectral_ids)
-            lossy_master = await prompt_lossy_master(force_prompt_lossy_master, offer_deletion, marks_found)
+            if check_lma:
+                lossy_master = await prompt_lossy_master(force_prompt_lossy_master, offer_deletion, marks_found)
 
     return lossy_master, spectral_ids
 

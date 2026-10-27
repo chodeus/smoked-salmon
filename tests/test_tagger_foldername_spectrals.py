@@ -657,7 +657,9 @@ def test_a_web_jobs_vetted_folder_is_the_one_made(tmp_path) -> None:
     vetted = tmp_path / "vetted" / "Spectrals"
     vetted.parent.mkdir()
 
-    assert create_specs_folder(str(album), str(vetted)) == str(vetted)
+    made = create_specs_folder(str(album), str(vetted))
+
+    assert made == str(vetted)
     assert vetted.is_dir()
     assert not os.path.exists(get_spectrals_path(str(album)))
 

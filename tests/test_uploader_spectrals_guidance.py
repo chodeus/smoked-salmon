@@ -168,6 +168,14 @@ def test_without_the_lossy_check_the_measurement_is_printed_and_nothing_is_asked
     assert any(line.startswith("\nFrequency analysis: ") for line in printed)
 
 
+def test_without_the_lossy_check_preselected_ids_are_measured_and_nothing_is_asked(flow):
+    events, _printed, _state = flow
+    lossy, ids = run(sp.check_spectrals, "/album", {"01.flac": {}}, None, (1,), check_lma=False)
+    assert lossy is None
+    assert events == ["spectrograms-ids", "measure"]
+    assert ids == {1: "01.flac"}
+
+
 def test_a_pre_answered_question_skips_the_measurement(flow):
     events, _printed, _state = flow
     lossy, _ids = run(sp.check_spectrals, "/album", {"01.flac": {}}, True, None)
