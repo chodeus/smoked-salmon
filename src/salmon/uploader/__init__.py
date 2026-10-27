@@ -603,7 +603,7 @@ def _max_path_length_for_run(
 def _trackers_for_run(
     first_tracker: str, flac_group: dict | None, trackers: list[str] | None = None, offer_others: bool = False
 ) -> list[str]:
-    """Every tracker an upload run may upload to: first_tracker alone unless -t or multi_tracker_upload goes on."""
+    """Trackers a run may upload to: first_tracker alone with flac_group, or without -t and multi_tracker_upload."""
     if flac_group is not None or not (trackers or cfg.upload.multi_tracker_upload):
         return [first_tracker]
     return follow_up_trackers(trackers, first_tracker, offer_others)
