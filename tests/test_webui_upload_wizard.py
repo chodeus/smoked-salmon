@@ -481,10 +481,10 @@ async def test_full_happy_path_uploads_to_fake_tracker(jm, tracker, album_dir, u
     assert kinds[-1] == "finished"
 
 
-async def test_a_job_with_no_tracker_ticked_offers_no_other_without_multi_tracker_upload(
+async def test_a_job_without_a_trackers_list_offers_no_other_without_multi_tracker_upload(
     jm, tracker, album_dir, upload_world, monkeypatch
 ):
-    # Such a job passes no trackers: only multi_tracker_upload lets the run go on to another.
+    # Such a job passes only its tracker: only multi_tracker_upload lets the run go on to another.
     monkeypatch.setattr(cfg.upload, "multi_tracker_upload", False)
     m = jm()
     path = str(album_dir)

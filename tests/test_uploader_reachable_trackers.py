@@ -25,7 +25,7 @@ def three_sites(monkeypatch):
 
 
 def test_no_trackers_are_known_up_front_without_a_list():
-    """What salmon web passes when no tracker was ticked: each next one is asked for."""
+    """What salmon web's job passes with no trackers list, only its tracker: the run learns the rest as it goes."""
     assert _reachable_trackers(None, offer_others=False) is None
 
 
