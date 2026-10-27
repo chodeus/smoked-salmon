@@ -166,6 +166,11 @@ def test_48khz_passes_and_32khz_may_be_rejected():
     assert row.notes == ("02.flac",)
 
 
+def test_no_file_read_is_no_sample_rate_verdict():
+    row = verdicts.sample_rate_row({})
+    assert (row.verdict, row.detail) == ("INFO", "No file read.")
+
+
 def test_16bit_96khz_blocks_for_ops_and_warns_for_red():
     rows = verdicts.sixteen_bit_rows({"01.flac": _flac(96000)}, {"RED": "trumpable", "OPS": "refused"})
     assert [(row.check, row.verdict) for row in rows] == [

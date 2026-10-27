@@ -92,6 +92,9 @@ def spectrals_report(album_path: str, audio_info: dict[str, Any], provenance: di
     lines += ["", "4. Plots"]
     lines += [f"   {describe(result)}" for result in spectra]
     lines += [f"   {note}" for note in summarize(spectra)[1]]
-    lines.append("   Full-track spectrogram, a 2-second zoom, and an averaged frequency plot per track.")
+    plotted = "an averaged frequency plot per track"
+    if unplotted := [result.file for result in spectra if not result.image]:
+        plotted += f" except {', '.join(unplotted)}"
+    lines.append(f"   Full-track spectrogram, a 2-second zoom, and {plotted}.")
     lines += ["", "5. About the release", "   "]
     return "\n".join(lines)
