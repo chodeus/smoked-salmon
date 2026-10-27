@@ -20,7 +20,7 @@ from salmon.checks.high_rate import sixteen_bit_notice
 from salmon.checks.integrity import resolve_integrity_for_upload
 from salmon.checks.logs import check_log_cambia
 from salmon.checks.provenance import gather_provenance
-from salmon.checks.source import detect_source
+from salmon.checks.source import DetectedSource, detect_source
 from salmon.checks.tag_rules import path_limit_for, process_tag_issues, upload_warnings
 from salmon.checks.upconverts import upload_upconvert_test
 from salmon.common import AlbumPath, commandgroup, copy_to_clipboard, decade_tag, tagify
@@ -1970,17 +1970,15 @@ def convert_genres(genres, year=None):
     return ",".join(tags)
 
 
-async def _prompt_source(detected: dict | None = None):
-    """Ask for the source; a confirmed detection from the files is pre-typed and its evidence shown."""
+async def _prompt_source(detected: DetectedSource | None = None) -> str:
+    """Ask for the release's media source. An empty answer takes the detected one, when there is one."""
     click.echo(f"\nValid sources: {', '.join(SOURCES.values())}")
-    default = ""
-    if detected and detected.get("confidence") == "confirmed" and detected.get("source") in SOURCES.values():
-        default = str(detected["source"])
-        click.secho(f"Files suggest {detected['source']}: {' '.join(detected['reasons'])}", fg="cyan")
+    if detected:
+        click.secho(f"The files say {detected.source}: {detected.reason}.", fg="cyan")
     while True:
         sauce = await interaction.prompt(
             click.style("What is the source of this release? [a]bort", fg="magenta"),
-            default=default,
+            default=detected.source if detected else "",
         )
         try:
             return SOURCES[sauce.lower()]

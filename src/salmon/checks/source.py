@@ -1,4 +1,11 @@
-"""Infer an album's media source from its own files, and read the URLs their tags carry."""
+"""Detect an album's media source from its own files (#537).
+
+Ported from chodeus's fork (`checks/source.py`). A source is reported only when the files prove it
+and nothing in them disagrees: a plain 16/44.1 rip with no log could be a CD or a WEB release, so it
+stays a question. The result is only ever offered as the source prompt's default.
+
+Reads the files already in the folder and nothing else.
+"""
 
 import os
 import re
@@ -6,85 +13,9 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from mutagen import File as MutagenFile
-from mutagen.id3 import TextFrame
-from mutagen.mp4 import AtomDataType, MP4FreeForm
 
 from salmon.common.files import get_audio_files
-
-# Keys downloaders use for the page the files came from; WOAS is ID3's "official audio source".
-_SOURCE_KEYS = frozenset({"source", "sourceurl", "www", "website", "url", "purl", "woas"})
-# MusicBrainz and Discogs links describe a release in a database, not where these files came from:
-# skip both their keys (which can hold a store link) and their own URLs under any key.
-_DATABASE_KEYS = ("musicbrainz", "discogs")
-_DATABASE_URL = re.compile(r"https?://(?:[a-z0-9-]+\.)*(?:musicbrainz\.org|discogs\.com)(?:[/:?#]|$)", re.IGNORECASE)
-_URL_VALUE = re.compile(r"https?://\S+", re.IGNORECASE)
-# ID3 and MP4 frames that hold a field under another name.
-_FRAME_FIELDS = {
-    "comm": "comment",
-    "tenc": "encoded-by",
-    "tsse": "encoder settings",
-    "\xa9cmt": "comment",
-    "\xa9too": "encoder",
-}
-
-
-def field_name(key) -> str:
-    """Lowercase Vorbis-style name for a tag key from any container (TXXX:SOURCE, COMM::eng, ----:…:MEDIA)."""
-    name = str(key).lower()
-    if name.startswith(("txxx:", "wxxx:")):
-        return name[5:]
-    if name.startswith("----:"):
-        return name.rsplit(":", 1)[-1]
-    return _FRAME_FIELDS.get(name.split(":", 1)[0], name)
-
-
-def _decode_bytes(item: bytes) -> str:
-    """Decode a raw tag value: UTF-16 MP4 freeform by its BOM (big-endian without one), else UTF-8."""
-    if isinstance(item, MP4FreeForm) and item.dataformat == AtomDataType.UTF16:
-        encoding = "utf-16" if item[:2] in (b"\xfe\xff", b"\xff\xfe") else "utf-16-be"
-        return item.decode(encoding, "ignore")
-    return item.decode("utf-8", "ignore")
-
-
-def tag_texts(value) -> list[str]:
-    """A tag value as plain strings: a list, each value of an ID3 frame, or MP4 freeform bytes."""
-    if isinstance(value, TextFrame):
-        # mutagen sets a frame's attributes from its spec at runtime, so its types do not know `text`.
-        value = getattr(value, "text", [])
-    items = value if isinstance(value, list) else [value]
-    return [(_decode_bytes(item) if isinstance(item, bytes) else str(item)).strip() for item in items]
-
-
-def tag_pairs(mut) -> list:
-    """The file's (key, value) tag pairs, database links left out."""
-    pairs = dict(mut.tags or {}).items()
-    return [(key, value) for key, value in pairs if not field_name(key).startswith(_DATABASE_KEYS)]
-
-
-def tag_url_fields(mut) -> list[tuple[str, str]]:
-    """(field name, URL) for every tag whose whole value is one URL."""
-    return [
-        (field_name(key), text)
-        for key, value in tag_pairs(mut)
-        for text in tag_texts(value)
-        if _URL_VALUE.fullmatch(text) and not _DATABASE_URL.match(text)
-    ]
-
-
-def tag_urls(path: str) -> tuple[list[str], list[str]]:
-    """URLs the files' tags hold whole: (under a source key such as SOURCE or WOAS, under any other key)."""
-    sourced, other = [], []
-    for filename in get_audio_files(path, True):
-        try:
-            mut = MutagenFile(os.path.join(path, filename))
-        except Exception:
-            continue
-        if mut is None:
-            continue
-        for field, url in tag_url_fields(mut):
-            (sourced if field in _SOURCE_KEYS else other).append(url)
-    return list(dict.fromkeys(sourced)), list(dict.fromkeys(other))
-
+from salmon.tagger.tag_urls import field_name, tag_pairs, tag_texts, tag_url_fields
 
 # Enough of a log to hold the ripper's banner.
 _LOG_HEAD_BYTES = 4096
@@ -142,6 +73,14 @@ def is_store_url(url: str) -> bool:
     return bool(_STORE_URL.match(url))
 
 
+@dataclass(frozen=True)
+class DetectedSource:
+    source: str
+    """A value of `constants.SOURCES`, so it is always a valid answer to the source prompt."""
+    reason: str
+    """Why, for the user: "rip log found (album.log)", "Qobuz URL in the tags"."""
+
+
 @dataclass
 class _Evidence:
     proofs: dict[str, str]
@@ -150,49 +89,28 @@ class _Evidence:
     above_cd_quality: bool
 
 
-def detect_source(path: str) -> dict:
-    """{source, confidence, reasons}: "confirmed" if proven and uncontradicted, "likely" for a hint, else "unknown"."""
-    if not get_audio_files(path):
-        return _unknown(["No audio files found."])
+def detect_source(path: str) -> DetectedSource | None:
+    """The media source the album's files prove, or None when they do not prove one.
+
+    A rip log, a store URL in the tags, a tag only a store writes or a media tag each prove a
+    source. Vinyl side numbering and a rate above CD's 16/44.1 only rule sources out: alone they
+    prove nothing, but they make a proof they contradict unknown. So does a second proof that
+    names another source.
+    """
     try:
         evidence = _gather(path)
-    except OSError as error:
-        # An unread log or folder could hide a rip log, so nothing is confirmed.
-        return _unknown([f"Could not read {os.path.basename(error.filename or path)}: {error.strerror or error}."])
+    except OSError:
+        # A log or folder salmon cannot read could hide a rip log, so nothing is proven.
+        return None
     sources = set(evidence.proofs.values())
-    sides = _vinyl_sides(evidence.tracknumbers)
-    proofs = "; ".join(evidence.proofs)
-    if len(sources) > 1:
-        named = "; ".join(f"{why} ({source})" for why, source in evidence.proofs.items())
-        return _unknown([f"The files disagree: {named}."])
-    if sources:
-        source = sources.pop()
-        if evidence.above_cd_quality and source == "CD":
-            return _unknown([f"Not confirmed: {proofs}, but the files are above CD's 16bit/44.1kHz."])
-        if sides and source not in _VINYL_SIDE_SOURCES:
-            return _unknown([f"Not confirmed: {proofs}, but the track numbers are vinyl sides (A1, B2 ...)."])
-        return {"source": source, "confidence": "confirmed", "reasons": [f"{proofs}."]}
-    if sides:
-        return {
-            "source": "Vinyl",
-            "confidence": "likely",
-            "reasons": ["Track numbers are vinyl sides (A1, B2 ...), which a cassette or a WEB release can keep too."],
-        }
-    if evidence.above_cd_quality:
-        return {
-            "source": "WEB",
-            "confidence": "likely",
-            "reasons": ["Above CD's 16bit/44.1kHz, so this is not a CD rip.", "Check it is not a vinyl or SACD rip."],
-        }
-    reasons = ["No rip log, no store tags, and 16bit/44.1kHz fits both CD and WEB."]
-    if _has_cue(path):
-        reasons.append("A cue sheet is present, which leans CD, but cue sheets are often bundled with WEB rips too.")
-    reasons.append("Set the source yourself: an unverified guess would be a mislabelled upload.")
-    return _unknown(reasons)
-
-
-def _unknown(reasons: list[str]) -> dict:
-    return {"source": None, "confidence": "unknown", "reasons": reasons}
+    if len(sources) != 1:
+        return None
+    source = sources.pop()
+    if evidence.above_cd_quality and source == "CD":
+        return None
+    if _vinyl_sides(evidence.tracknumbers) and source not in _VINYL_SIDE_SOURCES:
+        return None
+    return DetectedSource(source, "; ".join(evidence.proofs))
 
 
 def _gather(path: str) -> _Evidence:
@@ -284,6 +202,51 @@ def _vinyl_sides(tracknumbers: list[str]) -> bool:
     if len(tracknumbers) < 2:
         return False
     return sum(bool(_VINYL_SIDE.fullmatch(t)) for t in tracknumbers) >= len(tracknumbers) * 0.8
+
+
+def source_guess(path: str) -> dict:
+    """salmon web's source row: {source, confidence, reasons}, "confirmed", "likely" for a hint, else "unknown"."""
+    if not get_audio_files(path):
+        return _unknown(["No audio files found."])
+    try:
+        evidence = _gather(path)
+    except OSError as error:
+        # An unread log or folder could hide a rip log, so nothing is confirmed.
+        return _unknown([f"Could not read {os.path.basename(error.filename or path)}: {error.strerror or error}."])
+    sources = set(evidence.proofs.values())
+    sides = _vinyl_sides(evidence.tracknumbers)
+    proofs = "; ".join(evidence.proofs)
+    if len(sources) > 1:
+        named = "; ".join(f"{why} ({source})" for why, source in evidence.proofs.items())
+        return _unknown([f"The files disagree: {named}."])
+    if sources:
+        source = sources.pop()
+        if evidence.above_cd_quality and source == "CD":
+            return _unknown([f"Not confirmed: {proofs}, but the files are above CD's 16bit/44.1kHz."])
+        if sides and source not in _VINYL_SIDE_SOURCES:
+            return _unknown([f"Not confirmed: {proofs}, but the track numbers are vinyl sides (A1, B2 ...)."])
+        return {"source": source, "confidence": "confirmed", "reasons": [f"{proofs}."]}
+    if sides:
+        return {
+            "source": "Vinyl",
+            "confidence": "likely",
+            "reasons": ["Track numbers are vinyl sides (A1, B2 ...), which a cassette or a WEB release can keep too."],
+        }
+    if evidence.above_cd_quality:
+        return {
+            "source": "WEB",
+            "confidence": "likely",
+            "reasons": ["Above CD's 16bit/44.1kHz, so this is not a CD rip.", "Check it is not a vinyl or SACD rip."],
+        }
+    reasons = ["No rip log, no store tags, and 16bit/44.1kHz fits both CD and WEB."]
+    if _has_cue(path):
+        reasons.append("A cue sheet is present, which leans CD, but cue sheets are often bundled with WEB rips too.")
+    reasons.append("Set the source yourself: an unverified guess would be a mislabelled upload.")
+    return _unknown(reasons)
+
+
+def _unknown(reasons: list[str]) -> dict:
+    return {"source": None, "confidence": "unknown", "reasons": reasons}
 
 
 def _has_cue(path: str) -> bool:

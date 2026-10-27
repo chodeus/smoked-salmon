@@ -7,7 +7,7 @@ from test_checks_tag_rules import (  # pyright: ignore[reportMissingImports]
     _write_mp3_v2_only,
 )
 
-from salmon.checks import album
+from salmon.checks import album_web
 from salmon.checks import preflight as pf
 
 
@@ -16,7 +16,7 @@ def test_a_dual_id3_mp3_is_named_and_a_good_one_is_not(tmp_path) -> None:
     _write_mp3_v2_only(tmp_path / "02.mp3")
     (tmp_path / "03.flac").write_bytes(b"not read")
 
-    result = anyio.run(album.run_tag_check, str(tmp_path))
+    result = anyio.run(album_web.run_tag_check, str(tmp_path))
 
     assert result == {"mp3s": 2, "dual_id3": ["01.mp3"], "errors": []}
 
@@ -27,9 +27,9 @@ def test_an_unreadable_mp3_is_an_error_not_a_pass(tmp_path, monkeypatch) -> None
     def unreadable(_path: str) -> bool:
         raise OSError("test: unreadable")
 
-    monkeypatch.setattr(album, "has_blank_id3v2_alongside_id3v1", unreadable)
+    monkeypatch.setattr(album_web, "has_blank_id3v2_alongside_id3v1", unreadable)
 
-    result = anyio.run(album.run_tag_check, str(tmp_path))
+    result = anyio.run(album_web.run_tag_check, str(tmp_path))
 
     assert result == {"mp3s": 1, "dual_id3": [], "errors": [{"file": "01.mp3", "error": "test: unreadable"}]}
 

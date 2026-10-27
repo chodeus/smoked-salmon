@@ -1,7 +1,5 @@
 """Reading the store URL a release's own files carry in their tags (#545)."""
 
-# Upstream's tagger/tag_urls.py is this fork's checks/source.py.
-
 import struct
 
 from mutagen.flac import FLAC
@@ -9,8 +7,8 @@ from mutagen.id3 import WOAS, WXXX
 from mutagen.mp3 import MP3
 from mutagen.mp4 import AtomDataType, MP4FreeForm
 
-from salmon.checks import source as tag_urls_mod
-from salmon.checks.source import tag_urls
+from salmon.tagger import tag_urls as tag_urls_mod
+from salmon.tagger.tag_urls import tag_urls
 
 DEEZER_URL = "https://www.deezer.com/album/322064097"
 
@@ -129,7 +127,7 @@ def test_url_under_a_non_source_key_lands_in_other(tmp_path) -> None:
 def test_an_id3_frame_gives_each_of_its_values() -> None:
     from mutagen.id3 import TXXX
 
-    from salmon.checks.source import tag_texts
+    from salmon.tagger.tag_urls import tag_texts
 
     frame = TXXX(encoding=3, desc="SOURCE", text=["https://a.example/1", "https://b.example/2"])
 

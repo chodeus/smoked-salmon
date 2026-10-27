@@ -13,10 +13,10 @@ from typing import Any
 
 from mutagen.flac import StreamInfo as FlacStreamInfo
 
-from salmon.checks.source import field_name, tag_texts, tag_url_fields
+from salmon.tagger.tag_urls import field_name, tag_texts, tag_url_fields
 from salmon.tagger.tags import gather_tags
 
-# Field names (see source.field_name, so MP3 and M4A frames count too) of the ripper/store markers worth reading.
+# Field names (see tag_urls.field_name, so MP3 and M4A frames count too) of the ripper/store markers worth reading.
 MARKER_FIELDS = (
     "comment",
     "encoded-by",

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from test_checks_do_not_upload import write_lists  # pyright: ignore[reportMissingImports]
 
-from salmon.checks import album
+from salmon.checks import album_web
 from salmon.checks import preflight as pf
 
 NO_FILE_CHECKS: list[str] = []
@@ -72,7 +72,7 @@ def test_upconvert_still_blocks_when_a_deeper_file_is_upconverted():
 
 
 def _log(**fields) -> dict:
-    """A rip log as album.run_log_check reads it: full marks, unless fields say otherwise."""
+    """A rip log as album_web.run_log_check reads it: full marks, unless fields say otherwise."""
     return {"file": "rip.log", "score": 100, "checksum_integrity": "Match", "crcs": "match", "crcs_detail": ""} | fields
 
 
@@ -131,10 +131,10 @@ def test_one_edited_log_blocks_whatever_the_others_say():
 @pytest.mark.parametrize(("source", "read"), [("WEB", False), ("Vinyl", False), ("CD", True), (None, True)])
 async def test_logs_are_read_for_a_cd_or_an_unknown_source_only(album_dir, monkeypatch, source, read: bool):
     monkeypatch.setattr(
-        pf, "detect_source", lambda _p: {"source": None, "confidence": "unknown", "reasons": ["undecidable"]}
+        pf, "source_guess", lambda _p: {"source": None, "confidence": "unknown", "reasons": ["undecidable"]}
     )
     searched: list[str] = []
-    monkeypatch.setattr(album, "_log_paths", lambda path: searched.append(path) or [])
+    monkeypatch.setattr(album_web, "_log_paths", lambda path: searched.append(path) or [])
 
     result = await pf.run_checks(str(album_dir), ["log"], source, [])
 
@@ -303,7 +303,7 @@ async def test_run_checks_weighs_the_matches_against_the_chosen_source(album_dir
     async def oracle(_site, _searchstrs):
         return [ORACLE_GROUP]
 
-    monkeypatch.setattr(pf, "detect_source", lambda _p: {"source": None, "confidence": "unknown", "reasons": ["none"]})
+    monkeypatch.setattr(pf, "source_guess", lambda _p: {"source": None, "confidence": "unknown", "reasons": ["none"]})
     identity = {"artists": [("X", "main")], "title": "Oracle", "edition_title": None, "year": "2026", "catno": None}
     monkeypatch.setattr(pf, "_release_identity", lambda _p: identity | {"label": None})
     monkeypatch.setattr(pf, "_audio_info", lambda _p: {"01.flac": {"precision": 16, "sample rate": 44100}})
@@ -341,7 +341,7 @@ def test_a_listed_release_blocks():
 
 async def test_run_checks_blocks_until_a_source_is_chosen(album_dir, monkeypatch):
     monkeypatch.setattr(
-        pf, "detect_source", lambda _p: {"source": None, "confidence": "unknown", "reasons": ["undecidable"]}
+        pf, "source_guess", lambda _p: {"source": None, "confidence": "unknown", "reasons": ["undecidable"]}
     )
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, None, [])
     assert result["blocking"] == ["source"]
@@ -350,7 +350,7 @@ async def test_run_checks_blocks_until_a_source_is_chosen(album_dir, monkeypatch
 
 async def test_run_checks_clears_when_everything_passes(album_dir, monkeypatch):
     monkeypatch.setattr(
-        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+        pf, "source_guess", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
     )
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", [])
     assert result["blocking"] == []
@@ -359,7 +359,7 @@ async def test_run_checks_clears_when_everything_passes(album_dir, monkeypatch):
 
 async def test_run_checks_reports_a_tracker_search_failure_as_a_warning(album_dir, monkeypatch):
     monkeypatch.setattr(
-        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+        pf, "source_guess", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
     )
     monkeypatch.setattr(
         pf, "_release_identity", lambda _p: {"artists": [("X", "main")], "title": "Y", "label": None, "catno": None}
@@ -402,7 +402,7 @@ async def test_run_checks_exposes_every_dupe_match_not_just_the_two_it_names(alb
         ]
 
     monkeypatch.setattr(
-        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+        pf, "source_guess", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
     )
     monkeypatch.setattr(
         pf, "_release_identity", lambda _p: {"artists": [("X", "main")], "title": "Y", "label": None, "catno": None}
@@ -432,7 +432,7 @@ def test_every_check_is_declared_once_in_the_table():
 async def test_rows_take_their_labels_from_the_table(album_dir, monkeypatch):
     """Labels live only in CHECKS, so a rename cannot leave a stale copy behind."""
     monkeypatch.setattr(
-        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+        pf, "source_guess", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
     )
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", [])
     by_id = {r["id"]: r["label"] for r in result["rows"]}
@@ -442,7 +442,7 @@ async def test_rows_take_their_labels_from_the_table(album_dir, monkeypatch):
 
 async def test_unselected_checks_are_skipped_not_dropped(album_dir, monkeypatch):
     monkeypatch.setattr(
-        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+        pf, "source_guess", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
     )
     result = await pf.run_checks(str(album_dir), ["mqa"], "WEB", [])
     verdicts = {r["id"]: r["verdict"] for r in result["rows"]}
@@ -453,7 +453,7 @@ async def test_unselected_checks_are_skipped_not_dropped(album_dir, monkeypatch)
 
 def _tagged_x_y(monkeypatch) -> None:
     monkeypatch.setattr(
-        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+        pf, "source_guess", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
     )
     identity = {"artists": [("X", "main")], "title": "Y", "edition_title": None, "label": None, "catno": None}
     monkeypatch.setattr(pf, "_release_identity", lambda _p: identity)
@@ -539,7 +539,7 @@ def test_the_other_files_are_every_file_but_the_audio(tmp_path):
 
 async def test_run_checks_measures_the_path_of_a_log_beside_the_audio(album_dir, monkeypatch):
     monkeypatch.setattr(
-        pf, "detect_source", lambda _p: {"source": "CD", "confidence": "confirmed", "reasons": ["rip log"]}
+        pf, "source_guess", lambda _p: {"source": "CD", "confidence": "confirmed", "reasons": ["rip log"]}
     )
     monkeypatch.setattr(pf, "_release_identity", lambda _p: {})
     (album_dir / LONG_LOG).write_text("log", encoding="utf-8")
@@ -567,7 +567,7 @@ async def test_run_checks_still_returns_rows_when_the_audio_will_not_parse(album
     """The fixtures are dummy FLAC bytes, so this is the unreadable case end to
     end: an unparseable file used to raise straight out of run_checks."""
     monkeypatch.setattr(
-        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+        pf, "source_guess", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
     )
     monkeypatch.setattr(
         pf, "_release_identity", lambda _p: {"artists": [("X", "main")], "title": "Y", "label": None, "catno": None}
@@ -583,7 +583,7 @@ async def test_run_checks_still_returns_rows_when_the_audio_will_not_parse(album
 async def test_the_rules_row_runs_even_when_the_tags_cannot_be_read(album_dir, monkeypatch):
     # Path length depends on the filenames, not on readable tags.
     monkeypatch.setattr(
-        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+        pf, "source_guess", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
     )
     monkeypatch.setattr(pf, "_release_identity", lambda _p: {})
 
@@ -685,7 +685,7 @@ async def test_a_listed_release_is_not_searched_for_on_that_tracker(album_dir, m
 
 async def test_without_an_album_title_the_lists_are_said_not_checked(album_dir, monkeypatch):
     monkeypatch.setattr(
-        pf, "detect_source", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
+        pf, "source_guess", lambda _p: {"source": "WEB", "confidence": "confirmed", "reasons": ["store tag"]}
     )
     monkeypatch.setattr(pf, "_release_identity", lambda _p: {})
     result = await pf.run_checks(str(album_dir), NO_FILE_CHECKS, "WEB", ["RED", "DIC"])
@@ -793,7 +793,7 @@ def test_the_dupe_row_lists_every_group_it_found():
 async def test_run_checks_puts_a_checks_notes_on_its_row(album_dir, monkeypatch):
     import cambia
 
-    monkeypatch.setattr(pf, "detect_source", lambda _p: {"source": "CD", "confidence": "confirmed", "reasons": ["log"]})
+    monkeypatch.setattr(pf, "source_guess", lambda _p: {"source": "CD", "confidence": "confirmed", "reasons": ["log"]})
     (album_dir / "rip.log").write_text("test log", encoding="utf-8")
     rip = SimpleNamespace(checksum=SimpleNamespace(integrity=cambia.Integrity.Match))
     output = SimpleNamespace(
@@ -803,8 +803,8 @@ async def test_run_checks_puts_a_checks_notes_on_its_row(album_dir, monkeypatch)
     async def verified(*_args) -> None:
         return None
 
-    monkeypatch.setattr(album, "parse_log", lambda _path: output)
-    monkeypatch.setattr(album, "verify_log_crcs", verified)
+    monkeypatch.setattr(album_web, "parse_log", lambda _path: output)
+    monkeypatch.setattr(album_web, "verify_log_crcs", verified)
 
     result = await pf.run_checks(str(album_dir), ["log"], "CD", [])
 

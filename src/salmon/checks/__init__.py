@@ -1,15 +1,17 @@
 import os
+from typing import TYPE_CHECKING
 
 import asyncclick as click
 
-import salmon.trackers
 from salmon.checks.integrity import handle_integrity_check
 from salmon.checks.logs import check_log_cambia
-from salmon.checks.mqa import check_mqa
 from salmon.checks.upconverts import test_upconverted
-from salmon.common import AlbumPath, commandgroup
-from salmon.constants import SOURCES
+from salmon.common import commandgroup
+from salmon.common.files import AlbumPath, process_files
 from salmon.errors import CRCMismatchError, EditedLogError, LogCheckSkipped
+
+if TYPE_CHECKING:
+    from salmon.checks.album import AlbumChecks
 
 
 @commandgroup.group()
@@ -38,7 +40,12 @@ async def log(path: str) -> None:
 
 
 async def _check_log(path: str, basepath: str) -> None:
-    """Score the log at ``path``, searching ``basepath`` for its audio."""
+    """Score a single log file and display the result.
+
+    Args:
+        path: Path to the log file to check.
+        basepath: Release folder to search for the log's audio, as the upload does.
+    """
     try:
         await check_log_cambia(path, basepath)
     except EditedLogError:
@@ -77,6 +84,9 @@ async def integrity(path: str) -> None:
 @click.argument("path", type=click.Path(exists=True, resolve_path=True))
 async def mqa(path):
     """Check if a FLAC file is MQA"""
+    # salmon.checks.mqa loads numpy: import it when an MQA check runs, not when salmon starts.
+    from salmon.checks.mqa import check_mqa
+
     if os.path.isfile(path):
         if await check_mqa(path):
             click.secho("MQA syncword present", fg="red")
@@ -94,103 +104,107 @@ async def mqa(path):
                         click.secho("Did not find MQA syncword", fg="green")
 
 
-async def mqa_test(path: str, all_files: bool = True) -> None:
-    """Check whether any audio file in a release carries the MQA syncword.
+_VERDICT_STYLES = {
+    "OK": {"fg": "green"},
+    "WARN": {"fg": "yellow"},
+    "BLOCK": {"fg": "red", "bold": True},
+    "INFO": {"fg": "cyan"},
+}
 
-    Every file by default: MQA on a later track is as much of a trump as on track one,
-    and this is the gate the upload itself runs.
 
-    Args:
-        path: Path to the FLAC file or directory to check.
-        all_files: Check every file in a directory; False checks only the first FLAC by path
-            (upload.mqa_check_all_tracks).
+def _trackers_option(_ctx, _param, value: tuple[str, ...]) -> list[str]:
+    """The site codes -t names, comma-separated or repeated; each must be a tracker in the config."""
+    import salmon.trackers
 
-    Raises:
-        click.Abort: If MQA syncword is detected.
-    """
-    if os.path.isfile(path):
-        if await check_mqa(path):
-            click.secho(f"MQA syncword present in '{path}'", fg="red", bold=True)
-            raise click.Abort
-        return
-    if not os.path.isdir(path):
-        return
-    if not all_files:
-        flacs = sorted(
-            os.path.join(root, f) for root, _, files in os.walk(path) for f in files if f.lower().endswith(".flac")
-        )
-        if flacs and await check_mqa(flacs[0]):
-            click.secho(f"MQA syncword present in '{flacs[0]}'", fg="red", bold=True)
-            raise click.Abort
-        return
-
-    from salmon.checks.album import run_mqa_check
-
-    result = await run_mqa_check(path)
-    hits = [f["file"] for f in result["files"] if f["detected"]]
-    if hits:
-        for name in hits:
-            click.secho(f"MQA syncword present in '{name}'", fg="red", bold=True)
-        raise click.Abort
+    try:
+        return salmon.trackers.tracker_codes(value)
+    except salmon.trackers.UnknownTrackerError as e:
+        raise click.BadParameter(str(e)) from None
 
 
 @check.command(name="all")
 @click.argument("path", type=click.Path(exists=True, file_okay=False, resolve_path=True))
 @click.option(
-    "--source", "-s", default=None, help=f"Media source ({'/'.join(SOURCES.values())}); inferred when omitted"
-)
-@click.option(
     "--tracker",
     "-t",
     "trackers",
     multiple=True,
-    help="Apply this tracker's rules and search it for duplicates; without -t, RED's and OPS's rules, no search",
+    callback=_trackers_option,
+    help="Also search this tracker for a dupe, and check its rules only (RED,OPS or repeated -t). "
+    "Without it, no tracker is contacted and RED's and OPS's rules apply.",
 )
-@click.option(
-    "--report",
-    is_flag=True,
-    help="Also print a plain-text report for a tracker help thread, with each FLAC's frequency analysis",
-)
-async def all_checks(path: str, source: str | None, trackers: tuple[str, ...], report: bool) -> None:
-    """Run every check over an album and print a single verdict.
+@click.option("--report", is_flag=True, help="Also print a plain-text report to paste into a tracker help thread.")
+async def all_checks(path: str, trackers: list[str], report: bool) -> None:
+    """Run every check on an album folder and print a verdict for each.
 
-    Exits non-zero when a release is unfit to upload.
+    Each row is OK, WARN, BLOCK or INFO (not applicable). Advisory only: salmon up runs its own checks and
+    stays the authority. Nothing in PATH is changed.
+
+    Exits with 1 when a check BLOCKs, 2 on a usage error (such as a tracker not in the config), 0 otherwise.
     """
-    from salmon.checks.preflight import BLOCK, OK, RULE_TRACKERS, SKIP, WARN, run_checks
+    # numpy, PyAV and the tracker clients: loaded when the checks run, not when salmon starts.
+    from salmon.checks.album import check_album
+    from salmon.checks.report import build_report
 
-    for code in trackers:
-        if code.upper() not in salmon.trackers.tracker_list:
-            raise click.UsageError(f"Unknown tracker {code}. Configured: {', '.join(salmon.trackers.tracker_list)}")
-
-    if source and source not in SOURCES.values():
-        raise click.UsageError(f"Unknown source {source}. Valid sources: {', '.join(SOURCES.values())}")
-
-    named = [c.upper() for c in trackers]
-    # No tracker named: their rules still apply, and no request is sent.
-    result = await run_checks(path, None, source, named or list(RULE_TRACKERS), search=bool(named))
-    colours = {OK: "green", WARN: "yellow", BLOCK: "red", SKIP: None}
-    marks = {OK: "OK  ", WARN: "WARN", BLOCK: "FAIL", SKIP: "--  "}
-    click.secho(f"\n{os.path.basename(path)}", bold=True)
-    for row in result["rows"]:
-        verdict = row["verdict"]
-        click.secho(f"  {marks[verdict]}  ", fg=colours[verdict], bold=verdict == BLOCK, nl=False)
-        click.secho(f"{row['label']:<18}", bold=True, nl=False)
-        click.echo(row["detail"])
-        for note in row["notes"]:
-            click.echo(f"{'':26}- {note}")
-
-    # Not picking a source blocks the upload button, but this command is a
-    # diagnostic — nothing is being claimed, so only real defects fail it.
-    blocking = [b for b in result["blocking"] if source or b != "source"]
-    if blocking:
-        click.secho(f"\nNot suitable for upload: {len(blocking)} blocking issue(s).", fg="red", bold=True)
-    elif result["warnings"]:
-        click.secho(f"\nUploadable, with {len(result['warnings'])} thing(s) to check first.", fg="yellow")
-    else:
-        click.secho("\nAll checks passed.", fg="green", bold=True)
+    checks = await check_album(path, trackers)
+    print_album_checks(checks)
     if report:
-        from salmon.checks.report import album_report
+        click.echo(f"\n{build_report(checks)}")
+    if checks.blocking:
+        raise click.exceptions.Exit(1)
 
-        click.echo(f"\n{await album_report(path, result['rows'], result['raw'].get('provenance'))}")
-    if blocking:
-        raise SystemExit(1)
+
+def print_album_checks(checks: "AlbumChecks") -> None:
+    """Print check all's verdict rows and its summary line."""
+    width = max(len(row.check) for row in checks.rows)
+    click.secho(f"\n{checks.folder}", bold=True)
+    for row in checks.rows:
+        click.secho(f"  {row.verdict:<5}  ", nl=False, **_VERDICT_STYLES[row.verdict])
+        click.echo(f"{row.check:<{width}}  {row.detail}")
+        for note in row.notes:
+            click.echo(f"  {'':<5}  {'':<{width}}    {note}")
+
+    warnings = sum(row.verdict == "WARN" for row in checks.rows)
+    if checks.blocking:
+        click.secho(f"\n{len(checks.blocking)} blocking, {warnings} warning(s).", fg="red", bold=True)
+    elif warnings:
+        click.secho(f"\nNothing blocking, {warnings} warning(s) to read first.", fg="yellow")
+    else:
+        click.secho("\nNothing blocking, no warning.", fg="green")
+    click.echo("Advisory: salmon up runs its own checks.")
+
+
+async def mqa_test(path: str, all_files: bool = True) -> None:
+    """Check if a FLAC file or any FLAC file in a directory contains MQA content.
+
+    The files are checked concurrently, like the integrity check.
+
+    Args:
+        path: Path to the FLAC file or directory to check.
+        all_files: Check every FLAC file in a directory; False checks only the first one by path.
+
+    Raises:
+        click.Abort: If MQA syncword is detected.
+    """
+    from salmon.checks.mqa import check_mqa
+
+    if os.path.isfile(path):
+        filepaths = [path]
+    elif os.path.isdir(path):
+        filepaths = sorted(
+            os.path.join(root, f) for root, _, files in os.walk(path) for f in files if f.lower().endswith(".flac")
+        )
+        if not all_files:
+            filepaths = filepaths[:1]
+    else:
+        return
+
+    async def check(filepath: str, _: int) -> bool:
+        return await check_mqa(filepath)
+
+    detected = await process_files(filepaths, check, "Checking for MQA")
+    hits = [filepath for filepath, found in zip(filepaths, detected, strict=True) if found]
+    for filepath in hits:
+        click.secho(f"MQA syncword present in '{filepath}'", fg="red", bold=True)
+    if hits:
+        raise click.Abort

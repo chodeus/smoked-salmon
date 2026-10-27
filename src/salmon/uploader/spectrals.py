@@ -115,21 +115,35 @@ async def check_spectrals(
     return lossy_master, spectral_ids
 
 
+FREQUENCY_HEADINGS = {
+    "suspect": ("the marks of a lossy encoder", "red"),
+    "look": ("one mark of a lossy encoder, not both", "yellow"),
+    "ok": ("no mark of a lossy encoder", "green"),
+    "none": ("nothing could be measured", "yellow"),
+}
+
+
+def frequency_plot_paths(files: list[str], spectrals_path: str) -> dict[str, str]:
+    """Each file's averaged-spectrum plot in the spectrals folder, numbered as its spectrals are."""
+    return {name: os.path.join(spectrals_path, f"{index + 1:02d} Frequency.png") for index, name in enumerate(files)}
+
+
 async def print_frequency_guidance(path: str, spectrals_path: str) -> str:
     """Print the frequency analysis as guidance for the lossy-master question; returns the folder level."""
     try:
-        spectra = await generate_frequency_plots(path, get_audio_files(path, True), spectrals_path)
-        verdict = assess(spectra)
+        files = get_audio_files(path, True)
+        spectra = await generate_frequency_plots(path, files, frequency_plot_paths(files, spectrals_path))
+        level, notes = assess(spectra)
     except Exception as e:
         # Advisory output must never cost an upload.
         click.secho(f"\nFrequency analysis skipped: {e}", fg="yellow")
         return "ok"
-    colour = {"suspect": "red", "look": "yellow"}.get(verdict["level"], "green")
-    click.secho(f"\nFrequency analysis: {verdict['level']}", fg=colour, bold=True)
-    for note in verdict["notes"]:
+    heading, colour = FREQUENCY_HEADINGS[level]
+    click.secho(f"\nFrequency analysis: {heading}", fg=colour, bold=True)
+    for note in notes:
         click.secho(f"  {note}")
     click.secho("  A measurement, not a verdict: read the spectrals before answering.", fg="cyan")
-    return verdict["level"]
+    return level
 
 
 async def handle_spectrals_upload_and_deletion(

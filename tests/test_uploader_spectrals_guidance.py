@@ -80,7 +80,7 @@ async def test_the_measurements_are_printed_before_the_question(flow):
     assert events[:2] == ["spectrograms-all", "measure"]
     assert events.index("measure") < events.index("view") < events.index("prompt")
     joined = "\n".join(printed)
-    assert "Frequency analysis: suspect" in joined
+    assert "Frequency analysis: the marks of a lossy encoder" in joined
     assert "01.flac: brick-wall at 16.6 kHz" in joined
     assert "A measurement, not a verdict" in joined
 

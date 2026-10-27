@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from salmon import cfg
 from salmon.checks.provenance import gather_provenance
-from salmon.checks.report import build_report
+from salmon.checks.report import spectrals_report
 from salmon.common.files import get_audio_files
 from salmon.config.image_hosts import spectrals_refusal
 from salmon.images import HOSTS, upload_images
@@ -21,6 +21,7 @@ from salmon.uploader.frequency import assess, generate_frequency_plots
 from salmon.uploader.spectrals import (
     create_specs_folder,
     drop_specs_claim,
+    frequency_plot_paths,
     generate_spectrals_all,
     get_spectrals_path,
     made_by_salmon,
@@ -73,7 +74,9 @@ async def generate(req: GenerateRequest) -> dict:
         audio_info = await asyncio.to_thread(gather_audio_info, path, True)
         created = await asyncio.to_thread(create_specs_folder, path, spectrals_path)
         spectral_ids = await generate_spectrals_all(path, created, audio_info)
-        spectra = await generate_frequency_plots(path, get_audio_files(path, True), created)
+        files = get_audio_files(path, True)
+        spectra = await generate_frequency_plots(path, files, frequency_plot_paths(files, created))
+        level, notes = assess(spectra)
         provenance = await asyncio.to_thread(gather_provenance, path)
         # "files" is what gets uploaded to an image host, so it stays the
         # spectrograms alone; the frequency plots are served and shown, not posted.
@@ -85,9 +88,9 @@ async def generate(req: GenerateRequest) -> dict:
             "spectral_ids": {str(k): v for k, v in spectral_ids.items()},
             "files": [f for f in every_png if f not in plots],
             "frequency": [msgspec.to_builtins(s) for s in spectra],
-            "assessment": assess(spectra),
+            "assessment": {"level": level, "notes": notes},
             "provenance": provenance,
-            "report": build_report(path, audio_info, provenance, spectra),
+            "report": spectrals_report(path, audio_info, provenance, spectra),
         }
 
     title = f"Spectrals: {os.path.basename(path)}"

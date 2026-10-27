@@ -7,7 +7,7 @@ import anyio
 import cambia
 import pytest
 
-from salmon.checks import album
+from salmon.checks import album_web
 from salmon.errors import CRCMismatchError, LogCheckSkipped
 
 
@@ -31,9 +31,9 @@ def _read(monkeypatch, tmp_path: Path, output: SimpleNamespace, crcs: Exception 
         if crcs is not None:
             raise crcs
 
-    monkeypatch.setattr(album, "parse_log", lambda _logpath: output)
-    monkeypatch.setattr(album, "verify_log_crcs", verify)
-    result = anyio.run(album.run_log_check, str(album_path))
+    monkeypatch.setattr(album_web, "parse_log", lambda _logpath: output)
+    monkeypatch.setattr(album_web, "verify_log_crcs", verify)
+    result = anyio.run(album_web.run_log_check, str(album_path))
     return [*result["logs"], {"verified": len(verified)}]
 
 
@@ -94,8 +94,8 @@ def test_a_log_cambia_cannot_parse_is_an_error_named_from_the_album(monkeypatch,
     def unparseable(path: str) -> None:
         raise LogCheckSkipped(f"Could not parse {path}: no rip found")
 
-    monkeypatch.setattr(album, "parse_log", unparseable)
+    monkeypatch.setattr(album_web, "parse_log", unparseable)
 
-    result = anyio.run(album.run_log_check, str(album_path))
+    result = anyio.run(album_web.run_log_check, str(album_path))
 
     assert result == {"logs": [{"file": "rip.log", "error": "Could not parse rip.log: no rip found"}]}

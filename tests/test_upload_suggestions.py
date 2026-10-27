@@ -10,10 +10,10 @@ import pytest
 import salmon.trackers as trackers
 import salmon.uploader as uploader
 from salmon import cfg
-from salmon.checks import source as src
 from salmon.common.strings import comparable
 from salmon.tagger import metadata as metadata_mod
 from salmon.tagger import review
+from salmon.tagger import tag_urls as src
 from salmon.uploader import dupe_checker
 from salmon.uploader import spectrals as sp
 
@@ -218,23 +218,6 @@ def test_lossy_prompt_pretypes_the_analysis_verdict(monkeypatch) -> None:
     result = anyio.run(sp.prompt_lossy_master, False, "n")
     assert result is False
     assert defaults == ["y", "n"]
-
-
-def test_source_prompt_pretypes_a_confirmed_detection(monkeypatch) -> None:
-    defaults = _capturing_prompt(monkeypatch, "salmon.uploader.click.prompt")
-    detected = {"source": "WEB", "confidence": "confirmed", "reasons": ['Files declare media "digital media".']}
-
-    result = anyio.run(uploader._prompt_source, detected)
-    assert result == "WEB"
-    assert defaults == ["WEB"]
-
-
-def test_source_prompt_offers_nothing_for_an_unconfirmed_detection(monkeypatch) -> None:
-    defaults = _capturing_prompt(monkeypatch, "salmon.uploader.click.prompt", answer="cd")
-
-    result = anyio.run(uploader._prompt_source, {"source": None, "confidence": "unknown", "reasons": []})
-    assert result == "CD"
-    assert defaults == [""]
 
 
 def test_next_tracker_takes_the_preselected_site_without_asking(monkeypatch) -> None:

@@ -13,14 +13,14 @@ from typing import Literal
 import msgspec
 
 import salmon.trackers
-from salmon.checks import album, provenance
+from salmon.checks import album_web, provenance
 from salmon.checks.do_not_upload import LISTS, Candidate, do_not_upload_reason
 from salmon.checks.high_rate import sixteen_bit_notice
 
 # Not `from salmon.checks import integrity` — the click Command of that name in
 # checks/__init__.py shadows the module.
 from salmon.checks.integrity import md5_unset_summary
-from salmon.checks.source import detect_source
+from salmon.checks.source import source_guess
 from salmon.checks.tag_rules import collect_upload_warnings, in_torrent_path, path_limit_warning
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.tagger.pre_data import construct_artists_li, parse_format, parse_title
@@ -198,14 +198,14 @@ CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec(
         "provenance",
         "Provenance",
-        album.run_provenance_check,
+        album_web.run_provenance_check,
         _provenance_verdict,
         notes=lambda result: result["contradictions"],
     ),
     CheckSpec(
         "integrity",
         "File integrity",
-        album.run_integrity_check,
+        album_web.run_integrity_check,
         _integrity_verdict,
         notes=lambda result: [
             *(f"{name}: does not decode" for name in result.get("decode_failures") or []),
@@ -216,7 +216,7 @@ CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec(
         "upconvert",
         "Upconvert",
-        album.run_upconvert_check,
+        album_web.run_upconvert_check,
         _upconvert_verdict,
         notes=lambda result: [
             *(
@@ -230,14 +230,14 @@ CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec(
         "mqa",
         "MQA",
-        album.run_mqa_check,
+        album_web.run_mqa_check,
         _mqa_verdict,
         notes=lambda result: [f["file"] for f in result["files"] if f["detected"]],
     ),
     CheckSpec(
         "tags",
         "MP3 tags",
-        album.run_tag_check,
+        album_web.run_tag_check,
         _tags_verdict,
         notes=lambda result: [
             *result["dual_id3"],
@@ -248,7 +248,7 @@ CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec(
         "log",
         "Rip log",
-        album.run_log_check,
+        album_web.run_log_check,
         _log_verdict,
         sources=("CD",),
         notes=lambda result: [_log_line(log)[1] for log in result["logs"]],
@@ -506,7 +506,7 @@ async def run_checks(
     search a duplicate search on each. Pass no trackers to check the files alone.
     """
     selected = CHECK_IDS if checks is None else tuple(checks)
-    guess = await asyncio.to_thread(detect_source, path)
+    guess = await asyncio.to_thread(source_guess, path)
     ctx = {"source": source or (guess["source"] if guess["confidence"] == "confirmed" else None)}
     rows: list[Row] = [source_row(guess, source)]
     raw: dict[str, dict] = {"source": guess}
