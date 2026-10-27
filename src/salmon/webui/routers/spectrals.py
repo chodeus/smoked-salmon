@@ -75,7 +75,7 @@ async def generate(req: GenerateRequest) -> dict:
         created = await asyncio.to_thread(create_specs_folder, path, spectrals_path)
         spectral_ids = await generate_spectrals_all(path, created, audio_info)
         files = get_audio_files(path, True)
-        spectra = await generate_frequency_plots(path, files, frequency_plot_paths(files, created))
+        spectra = await generate_frequency_plots(path, files, frequency_plot_paths(spectral_ids, created))
         level, notes = assess(spectra)
         provenance = await asyncio.to_thread(gather_provenance, path)
         # "files" is what gets uploaded to an image host, so it stays the

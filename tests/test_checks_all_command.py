@@ -40,6 +40,7 @@ from salmon import cfg
 from salmon.checks import all_checks
 from salmon.trackers.account import SlidingWindowLimiter
 from salmon.trackers.base import BaseGazelleApi
+from salmon.uploader import frequency
 from salmon.uploader.dupe_checker import generate_dupe_check_searchstrs
 
 FOLDER = "Artist - Album (2020) [WEB FLAC]"
@@ -139,6 +140,7 @@ def test_a_clean_album_gets_a_row_for_every_check_and_exits_0(album):
         "Do-Not-Upload (RED)": "OK",
         "Do-Not-Upload (OPS)": "OK",
     }
+    assert rows["Frequency analysis"] in ("OK", "WARN"), result.output
     assert "Advisory: salmon up runs its own checks." in result.output
 
 
@@ -349,6 +351,27 @@ def _write_aac(path: Path) -> None:
         frame.sample_rate = 44100
         for packet in [*stream.encode(frame), *stream.encode(None)]:
             out.mux(packet)
+
+
+@pytest.mark.usefixtures("no_tracker")
+def test_a_failed_analysis_is_reported_as_failed_not_as_no_lossless_file(album, monkeypatch):
+    async def boom(*_args):
+        raise RuntimeError("decoder exploded")
+
+    monkeypatch.setattr(frequency, "generate_frequency_plots", boom)
+    result = _run(str(album), "--report")
+    assert _rows(result.output)["Frequency analysis"] == "INFO"
+    assert "4. Frequency analysis (averaged spectrum per track)\n   Failed: see the Frequency analysis" in result.output
+    assert "no lossless file" not in result.output
+
+
+def test_a_folder_without_audio_is_a_usage_error(tmp_path):
+    folder = tmp_path / "Not an album"
+    folder.mkdir()
+    (folder / "notes.txt").write_text("no audio here")
+    result = _run(str(folder))
+    assert result.exit_code == 2, result.output
+    assert "No audio file in Not an album." in result.output
 
 
 @pytest.mark.usefixtures("no_tracker")

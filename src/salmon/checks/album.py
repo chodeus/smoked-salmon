@@ -216,11 +216,11 @@ async def check_album(path: str, trackers: list[str]) -> AlbumChecks:
             applies RED's and OPS's rules and contacts no tracker.
 
     Raises:
-        click.ClickException: If the folder holds no audio file.
+        click.UsageError: If the folder holds no audio file.
     """
     audio_files = get_audio_files(path, True)
     if not audio_files:
-        raise click.ClickException(f"No audio file in {os.path.basename(path)}.")
+        raise click.UsageError(f"No audio file in {os.path.basename(path)}.")
     audio_info = await anyio.to_thread.run_sync(_audio_info, path)
     detected: DetectedSource | None = await anyio.to_thread.run_sync(detect_source, path)
     source = detected.source if detected else None

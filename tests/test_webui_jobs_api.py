@@ -167,7 +167,7 @@ def spectral_stubs(monkeypatch, tmp_path, specs_requests):
         (specs_dir / "01-intro.png").write_bytes(PNG1)
         (specs_dir / "02-mittelteil.png").write_bytes(PNG2)
         (specs_dir / "notes.txt").write_text("not an image")
-        return {1: "01-intro.png", 2: "02-mittelteil.png"}
+        return {1: "01. Intro.flac", 2: "02. Mittelteil.flac"}
 
     async def fake_generate_frequency_plots(path, files, plot_paths):
         plot = plot_paths["01. Intro.flac"]
@@ -1268,7 +1268,7 @@ def test_spectrals_generate_happy_path(client, album_dir, spectral_stubs):
     assert data["result"]["album_path"] == str(album_dir)
     assert data["result"]["spectrals_path"] == str(spectral_stubs)
     # keys are stringified for JSON, non-png files are excluded, list sorted
-    assert data["result"]["spectral_ids"] == {"1": "01-intro.png", "2": "02-mittelteil.png"}
+    assert data["result"]["spectral_ids"] == {"1": "01. Intro.flac", "2": "02. Mittelteil.flac"}
     # Frequency plots are shown but never posted, so they stay out of "files".
     assert data["result"]["files"] == ["01-intro.png", "02-mittelteil.png"]
     assert data["result"]["frequency"][0]["image"] == "01 Frequency.png"
