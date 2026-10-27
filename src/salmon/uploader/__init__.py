@@ -99,12 +99,12 @@ from salmon.uploader.preassumptions import (
 from salmon.uploader.request_checker import check_requests
 from salmon.uploader.seedbox import UploadManager
 from salmon.uploader.spectrals import (
+    SpectralUploads,
     check_spectrals,
     generate_lossy_approval_comment,
-    get_spectrals_path,
-    handle_spectrals_upload_and_deletion,
     post_upload_spectral_check,
     report_lossy_master,
+    specs_hosts_text,
 )
 from salmon.uploader.staging import staged_source
 from salmon.uploader.upload import (
@@ -597,9 +597,16 @@ def _max_path_length_for_run(
     site_code: str, trackers: list[str] | None, flac_group: dict | None, offer_others: bool = False
 ) -> int:
     """The run's path limit: this tracker's, or the strictest of all the run may reach (-t, multi_tracker_upload)."""
+    return path_limit_for(_trackers_for_run(site_code, flac_group, trackers, offer_others))
+
+
+def _trackers_for_run(
+    first_tracker: str, flac_group: dict | None, trackers: list[str] | None = None, offer_others: bool = False
+) -> list[str]:
+    """Trackers a run may upload to: first_tracker alone with flac_group, or without -t and multi_tracker_upload."""
     if flac_group is not None or not (trackers or cfg.upload.multi_tracker_upload):
-        return path_limit_for([site_code])
-    return path_limit_for(follow_up_trackers(trackers, site_code, offer_others))
+        return [first_tracker]
+    return follow_up_trackers(trackers, first_tracker, offer_others)
 
 
 async def next_tracker(trackers: list[str] | None, remaining: list[str]) -> str | None:
@@ -899,7 +906,12 @@ async def _upload_staged(
             pass
         else:
             lossy_result, spectral_ids = await check_spectrals(
-                path, audio_info, lossy, spectrals, format=rls_data["format"]
+                path,
+                audio_info,
+                lossy,
+                spectrals,
+                format=rls_data["format"],
+                hosts=specs_hosts_text(_trackers_for_run(gazelle_site.site_code, flac_group, trackers, offer_others)),
             )
             lossy_master = lossy_result if lossy_result is not None else False
 
@@ -1009,186 +1021,119 @@ async def _upload_staged(
             shutil.rmtree(path)
             return click.secho("\nDeleted folder, aborting upload...", fg="red")
 
-    lossy_comment = None
-    if spectrals_after:
-        spectral_urls = None
-    else:
-        if lossy_master:
-            lossy_comment = await generate_lossy_approval_comment(source_url, list(track_data.keys()))
-            click.echo()
-
-        spectrals_path = get_spectrals_path(path)
-        spectral_urls = await handle_spectrals_upload_and_deletion(spectrals_path, spectral_ids)
-    if cfg.upload.requests.last_minute_dupe_check and not skip_first:
-        await last_min_dupe_check(gazelle_site, searchstrs, our_title)
-
-    remaining_gazelle_sites = follow_up_trackers(trackers, gazelle_site.site_code, offer_others)
-    tracker: str | None = gazelle_site.site_code
-    if skip_first:
-        remaining_gazelle_sites.remove(gazelle_site.site_code)
-        tracker = None
-    torrent_id = None
-    cover_url = None
-    stored_cover_urls: dict[str, str | None] = {}  # cover URL cached per image host (trackers may use different hosts)
-
-    seedbox_uploader = UploadManager()
-    uploaded: list[str] = []  # The URL of each torrent uploaded, for an abort to list
-
+    # Uploaded once per specs host; the files are deleted once no tracker of the run can need them.
+    spectral_uploads = SpectralUploads(
+        path, _trackers_for_run(gazelle_site.site_code, flac_group, trackers, offer_others)
+    )
     try:
-        while True:
-            # Loop until we don't want to upload to any more sites.
-            if not tracker:
-                tracker = await next_tracker(trackers, remaining_gazelle_sites)
+        lossy_comment = None
+        spectral_urls = None
+        if not spectrals_after:
+            if lossy_master:
+                lossy_comment = await generate_lossy_approval_comment(source_url, list(track_data.keys()))
+                click.echo()
+
+            if not skip_first:
+                spectral_urls = await spectral_uploads.urls_for(gazelle_site.site_code, spectral_ids)
+        if cfg.upload.requests.last_minute_dupe_check and not skip_first:
+            await last_min_dupe_check(gazelle_site, searchstrs, our_title)
+
+        remaining_gazelle_sites = follow_up_trackers(trackers, gazelle_site.site_code, offer_others)
+        tracker: str | None = gazelle_site.site_code
+        if skip_first:
+            remaining_gazelle_sites.remove(gazelle_site.site_code)
+            tracker = None
+        torrent_id = None
+        cover_url = None
+        # cover URL cached per image host (trackers may use different hosts)
+        stored_cover_urls: dict[str, str | None] = {}
+
+        seedbox_uploader = UploadManager()
+        uploaded: list[str] = []  # The URL of each torrent uploaded, for an abort to list
+
+        try:
+            while True:
+                # Loop until we don't want to upload to any more sites.
                 if not tracker:
-                    click.secho("\nDone with this release.", fg="green")
-                    break
-                gazelle_site = salmon.trackers.get_class(tracker)()
-                # Before its dupe check, which may ask which group to upload into.
-                if _do_not_upload_refusal(tracker, metadata) is not None or (
-                    flac_group is None and _sixteen_bit_refusal(tracker, audio_info)
-                ):
-                    remaining_gazelle_sites.remove(tracker)
-                    tracker = None
-                    if not remaining_gazelle_sites or not (trackers or cfg.upload.multi_tracker_upload):
+                    tracker = await next_tracker(trackers, remaining_gazelle_sites)
+                    if not tracker:
+                        click.secho("\nDone with this release.", fg="green")
                         break
-                    continue
+                    gazelle_site = salmon.trackers.get_class(tracker)()
+                    # Before its dupe check, which may ask which group to upload into.
+                    if _do_not_upload_refusal(tracker, metadata) is not None or (
+                        flac_group is None and _sixteen_bit_refusal(tracker, audio_info)
+                    ):
+                        remaining_gazelle_sites.remove(tracker)
+                        tracker = None
+                        if not remaining_gazelle_sites or not (trackers or cfg.upload.multi_tracker_upload):
+                            break
+                        continue
 
-                click.secho(f"Uploading to {gazelle_site.base_url}", fg="cyan", bold=True)
-                # The reviewed metadata, not the tags: an edit to artist, title or year must move the match with it.
-                # A torrent already seeds from the folder: never offer to delete it.
-                try:
-                    group_id = await check_existing_group(
-                        gazelle_site, searchstrs, offer_deletion=False, release=metadata
-                    )
-                except RequestError as e:
+                    click.secho(f"Uploading to {gazelle_site.base_url}", fg="cyan", bold=True)
+                    # The reviewed metadata, not the tags: an edit to artist, title or year must move the match with it.
+                    # A torrent already seeds from the folder: never offer to delete it.
+                    try:
+                        group_id = await check_existing_group(
+                            gazelle_site, searchstrs, offer_deletion=False, release=metadata
+                        )
+                    except RequestError as e:
+                        # Like a failed upload: skip this tracker, and offer the next one.
+                        click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
+                        remaining_gazelle_sites.remove(tracker)
+                        tracker = None
+                        if not remaining_gazelle_sites or not (trackers or cfg.upload.multi_tracker_upload):
+                            break
+                        continue
+
+                remaining_gazelle_sites.remove(tracker)
+                # The source FLAC's group is on this tracker only; trackers named up front are all gone through.
+                last_site = (
+                    source_flac is not None
+                    or not remaining_gazelle_sites
+                    or not (trackers or cfg.upload.multi_tracker_upload)
+                )
+
+                proceed, cover_url = await resolve_cover_url(
+                    gazelle_site,
+                    group_id,
+                    stored_cover_urls,
+                    path,
+                    metadata["cover"],
+                    remove_downloaded_cover_image,
+                )
+                if not proceed:
                     # Like a failed upload: skip this tracker, and offer the next one.
-                    click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
-                    remaining_gazelle_sites.remove(tracker)
+                    click.secho(f"\nSkipping upload to {gazelle_site.site_string}.", fg="red", bold=True)
                     tracker = None
-                    if not remaining_gazelle_sites or not (trackers or cfg.upload.multi_tracker_upload):
+                    if last_site:
                         break
                     continue
 
-            remaining_gazelle_sites.remove(tracker)
-            # The source FLAC's group is on this tracker only; trackers named up front are all gone through.
-            last_site = (
-                source_flac is not None
-                or not remaining_gazelle_sites
-                or not (trackers or cfg.upload.multi_tracker_upload)
-            )
+                if not spectrals_after:
+                    # Uploaded to this tracker's specs host, unless a tracker using the same host already did.
+                    spectral_urls = await spectral_uploads.urls_for(gazelle_site.site_code, spectral_ids)
 
-            proceed, cover_url = await resolve_cover_url(
-                gazelle_site,
-                group_id,
-                stored_cover_urls,
-                path,
-                metadata["cover"],
-                remove_downloaded_cover_image,
-            )
-            if not proceed:
-                # Like a failed upload: skip this tracker, and offer the next one.
-                click.secho(f"\nSkipping upload to {gazelle_site.site_string}.", fg="red", bold=True)
-                tracker = None
-                if last_site:
-                    break
-                continue
+                if source_flac is None and not request_id and cfg.upload.requests.check_requests:
+                    request_id = await check_requests(gazelle_site, searchstrs)
 
-            if source_flac is None and not request_id and cfg.upload.requests.check_requests:
-                request_id = await check_requests(gazelle_site, searchstrs)
+                for rule_warning in upload_warnings(track_data):
+                    click.secho(f"⚠ {rule_warning}", fg="yellow", bold=True)
 
-            for rule_warning in upload_warnings(track_data):
-                click.secho(f"⚠ {rule_warning}", fg="yellow", bold=True)
-
-            group_link = f"{gazelle_site.base_url}/torrents.php?id={group_id}" if group_id else source_url
-            try:
-                if source_flac is not None:
-                    url, held = _existing_flac_result(
-                        gazelle_site,
-                        flac_group or {},
-                        source_flac,
-                        metadata,
-                        get_downconversion_options(rls_data, track_data, quiet=True),
-                    )
-                else:
-                    torrent_id, group_id, torrent_path, torrent_content, url = await upload_and_report(
-                        gazelle_site,
-                        path,
-                        group_id,
-                        metadata,
-                        cover_url,
-                        track_data,
-                        hybrid,
-                        lossy_master,
-                        spectral_urls,
-                        spectral_ids,
-                        lossy_comment,
-                        request_id,
-                        source_url,
-                        seedbox_uploader,
-                        source=source,
-                        conversion_note=converted_from_note(conversion, group_link),
-                    )
-
-                    request_id = None
-                    held = set()
-                    uploaded.append(url)
-
-                    # A request fill can answer without a torrent id (0): the check, on the FLAC's torrent, waits.
-                    if spectrals_after and not torrent_id:
-                        click.secho(
-                            "No torrent id came back for this upload: spectrals are checked on the next tracker's "
-                            "upload, or run salmon checkspecs on this one.",
-                            fg="yellow",
+                group_link = f"{gazelle_site.base_url}/torrents.php?id={group_id}" if group_id else source_url
+                try:
+                    if source_flac is not None:
+                        url, held = _existing_flac_result(
+                            gazelle_site,
+                            flac_group or {},
+                            source_flac,
+                            metadata,
+                            get_downconversion_options(rls_data, track_data, quiet=True),
                         )
-                    elif spectrals_after:
-                        # Once, on the first torrent up; transcodes and later trackers carry what it found.
-                        # Before print_torrents: that fetch can fail, and must not take the check with it.
-                        spectrals_after = False
-                        lossy_master, lossy_comment, spectral_urls, spectral_ids = await post_upload_spectral_check(
+                    else:
+                        torrent_id, group_id, torrent_path, torrent_content, url = await upload_and_report(
                             gazelle_site,
                             path,
-                            torrent_id,
-                            None,
-                            track_data,
-                            source,
-                            source_url,
-                            format=rls_data["format"],
-                        )
-
-                    if not group_id:
-                        # Conversions with no group id would each start a new group beside this one.
-                        click.secho(
-                            f"\nNo group id came back for {url}: no conversions are offered for it.", fg="yellow"
-                        )
-                    elif not dryrun.active():
-                        group = await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
-                        options = get_downconversion_options(rls_data, track_data, quiet=True)
-                        held = _held_options(group, metadata, {"id": torrent_id}, options, uploaded=True)
-
-                if (
-                    group_id
-                    and (conversion_options := get_downconversion_options(rls_data, track_data, quiet=True))
-                    and (
-                        source_flac is not None
-                        or await interaction.assume_defaults()
-                        or await interaction.confirm(
-                            click.style("\nWould you like to check downconversion options?", fg="magenta"),
-                            default=bool(wanted_conversions(conversion_options, held, conversions)),
-                        )
-                    )
-                ):
-                    selected_tasks = await prompt_downconversion_choice(rls_data, track_data, held, conversions)
-                    if selected_tasks:
-                        display_names = [task["name"] for task in selected_tasks]
-                        click.secho(
-                            f"\nSelected formats for downconversion: {', '.join(display_names)}", fg="green", bold=True
-                        )
-
-                        # Execute downconversion tasks
-                        await execute_downconversion_tasks(
-                            selected_tasks,
-                            path,
-                            gazelle_site,
                             group_id,
                             metadata,
                             cover_url,
@@ -1201,32 +1146,113 @@ async def _upload_staged(
                             request_id,
                             source_url,
                             seedbox_uploader,
-                            source,
-                            url,
-                            uploaded=uploaded,
-                            max_path_length=run_path_limit,
+                            source=source,
+                            conversion_note=converted_from_note(conversion, group_link),
                         )
-            except RequestError as e:
-                click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
-                if isinstance(e, UnknownOutcomeError):
-                    record.note_unknown_outcome(e)
 
-            tracker = None
-            if last_site:
-                click.secho("\nDone uploading this release.", fg="green")
-                break
+                        request_id = None
+                        held = set()
+                        uploaded.append(url)
 
-    except click.Abort as e:
-        if not uploaded or dryrun.active():
-            raise
-        # What is up stays up and is seeded below: the run only stops offering more.
-        click.secho("\nAborting: nothing more is uploaded. Already uploaded:", fg="red")
-        for line in uploaded:
-            click.echo(f"  {line}")
-        if isinstance(e, NoAnswerError):
-            raise
+                        # A request fill can answer without a torrent id (0): the check, on the FLAC's torrent, waits.
+                        if spectrals_after and not torrent_id:
+                            click.secho(
+                                "No torrent id came back for this upload: spectrals are checked on the next tracker's "
+                                "upload, or run salmon checkspecs on this one.",
+                                fg="yellow",
+                            )
+                        elif spectrals_after:
+                            # Once, on the first torrent up; transcodes and later trackers carry what it found.
+                            # Before print_torrents: that fetch can fail, and must not take the check with it.
+                            spectrals_after = False
+                            lossy_master, lossy_comment, spectral_urls, spectral_ids = await post_upload_spectral_check(
+                                gazelle_site,
+                                path,
+                                torrent_id,
+                                None,
+                                track_data,
+                                source,
+                                source_url,
+                                format=rls_data["format"],
+                                uploads=spectral_uploads,
+                            )
+
+                        if not group_id:
+                            # Conversions with no group id would each start a new group beside this one.
+                            click.secho(
+                                f"\nNo group id came back for {url}: no conversions are offered for it.", fg="yellow"
+                            )
+                        elif not dryrun.active():
+                            group = await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
+                            options = get_downconversion_options(rls_data, track_data, quiet=True)
+                            held = _held_options(group, metadata, {"id": torrent_id}, options, uploaded=True)
+
+                    if (
+                        group_id
+                        and (conversion_options := get_downconversion_options(rls_data, track_data, quiet=True))
+                        and (
+                            source_flac is not None
+                            or await interaction.assume_defaults()
+                            or await interaction.confirm(
+                                click.style("\nWould you like to check downconversion options?", fg="magenta"),
+                                default=bool(wanted_conversions(conversion_options, held, conversions)),
+                            )
+                        )
+                    ):
+                        selected_tasks = await prompt_downconversion_choice(rls_data, track_data, held, conversions)
+                        if selected_tasks:
+                            display_names = [task["name"] for task in selected_tasks]
+                            click.secho(
+                                f"\nSelected formats for downconversion: {', '.join(display_names)}",
+                                fg="green",
+                                bold=True,
+                            )
+
+                            # Execute downconversion tasks
+                            await execute_downconversion_tasks(
+                                selected_tasks,
+                                path,
+                                gazelle_site,
+                                group_id,
+                                metadata,
+                                cover_url,
+                                track_data,
+                                hybrid,
+                                lossy_master,
+                                spectral_urls,
+                                spectral_ids,
+                                lossy_comment,
+                                request_id,
+                                source_url,
+                                seedbox_uploader,
+                                source,
+                                url,
+                                uploaded=uploaded,
+                                max_path_length=run_path_limit,
+                            )
+                except RequestError as e:
+                    click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
+                    if isinstance(e, UnknownOutcomeError):
+                        record.note_unknown_outcome(e)
+
+                tracker = None
+                if last_site:
+                    click.secho("\nDone uploading this release.", fg="green")
+                    break
+
+        except click.Abort as e:
+            if not uploaded or dryrun.active():
+                raise
+            # What is up stays up and is seeded below: the run only stops offering more.
+            click.secho("\nAborting: nothing more is uploaded. Already uploaded:", fg="red")
+            for line in uploaded:
+                click.echo(f"  {line}")
+            if isinstance(e, NoAnswerError):
+                raise
+        finally:
+            await seedbox_uploader.execute_upload()
     finally:
-        await seedbox_uploader.execute_upload()
+        await spectral_uploads.close()
 
 
 async def edit_metadata(

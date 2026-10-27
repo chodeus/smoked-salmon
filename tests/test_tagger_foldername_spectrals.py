@@ -1,16 +1,19 @@
-"""A folder rename moves the spectrals salmon made to the new name; a folder it did not make stays."""
+"""A folder rename moves the spectrals salmon made to the new name, never leaving them behind (#569, #573). A spectrals
+folder salmon did not make is never replaced, moved or deleted: an album's own is copied like any other folder."""
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Any
 
 import anyio
-import asyncclick as click
 import pytest
 
 from salmon import cfg, dryrun
+from salmon.errors import UploadError
 from salmon.tagger import foldername
-from salmon.uploader.spectrals import create_specs_folder, get_spectrals_path
+from salmon.uploader import spectrals
+from salmon.uploader.spectrals import create_specs_folder, get_spectrals_path, made_by_salmon
 
 NEW_NAME = "Artist - Album (2020) [WEB FLAC]"
 SPECTRAL_FILES = {"01 Full.png": b"full", "01 Zoom.png": b"zoom"}
@@ -51,10 +54,38 @@ def _album(folder: Path) -> Path:
 
 
 def _write_spectrals(spectrals: Path) -> None:
-    """Spectrals as salmon makes them: through create_specs_folder."""
-    create_specs_folder("", str(spectrals))
+    spectrals.mkdir(parents=True)
+    _fill(spectrals)
+
+
+def _fill(spectrals: Path) -> None:
     for name, data in SPECTRAL_FILES.items():
         (spectrals / name).write_bytes(data)
+
+
+def _specs(album: Path | str) -> Path:
+    """Where salmon makes an album's spectrals."""
+    return Path(get_spectrals_path(str(album)))
+
+
+def _rename(album: Path, scene: bool = False) -> Path:
+    return Path(
+        anyio.run(lambda: foldername.rename_folder(str(album), _metadata(scene), auto_rename=True, check=False))
+    )
+
+
+def _tmp_dir(monkeypatch, tmp_path: Path) -> Path:
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
+    return tmp_dir
+
+
+def _no_upload(monkeypatch) -> None:
+    async def no_upload(*_args: Any, **_kwargs: Any) -> dict:
+        return {}
+
+    monkeypatch.setattr(spectrals, "upload_spectrals", no_upload)
 
 
 def _listing(folder: Path) -> dict[str, str]:
@@ -70,67 +101,39 @@ def _files(folder: Path) -> dict[str, bytes]:
 
 
 @pytest.mark.parametrize("hardlinks", [True, False])
-def test_the_tmp_dir_spectrals_move_to_the_new_name(monkeypatch, dirs, tmp_path, hardlinks: bool) -> None:
-    _downloads, seeding = dirs
-    tmp_dir = tmp_path / "tmp"
-    tmp_dir.mkdir()
-    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
+@pytest.mark.parametrize("scene", [False, True])
+def test_the_tmp_dir_spectrals_move_to_the_new_name(monkeypatch, dirs, tmp_path, hardlinks: bool, scene: bool) -> None:
+    downloads, seeding = dirs
+    tmp_dir = _tmp_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(cfg.directory, "hardlinks", hardlinks)
     album = _album(seeding / "Old Name")
-    _write_spectrals(Path(get_spectrals_path(str(album))))
+    _write_spectrals(_specs(album))
 
-    new_path = anyio.run(lambda: foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False))
+    new_path = _rename(album, scene)
 
-    moved = Path(get_spectrals_path(new_path))
-    assert Path(new_path).name == NEW_NAME
-    assert moved.name.startswith(f"spectrals_{NEW_NAME} ")
-    assert sorted(tmp_dir.iterdir()) == [moved]
-    assert _files(moved) == SPECTRAL_FILES
+    assert new_path == downloads / ("Old Name" if scene else NEW_NAME)
+    assert _specs(new_path).parent == tmp_dir
+    assert _specs(new_path).name.startswith(f"spectrals_{new_path.name} ")
+    assert sorted(entry.name for entry in tmp_dir.iterdir()) == [_specs(new_path).name]
+    assert _files(_specs(new_path)) == SPECTRAL_FILES
 
 
 def test_a_stale_tmp_dir_spectrals_folder_of_the_new_name_is_replaced(monkeypatch, dirs, tmp_path) -> None:
     downloads, seeding = dirs
-    tmp_dir = tmp_path / "tmp"
-    tmp_dir.mkdir()
-    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
+    tmp_dir = _tmp_dir(monkeypatch, tmp_path)
     album = _album(seeding / "Old Name")
-    _write_spectrals(Path(get_spectrals_path(str(album))))
-    stale = Path(get_spectrals_path(str(downloads / NEW_NAME)))
+    _write_spectrals(_specs(album))
+    # Salmon's, from an earlier run of the album at the new name.
+    stale = _specs(downloads / NEW_NAME)
     stale.mkdir()
     (stale / "01 Full.png").write_bytes(b"stale")
+    (stale / "02 Full.png").write_bytes(b"stale")
 
-    anyio.run(lambda: foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False))
+    new_path = _rename(album)
 
-    assert sorted(tmp_dir.iterdir()) == [stale]
+    assert _specs(new_path) == stale
+    assert sorted(entry.name for entry in tmp_dir.iterdir()) == [stale.name]
     assert _files(stale) == SPECTRAL_FILES
-
-
-def test_same_named_albums_get_their_own_tmp_dir_spectrals(monkeypatch, dirs, tmp_path) -> None:
-    # Web jobs on two albums run at once: making one's spectrals must not replace the other's.
-    _downloads, seeding = dirs
-    tmp_dir = tmp_path / "tmp"
-    tmp_dir.mkdir()
-    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
-    (seeding / "A").mkdir()
-    (seeding / "B").mkdir()
-    first = Path(get_spectrals_path(str(_album(seeding / "A" / "CD1"))))
-    _write_spectrals(first)
-
-    made = Path(create_specs_folder(str(_album(seeding / "B" / "CD1"))))
-
-    assert made.parent == tmp_dir
-    assert _files(first) == SPECTRAL_FILES
-
-
-def test_an_album_reached_through_a_link_has_one_tmp_dir_spectrals_folder(monkeypatch, dirs, tmp_path) -> None:
-    downloads, seeding = dirs
-    tmp_dir = tmp_path / "tmp"
-    tmp_dir.mkdir()
-    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
-    album = _album(downloads / "Album")
-    (seeding / "Linked").symlink_to(album)
-
-    assert get_spectrals_path(str(seeding / "Linked")) == get_spectrals_path(str(album))
 
 
 @pytest.mark.parametrize("hardlinks", [True, False])
@@ -194,6 +197,382 @@ def test_a_plain_file_named_spectrals_is_copied_like_any_other(monkeypatch, dirs
     assert (new_path / "Spectrals").read_bytes() == b"not a folder"
 
 
+def test_the_spectrals_of_a_library_album_are_never_inside_it(monkeypatch, dirs) -> None:
+    downloads, _seeding = dirs
+    library = downloads.parent / "library"
+    library.mkdir()
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(library)])
+    album = _album(library / "Old Name")
+    _write_spectrals(Path(get_spectrals_path(str(album))))
+    before = _listing(library)
+
+    assert not Path(get_spectrals_path(str(album))).is_relative_to(album)
+
+    anyio.run(lambda: foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False))
+
+    assert _listing(library) == before
+
+
+# A spectrals folder salmon did not make
+
+
+@pytest.mark.parametrize("own", [{"notes.txt": b"mine"}, {"01 Full.png": b"theirs", "notes.txt": b"mine"}, {}])
+def test_an_albums_own_spectrals_folder_stays_in_it_and_goes_into_the_renamed_copy(dirs, own: dict) -> None:
+    downloads, seeding = dirs
+    album = _album(seeding / "Old Name")
+    (album / "Spectrals").mkdir()
+    for name, data in own.items():
+        (album / "Spectrals" / name).write_bytes(data)
+    before = _listing(album)
+
+    made = Path(create_specs_folder(str(album)))
+    _fill(made)
+    new_path = _rename(album)
+
+    assert made.parent == downloads
+    assert _listing(album) == before
+    assert _files(new_path / "Spectrals") == own
+    assert _specs(new_path).parent == downloads
+    assert _files(_specs(new_path)) == SPECTRAL_FILES
+    assert not made.exists()
+
+
+def test_spectrals_an_earlier_run_left_in_the_album_are_still_replaced_and_deleted(monkeypatch, dirs) -> None:
+    _downloads, seeding = dirs
+    album = _album(seeding / "Album")
+    left = album / "Spectrals"
+    left.mkdir()
+    # An earlier run's spectrals, averaged spectra and an oxipng copy it was killed in, beside a file browser's litter.
+    for name in ("01 Full.png", "01 Zoom.png", "01 Spectrum.png", "02 Full.png.tmp.png", ".DS_Store", "Thumbs.db"):
+        (left / name).write_bytes(b"old")
+    _no_upload(monkeypatch)
+
+    made = create_specs_folder(str(album))
+    assert Path(made) == left
+    assert list(left.iterdir()) == []
+    _fill(left)
+    anyio.run(spectrals.handle_spectrals_upload_and_deletion, made, {1: "01 - one.flac"})
+
+    assert not left.exists()
+
+
+def test_an_empty_spectrals_folder_salmon_did_not_make_is_the_albums_own(dirs) -> None:
+    downloads, seeding = dirs
+    album = _album(seeding / "Album")
+    (album / "Spectrals").mkdir()
+
+    made = create_specs_folder(str(album))
+
+    assert (album / "Spectrals").is_dir()
+    assert Path(made).parent == downloads
+
+
+def test_a_symlinked_spectrals_folder_is_never_salmons(dirs, tmp_path) -> None:
+    downloads, seeding = dirs
+    album = _album(seeding / "Album")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "01 Full.png").write_bytes(b"theirs")
+    (album / "Spectrals").symlink_to(elsewhere)
+
+    made = create_specs_folder(str(album))
+
+    assert not made_by_salmon(str(album / "Spectrals"))
+    assert (elsewhere / "01 Full.png").read_bytes() == b"theirs"
+    assert (album / "Spectrals").is_symlink()
+    assert Path(made).parent == downloads
+
+
+def test_a_file_named_spectrals_in_the_album_gets_salmons_folder_beside_it(dirs) -> None:
+    downloads, seeding = dirs
+    album = _album(seeding / "Album")
+    (album / "Spectrals").write_bytes(b"not a folder")
+
+    made = create_specs_folder(str(album))
+
+    assert (album / "Spectrals").read_bytes() == b"not a folder"
+    assert Path(made).parent == downloads
+
+
+@pytest.mark.parametrize("theirs", ["a file", "a folder named like a spectral", "a hidden folder"])
+def test_making_spectrals_over_a_folder_that_is_not_salmons_is_refused(monkeypatch, dirs, tmp_path, theirs) -> None:
+    _downloads, seeding = dirs
+    _tmp_dir(monkeypatch, tmp_path)
+    album = _album(seeding / "Album")
+    specs = _specs(album)
+    specs.mkdir()
+    (specs / "01 Zoom.png").write_bytes(b"png")
+    holder = {"a file": specs, "a folder named like a spectral": specs / "01 Full.png", "a hidden folder": specs / ".x"}
+    holder[theirs].mkdir(exist_ok=True)
+    (holder[theirs] / "theirs.txt").write_bytes(b"theirs")
+
+    with pytest.raises(UploadError, match="salmon did not make"):
+        create_specs_folder(str(album))
+
+    assert (holder[theirs] / "theirs.txt").read_bytes() == b"theirs"
+
+
+def test_deleting_spectrals_leaves_a_folder_holding_files_salmon_did_not_make(monkeypatch, dirs) -> None:
+    _downloads, seeding = dirs
+    album = _album(seeding / "Album")
+    made = Path(create_specs_folder(str(album)))
+    _fill(made)
+    (made / "notes.txt").write_bytes(b"mine")
+    _no_upload(monkeypatch)
+
+    anyio.run(spectrals.handle_spectrals_upload_and_deletion, str(made), {1: "01 - one.flac"})
+
+    assert (made / "notes.txt").read_bytes() == b"mine"
+
+
+# Moving salmon's spectrals with a rename
+
+
+def test_an_album_reached_through_a_link_of_another_name_has_one_tmp_dir_spectrals_folder(
+    monkeypatch, dirs, tmp_path
+) -> None:
+    downloads, seeding = dirs
+    _tmp_dir(monkeypatch, tmp_path)
+    album = _album(downloads / "Album")
+    (seeding / "Linked").symlink_to(album)
+
+    assert get_spectrals_path(str(seeding / "Linked")) == get_spectrals_path(str(album))
+
+
+def test_a_folder_given_another_file_before_the_second_try_is_not_deleted(monkeypatch, tmp_path, capsys) -> None:
+    import shutil
+
+    specs = tmp_path / "Album" / "Spectrals"
+    specs.parent.mkdir()
+    _write_spectrals(specs)
+    rmtree = shutil.rmtree
+    tries: list[str] = []
+    slept: list[float] = []
+
+    def held_on_the_first_try(path: str, ignore_errors: bool = False) -> None:
+        # As on Windows, where a viewer holding a file stops the first try.
+        tries.append(path)
+        if len(tries) > 1:
+            rmtree(path, ignore_errors=ignore_errors)
+
+    async def a_file_arrives(seconds: float) -> None:
+        if not slept:
+            (specs / "notes.txt").write_bytes(b"theirs")
+        slept.append(seconds)
+
+    _no_upload(monkeypatch)
+    monkeypatch.setattr(spectrals.shutil, "rmtree", held_on_the_first_try)
+    monkeypatch.setattr(spectrals.anyio, "sleep", a_file_arrives)
+    anyio.run(spectrals.handle_spectrals_upload_and_deletion, str(specs), None)
+
+    assert (specs / "notes.txt").read_bytes() == b"theirs"
+    assert len(tries) == 1
+    assert "Not deleting" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("put_there", ["a folder", "a link to another of salmon's"])
+def test_what_takes_the_place_of_salmons_folder_during_the_delete_is_not_salmons(
+    monkeypatch, tmp_path, put_there: str
+) -> None:
+    specs = tmp_path / "Album" / "Spectrals"
+    specs.parent.mkdir()
+    _write_spectrals(specs)
+    other = Path(create_specs_folder(str(_album(tmp_path / "Other"))))
+    slept: list[float] = []
+
+    async def put_in_its_place(seconds: float) -> None:
+        if not slept:
+            if put_there == "a folder":
+                specs.mkdir()
+                (specs / ".theirs").write_bytes(b"theirs")
+                (specs / "notes.txt").write_bytes(b"theirs")
+            else:
+                specs.symlink_to(other)
+        slept.append(seconds)
+
+    _no_upload(monkeypatch)
+    monkeypatch.setattr(spectrals.anyio, "sleep", put_in_its_place)
+    anyio.run(spectrals.handle_spectrals_upload_and_deletion, str(specs), None)
+
+    if put_there == "a folder":
+        # Left with only a hidden file of the user's, it must not pass for salmon's empty folder.
+        (specs / "notes.txt").unlink()
+        assert not made_by_salmon(str(specs))
+    else:
+        assert made_by_salmon(str(other))
+
+
+def test_the_claim_goes_when_the_last_delete_try_raises(monkeypatch, tmp_path) -> None:
+    album = _album(tmp_path / "Album")
+    specs = Path(create_specs_folder(str(album)))
+    _fill(specs)
+
+    def held(_path: str, ignore_errors: bool = False) -> None:
+        if not ignore_errors:
+            raise PermissionError("held by a viewer")
+
+    async def no_sleep(_seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr(spectrals.shutil, "rmtree", held)
+    monkeypatch.setattr(spectrals.anyio, "sleep", no_sleep)
+    with pytest.raises(PermissionError):
+        anyio.run(spectrals._delete_spectrals, str(specs))
+
+    for entry in specs.iterdir():
+        entry.unlink()
+    # Empty, and no longer claimed: the user's.
+    assert not made_by_salmon(str(specs))
+
+
+def test_a_library_albums_spectrals_follow_it_to_the_renamed_copy(monkeypatch, dirs) -> None:
+    downloads, _seeding = dirs
+    library = downloads.parent / "library"
+    library.mkdir()
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(library)])
+    album = _album(library / "Old Name")
+    _write_spectrals(_specs(album))
+
+    new_path = _rename(album)
+
+    assert _files(_specs(new_path)) == SPECTRAL_FILES
+    assert list(downloads.glob("spectrals_*")) == []
+
+
+def test_a_second_rename_still_moves_salmons_spectrals(monkeypatch, dirs) -> None:
+    _downloads, seeding = dirs
+    album = _album(seeding / "Old Name")
+    create_specs_folder(str(album))  # Empty, as when no spectral was made: salmon's only by its claim.
+    first = _rename(album)
+    monkeypatch.setattr(foldername, "generate_folder_name", lambda _metadata: "Second Name")
+
+    second = _rename(first)
+
+    assert not (first / "Spectrals").exists()
+    assert (second / "Spectrals").is_dir()
+    assert made_by_salmon(str(second / "Spectrals"))
+
+
+def test_a_folder_made_later_at_the_old_path_is_not_salmons(monkeypatch, dirs) -> None:
+    _downloads, seeding = dirs
+    album = _album(seeding / "Old Name")
+    create_specs_folder(str(album))
+    _rename(album)
+    (album / "Spectrals").mkdir()
+    before = _listing(album)
+    monkeypatch.setattr(foldername, "generate_folder_name", lambda _metadata: "Second Name")
+
+    second = _rename(album)
+
+    assert _listing(album) == before
+    assert (second / "Spectrals").is_dir()
+
+
+def test_a_folder_made_where_salmon_removed_its_own_is_the_users(monkeypatch, dirs) -> None:
+    _downloads, seeding = dirs
+    album = _album(seeding / "Album")
+    made = create_specs_folder(str(album))
+    _no_upload(monkeypatch)
+    anyio.run(spectrals.handle_spectrals_upload_and_deletion, made, None)
+    os.mkdir(made)
+
+    assert not made_by_salmon(made)
+
+
+def test_a_folder_of_the_new_name_holding_other_files_stops_the_rename(monkeypatch, dirs, tmp_path) -> None:
+    downloads, seeding = dirs
+    _tmp_dir(monkeypatch, tmp_path)
+    album = _album(seeding / "Old Name")
+    _write_spectrals(_specs(album))
+    theirs = _specs(downloads / NEW_NAME)
+    theirs.mkdir()
+    (theirs / "theirs.png").write_bytes(b"theirs")
+
+    with pytest.raises(UploadError, match="salmon did not make"):
+        _rename(album)
+
+    assert (theirs / "theirs.png").read_bytes() == b"theirs"
+    assert _files(_specs(album)) == SPECTRAL_FILES
+
+
+def test_a_folder_at_the_old_name_that_is_not_salmons_stays_put(monkeypatch, dirs, tmp_path) -> None:
+    _downloads, seeding = dirs
+    _tmp_dir(monkeypatch, tmp_path)
+    album = _album(seeding / "Old Name")
+    _specs(album).mkdir()
+    (_specs(album) / "theirs.png").write_bytes(b"theirs")
+
+    new_path = _rename(album)
+
+    assert (_specs(album) / "theirs.png").read_bytes() == b"theirs"
+    assert not _specs(new_path).exists()
+
+
+def test_salmons_tmp_dir_spectrals_follow_a_rename_into_the_same_folder(monkeypatch, dirs, tmp_path) -> None:
+    # As a case-only rename on a case-insensitive disk: the album stays where it is, its name changes.
+    downloads, seeding = dirs
+    tmp_dir = _tmp_dir(monkeypatch, tmp_path)
+    link = seeding / "Old Name"
+    link.symlink_to(_album(downloads / NEW_NAME))
+    _write_spectrals(_specs(link))
+
+    new_path = _rename(link)
+
+    assert _files(_specs(new_path)) == SPECTRAL_FILES
+    assert sorted(entry.name for entry in tmp_dir.iterdir()) == [_specs(new_path).name]
+
+
+# A dry run
+
+
+@pytest.mark.parametrize("with_tmp_dir", [False, True], ids=["no tmp_dir", "tmp_dir"])
+def test_a_dry_run_makes_its_spectrals_outside_the_album_in_its_run_directory(
+    monkeypatch, dirs, tmp_path, with_tmp_dir: bool
+) -> None:
+    _downloads, seeding = dirs
+    tmp_dir = _tmp_dir(monkeypatch, tmp_path) if with_tmp_dir else None
+    album = _album(seeding / "Album")
+    (album / "Spectrals").mkdir()
+    (album / "Spectrals" / "theirs.png").write_bytes(b"theirs")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    with dryrun.mode(), dryrun.writing_into(str(run_dir)):
+        made = create_specs_folder(str(album))
+
+    assert Path(made).parent == run_dir
+    assert (album / "Spectrals" / "theirs.png").read_bytes() == b"theirs"
+    assert tmp_dir is None or list(tmp_dir.iterdir()) == []
+
+
+def test_same_named_albums_get_their_own_tmp_dir_spectrals(monkeypatch, dirs, tmp_path) -> None:
+    # Web jobs on two albums run at once: making one's spectrals must not replace the other's.
+    _downloads, seeding = dirs
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
+    (seeding / "A").mkdir()
+    (seeding / "B").mkdir()
+    first = Path(get_spectrals_path(str(_album(seeding / "A" / "CD1"))))
+    _write_spectrals(first)
+
+    made = Path(create_specs_folder(str(_album(seeding / "B" / "CD1"))))
+
+    assert made.parent == tmp_dir
+    assert _files(first) == SPECTRAL_FILES
+
+
+def test_an_album_reached_through_a_link_has_one_tmp_dir_spectrals_folder(monkeypatch, dirs, tmp_path) -> None:
+    downloads, seeding = dirs
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
+    album = _album(downloads / "Album")
+    (seeding / "Linked").symlink_to(album)
+
+    assert get_spectrals_path(str(seeding / "Linked")) == get_spectrals_path(str(album))
+
+
 def test_a_library_album_keeps_its_own_spectrals_folder(monkeypatch, dirs) -> None:
     downloads, _seeding = dirs
     library = downloads.parent / "library"
@@ -224,53 +603,6 @@ def test_a_spectrals_folder_salmon_did_not_make_stays_in_the_source(monkeypatch,
     assert (new_path / "Spectrals" / "theirs.png").read_bytes() == b"theirs"
 
 
-def test_a_second_rename_still_moves_salmons_spectrals(monkeypatch, dirs) -> None:
-    _downloads, seeding = dirs
-    album = _album(seeding / "Old Name")
-    _write_spectrals(Path(get_spectrals_path(str(album))))
-    first = Path(anyio.run(lambda: foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False)))
-    monkeypatch.setattr(foldername, "generate_folder_name", lambda _metadata: "Second Name")
-
-    second = Path(anyio.run(lambda: foldername.rename_folder(str(first), _metadata(), auto_rename=True, check=False)))
-
-    assert not (first / "Spectrals").exists()
-    assert _files(second / "Spectrals") == SPECTRAL_FILES
-
-
-def test_a_folder_made_later_at_the_old_path_is_not_salmons(monkeypatch, dirs) -> None:
-    _downloads, seeding = dirs
-    album = _album(seeding / "Old Name")
-    _write_spectrals(Path(get_spectrals_path(str(album))))
-    anyio.run(lambda: foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False))
-    (album / "Spectrals").mkdir()
-    (album / "Spectrals" / "theirs.png").write_bytes(b"theirs")
-    before = _listing(album)
-    monkeypatch.setattr(foldername, "generate_folder_name", lambda _metadata: "Second Name")
-
-    anyio.run(lambda: foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False))
-
-    assert _listing(album) == before
-
-
-def test_a_folder_made_where_salmon_removed_its_own_is_the_users(monkeypatch, tmp_path) -> None:
-    import anyio
-
-    from salmon.uploader import spectrals
-
-    specs = tmp_path / "Album" / "Spectrals"
-    specs.parent.mkdir()
-    create_specs_folder("", str(specs))
-
-    async def no_upload(*_args: Any) -> dict:
-        return {}
-
-    monkeypatch.setattr(spectrals, "upload_spectrals", no_upload)
-    anyio.run(spectrals.handle_spectrals_upload_and_deletion, str(specs), None)
-    specs.mkdir()
-
-    assert not spectrals.made_by_salmon(str(specs))
-
-
 def test_salmons_spectrals_given_another_file_are_not_deleted(monkeypatch, tmp_path, capsys) -> None:
     import anyio
 
@@ -289,110 +621,6 @@ def test_salmons_spectrals_given_another_file_are_not_deleted(monkeypatch, tmp_p
 
     assert (specs / "notes.txt").read_bytes() == b"theirs"
     assert "Not deleting" in capsys.readouterr().out
-
-
-def test_a_folder_given_another_file_before_the_second_try_is_not_deleted(monkeypatch, tmp_path, capsys) -> None:
-    import shutil
-
-    import anyio
-
-    from salmon.uploader import spectrals
-
-    specs = tmp_path / "Album" / "Spectrals"
-    specs.parent.mkdir()
-    _write_spectrals(specs)
-    rmtree = shutil.rmtree
-    tries: list[str] = []
-    slept: list[float] = []
-
-    def held_on_the_first_try(path: str, ignore_errors: bool = False) -> None:
-        # As on Windows, where a viewer holding a file stops the first try.
-        tries.append(path)
-        if len(tries) > 1:
-            rmtree(path, ignore_errors=ignore_errors)
-
-    async def a_file_arrives(seconds: float) -> None:
-        if not slept:
-            (specs / "notes.txt").write_bytes(b"theirs")
-        slept.append(seconds)
-
-    async def no_upload(*_args: Any) -> dict:
-        return {}
-
-    monkeypatch.setattr(spectrals, "upload_spectrals", no_upload)
-    monkeypatch.setattr(spectrals.shutil, "rmtree", held_on_the_first_try)
-    monkeypatch.setattr(spectrals.anyio, "sleep", a_file_arrives)
-    anyio.run(spectrals.handle_spectrals_upload_and_deletion, str(specs), None)
-
-    assert (specs / "notes.txt").read_bytes() == b"theirs"
-    assert len(tries) == 1
-    assert "Not deleting" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize("put_there", ["a folder", "a link to another of salmon's"])
-def test_what_takes_the_place_of_salmons_folder_during_the_delete_is_not_salmons(
-    monkeypatch, tmp_path, put_there: str
-) -> None:
-    import anyio
-
-    from salmon.uploader import spectrals
-
-    specs = tmp_path / "Album" / "Spectrals"
-    specs.parent.mkdir()
-    _write_spectrals(specs)
-    other = Path(create_specs_folder("", str(tmp_path / "spectrals_Other")))
-    slept: list[float] = []
-
-    async def put_in_its_place(seconds: float) -> None:
-        if not slept:
-            if put_there == "a folder":
-                specs.mkdir()
-                (specs / ".theirs").write_bytes(b"theirs")
-                (specs / "notes.txt").write_bytes(b"theirs")
-            else:
-                specs.symlink_to(other)
-        slept.append(seconds)
-
-    async def no_upload(*_args: Any) -> dict:
-        return {}
-
-    monkeypatch.setattr(spectrals, "upload_spectrals", no_upload)
-    monkeypatch.setattr(spectrals.anyio, "sleep", put_in_its_place)
-    anyio.run(spectrals.handle_spectrals_upload_and_deletion, str(specs), None)
-
-    if put_there == "a folder":
-        # Left with only a hidden file of the user's, it must not pass for salmon's empty folder.
-        (specs / "notes.txt").unlink()
-        assert not spectrals.made_by_salmon(str(specs))
-    else:
-        assert spectrals.made_by_salmon(str(other))
-
-
-def test_the_claim_goes_when_the_last_delete_try_raises(monkeypatch, tmp_path) -> None:
-    import anyio
-
-    from salmon.uploader import spectrals
-
-    specs = tmp_path / "Album" / "Spectrals"
-    specs.parent.mkdir()
-    _write_spectrals(specs)
-
-    def held(_path: str, ignore_errors: bool = False) -> None:
-        if not ignore_errors:
-            raise PermissionError("held by a viewer")
-
-    async def no_sleep(_seconds: float) -> None:
-        pass
-
-    monkeypatch.setattr(spectrals.shutil, "rmtree", held)
-    monkeypatch.setattr(spectrals.anyio, "sleep", no_sleep)
-    with pytest.raises(PermissionError):
-        anyio.run(spectrals._delete_spectrals, str(specs))
-
-    for entry in specs.iterdir():
-        entry.unlink()
-    # Empty, and no longer claimed: the user's.
-    assert not spectrals.made_by_salmon(str(specs))
 
 
 def test_the_spectral_urls_survive_a_delete_that_fails(monkeypatch, tmp_path, capsys) -> None:
@@ -423,17 +651,42 @@ def test_the_spectral_urls_survive_a_delete_that_fails(monkeypatch, tmp_path, ca
     assert "Could not delete" in capsys.readouterr().out
 
 
-def test_a_library_albums_spectrals_follow_it_to_the_renamed_copy(monkeypatch, dirs) -> None:
-    downloads, _seeding = dirs
-    library = downloads.parent / "library"
-    library.mkdir()
-    monkeypatch.setattr(cfg.directory, "library_dirs", [str(library)])
-    album = _album(library / "Old Name")
+def test_a_web_jobs_vetted_folder_is_the_one_made(tmp_path) -> None:
+    album = tmp_path / "Album"
+    album.mkdir()
+    vetted = tmp_path / "vetted" / "Spectrals"
+    vetted.parent.mkdir()
+
+    made = create_specs_folder(str(album), str(vetted))
+
+    assert made == str(vetted)
+    assert vetted.is_dir()
+    assert not os.path.exists(get_spectrals_path(str(album)))
+
+
+def test_a_runs_spectral_urls_survive_a_delete_that_fails(monkeypatch, tmp_path, capsys) -> None:
+    album = tmp_path / "Album"
+    album.mkdir()
     _write_spectrals(Path(get_spectrals_path(str(album))))
 
-    new_path = anyio.run(lambda: foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False))
+    async def uploaded(_path, _ids, _tracker):
+        return {1: ["https://img.example/1.png"]}
 
-    assert _files(Path(get_spectrals_path(new_path))) == SPECTRAL_FILES
+    def held(_path: str, ignore_errors: bool = False) -> None:
+        if not ignore_errors:
+            raise PermissionError("held by a viewer")
+
+    async def no_sleep(_seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr(spectrals, "upload_spectrals", uploaded)
+    monkeypatch.setattr(spectrals.shutil, "rmtree", held)
+    monkeypatch.setattr(spectrals.anyio, "sleep", no_sleep)
+    uploads = spectrals.SpectralUploads(str(album), ["RED"])
+    urls = anyio.run(uploads.urls_for, "RED", {1: "01 Full.png"})
+
+    assert urls == {1: ["https://img.example/1.png"]}
+    assert "Could not delete" in capsys.readouterr().out
 
 
 def test_salmons_spectrals_beside_an_albums_own_follow_the_rename(dirs) -> None:
@@ -448,17 +701,6 @@ def test_salmons_spectrals_beside_an_albums_own_follow_the_rename(dirs) -> None:
     assert (album / "Spectrals" / "theirs.png").read_bytes() == b"theirs"
     assert (Path(new_path) / "Spectrals" / "theirs.png").read_bytes() == b"theirs"
     assert _files(Path(get_spectrals_path(new_path))) == SPECTRAL_FILES
-
-
-def test_a_file_named_spectrals_in_the_album_gets_salmons_folder_beside_it(dirs) -> None:
-    downloads, seeding = dirs
-    album = _album(seeding / "Album")
-    (album / "Spectrals").write_bytes(b"not a folder")
-
-    made = create_specs_folder(str(album))
-
-    assert (album / "Spectrals").read_bytes() == b"not a folder"
-    assert Path(made).parent == downloads
 
 
 def test_a_scene_release_keeps_its_tmp_dir_spectrals_in_place(monkeypatch, dirs, tmp_path) -> None:
@@ -494,93 +736,13 @@ def test_spectrals_an_earlier_run_left_in_the_album_are_still_salmons(dirs) -> N
     album = _album(seeding / "Album")
     left = album / "Spectrals"
     left.mkdir()
-    for name in ("01 Full.png", "01 Zoom.png", "01 Frequency.png", ".DS_Store"):
+    for name in ("01 Full.png", "01 Zoom.png", "01 Spectrum.png", ".DS_Store"):
         (left / name).write_bytes(b"old")
 
     made = create_specs_folder(str(album))
 
     assert Path(made) == left
     assert list(left.iterdir()) == []
-
-
-def test_a_symlinked_spectrals_folder_is_never_salmons(dirs, tmp_path) -> None:
-    downloads, seeding = dirs
-    album = _album(seeding / "Album")
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    (elsewhere / "01 Full.png").write_bytes(b"theirs")
-    (album / "Spectrals").symlink_to(elsewhere)
-
-    made = create_specs_folder(str(album))
-
-    assert (elsewhere / "01 Full.png").read_bytes() == b"theirs"
-    assert Path(made).parent == downloads
-
-
-def test_salmons_tmp_dir_spectrals_follow_a_rename_into_the_same_folder(monkeypatch, dirs, tmp_path) -> None:
-    downloads, seeding = dirs
-    tmp_dir = tmp_path / "tmp"
-    tmp_dir.mkdir()
-    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
-    link = seeding / "Old Name"
-    link.symlink_to(_album(downloads / NEW_NAME))
-    _write_spectrals(Path(get_spectrals_path(str(link))))
-
-    new_path = anyio.run(lambda: foldername.rename_folder(str(link), _metadata(), auto_rename=True, check=False))
-
-    assert _files(Path(get_spectrals_path(new_path))) == SPECTRAL_FILES
-
-
-def test_a_folder_of_the_new_name_holding_other_files_stops_the_rename(monkeypatch, dirs, tmp_path) -> None:
-    downloads, seeding = dirs
-    tmp_dir = tmp_path / "tmp"
-    tmp_dir.mkdir()
-    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
-    album = _album(seeding / "Old Name")
-    ours = Path(get_spectrals_path(str(album)))
-    _write_spectrals(ours)
-    theirs = Path(get_spectrals_path(str(downloads / NEW_NAME)))
-    theirs.mkdir()
-    (theirs / "theirs.png").write_bytes(b"theirs")
-
-    with pytest.raises(click.ClickException, match="files salmon did not make"):
-        anyio.run(lambda: foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False))
-
-    assert (theirs / "theirs.png").read_bytes() == b"theirs"
-    assert _files(ours) == SPECTRAL_FILES
-
-
-def test_a_folder_at_the_old_name_that_is_not_salmons_stays_put(monkeypatch, dirs, tmp_path) -> None:
-    _downloads, seeding = dirs
-    tmp_dir = tmp_path / "tmp"
-    tmp_dir.mkdir()
-    monkeypatch.setattr(cfg.directory, "tmp_dir", str(tmp_dir))
-    album = _album(seeding / "Old Name")
-    theirs = Path(get_spectrals_path(str(album)))
-    theirs.mkdir()
-    (theirs / "theirs.png").write_bytes(b"theirs")
-
-    new_path = anyio.run(lambda: foldername.rename_folder(str(album), _metadata(), auto_rename=True, check=False))
-
-    assert (theirs / "theirs.png").read_bytes() == b"theirs"
-    assert not Path(get_spectrals_path(new_path)).exists()
-
-
-@pytest.mark.parametrize("theirs", ["a file", "a folder named like a spectral"])
-def test_making_spectrals_over_a_folder_that_is_not_salmons_is_refused(tmp_path, theirs: str) -> None:
-    # As when a web job's destination, chosen when it was queued, is taken by the time it runs.
-    specs = tmp_path / "spectrals_Album"
-    specs.mkdir()
-    if theirs == "a file":
-        (specs / "theirs.png").write_bytes(b"theirs")
-    else:
-        (specs / "01 Full.png").mkdir()
-        (specs / "01 Full.png" / "theirs.png").write_bytes(b"theirs")
-
-    with pytest.raises(click.ClickException, match="files salmon did not make"):
-        create_specs_folder("", str(specs))
-
-    assert len(list(specs.rglob("theirs.png"))) == 1
 
 
 @pytest.mark.parametrize("entry", ["folder", "link"])
@@ -595,7 +757,7 @@ def test_a_hidden_folder_or_link_beside_salmons_images_is_not_replaced(tmp_path,
         (tmp_path / "elsewhere").mkdir()
         hidden.symlink_to(tmp_path / "elsewhere")
 
-    with pytest.raises(click.ClickException, match="files salmon did not make"):
+    with pytest.raises(UploadError, match="salmon did not make"):
         create_specs_folder("", str(specs))
 
     assert hidden.exists()

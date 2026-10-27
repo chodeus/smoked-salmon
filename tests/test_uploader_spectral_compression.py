@@ -1,4 +1,4 @@
-"""Spectral PNGs are compressed with pyoxipng, else the oxipng program, and left as sox wrote them without either."""
+"""Spectral PNGs are compressed with oxipng where it installs, and left as sox wrote them where it does not (3.14)."""
 
 import sys
 from functools import partial
@@ -13,7 +13,7 @@ from salmon.uploader import spectrals
 def _spectrals_dir(tmp_path: Path) -> Path:
     path = tmp_path / "Spectrals"
     path.mkdir()
-    for sid in (1,):
+    for sid in (1, 2):
         for kind in ("Full", "Zoom"):
             (path / f"{sid:02d} {kind}.png").write_bytes(f"png {sid} {kind}".encode())
     return path
@@ -27,7 +27,7 @@ def test_without_oxipng_spectrals_are_left_as_is_and_the_notice_is_printed_once(
     before = {p.name: p.read_bytes() for p in path.iterdir()}
 
     # Twice in one run, as when spectrals are compressed for more than one upload.
-    anyio.run(partial(spectrals._compress_spectrals, str(path)))
+    anyio.run(partial(spectrals._compress_spectrals, str(path), {1: "01.flac"}))
     anyio.run(partial(spectrals._compress_spectrals, str(path)))
 
     assert {p.name: p.read_bytes() for p in path.iterdir()} == before
@@ -56,7 +56,7 @@ def test_with_oxipng_it_is_used(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(spectrals, "_not_compressed_notice_shown", False, raising=False)
     path = _spectrals_dir(tmp_path)
 
-    anyio.run(partial(spectrals._compress_spectrals, str(path)))
+    anyio.run(partial(spectrals._compress_spectrals, str(path), {1: "01.flac"}))
 
     assert sorted(calls) == [
         ("01 Full.png", {"level": 2, "strip": "all"}),
@@ -90,7 +90,7 @@ def test_without_pyoxipng_the_oxipng_program_compresses_each_file(monkeypatch, t
     log = _fake_program(monkeypatch, tmp_path, 'for last; do :; done; echo small > "$last"')
     path = _spectrals_dir(tmp_path)
 
-    anyio.run(partial(spectrals._compress_spectrals, str(path)))
+    anyio.run(partial(spectrals._compress_spectrals, str(path), {1: "01.flac"}))
 
     calls = sorted(log.read_text().splitlines())
     assert len(calls) == 2
@@ -98,24 +98,10 @@ def test_without_pyoxipng_the_oxipng_program_compresses_each_file(monkeypatch, t
     assert "01 Full.png" in calls[0]
     assert "01 Zoom.png" in calls[1]
     assert (path / "01 Full.png").read_text().strip() == "small"
-    assert sorted(p.name for p in path.iterdir()) == sorted(f"{s:02d} {k}.png" for s in (1,) for k in ("Full", "Zoom"))
-
-
-@posix_only
-def test_a_leftover_temporary_copy_is_not_compressed_again(monkeypatch, tmp_path) -> None:
-    _hide_pyoxipng(monkeypatch)
-    log = _fake_program(monkeypatch, tmp_path, 'for last; do :; done; echo small > "$last"')
-    path = _spectrals_dir(tmp_path)
-    # A copy an earlier run could not remove; this run makes its own, named after each spectral.
-    leftover = path / ".02 Full.png.tmp.png"
-    leftover.write_bytes(b"left by a failed cleanup")
-
-    anyio.run(partial(spectrals._compress_spectrals, str(path)))
-
-    calls = log.read_text().splitlines()
-    assert len(calls) == 2
-    assert not any("02 Full" in call for call in calls)
-    assert leftover.read_bytes() == b"left by a failed cleanup"
+    assert (path / "02 Full.png").read_bytes() == b"png 2 Full"
+    assert sorted(p.name for p in path.iterdir()) == sorted(
+        f"{s:02d} {k}.png" for s in (1, 2) for k in ("Full", "Zoom")
+    )
 
 
 @posix_only
@@ -125,10 +111,12 @@ def test_a_failing_oxipng_program_leaves_the_file_and_prints_a_line(monkeypatch,
     _fake_program(monkeypatch, tmp_path, 'for last; do :; done; echo broken > "$last"; exit 1')
     path = _spectrals_dir(tmp_path)
 
-    anyio.run(partial(spectrals._compress_spectrals, str(path)))
+    anyio.run(partial(spectrals._compress_spectrals, str(path), {1: "01.flac"}))
 
     assert (path / "01 Full.png").read_bytes() == b"png 1 Full"
-    assert sorted(p.name for p in path.iterdir()) == sorted(f"{s:02d} {k}.png" for s in (1,) for k in ("Full", "Zoom"))
+    assert sorted(p.name for p in path.iterdir()) == sorted(
+        f"{s:02d} {k}.png" for s in (1, 2) for k in ("Full", "Zoom")
+    )
     out = capsys.readouterr().out
     assert "Could not compress 01 Full.png" in out
     assert "Could not compress 01 Zoom.png" in out
@@ -142,12 +130,13 @@ def test_an_oxipng_program_that_hangs_is_given_up_on(monkeypatch, tmp_path, caps
     _fake_program(monkeypatch, tmp_path, 'for last; do :; done; echo broken > "$last"; exec sleep 30')
     path = _spectrals_dir(tmp_path)
 
-    anyio.run(partial(spectrals._compress_spectrals, str(path)))
+    anyio.run(partial(spectrals._compress_spectrals, str(path), {1: "01.flac"}))
 
     assert (path / "01 Full.png").read_bytes() == b"png 1 Full"
-    assert sorted(p.name for p in path.iterdir()) == sorted(f"{s:02d} {k}.png" for s in (1,) for k in ("Full", "Zoom"))
-    printed = capsys.readouterr().out
-    assert "Could not compress 01 Full.png" in printed
+    assert sorted(p.name for p in path.iterdir()) == sorted(
+        f"{s:02d} {k}.png" for s in (1, 2) for k in ("Full", "Zoom")
+    )
+    assert "Could not compress 01 Full.png" in capsys.readouterr().out
 
 
 def test_without_pyoxipng_and_program_the_notice_names_the_program_option(monkeypatch, tmp_path, capsys) -> None:
@@ -183,6 +172,73 @@ def test_with_pyoxipng_the_program_is_never_looked_up(monkeypatch, tmp_path) -> 
     anyio.run(partial(spectrals._compress_spectrals, str(path)))
 
     assert looked_up == []
+
+
+def test_a_hidden_leftover_is_neither_compressed_nor_shown(monkeypatch, tmp_path) -> None:
+    compressed: list[str] = []
+
+    class FakeOxipng:
+        class StripChunks:
+            @staticmethod
+            def all() -> str:
+                return "all"
+
+        @staticmethod
+        def optimize(path, **kwargs) -> None:
+            compressed.append(Path(path).name)
+
+    monkeypatch.setattr(spectrals, "oxipng", FakeOxipng)
+    path = _spectrals_dir(tmp_path)
+    (path / ".01 Full.png.tmp.png").write_bytes(b"leftover")
+
+    anyio.run(partial(spectrals._compress_spectrals, str(path)))
+
+    assert sorted(compressed) == ["01 Full.png", "01 Zoom.png", "02 Full.png", "02 Zoom.png"]
+    assert spectrals._spectral_images(str(path)) == ["01 Full.png", "01 Zoom.png", "02 Full.png", "02 Zoom.png"]
+
+
+def test_the_windows_viewer_skips_a_hidden_leftover(monkeypatch, tmp_path) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(spectrals.os, "startfile", opened.append, raising=False)
+    path = _spectrals_dir(tmp_path)
+    (path / ".00 Full.png.tmp.png").write_bytes(b"leftover")
+
+    spectrals._open_specs_in_windows(str(path))
+
+    assert opened == [str(path / "01 Full.png")]
+
+
+def test_the_quick_look_viewer_is_given_the_pngs_only(monkeypatch, tmp_path) -> None:
+    run: list[list[str]] = []
+
+    async def fake_run_process(args, **kwargs) -> None:
+        run.append(args)
+
+    monkeypatch.setattr(spectrals.anyio, "run_process", fake_run_process)
+    path = _spectrals_dir(tmp_path)
+    (path / ".00 Full.png.tmp.png").write_bytes(b"leftover")
+    (path / "notes.txt").write_bytes(b"not an image")
+
+    anyio.run(spectrals._open_specs_in_preview, str(path))
+
+    assert [Path(arg).name for arg in run[0][2:]] == ["01 Full.png", "01 Zoom.png", "02 Full.png", "02 Zoom.png"]
+
+
+@posix_only
+def test_a_leftover_temporary_copy_is_not_compressed_again(monkeypatch, tmp_path) -> None:
+    _hide_pyoxipng(monkeypatch)
+    log = _fake_program(monkeypatch, tmp_path, 'for last; do :; done; echo small > "$last"')
+    path = _spectrals_dir(tmp_path)
+    # A copy an earlier run could not remove; this run makes its own, named after each spectral.
+    leftover = path / ".03 Full.png.tmp.png"
+    leftover.write_bytes(b"left by a failed cleanup")
+
+    anyio.run(partial(spectrals._compress_spectrals, str(path)))
+
+    calls = log.read_text().splitlines()
+    assert len(calls) == 4
+    assert not any("03 Full" in call for call in calls)
+    assert leftover.read_bytes() == b"left by a failed cleanup"
 
 
 @posix_only

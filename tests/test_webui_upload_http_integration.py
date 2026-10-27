@@ -38,6 +38,7 @@ from salmon.trackers import base as tracker_base
 from salmon.trackers.red import RedApi
 from salmon.uploader import upload as run_upload
 from salmon.uploader.upload import concat_track_data, prepare_and_upload
+from salmon.webui import jobs as jobs_mod
 from salmon.webui import output
 from salmon.webui.jobs import UNKNOWN_OUTCOME, JobManager
 
@@ -250,6 +251,7 @@ def upload_world(monkeypatch, tmp_path):
         audio_info=make_audio_info(),
         metadata=make_web_metadata(),
         spectral_uploads=[],
+        shown_spectrals=[],
     )
 
     monkeypatch.setattr("salmon.uploader.gather_audio_info", lambda path: dict(world.audio_info))
@@ -281,7 +283,7 @@ def upload_world(monkeypatch, tmp_path):
                 (Path(spectrals_path) / f"{idx:02d} {kind}.png").write_bytes(b"png")
         return {i + 1: fn for i, fn in enumerate(TRACK_FILES)}
 
-    async def fake_handle_spectrals(spectrals_path, spectral_ids, delete_spectrals=True):
+    async def fake_upload_spectrals(spectrals_path, spectral_ids, tracker=None):
         world.spectral_uploads.append((spectrals_path, dict(spectral_ids or {})))
         return {sid: [f"https://img.example/{sid}f", f"https://img.example/{sid}z"] for sid in (spectral_ids or {})}
 
@@ -303,7 +305,16 @@ def upload_world(monkeypatch, tmp_path):
     monkeypatch.setattr("salmon.uploader.download_cover_if_nonexistent", fake_download_cover)
     monkeypatch.setattr("salmon.uploader.upload_cover", fake_upload_cover)
     monkeypatch.setattr("salmon.uploader.spectrals.generate_spectrals_all", fake_generate_spectrals_all)
-    monkeypatch.setattr("salmon.uploader.handle_spectrals_upload_and_deletion", fake_handle_spectrals)
+    monkeypatch.setattr("salmon.uploader.spectrals.upload_spectrals", fake_upload_spectrals)
+    show_spectrals = jobs_mod._JobAsker.show_spectrals
+
+    def recording_show_spectrals(asker, folder, files):
+        show_spectrals(asker, folder, files)
+        world.shown_spectrals.append(asker.spectrals)
+
+    monkeypatch.setattr(jobs_mod._JobAsker, "show_spectrals", recording_show_spectrals)
+    # The fake spectrals are not PNGs: compressing the picked ones would fail on them.
+    monkeypatch.setattr(cfg.upload.compression, "compress_spectrals", False)
 
     tmp_dir = tmp_path / "salmon-tmp"
     tmp_dir.mkdir()
@@ -431,13 +442,12 @@ async def test_happy_path_uploads_over_real_http(jm, album_dir, upload_world, st
     assert read_back.source == "RED"
     assert read_back.comment == f"{base_url}/torrents.php?torrentid=424242"
 
-    # Spectrals surfaced to the browser; the selected ids reached the
-    # (stubbed) spectral uploader.
-    assert job.asker.spectrals is not None
-    assert len(job.asker.spectrals["files"]) == 6
-    assert upload_world.spectral_uploads == [
-        (job.asker.spectrals["path"], {1: TRACK_FILES[0], 2: TRACK_FILES[1], 3: TRACK_FILES[2]})
-    ]
+    # Spectrals surfaced to the browser instead of a native viewer, the selected ids reached the (stubbed)
+    # spectral uploader, and the folder deleted once they were up is no longer shown.
+    shown = upload_world.shown_spectrals[-1]
+    assert len(shown["files"]) == 6
+    assert upload_world.spectral_uploads == [(shown["path"], {1: TRACK_FILES[0], 2: TRACK_FILES[1], 3: TRACK_FILES[2]})]
+    assert job.asker.spectrals is None
 
     log = "\n".join(job.log_lines)
     assert "Uploading to a new torrent group." in log

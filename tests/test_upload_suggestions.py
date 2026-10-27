@@ -9,13 +9,11 @@ import pytest
 
 import salmon.trackers as trackers
 import salmon.uploader as uploader
-from salmon import cfg
 from salmon.common.strings import comparable
 from salmon.tagger import metadata as metadata_mod
 from salmon.tagger import review
 from salmon.tagger import tag_urls as src
 from salmon.uploader import dupe_checker
-from salmon.uploader import spectrals as sp
 
 QOBUZ_URL = "https://www.qobuz.com/au-en/album/journaling-illy/ul39e7xjbuqrb"
 DEEZER_URL = "https://www.deezer.com/album/322064097"
@@ -206,18 +204,6 @@ def test_metadata_prompt_pretypes_the_suggestion(monkeypatch) -> None:
     anyio.run(metadata_mod._select_choice, {}, {"urls": []}, "*" + QOBUZ_URL)
 
     assert defaults == ["*" + QOBUZ_URL]
-
-
-def test_lossy_prompt_pretypes_the_analysis_verdict(monkeypatch) -> None:
-    monkeypatch.setattr(cfg.upload, "yes_all", False)
-    monkeypatch.setattr(sp, "flush_stdin", lambda: None)
-    defaults = _capturing_prompt(monkeypatch, "salmon.uploader.spectrals.click.prompt")
-
-    result = anyio.run(sp.prompt_lossy_master, False, "y")
-    assert result is True
-    result = anyio.run(sp.prompt_lossy_master, False, "n")
-    assert result is False
-    assert defaults == ["y", "n"]
 
 
 def test_next_tracker_takes_the_preselected_site_without_asking(monkeypatch) -> None:

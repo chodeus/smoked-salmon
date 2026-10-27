@@ -1441,6 +1441,7 @@ async def test_a_real_dropped_answer_to_a_get_is_retried(api, monkeypatch, track
 async def test_a_report_with_an_unknown_outcome_is_not_filed_again(capsys):
     class _Site:
         base_url = "https://dummy.example"
+        site_string = "RED"
 
         async def report_lossy_master(self, *_args):
             raise UnknownOutcomeError("answer lost")
@@ -1448,7 +1449,7 @@ async def test_a_report_with_an_unknown_outcome_is_not_filed_again(capsys):
     await spectrals.report_lossy_master(cast("Any", _Site()), 7, None, None, "WEB", "comment")
 
     out = capsys.readouterr().out
-    assert "Could not tell whether the Lossy Master/WEB report was filed" in out
+    assert "Could not tell whether RED took the lossy master report (answer lost)" in out
     assert "torrents.php?torrentid=7" in out
     assert "Reported upload for Lossy Master/WEB Approval Request" not in out
 

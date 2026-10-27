@@ -6,9 +6,11 @@ import platform
 import random
 import re
 import shutil
+import tempfile
 import textwrap
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from functools import partial
+from pathlib import Path
 from subprocess import DEVNULL
 from typing import TYPE_CHECKING, Any
 
@@ -49,6 +51,7 @@ async def check_spectrals(
     check_lma: bool = True,
     force_prompt_lossy_master: bool = False,
     format: str = "FLAC",
+    hosts: str | None = None,
     offer_deletion: bool = True,
 ) -> tuple[bool | None, dict[int, str] | None]:
     """Run spectral checker functions.
@@ -64,6 +67,8 @@ async def check_spectrals(
         check_lma: Whether to check for lossy master.
         force_prompt_lossy_master: Force lossy master prompt.
         format: Audio format.
+        hosts: Where the spectrals go, as the prompt names them: see specs_hosts_text. Defaults to
+            the shared specs_uploader.
         offer_deletion: Whether the lossy master prompt offers to delete the music folder.
 
     Returns:
@@ -78,19 +83,16 @@ async def check_spectrals(
     click.secho("\nChecking lossy master / spectrals...", fg="cyan", bold=True)
     spectrals_path = create_specs_folder(path)
     all_spectral_ids: dict[int, str] = {}
-    measured = "ok"
     if not spectral_ids:
         all_spectral_ids = await generate_spectrals_all(path, spectrals_path, audio_info)
-        if lossy_master is None and check_lma:
-            measured = await print_frequency_guidance(path, spectrals_path, all_spectral_ids)
+        # Printed whether or not the question follows: salmon specs prints it and asks nothing.
+        marks_found = False
+        if lossy_master is None:
+            marks_found = await print_frequency_analysis(path, spectrals_path, all_spectral_ids)
         while True:
             await interaction.show_spectrals(spectrals_path, all_spectral_ids)
             if lossy_master is None and check_lma:
-                lossy_master = await prompt_lossy_master(
-                    force_prompt_lossy_master or measured == "suspect",
-                    suggested="y" if measured == "suspect" else "n",
-                    offer_deletion=offer_deletion,
-                )
+                lossy_master = await prompt_lossy_master(force_prompt_lossy_master, offer_deletion, marks_found)
                 if lossy_master is not None:
                     break
             else:
@@ -100,16 +102,17 @@ async def check_spectrals(
             lossy_master,
             check_lma,
             force_prompt_lossy_master=force_prompt_lossy_master,
+            hosts=hosts,
         )
+        if spectral_ids and cfg.upload.compression.compress_spectrals:
+            await _compress_spectrals(spectrals_path, spectral_ids)
     else:
+        # Before the plots are written: this compresses every image in the folder.
         spectral_ids = await generate_spectrals_ids(path, spectral_ids, spectrals_path, audio_info)
-        if lossy_master is None and check_lma:
-            measured = await print_frequency_guidance(path, spectrals_path, spectral_ids)
-            lossy_master = await prompt_lossy_master(
-                force_prompt_lossy_master or measured == "suspect",
-                suggested="y" if measured == "suspect" else "n",
-                offer_deletion=offer_deletion,
-            )
+        if lossy_master is None:
+            marks_found = await print_frequency_analysis(path, spectrals_path, spectral_ids)
+            if check_lma:
+                lossy_master = await prompt_lossy_master(force_prompt_lossy_master, offer_deletion, marks_found)
 
     return lossy_master, spectral_ids
 
@@ -122,30 +125,51 @@ FREQUENCY_HEADINGS = {
 }
 
 
-def frequency_plot_paths(spectral_ids: dict[int, str], spectrals_path: str) -> dict[str, str]:
-    """Each track with spectrals gets its averaged-spectrum plot in the spectrals folder, under its spectral ID."""
-    return {name: os.path.join(spectrals_path, f"{sid:02d} Frequency.png") for sid, name in spectral_ids.items()}
+def spectrum_plot_name(spectral_id: int) -> str:
+    """The name of a track's averaged-spectrum plot in the spectrals folder.
+
+    It sorts between the track's "NN Full.png" and "NN Zoom.png", so a viewer that opens a folder's first image
+    still opens a spectral.
+    """
+    return f"{spectral_id:02d} Spectrum.png"
 
 
-async def print_frequency_guidance(path: str, spectrals_path: str, spectral_ids: dict[int, str]) -> str:
-    """Print the frequency analysis as guidance for the lossy-master question; returns the folder level."""
+async def print_frequency_analysis(path: str, spectrals_path: str, spectral_ids: dict[int, str]) -> bool:
+    """Measure the marks a lossy encoder leaves in each track and print them.
+
+    Printed before the lossy-master question, or alone where none is asked (salmon specs).
+
+    Each track with spectrals gets its averaged-spectrum plot next to them, under the same spectral ID: see
+    spectrum_plot_name. Never raises: a failed analysis prints one line.
+
+    Args:
+        path: Path to the album folder.
+        spectrals_path: Path to the spectrals folder.
+        spectral_ids: The spectrals in that folder, by spectral ID.
+
+    Returns:
+        Whether a track carries the marks, which makes "yes" the question's default.
+    """
     try:
         # numpy, PyAV and Pillow: loaded when the analysis runs, not when salmon starts.
         from salmon.uploader import frequency
 
-        plot_paths = frequency_plot_paths(spectral_ids, spectrals_path)
-        spectra = await frequency.generate_frequency_plots(path, get_audio_files(path, True), plot_paths)
-        level, notes = frequency.assess(spectra)
+        plot_paths = {
+            filename: os.path.join(spectrals_path, spectrum_plot_name(sid)) for sid, filename in spectral_ids.items()
+        }
+        results = await frequency.generate_frequency_plots(path, get_audio_files(path, True), plot_paths)
+        level, notes = frequency.assess(results)
     except Exception as e:
-        # Advisory output must never cost an upload.
-        click.secho(f"\nFrequency analysis skipped: {e}", fg="yellow")
-        return "ok"
+        click.secho(f"\nFrequency analysis failed, so it says nothing about this release: {e!r}", fg="yellow")
+        return False
     heading, colour = FREQUENCY_HEADINGS[level]
     click.secho(f"\nFrequency analysis: {heading}", fg=colour, bold=True)
     for note in notes:
-        click.secho(f"  {note}")
+        click.echo(f"  {note}")
+    if any(result.image for result in results):
+        click.echo(f'  Averaged spectra: "NN Spectrum.png", next to the spectrals in {spectrals_path}')
     click.secho("  A measurement, not a verdict: read the spectrals before answering.", fg="cyan")
-    return level
+    return level == "suspect"
 
 
 async def handle_spectrals_upload_and_deletion(
@@ -165,12 +189,17 @@ async def handle_spectrals_upload_and_deletion(
     """
     spectral_urls = await upload_spectrals(spectrals_path, spectral_ids)
     if delete_spectrals:
-        try:
-            await _delete_spectrals(spectrals_path)
-        except OSError as e:
-            # The images are up already: a local cleanup must not lose their URLs, which the description needs.
-            click.secho(f"Could not delete {spectrals_path} ({e}); delete it by hand.", fg="yellow")
+        await _delete_uploaded_spectrals(spectrals_path)
     return spectral_urls
+
+
+async def _delete_uploaded_spectrals(spectrals_path: str) -> None:
+    """Delete spectrals that are up, or were not wanted: a failure is printed rather than raised."""
+    try:
+        await _delete_spectrals(spectrals_path)
+    except OSError as e:
+        # The images are up already: a local cleanup must not lose their URLs, which the description needs.
+        click.secho(f"Could not delete {spectrals_path} ({e}); delete it by hand.", fg="yellow")
 
 
 async def _delete_spectrals(spectrals_path: str) -> None:
@@ -193,6 +222,81 @@ async def _delete_spectrals(spectrals_path: str) -> None:
         drop_specs_claim(spectrals_path)
 
 
+def specs_hosts_text(trackers: Sequence[str]) -> str:
+    """Name where these trackers' spectrals go: "catbox", or "catbox (RED), imgbox (OPS/DIC)" when hosts differ."""
+    trackers_by_host: dict[str, list[str]] = {}
+    for tracker in trackers:
+        trackers_by_host.setdefault(cfg.image.host_for(tracker, "specs_uploader"), []).append(tracker)
+    if len(trackers_by_host) == 1:
+        return next(iter(trackers_by_host))
+    return ", ".join(f"{host} ({'/'.join(codes)})" for host, codes in trackers_by_host.items())
+
+
+class SpectralUploads:
+    """A release's spectrals in an upload run, uploaded once per image host and reused by the trackers sharing it.
+
+    A tracker's spectrals go to its specs host: image.<tracker>.specs_uploader, else image.specs_uploader.
+    Once every tracker the run may upload to has its upload, the spectral files are deleted. Until then,
+    they are kept, outside the album folder so that no torrent made from it holds them, and close()
+    deletes them.
+    """
+
+    def __init__(self, album_path: str, trackers: Sequence[str]) -> None:
+        """Set up the uploads for an album.
+
+        Args:
+            album_path: The album folder, as the spectrals were made from it.
+            trackers: The site codes of every tracker the run may upload to.
+        """
+        self._album_path = album_path
+        self._path = get_spectrals_path(album_path)
+        self._trackers = list(trackers)
+        self._hosts = {cfg.image.host_for(tracker, "specs_uploader") for tracker in self._trackers}
+        self._urls: dict[str, dict[int, list[str]] | None] = {}
+        self._scratch: str | None = None
+
+    def hosts_text(self) -> str:
+        """Name where the spectrals go, for prompts: see specs_hosts_text."""
+        return specs_hosts_text(self._trackers)
+
+    async def urls_for(self, tracker: str, spectral_ids: dict[int, str] | None) -> dict[int, list[str]] | None:
+        """Get the spectral URLs for a tracker, uploading them to its host if no tracker of the run did yet.
+
+        Args:
+            tracker: The tracker's site code.
+            spectral_ids: The spectrals to upload, by track ID.
+
+        Returns:
+            The URLs of each spectral by track ID, or None if there are none: see upload_spectrals.
+        """
+        host = cfg.image.host_for(tracker, "specs_uploader")
+        if host not in self._urls:
+            self._urls[host] = await upload_spectrals(self._path, spectral_ids, tracker)
+            if not spectral_ids or self._hosts <= self._urls.keys():
+                await self.close()
+            else:
+                self._keep_out_of_album()
+        return self._urls[host]
+
+    def _keep_out_of_album(self) -> None:
+        """Move the spectrals folder out of the album folder, if it is inside it, to where close() deletes it."""
+        if self._scratch is not None or not os.path.isdir(self._path):
+            return
+        if not Path(self._path).resolve().is_relative_to(Path(self._album_path).resolve()):
+            return
+        self._scratch = tempfile.mkdtemp(prefix="salmon-spectrals-")
+        old_real = os.path.realpath(self._path)
+        self._path = shutil.move(self._path, os.path.join(self._scratch, "Spectrals"))
+        carry_specs_claim(old_real, self._path)
+
+    async def close(self) -> None:
+        """Delete the spectral files, if they are still there."""
+        await _delete_uploaded_spectrals(self._path)
+        if self._scratch is not None:
+            shutil.rmtree(self._scratch, ignore_errors=True)
+            self._scratch = None
+
+
 async def generate_spectrals_all(path: str, spectrals_path: str, audio_info: dict[str, Any]) -> dict[int, str]:
     """Generate spectral images for all audio files.
 
@@ -205,7 +309,10 @@ async def generate_spectrals_all(path: str, spectrals_path: str, audio_info: dic
         Dictionary mapping track numbers to filenames.
     """
     files_li = get_audio_files(path, True)
-    return await _generate_spectrals(path, files_li, spectrals_path, audio_info)
+    # Compression happens after the user selects which spectrals to upload
+    # (see check_spectrals), not here, since most generated spectrals are
+    # only for viewing and are never uploaded.
+    return await _generate_spectrals(path, files_li, spectrals_path, audio_info, compress=False)
 
 
 async def generate_spectrals_ids(
@@ -309,7 +416,11 @@ async def _generate_spectral_for_file(
 
 
 async def _generate_spectrals(
-    path: str, files_li: list[str], spectrals_path: str, audio_info: dict[str, Any]
+    path: str,
+    files_li: list[str],
+    spectrals_path: str,
+    audio_info: dict[str, Any],
+    compress: bool = True,
 ) -> dict[int, str]:
     """Generate spectral images for a list of audio files.
 
@@ -318,6 +429,9 @@ async def _generate_spectrals(
         files_li: List of relative audio filenames.
         spectrals_path: Path to the spectrals output folder.
         audio_info: Audio file information dict.
+        compress: Whether to compress the generated spectrals immediately.
+            Set to False when the caller will compress only a subset later
+            (e.g. once the user has picked which spectrals to upload).
 
     Returns:
         Sorted dictionary mapping track numbers to filenames.
@@ -331,7 +445,7 @@ async def _generate_spectrals(
     )
 
     click.secho("Finished generating spectrals.", fg="green")
-    if cfg.upload.compression.compress_spectrals:
+    if compress and cfg.upload.compression.compress_spectrals:
         await _compress_spectrals(spectrals_path)
 
     for result in results:
@@ -353,13 +467,13 @@ _not_compressed_notice_shown = False
 
 
 def _notify_spectrals_not_compressed() -> None:
-    """Say once per run that spectrals go up uncompressed: neither pyoxipng nor the oxipng program is installed."""
+    """Say, once per run, that spectrals go up uncompressed because oxipng is not installed."""
     global _not_compressed_notice_shown
     if _not_compressed_notice_shown:
         return
     _not_compressed_notice_shown = True
     click.secho(
-        "Spectrals are not compressed: neither pyoxipng nor the oxipng program is installed. Installing salmon with "
+        "Spectrals are not compressed: oxipng is not available for this Python version. Installing salmon with "
         '"uv tool install --python 3.13 git+https://github.com/chodeus/smoked-salmon" compresses them, '
         "and so does installing the oxipng program (winget, scoop, brew, apt, or its GitHub releases).",
         fg="yellow",
@@ -370,8 +484,10 @@ OXIPNG_PROGRAM_TIMEOUT = 60
 
 
 async def _compress_with_oxipng_program(program: str, filepath: str) -> bool:
-    """Compress a spectral with the oxipng program on a copy, replacing it on success; False, with a line, if not."""
-    # Hidden: a copy a crash leaves behind must not make the folder look like someone else's (made_by_salmon).
+    """Compress a spectral with the oxipng program on a copy, replacing the original only on success.
+
+    Returns False, after printing one line, when the file was left as it was.
+    """
     tmp_path = os.path.join(os.path.dirname(filepath), f".{os.path.basename(filepath)}.tmp.png")
     try:
         shutil.copyfile(filepath, tmp_path)
@@ -393,7 +509,13 @@ async def _compress_with_oxipng_program(program: str, filepath: str) -> bool:
 
 
 async def _compress_single_spectral(filepath: str, _idx: int, program: str | None = None) -> bool | None:
-    """Compress one spectral with pyoxipng in a thread, or else with the oxipng `program`; False if left as it was."""
+    """Compress a single spectral PNG image with pyoxipng in a thread, or with the oxipng program.
+
+    Args:
+        filepath: Path to the PNG file to compress.
+        _idx: Unused index parameter for process_files compatibility.
+        program: Path to the oxipng program, used when pyoxipng is not installed.
+    """
     if oxipng is None:
         assert program is not None
         return await _compress_with_oxipng_program(program, filepath)
@@ -401,9 +523,25 @@ async def _compress_single_spectral(filepath: str, _idx: int, program: str | Non
     return await anyio.to_thread.run_sync(func)
 
 
-async def _compress_spectrals(spectrals_path: str) -> None:
-    """Compress every spectral PNG in `spectrals_path`, with pyoxipng or else the oxipng program."""
-    files = _spectral_images(spectrals_path)
+async def _compress_spectrals(spectrals_path: str, spectral_ids: dict[int, str] | None = None) -> None:
+    """Compress spectral PNG images in a directory.
+
+    Args:
+        spectrals_path: Path to the directory containing spectral PNG files.
+        spectral_ids: If provided, only compress the Full/Zoom images for
+            these track IDs instead of every PNG in the folder. This is used
+            to avoid compressing spectrals that were only generated for
+            viewing and were never selected for upload.
+    """
+    if spectral_ids:
+        files = [
+            fname
+            for sid in spectral_ids
+            for fname in (f"{sid:02d} Full.png", f"{sid:02d} Zoom.png")
+            if os.path.isfile(os.path.join(spectrals_path, fname))
+        ]
+    else:
+        files = _spectral_images(spectrals_path)
     if not files:
         return
     program = None
@@ -427,87 +565,100 @@ async def _compress_spectrals(spectrals_path: str) -> None:
         click.secho("Finished compressing spectrals.", fg="green")
 
 
-def spectrals_dir() -> str | None:
-    """The folder spectrals go in beside albums: tmp_dir, or a dry run's own run directory; None without tmp_dir."""
-    if not (cfg.directory.tmp_dir and os.path.isdir(cfg.directory.tmp_dir)):
-        return None
-    # A dry run leaves nothing outside its run directory, nor replaces another album's spectrals_<name> there.
-    return dryrun.scratch_dir() if dryrun.active() else cfg.directory.tmp_dir
+def get_spectrals_path(path: str) -> str:
+    """The folder salmon makes an album's spectrals in: never one salmon did not make, which it would replace.
 
-
-def get_spectrals_path(path):
-    """The spectrals folder salmon makes for an album: never one of the user's own, which salmon would replace."""
+    That is the album's Spectrals folder, unless tmp_dir is set, the album is in library_dirs, or the album has a
+    Spectrals of its own (one salmon did not make). Then it is a folder outside the album: in tmp_dir, else in
+    download_directory, and in a dry run in its run directory. Its name holds a digest of the album's real path, so
+    albums of the same folder name (two CD1s) never share one.
+    """
     in_album = os.path.join(path, "Spectrals")
-    outside = spectrals_dir()
-    if outside is None:
-        if not cfg.directory.protects(path) and not (os.path.lexists(in_album) and not made_by_salmon(in_album)):
-            return in_album
-        # Never inside a library album, nor over the album's own Spectrals.
-        outside = dryrun.scratch_dir() if dryrun.active() else cfg.directory.download_directory
-    # Every album's spectrals share this folder, and web jobs run at once: the digest keeps same-named albums apart.
+    tmp_dir = cfg.directory.tmp_dir if cfg.directory.tmp_dir and os.path.isdir(cfg.directory.tmp_dir) else None
+    albums_own = os.path.lexists(in_album) and not made_by_salmon(in_album)
+    if tmp_dir is None and not albums_own and not cfg.directory.protects(path):
+        return in_album
+    # A dry run leaves nothing outside its run directory, and never replaces a real run's spectrals.
+    outside = dryrun.scratch_dir() if dryrun.active() else (tmp_dir or cfg.directory.download_directory)
     # Both from the real path, so the album and a link to it, whatever its name, find one folder.
     real = os.path.realpath(path)
     digest = hashlib.sha1(real.encode(), usedforsecurity=False).hexdigest()[:8]
     return os.path.join(outside, f"spectrals_{os.path.basename(real)} {digest}")
 
 
-# Spectrals folders salmon made in this process, by real path: an empty folder is salmon's only if it is one of these.
+# The spectrals folders this process made, by real path: an empty folder is salmon's only if it is one of these.
 _made_specs_folders: set[str] = set()
-# The images salmon writes into a spectrals folder, and what a file browser leaves beside them.
-_SALMON_SPECTRAL = re.compile(r"\d{2,} (?:Full|Zoom|Frequency)\.png")
-_BROWSER_LITTER = {"Thumbs.db", "desktop.ini"}
+# What salmon writes into a spectrals folder: the spectrals, the averaged spectra (spectrum_plot_name), and the copy
+# that oxipng compresses, which a killed run leaves behind.
+_SALMON_SPECTRAL = re.compile(r"\d{2,} (?:Full|Zoom|Spectrum)\.png(?:\.tmp\.png)?")
+# What a file browser leaves beside them, besides hidden files.
+_BROWSER_LITTER = frozenset({"Thumbs.db", "desktop.ini"})
 
 
 def made_by_salmon(spectrals_path: str) -> bool:
-    """Whether a spectrals folder is salmon's: only salmon's spectral images in it, or empty and made by salmon."""
+    """Whether a spectrals folder is salmon's: a folder, not a symlink, that holds salmon's spectral images and no other
+    file or folder (hidden files and a file browser's litter aside), or an empty one this process made.
+
+    By its files, spectrals an earlier run left (salmon specs -nd, an interrupted check) are still salmon's.
+    """
     if os.path.islink(spectrals_path):
         return False
     try:
         with os.scandir(spectrals_path) as entries:
             is_file = {entry.name: entry.is_file(follow_symlinks=False) for entry in entries}
-    except OSError:
+    except OSError:  # Not a folder, or gone.
         return False
-    # A folder or link inside, hidden or not, is not salmon's: deleting salmon's folder would take it too.
     if not all(is_file.values()):
         return False
     images = [name for name in is_file if not name.startswith(".") and name not in _BROWSER_LITTER]
     if not all(_SALMON_SPECTRAL.fullmatch(name) for name in images):
         return False
-    # By content too: spectrals an earlier run left (salmon specs -nd, an interrupted check) are still salmon's.
     return bool(images) or os.path.realpath(spectrals_path) in _made_specs_folders
 
 
 def carry_specs_claim(old_real: str, new_path: str) -> None:
-    """After a move, salmon's claim on the folder at old_real (a real path) moves to new_path."""
+    """After salmon moved its spectrals folder from old_real (a real path) to new_path, make the folder there salmon's.
+
+    Folder renames move it, so that a second rename moves it again, and a folder made later at the old path is not
+    taken for salmon's.
+    """
     if old_real in _made_specs_folders:
         _made_specs_folders.discard(old_real)
         _made_specs_folders.add(os.path.realpath(new_path))
 
 
 def drop_specs_claim(spectrals_path: str) -> None:
-    """Forget salmon's claim on a spectrals folder gone or no longer salmon's: a folder there later is the user's."""
+    """Forget a spectrals folder gone or no longer salmon's: a folder made there later is the user's."""
     # The last part unresolved: a link put in place of salmon's folder must not clear the claim of the one it names.
     parent, name = os.path.split(os.path.abspath(spectrals_path))
     _made_specs_folders.discard(os.path.join(os.path.realpath(parent), name))
 
 
 def make_way_for_spectrals(spectrals_path: str) -> None:
-    """Clear spectrals_path for salmon's folder: remove salmon's own or an empty folder, refuse anything else."""
+    """Clear spectrals_path for salmon's spectrals folder: remove salmon's own, or an empty folder.
+
+    Raises:
+        UploadError: Something salmon did not make is there.
+    """
     if not os.path.lexists(spectrals_path):
         return
-    empty = not os.path.islink(spectrals_path) and os.path.isdir(spectrals_path) and not os.listdir(spectrals_path)
+    try:
+        empty = not os.path.islink(spectrals_path) and os.path.isdir(spectrals_path) and not os.listdir(spectrals_path)
+    except OSError:
+        empty = False
     if not (empty or made_by_salmon(spectrals_path)):
-        # Chosen earlier (a web job) or outside the album: whatever is there now is not known to be salmon's.
-        raise click.ClickException(f"Not replacing {spectrals_path}: it holds files salmon did not make. Move them.")
+        raise UploadError(f"Not replacing {spectrals_path} with spectrals: salmon did not make it. Move it away.")
     shutil.rmtree(spectrals_path)
+    drop_specs_claim(spectrals_path)
 
 
-def create_specs_folder(path, spectrals_path=None):
-    """Create the spectrals folder, emptying it first.
+def create_specs_folder(path: str, spectrals_path: str | None = None) -> str:
+    """Create the spectrals folder of an album (see get_spectrals_path), replacing salmon's own from an earlier run.
 
-    Callers that must vet the destination first pass it in, so the folder that
-    gets cleared is the one they checked — get_spectrals_path falls back to the
-    album itself when tmp_dir has gone missing.
+    A web job passes the spectrals_path it vetted, so the folder cleared is the one it checked.
+
+    Raises:
+        UploadError: Something salmon did not make is where the folder goes.
     """
     if spectrals_path is None:
         spectrals_path = get_spectrals_path(path)
@@ -599,7 +750,10 @@ async def _open_specs_in_web_server(
     all_spectral_ids: dict[int, str],
     wait_for_enter: Callable[[str], Awaitable[None]],
 ):
-    spectrals.set_active_spectrals(all_spectral_ids)
+    spectrals.set_active_spectrals(
+        all_spectral_ids,
+        [sid for sid in all_spectral_ids if os.path.isfile(os.path.join(specs_path, spectrum_plot_name(sid)))],
+    )
 
     runner = None
     try:
@@ -650,15 +804,19 @@ async def _open_specs_in_web_server(
 async def upload_spectrals(
     spectrals_path: str,
     spectral_ids: dict[int, str] | None,
+    tracker: str | None = None,
 ) -> dict[int, list[str]] | None:
     """Upload spectral images to image host.
 
     Args:
         spectrals_path: Path to spectrals folder.
         spectral_ids: Dict mapping spectral IDs to filenames.
+        tracker: The site code of the tracker the spectrals are for, whose specs host they go to. None
+            uploads them to the shared specs_uploader.
 
     Returns:
-        Dict mapping spectral IDs to uploaded URLs, or None.
+        Dict mapping spectral IDs to uploaded URLs, or None. A dry run uploads nothing: the URLs are what stands
+        in for them.
     """
     if not spectral_ids:
         return None
@@ -677,11 +835,11 @@ async def upload_spectrals(
         )
 
     if dryrun.active():
-        host = cfg.image.host_for(None, "specs_uploader")
+        host = cfg.image.host_for(tracker, "specs_uploader")
         dryrun.say(f"not uploading the spectrals of {len(spectrals_list)} track(s) to {host}.")
         return {sid: [dryrun.image_url(path, host) for path in paths] for sid, _filename, paths in spectrals_list}
     try:
-        return await upload_spectral_imgs(spectrals_list)
+        return await upload_spectral_imgs(spectrals_list, tracker=tracker)
     except ImageUploadFailed as e:
         click.secho(f"Failed to upload spectral: {e}", fg="red")
         return None
@@ -703,15 +861,16 @@ def _default_spectral_selection(spectral_ids: dict[int, str], lossy_master: bool
     return " ".join(track_ids) if track_ids else context_default
 
 
-async def prompt_spectrals(spectral_ids, lossy_master, check_lma, force_prompt_lossy_master=False):
-    """Ask which spectral IDs the user wants to upload."""
+async def prompt_spectrals(spectral_ids, lossy_master, check_lma, force_prompt_lossy_master=False, hosts=None):
+    """Ask which spectral IDs the user wants to upload, to hosts (see check_spectrals)."""
+    hosts = hosts or cfg.image.specs_uploader
     while True:
         ids = (
             "*"
             if await interaction.assume_defaults() and not force_prompt_lossy_master
             else await interaction.prompt(
                 click.style(
-                    f"What spectral IDs would you like to upload to {cfg.image.specs_uploader}? "
+                    f"What spectral IDs would you like to upload to {hosts}? "
                     '(space-separated list of IDs, "0" for none, "*" for all, or "+" for a randomized selection)',
                     fg="magenta",
                 ),
@@ -742,22 +901,29 @@ async def prompt_spectrals(spectral_ids, lossy_master, check_lma, force_prompt_l
         )
 
 
-async def prompt_lossy_master(force_prompt_lossy_master=False, suggested: str = "n", offer_deletion: bool = True):
-    """Ask the lossy-master question; `suggested` is the analysis's pre-typed answer, `offer_deletion` adds [d]."""
+async def prompt_lossy_master(force_prompt_lossy_master=False, offer_deletion=True, marks_found=False):
+    """Ask whether the release is lossy mastered: True, False, or None to reopen the spectrals.
+
+    offer_deletion: Whether to offer deleting the music folder, which an uploaded torrent may seed from.
+    marks_found: Whether the frequency analysis found a lossy encoder's marks. It makes "yes" the default, and
+        the question is then asked even with yes_all, which otherwise answers "no" without asking.
+    """
     while True:
         flush_stdin()
         r = (
             "n"
-            if await interaction.assume_defaults() and not force_prompt_lossy_master
+            if await interaction.assume_defaults() and not force_prompt_lossy_master and not marks_found
             else (
                 await interaction.prompt(
                     click.style(
-                        "\nIs this release lossy mastered? [y]es, [N]o, [r]eopen spectrals, [a]bort"
+                        "\nIs this release lossy mastered? "
+                        + ("[Y]es, [n]o" if marks_found else "[y]es, [N]o")
+                        + ", [r]eopen spectrals, [a]bort"
                         + (", [d]elete music folder" if offer_deletion else ""),
                         fg="magenta",
                     ),
                     type=click.STRING,
-                    default=suggested,
+                    default="y" if marks_found else "n",
                 )
             )[0].lower()
         )
@@ -782,7 +948,7 @@ async def report_lossy_master(
     comment: str | None,
     source_url: str | None = None,
 ) -> None:
-    """Report torrent for lossy WEB/master approval.
+    """Report torrent for lossy WEB/master approval. A dry run prints the report instead.
 
     Args:
         gazelle_site: The tracker API instance.
@@ -805,11 +971,13 @@ async def report_lossy_master(
         await gazelle_site.report_lossy_master(torrent_id, comment, source)
     except UnknownOutcomeError as err:
         record.note_unknown_outcome(err)
-        # A report has no tracker-side dedupe, so it is never sent twice.
+        # The upload itself went through, so the rest of the flow (seeding above all) goes on.
         click.secho(
-            "\nCould not tell whether the Lossy Master/WEB report was filed. Check "
-            f"{gazelle_site.base_url}/torrents.php?torrentid={torrent_id} before reporting again.",
-            fg="yellow",
+            f"\nCould not tell whether {gazelle_site.site_string} took the lossy master report ({err}): it may "
+            f"have been filed. Check {gazelle_site.base_url}/torrents.php?torrentid={torrent_id} before reporting "
+            "it again.",
+            fg="red",
+            bold=True,
         )
         return
     except RequestError as err:
@@ -880,6 +1048,7 @@ async def post_upload_spectral_check(
     source: str | None,
     source_url: str | None,
     format: str = "FLAC",
+    uploads: SpectralUploads | None = None,
 ) -> tuple[bool, str | None, dict[int, list[str]] | None, dict[int, str] | None]:
     """Generate and add spectrals after upload.
 
@@ -894,18 +1063,28 @@ async def post_upload_spectral_check(
         source: Media source.
         source_url: Source URL.
         format: Audio format.
+        uploads: The spectral uploads of the upload run this check is part of, for its other trackers to reuse.
+            Without one, the spectrals are only for this tracker.
 
     Returns:
         Tuple of (lossy_master, lossy_comment, spectral_urls, spectral_ids).
     """
+    if uploads is None:
+        uploads = SpectralUploads(path, [gazelle_site.site_code])
     # The uploaded torrent seeds from path: the check must not offer to delete it.
     lossy_master, spectral_ids = await check_spectrals(
-        path, track_data, None, spectral_ids, force_prompt_lossy_master=True, format=format, offer_deletion=False
+        path,
+        track_data,
+        None,
+        spectral_ids,
+        force_prompt_lossy_master=True,
+        format=format,
+        hosts=uploads.hosts_text(),
+        offer_deletion=False,
     )
     if not lossy_master and not spectral_ids:
-        # Nothing to upload: the spectrals made for the check go before a later torrent can take them.
-        if made_by_salmon(spectrals_path := get_spectrals_path(path)):
-            await handle_spectrals_upload_and_deletion(spectrals_path, None)
+        # Nothing to upload, for any tracker: the spectrals made for the check go, before a torrent could take them.
+        await uploads.close()
         return False, None, None, None
 
     lossy_comment = None
@@ -915,8 +1094,7 @@ async def post_upload_spectral_check(
         )
         click.echo()
 
-    spectrals_path = get_spectrals_path(path)
-    spectral_urls = await handle_spectrals_upload_and_deletion(spectrals_path, spectral_ids)
+    spectral_urls = await uploads.urls_for(gazelle_site.site_code, spectral_ids)
 
     if spectral_urls:
         spectrals_bbcode = make_spectral_bbcode(spectral_ids, spectral_urls)
@@ -927,7 +1105,8 @@ async def post_upload_spectral_check(
             record.note_unknown_outcome(err)
             click.secho(
                 f"\nCould not tell whether {gazelle_site.site_string} took the description edit for {permalink} "
-                f"({err}): check the description before pasting this in by hand:",
+                f"({err}): it may not have been updated; check the description before pasting this in "
+                "by hand:",
                 fg="red",
                 bold=True,
             )

@@ -23,7 +23,7 @@ def test_the_spectrals_report_keeps_its_sections_and_names_the_plots() -> None:
 
 def test_a_track_without_a_plot_is_named() -> None:
     spectra = [
-        SpectrumResult(file="01.flac", image="01 Frequency.png", sample_rate=96000, windows=9, reach_hz=40_000),
+        SpectrumResult(file="01.flac", image="01 Spectrum.png", sample_rate=96000, windows=9, reach_hz=40_000),
         SpectrumResult(file="02.flac", image="", sample_rate=96000, windows=9, error="plot failed"),
     ]
     text = spectrals_report("/music/Album", {"01.flac": INFO, "02.flac": INFO}, PROVENANCE, spectra)

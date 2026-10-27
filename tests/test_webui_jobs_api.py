@@ -1271,7 +1271,7 @@ def test_spectrals_generate_happy_path(client, album_dir, spectral_stubs):
     assert data["result"]["spectral_ids"] == {"1": "01. Intro.flac", "2": "02. Mittelteil.flac"}
     # Frequency plots are shown but never posted, so they stay out of "files".
     assert data["result"]["files"] == ["01-intro.png", "02-mittelteil.png"]
-    assert data["result"]["frequency"][0]["image"] == "01 Frequency.png"
+    assert data["result"]["frequency"][0]["image"] == "01 Spectrum.png"
     assert data["result"]["assessment"] == {"level": "none", "notes": ["No track carried enough signal to measure."]}
 
 
@@ -1296,7 +1296,7 @@ def test_a_frequency_plot_is_still_served_even_though_it_is_not_uploaded(client,
     job_id = client.post("/api/spectrals/generate", json={"path": str(album_dir)}).json()["id"]
     join_job(client, job_id)
 
-    resp = client.get(f"/api/spectrals/{job_id}/image/01%20Frequency.png")
+    resp = client.get(f"/api/spectrals/{job_id}/image/01%20Spectrum.png")
 
     assert resp.status_code == 200
     assert resp.content == PNGF

@@ -299,7 +299,7 @@ def _lossy_post_upload_check(monkeypatch, site: FakeSite) -> None:
 
     monkeypatch.setattr(spectrals, "check_spectrals", check_spectrals)
     monkeypatch.setattr(spectrals, "generate_lossy_approval_comment", lambda *_a, **_k: _done("lossy note"))
-    monkeypatch.setattr(spectrals, "handle_spectrals_upload_and_deletion", lambda *_a: _done({1: ["full", "zoom"]}))
+    monkeypatch.setattr(spectrals, "upload_spectrals", lambda *_a: _done({1: ["full", "zoom"]}))
     anyio.run(lambda: spectrals.post_upload_spectral_check(site, "/release", 7, None, {}, "WEB", None))  # type: ignore[arg-type]
 
 
@@ -392,7 +392,7 @@ def test_an_albums_own_spectrals_folder_survives_the_real_check(monkeypatch, tmp
         return {}
 
     monkeypatch.setattr(spectrals, "generate_spectrals_all", generate)
-    monkeypatch.setattr(spectrals, "print_frequency_guidance", lambda *_a: _done("ok"))
+    monkeypatch.setattr(spectrals, "print_frequency_analysis", lambda *_a: _done(False))
     monkeypatch.setattr(interaction, "show_spectrals", lambda *_a: _done(None))
     monkeypatch.setattr(spectrals, "prompt_lossy_master", lambda *_a, **_k: _done(False))
     monkeypatch.setattr(spectrals, "prompt_spectrals", lambda *_a, **_k: _done({}))
