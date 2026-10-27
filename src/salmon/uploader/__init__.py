@@ -78,6 +78,7 @@ from salmon.tagger.pre_data import construct_rls_data
 from salmon.tagger.retagger import rename_files, tag_files
 from salmon.tagger.review import release_type_from_folder, review_metadata, suggest_release_type
 from salmon.tagger.tags import check_tags, gather_tags, standardize_tags
+from salmon.trackers.base import TagRules
 from salmon.trackers.red import RedApi
 from salmon.uploader import record
 from salmon.uploader.dupe_checker import (
@@ -217,6 +218,12 @@ def validate_conversions(ctx, param, value: str | None) -> tuple[str, ...] | Non
     help="For WEB uploads provide the source of the album to be added in release description",
 )
 @click.option(
+    "--skip-search",
+    is_flag=True,
+    help="With --source-url naming a store salmon scrapes, take the metadata from that URL without searching "
+    "the stores.",
+)
+@click.option(
     "--skip-initial-review",
     is_flag=True,
     help="Skip the initial manual metadata review before AI review.",
@@ -279,6 +286,7 @@ async def up(
     skip_up: bool,
     scene: bool,
     source_url: str | None,
+    skip_search: bool,
     skip_initial_review: bool,
     apply_ai_suggestions: bool,
     yyy: bool,
@@ -351,6 +359,7 @@ async def up(
                 essential_only=essential_only,
                 flac_group=flac_group,
                 skip_initial_review=skip_initial_review,
+                skip_search=skip_search,
                 apply_ai_suggestions=apply_ai_suggestions,
                 trackers=list(trackers),
                 offer_others=isinstance(trackers, salmon.trackers.UnnamedTrackers),
@@ -593,40 +602,52 @@ def converted_from_note(conversion: dict[str, Any] | None, url: str | None) -> s
     return conversion_note(url or "", conversion.get("sample_rate"), cast("BitDepth", conversion.get("bit_depth", 16)))
 
 
-def _max_path_length_for_run(
-    site_code: str, trackers: list[str] | None, flac_group: dict | None, offer_others: bool = False
-) -> int:
-    """The run's path limit: this tracker's, or the strictest of all the run may reach (-t, multi_tracker_upload)."""
-    return path_limit_for(_trackers_for_run(site_code, flac_group, trackers, offer_others))
-
-
 def _trackers_for_run(
-    first_tracker: str, flac_group: dict | None, trackers: list[str] | None = None, offer_others: bool = False
+    first_tracker: str, flac_group: dict[str, Any] | None, trackers: list[str] | None = None
 ) -> list[str]:
-    """Trackers a run may upload to: first_tracker alone with flac_group, or without -t and multi_tracker_upload."""
-    if flac_group is not None or not (trackers or cfg.upload.multi_tracker_upload):
+    """Get the site codes of every tracker an upload run may upload to, first_tracker first.
+
+    With --skip-flac-upload, or without multi_tracker_upload, the run stops after the first tracker.
+    Trackers named with -t are the run's, whatever multi_tracker_upload says.
+    """
+    if flac_group is not None:
         return [first_tracker]
-    return follow_up_trackers(trackers, first_tracker, offer_others)
+    if trackers:
+        return list(trackers)
+    if not cfg.upload.multi_tracker_upload:
+        return [first_tracker]
+    return [first_tracker, *(code for code in salmon.trackers.tracker_list if code != first_tracker)]
 
 
-async def next_tracker(trackers: list[str] | None, remaining: list[str]) -> str | None:
-    """Next site to upload to: the next of the run's own trackers, else ask among the others."""
-    if trackers and remaining[0] in trackers:
-        click.secho(f"\nNext tracker: {remaining[0]}", fg="magenta")
-        return remaining[0]
-    click.secho("\nWould you like to upload to another tracker? ", fg="magenta", nl=False)
-    return await salmon.trackers.choose_tracker(remaining)
+def _reachable_trackers(trackers: list[str] | None, offer_others: bool) -> list[str] | None:
+    """Every tracker a run given these trackers may upload to, in order; None when it is only known as it goes.
+
+    Trackers not named with -t (`offer_others`: the config's default_trackers, or the one asked for) are followed by
+    the other configured trackers the run offers, with multi_tracker_upload.
+    """
+    if not trackers or not offer_others or not cfg.upload.multi_tracker_upload:
+        return trackers
+    return [*trackers, *(code for code in salmon.trackers.tracker_list if code not in trackers)]
 
 
-def follow_up_trackers(trackers: list[str] | None, current: str, offer_others: bool = False) -> list[str]:
-    """Sites from `current` on: `trackers` (None: all), then the rest if offer_others and multi_tracker_upload."""
-    # Deduped: one entry is removed per upload, so a repeat would upload twice. `current` stays for its own removal.
-    sites = list(dict.fromkeys(trackers)) if trackers is not None else list(salmon.trackers.tracker_list)
-    if trackers is not None and offer_others and cfg.upload.multi_tracker_upload:
-        sites += [code for code in salmon.trackers.tracker_list if code not in sites]
-    if current not in sites:
-        sites.insert(0, current)
-    return sites
+def _max_path_length_for_run(gazelle_site: "BaseGazelleApi", trackers: list[str] | None = None) -> int:
+    """The path limit to check the folder against: this tracker's, or the strictest among every
+    tracker configured, when the run might go on to upload to another of them afterward.
+
+    Which trackers a run actually reaches is only known one at a time: after each upload, the
+    user is offered a choice among the remaining configured trackers. The folder is checked once,
+    before the first upload, so it is checked against the strictest limit already knowable then.
+    Trackers named with -t are known up front: the strictest of theirs.
+    """
+    own_limit = getattr(gazelle_site, "TAG_RULES", TagRules()).max_path_length
+    if not trackers and not cfg.upload.multi_tracker_upload:
+        return own_limit
+    limits = [own_limit]
+    for code in trackers or salmon.trackers.tracker_list:
+        tracker_class = salmon.trackers.tracker_classes.get(code)
+        if tracker_class is not None:
+            limits.append(tracker_class.TAG_RULES.max_path_length)
+    return min(limits)
 
 
 async def upload(
@@ -655,11 +676,13 @@ async def upload(
     apply_ai_suggestions: bool = False,
     trackers: list[str] | None = None,
     conversions: tuple[str, ...] | None = None,
+    skip_search: bool = False,
     offer_others: bool = False,
 ) -> None:
     """Upload an album folder to Gazelle Site.
 
-    Offer the choice to upload to another tracker after completion.
+    With multi_tracker_upload, offer the choice to upload to another tracker after completion, unless `trackers`
+    names them and not `offer_others`.
 
     Args:
         gazelle_site: The tracker API instance.
@@ -686,11 +709,13 @@ async def upload(
             release's FLAC. If given, the FLAC is not uploaded, only transcodes of it into that group.
         skip_initial_review: Skip the first manual metadata review before AI review.
         apply_ai_suggestions: Automatically apply AI review suggestions when present.
-        trackers: Restrict the follow-up tracker offer to these sites, in order;
-            duplicates are ignored. None offers every configured tracker; an empty list offers none.
+        trackers: The site codes to upload to, in order, gazelle_site's first: the run uploads to each and
+            asks about no other. None asks after each upload, as configured.
         offer_others: `trackers` were not named with -t (the config's default_trackers, or the tracker asked for):
             after them, offer the other configured trackers, as configured.
         conversions: The conversion kinds selected by default after a FLAC; None follows upload.conversions.
+        skip_search: Take the metadata from source_url without searching the stores, when a metadata source
+            scrapes it.
     """
     path = os.path.abspath(path)
     if flac_group is not None and (refusal := validate_skip_flac_source(path)):
@@ -737,6 +762,7 @@ async def upload(
             rename_into=rename_into,
             kept_source=None if staged == path else path,
             conversions=conversions,
+            skip_search=skip_search,
         )
 
 
@@ -779,10 +805,9 @@ def _warn_about_provenance(path: str) -> None:
             click.secho(f"  - {note}", fg="yellow")
 
 
-def _another_can_follow(trackers: list[str] | None, site_code: str, offer_others: bool = False) -> bool:
-    """Whether the run can go on to a tracker other than site_code."""
-    others = [site for site in follow_up_trackers(trackers, site_code, offer_others) if site != site_code]
-    return bool(others) and bool(trackers or cfg.upload.multi_tracker_upload)
+def _another_can_follow(first_tracker: str, flac_group: dict[str, Any] | None, reachable: list[str] | None) -> bool:
+    """Whether the run can go on to a tracker after first_tracker."""
+    return len(_trackers_for_run(first_tracker, flac_group, reachable)) > 1
 
 
 async def _upload_staged(
@@ -817,9 +842,16 @@ async def _upload_staged(
     rename_into: str | None,
     kept_source: str | None = None,
     conversions: tuple[str, ...] | None = None,
+    skip_search: bool = False,
 ) -> None:
     """upload() on a folder that is safe to change; see upload() for the arguments."""
     remove_downloaded_cover_image = scene or cfg.image.remove_auto_downloaded_cover_image
+    # Every tracker the run may reach, in order: those uploaded to without asking, then those it may offer.
+    reachable = _reachable_trackers(trackers, offer_others)
+    # The album folder and every conversion the run makes, on any tracker's turn, are checked against it.
+    max_path_length = _max_path_length_for_run(
+        gazelle_site, _trackers_for_run(gazelle_site.site_code, flac_group, reachable)
+    )
     if not source:
         source = await _prompt_source(detect_source(path))
     audio_info = gather_audio_info(path)
@@ -872,7 +904,7 @@ async def _upload_staged(
         tags_refusal = _do_not_upload_refusal(gazelle_site.site_code, rls_data)
         # The review keeps each file's depth and rate. With --skip-flac-upload only transcodes go up: no FLAC to refuse.
         rate_refused = flac_group is None and _sixteen_bit_refusal(gazelle_site.site_code, audio_info)
-        if rate_refused and not _another_can_follow(trackers, gazelle_site.site_code, offer_others):
+        if rate_refused and not _another_can_follow(gazelle_site.site_code, flac_group, reachable):
             # Nothing the review changes could let these files go up.
             raise click.Abort
         if group_id is None and (tags_refusal or rate_refused):
@@ -887,7 +919,7 @@ async def _upload_staged(
                     weighed_against = dict(rls_data)
                 except RequestError as e:
                     # Skipped like a later tracker; a request is this tracker's, so with one the run ends.
-                    if request_id or not _another_can_follow(trackers, gazelle_site.site_code, offer_others):
+                    if request_id or not _another_can_follow(gazelle_site.site_code, flac_group, reachable):
                         click.secho(
                             f"\nCould not search {gazelle_site.site_string} for dupes: {e}", fg="red", bold=True
                         )
@@ -911,16 +943,16 @@ async def _upload_staged(
                 lossy,
                 spectrals,
                 format=rls_data["format"],
-                hosts=specs_hosts_text(_trackers_for_run(gazelle_site.site_code, flac_group, trackers, offer_others)),
+                hosts=specs_hosts_text(_trackers_for_run(gazelle_site.site_code, flac_group, reachable)),
             )
             lossy_master = lossy_result if lossy_result is not None else False
 
-        metadata, new_source_url = await get_metadata(path, tags, rls_data)
+        metadata, new_source_url = await get_metadata(
+            path, tags, rls_data, skip_search=skip_search, skip_search_url=source_url
+        )
         if new_source_url is not None:
             source_url = new_source_url
             click.secho(f"New Source URL: {source_url}", fg="yellow")
-        # The strictest limit of every tracker this run may reach: its conversions are checked against it too.
-        run_path_limit = _max_path_length_for_run(gazelle_site.site_code, trackers, flac_group, offer_others)
         path, metadata, tags, audio_info = await edit_metadata(
             path,
             tags,
@@ -941,20 +973,15 @@ async def _upload_staged(
                 [info.get("duration") or 0 for info in audio_info.values()],
             ),
             rename_into=rename_into,
-            max_path_length=run_path_limit,
+            max_path_length=max_path_length,
             original=kept_source,
         )
 
         # Before the first tracker's group, cover and upload; spectrals go once for the run, so with a follower.
         if rate_refused or _do_not_upload_refusal(gazelle_site.site_code, metadata, said=tags_refusal) is not None:
-            # With --skip-flac-upload, the FLAC's group is on this tracker alone.
-            if flac_group is not None or not _another_can_follow(trackers, gazelle_site.site_code, offer_others):
+            if not _another_can_follow(gazelle_site.site_code, flac_group, reachable):
                 raise click.Abort
             skip_first = True
-            if request_id:
-                # --request names a request of this tracker: another tracker's with that ID is another request.
-                click.secho(f"\nNot filling request {request_id}: it is {gazelle_site.site_string}'s.", fg="yellow")
-                request_id = None
         if not group_id and not skip_first:
             group_id = await recheck_dupe(gazelle_site, searchstrs, metadata)
             click.echo()
@@ -1022,9 +1049,7 @@ async def _upload_staged(
             return click.secho("\nDeleted folder, aborting upload...", fg="red")
 
     # Uploaded once per specs host; the files are deleted once no tracker of the run can need them.
-    spectral_uploads = SpectralUploads(
-        path, _trackers_for_run(gazelle_site.site_code, flac_group, trackers, offer_others)
-    )
+    spectral_uploads = SpectralUploads(path, _trackers_for_run(gazelle_site.site_code, flac_group, reachable))
     try:
         lossy_comment = None
         spectral_urls = None
@@ -1038,10 +1063,19 @@ async def _upload_staged(
         if cfg.upload.requests.last_minute_dupe_check and not skip_first:
             await last_min_dupe_check(gazelle_site, searchstrs, our_title)
 
-        remaining_gazelle_sites = follow_up_trackers(trackers, gazelle_site.site_code, offer_others)
-        tracker: str | None = gazelle_site.site_code
+        # Shallow copy to avoid errors on multiple uploads in one session. Trackers named with -t, or the config's
+        # default_trackers, are uploaded to in their order, without asking; the others are offered.
+        remaining_gazelle_sites = list(reachable or salmon.trackers.tracker_list)
+        # Whether the run goes on after a tracker: always for named ones, until none is left.
+        go_on = bool(reachable) or cfg.upload.multi_tracker_upload
+        tracker = gazelle_site.site_code
+        requested = request_id  # What --request gave, if anything: check_requests only looks when it gave none
         if skip_first:
-            remaining_gazelle_sites.remove(gazelle_site.site_code)
+            remaining_gazelle_sites.remove(tracker)
+            if request_id is not None:
+                # --request names a request of this tracker: another tracker's request with that ID is another one.
+                click.secho(f"\nNot filling request {request_id}: it is {tracker}'s.", fg="yellow")
+                request_id = None
             tracker = None
         torrent_id = None
         cover_url = None
@@ -1055,10 +1089,25 @@ async def _upload_staged(
             while True:
                 # Loop until we don't want to upload to any more sites.
                 if not tracker:
-                    tracker = await next_tracker(trackers, remaining_gazelle_sites)
+                    # After a tracker whose Do-Not-Upload list forbids the release: the run may have none left.
+                    if source_flac is not None or not remaining_gazelle_sites or not go_on:
+                        break
+                    if next_named := next((code for code in remaining_gazelle_sites if code in (trackers or ())), None):
+                        tracker = next_named
+                        click.secho(f"\nNext tracker: {tracker}", fg="magenta")
+                    else:
+                        click.secho("\nWould you like to upload to another tracker? ", fg="magenta", nl=False)
+                        tracker = await salmon.trackers.choose_tracker(remaining_gazelle_sites)
                     if not tracker:
                         click.secho("\nDone with this release.", fg="green")
                         break
+                    # A request is of the tracker it was given or found for, whatever became of that tracker's turn.
+                    if request_id is not None:
+                        if request_id == requested:
+                            click.secho(
+                                f"\nNot filling request {request_id}: it is {gazelle_site.site_code}'s.", fg="yellow"
+                            )
+                        request_id = None
                     gazelle_site = salmon.trackers.get_class(tracker)()
                     # Before its dupe check, which may ask which group to upload into.
                     if _do_not_upload_refusal(tracker, metadata) is not None or (
@@ -1066,8 +1115,6 @@ async def _upload_staged(
                     ):
                         remaining_gazelle_sites.remove(tracker)
                         tracker = None
-                        if not remaining_gazelle_sites or not (trackers or cfg.upload.multi_tracker_upload):
-                            break
                         continue
 
                     click.secho(f"Uploading to {gazelle_site.base_url}", fg="cyan", bold=True)
@@ -1082,17 +1129,11 @@ async def _upload_staged(
                         click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
                         remaining_gazelle_sites.remove(tracker)
                         tracker = None
-                        if not remaining_gazelle_sites or not (trackers or cfg.upload.multi_tracker_upload):
+                        if not remaining_gazelle_sites or not go_on:
                             break
                         continue
 
                 remaining_gazelle_sites.remove(tracker)
-                # The source FLAC's group is on this tracker only; trackers named up front are all gone through.
-                last_site = (
-                    source_flac is not None
-                    or not remaining_gazelle_sites
-                    or not (trackers or cfg.upload.multi_tracker_upload)
-                )
 
                 proceed, cover_url = await resolve_cover_url(
                     gazelle_site,
@@ -1106,7 +1147,7 @@ async def _upload_staged(
                     # Like a failed upload: skip this tracker, and offer the next one.
                     click.secho(f"\nSkipping upload to {gazelle_site.site_string}.", fg="red", bold=True)
                     tracker = None
-                    if last_site:
+                    if not remaining_gazelle_sites or not go_on:
                         break
                     continue
 
@@ -1228,7 +1269,7 @@ async def _upload_staged(
                                 source,
                                 url,
                                 uploaded=uploaded,
-                                max_path_length=run_path_limit,
+                                max_path_length=max_path_length,
                             )
                 except RequestError as e:
                     click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
@@ -1236,7 +1277,7 @@ async def _upload_staged(
                         record.note_unknown_outcome(e)
 
                 tracker = None
-                if last_site:
+                if source_flac is not None or not remaining_gazelle_sites or not go_on:
                     click.secho("\nDone uploading this release.", fg="green")
                     break
 

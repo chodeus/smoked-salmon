@@ -262,7 +262,7 @@ def upload_world(monkeypatch, tmp_path):
     async def fake_check_tags(path):
         return dict(world.tags)
 
-    async def fake_get_metadata(path, tags, rls_data):
+    async def fake_get_metadata(path, tags, rls_data, **_kwargs):
         return dict(world.metadata), None
 
     async def fake_review_metadata_with_ai(metadata, *args, **kwargs):

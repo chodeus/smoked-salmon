@@ -577,6 +577,18 @@ def test_upload_forwards_the_selected_trackers(client, album_dir, monkeypatch) -
     assert seen["trackers"] == ["RED", "OPS"]
 
 
+def test_upload_puts_the_first_tracker_first_and_once(client, album_dir, monkeypatch) -> None:
+    """The run removes each tracker from its list as it uploads: a missing first one, or a repeat, breaks it."""
+    seen = _capture_upload(monkeypatch)
+    resp = client.post(
+        "/api/upload",
+        json={"path": str(album_dir), "tracker": "RED", "trackers": ["OPS", "RED", "OPS"], "source": "WEB"},
+    )
+    assert resp.status_code == 200
+    _wait(client, resp.json()["id"])
+    assert seen["trackers"] == ["RED", "OPS"]
+
+
 @pytest.mark.parametrize("dry_run", [True, False])
 def test_a_web_upload_runs_as_a_dry_run_only_when_asked(client, album_dir, monkeypatch, dry_run: bool) -> None:
     from salmon import dryrun

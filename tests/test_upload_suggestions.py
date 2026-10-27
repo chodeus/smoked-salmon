@@ -8,7 +8,6 @@ import asyncclick as click
 import pytest
 
 import salmon.trackers as trackers
-import salmon.uploader as uploader
 from salmon.common.strings import comparable
 from salmon.tagger import metadata as metadata_mod
 from salmon.tagger import review
@@ -204,30 +203,6 @@ def test_metadata_prompt_pretypes_the_suggestion(monkeypatch) -> None:
     anyio.run(metadata_mod._select_choice, {}, {"urls": []}, "*" + QOBUZ_URL)
 
     assert defaults == ["*" + QOBUZ_URL]
-
-
-def test_next_tracker_takes_the_preselected_site_without_asking(monkeypatch) -> None:
-    async def never(_choices):
-        raise AssertionError("no tracker question when the trackers were picked up front")
-
-    monkeypatch.setattr(trackers, "choose_tracker", never)
-
-    result = anyio.run(uploader.next_tracker, ["RED", "OPS"], ["OPS"])
-    assert result == "OPS"
-
-
-def test_next_tracker_asks_when_nothing_was_preselected(monkeypatch) -> None:
-    asked: list[list[str]] = []
-
-    async def choose(choices):
-        asked.append(list(choices))
-        return "OPS"
-
-    monkeypatch.setattr(trackers, "choose_tracker", choose)
-
-    result = anyio.run(uploader.next_tracker, None, ["OPS", "DIC"])
-    assert result == "OPS"
-    assert asked == [["OPS", "DIC"]]
 
 
 def test_validate_trackers_accepts_the_flag_repeated(monkeypatch) -> None:

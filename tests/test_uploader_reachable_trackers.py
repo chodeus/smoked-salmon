@@ -1,16 +1,22 @@
-"""follow_up_trackers: which sites the continuation prompt may offer."""
+"""_reachable_trackers: the trackers a run may upload to, and what salmon up passes it."""
 
 from pathlib import Path
 from typing import Any
 
 import anyio
+import asyncclick as click
 import pytest
 from asyncclick.testing import CliRunner
+from test_uploader_dry_run import (  # pyright: ignore[reportMissingImports]
+    _album,
+    _loose_rate_limit,  # noqa: F401 (a fixture: see the test using it)
+    _run_up,
+)
 
 import salmon.trackers
 import salmon.uploader as uploader
 from salmon import cfg
-from salmon.uploader import follow_up_trackers, next_tracker
+from salmon.uploader import _reachable_trackers
 
 
 @pytest.fixture(autouse=True)
@@ -18,33 +24,14 @@ def three_sites(monkeypatch):
     monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS", "DIC"])
 
 
-def test_none_offers_every_configured_site():
-    """What salmon web passes when no other tracker was picked."""
-    assert follow_up_trackers(None, "RED") == ["RED", "OPS", "DIC"]
+def test_no_trackers_are_known_up_front_without_a_list():
+    """What salmon web passes when no tracker was ticked: each next one is asked for."""
+    assert _reachable_trackers(None, offer_others=False) is None
 
 
-def test_a_selection_excludes_the_sites_not_chosen():
-    # picking OPS and DIC must never lead to RED being offered
-    assert follow_up_trackers(["OPS", "DIC"], "OPS") == ["OPS", "DIC"]
-
-
-def test_repeats_are_collapsed_so_a_site_cannot_be_offered_twice():
-    """One entry is removed per upload, so a duplicate would be re-offered and
-    could produce a second upload to the same tracker."""
-    assert follow_up_trackers(["RED", "OPS", "RED"], "RED") == ["RED", "OPS"]
-
-
-def test_caller_order_is_preserved():
-    assert follow_up_trackers(["DIC", "RED", "OPS"], "DIC") == ["DIC", "RED", "OPS"]
-
-
-def test_the_current_site_is_always_present_for_its_own_removal():
-    # upload() calls .remove(tracker) after uploading; a missing entry would raise
-    assert follow_up_trackers(["OPS"], "RED") == ["RED", "OPS"]
-
-
-def test_an_empty_selection_offers_nothing_further():
-    assert follow_up_trackers([], "RED") == ["RED"]
+def test_named_trackers_are_the_runs_alone():
+    # Ticking OPS and DIC must never lead to RED being offered.
+    assert _reachable_trackers(["OPS", "DIC"], offer_others=False) == ["OPS", "DIC"]
 
 
 @pytest.mark.parametrize(("multi_tracker_upload", "offered"), [(True, ["RED", "OPS", "DIC"]), (False, ["RED", "OPS"])])
@@ -52,23 +39,7 @@ def test_trackers_no_t_named_are_followed_by_the_others_if_multi_tracker_upload(
     monkeypatch, multi_tracker_upload: bool, offered: list[str]
 ):
     monkeypatch.setattr(cfg.upload, "multi_tracker_upload", multi_tracker_upload)
-    assert follow_up_trackers(["RED", "OPS"], "RED", offer_others=True) == offered
-
-
-def test_the_runs_own_trackers_go_on_unasked_and_the_others_are_asked_about(monkeypatch):
-    asked: list[list[str]] = []
-
-    async def choose(choices: list[str]) -> str | None:
-        asked.append(list(choices))
-        return None
-
-    monkeypatch.setattr(salmon.trackers, "choose_tracker", choose)
-
-    async def next_two() -> list[str | None]:
-        return [await next_tracker(["RED", "OPS"], ["OPS", "DIC"]), await next_tracker(["RED", "OPS"], ["DIC"])]
-
-    assert anyio.run(next_two) == ["OPS", None]
-    assert asked == [["DIC"]]
+    assert _reachable_trackers(["RED", "OPS"], offer_others=True) == offered
 
 
 async def _up_with(monkeypatch, tmp_path: Path, defaults: list[str], *args: str) -> list[dict[str, Any]]:
@@ -100,3 +71,27 @@ def test_the_run_uploads_to_the_trackers_named_exactly_and_offers_others_after_u
     seen = anyio.run(lambda: _up_with(monkeypatch, tmp_path, defaults, *args))
 
     assert [(kwargs["trackers"], kwargs["offer_others"]) for kwargs in seen] == [(trackers, offer_others)]
+
+
+@pytest.mark.usefixtures("_loose_rate_limit")
+@pytest.mark.parametrize(("trackers", "limit"), [(("OPS",), 255), (("OPS", "RED"), 180)])
+def test_the_run_checks_the_folder_against_the_strictest_limit_of_its_trackers(
+    monkeypatch, tmp_path, trackers: tuple[str, ...], limit: int
+) -> None:
+    # Through the real run, which stops at the review: OPS allows 255 characters, RED 180.
+    seen: list[int] = []
+
+    async def edit_metadata(*_args: Any, max_path_length: int, **_kwargs: Any) -> None:
+        seen.append(max_path_length)
+        raise click.Abort
+
+    downloads, torrents = tmp_path / "downloads", tmp_path / "torrents"
+    downloads.mkdir()
+    torrents.mkdir()
+    monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
+    monkeypatch.setattr(cfg.directory, "tmp_dir", None)
+    monkeypatch.setattr(cfg.directory, "library_dirs", [])
+    run = _run_up(monkeypatch, _album(tmp_path / "album"), torrents, trackers=trackers, edit_metadata=edit_metadata)
+
+    assert run.result.exit_code == 0, run.result.output
+    assert seen == [limit]
