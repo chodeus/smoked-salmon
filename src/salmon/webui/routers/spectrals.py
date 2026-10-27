@@ -21,10 +21,10 @@ from salmon.uploader.frequency import assess, generate_frequency_plots
 from salmon.uploader.spectrals import (
     create_specs_folder,
     drop_specs_claim,
-    frequency_plot_paths,
     generate_spectrals_all,
     get_spectrals_path,
     made_by_salmon,
+    spectrum_plot_name,
 )
 from salmon.webui.jobs import Job, JobCapacityError, JobConflictError, manager
 from salmon.webui.validation import allowed_roots, is_within_roots, refuse_library_output, validate_album_dir
@@ -75,7 +75,8 @@ async def generate(req: GenerateRequest) -> dict:
         created = await asyncio.to_thread(create_specs_folder, path, spectrals_path)
         spectral_ids = await generate_spectrals_all(path, created, audio_info)
         files = get_audio_files(path, True)
-        spectra = await generate_frequency_plots(path, files, frequency_plot_paths(spectral_ids, created))
+        plot_paths = {name: os.path.join(created, spectrum_plot_name(sid)) for sid, name in spectral_ids.items()}
+        spectra = await generate_frequency_plots(path, files, plot_paths)
         level, notes = assess(spectra)
         provenance = await asyncio.to_thread(gather_provenance, path)
         # "files" is what gets uploaded to an image host, so it stays the

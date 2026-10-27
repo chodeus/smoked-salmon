@@ -1,4 +1,4 @@
-"""Answering "skip" to the retry question goes on without the spectrals that failed to upload.
+"""Answering "skip" to the retry question goes on without the spectrals that failed to upload (#671).
 
 The real catbox and ptscreens uploaders run against the local fake hosts of test_image_upload_connections.
 """

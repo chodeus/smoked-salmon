@@ -63,7 +63,7 @@ def test_a_release_on_reds_list_goes_to_ops_only(monkeypatch, tmp_path, dirs, im
     ) in run.result.output
     # The FLAC and its two transcodes, to OPS only; the spectrals and the cover once, for OPS.
     assert _uploaded_to(run) == ["OPS"] * 3
-    assert [name for name, _url in images] == ["01 Full.png", "01 Zoom.png", "cover.jpg"]
+    assert [name for name, _url in images] == ["cover.jpg", "01 Full.png", "01 Zoom.png"]
 
 
 def _requests(run) -> list[tuple[str, str, str | None]]:

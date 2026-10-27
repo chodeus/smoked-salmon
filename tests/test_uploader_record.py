@@ -39,7 +39,7 @@ async def test_a_description_edit_whose_answer_is_lost_is_recorded(monkeypatch, 
         return {1: ["https://images.test/1.png", "https://images.test/2.png"]}
 
     monkeypatch.setattr(spectrals, "check_spectrals", checked)
-    monkeypatch.setattr(spectrals, "handle_spectrals_upload_and_deletion", uploaded)
+    monkeypatch.setattr(spectrals, "upload_spectrals", uploaded)
     with recording() as record:
         await spectrals.post_upload_spectral_check(
             cast("Any", Site(lost)), str(tmp_path), 77, None, {"01. one.flac": {}}, "WEB", None

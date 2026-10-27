@@ -211,19 +211,20 @@ async def upload_cover(cover_path: str | None, host: str | None = None, red_api:
         return None
 
 
-async def upload_spectrals(spectrals, uploader=None, successful=None) -> dict:
+async def upload_spectrals(spectrals, uploader=None, successful=None, tracker: str | None = None) -> dict:
     """Upload spectral images to image host.
 
     Args:
         spectrals: List of (spec_id, filename, spectral_paths) tuples.
-        uploader: The image host module to use.
+        uploader: The image host module to use. Defaults to the tracker's specs host.
         successful: Set of already successful spec_ids.
+        tracker: The site code (e.g. "RED") of the tracker the spectrals are for, or None if they are not for one.
 
     Returns:
         Dictionary mapping spec_id to list of URLs.
     """
     if uploader is None:
-        uploader = HOSTS[cfg.image.specs_uploader]
+        uploader = HOSTS[cfg.image.host_for(tracker, "specs_uploader")]
 
     successful = successful or set()
     pending = [(sid, filename, paths) for sid, filename, paths in spectrals if sid not in successful]
@@ -242,40 +243,45 @@ async def upload_spectrals(spectrals, uploader=None, successful=None) -> dict:
             response[sid] = urls
             successful.add(sid)
     if len(response) < len(pending):
-        retry_result = await _handle_failed_spectrals(spectrals, successful)
+        retry_result = await _handle_failed_spectrals(spectrals, successful, tracker)
         return {**response, **retry_result}
     return response
 
 
-async def _handle_failed_spectrals(spectrals, successful) -> dict:
+async def _handle_failed_spectrals(spectrals, successful, tracker: str | None = None) -> dict:
     """Handle failed spectral uploads by prompting for a new host.
 
     Args:
         spectrals: List of spectral tuples.
         successful: Set of already successful spec_ids.
+        tracker: The site code of the tracker the spectrals are for, or None if they are not for one.
 
     Returns:
         Dictionary of the URLs of the spectrals uploaded from here on: none on "skip".
     """
-    spec_hosts = {k: v for k, v in HOSTS.items() if spectrals_refusal(k) is None}
     while True:
+        # Recomputed every iteration (not cached at import time) so it always reflects the
+        # rules in salmon.config.image_hosts, the single source shared with config validation
+        # for specs_uploader.
+        forbidden = {host: reason for host in HOSTS if (reason := spectrals_refusal(host, tracker)) is not None}
+        allowed_hosts = [host for host in HOSTS if host not in forbidden]
         host_input: str = await interaction.prompt(
             click.style(
                 "Some spectrals failed to upload. Which image host would you like to retry "
-                f"with, or {SKIP} to go on without them? (Options: {', '.join(spec_hosts)}, {SKIP})",
+                f"with, or {SKIP} to go on without them? (Options: {', '.join(allowed_hosts)}, {SKIP})",
                 fg="magenta",
                 bold=True,
             ),
-            default="catbox",
+            default=cfg.image.host_for(tracker, "specs_uploader"),
         )
         host = host_input.lower()
         if host == SKIP:
             left_out = [filename for sid, filename, _ in spectrals if sid not in successful]
             click.secho(f"Going on without the spectrals of: {', '.join(left_out)}.", fg="yellow")
             return {}
-        if (reason := spectrals_refusal(host)) is not None:
-            click.secho(f"{host} can't be used for spectrals: {reason}.", fg="red")
-        elif host not in spec_hosts:
+        if host in forbidden:
+            click.secho(f"{host} can't be used for spectrals: {forbidden[host]}.", fg="red")
+        elif host not in HOSTS:
             click.secho(f"{host} is an invalid image host. Please choose another one.", fg="red")
         else:
-            return await upload_spectrals(spectrals, uploader=spec_hosts[host], successful=successful)
+            return await upload_spectrals(spectrals, uploader=HOSTS[host], successful=successful, tracker=tracker)
