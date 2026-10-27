@@ -1,23 +1,27 @@
-"""Average-spectrum plots, and the two marks a lossy encoder leaves that a master does not.
+"""Averaged-spectrum plots, and the two marks a lossy encoder leaves that a master does not.
 
 A brick-wall lowpass where MP3 and AAC encoders cut, and highs that flip between
 content and the bit-depth floor as the encoder runs short of bits. A master rolls
 off gently or cuts hard only near Nyquist, as sample-rate conversion does, and its
 quiet is noise, never digital silence. PyAV decodes, numpy measures, Pillow draws.
+
+This module loads numpy, PyAV and Pillow: import it when the analysis runs, not when salmon starts.
 """
 
-import asyncio
 import contextlib
 import math
 import os
-from typing import NamedTuple
+from collections.abc import Mapping
+from typing import Any, NamedTuple
 
+import anyio.to_thread
 import av
 import msgspec
 import numpy as np
+from numpy.typing import NDArray
 from PIL import Image, ImageDraw
 
-from salmon.common.progress import report_progress
+from salmon.common.files import process_files
 
 FFT_SIZE = 8192
 HOP = FFT_SIZE // 2
@@ -39,25 +43,32 @@ _LABEL = (150, 150, 160)
 _CURVE = (255, 170, 60)
 _MARK = (90, 200, 255)
 
-# Energy "reaches" as far as the average stays above -100 dB, about where a
-# spectrogram goes dark. A wall is a step down to the band under Nyquist, so it
-# is searched from where the curve last clears that band by a margin.
+# These thresholds are signal heuristics measured on synthetic and real encodes, not tracker rules.
+#
+# The wall. Energy "reaches" as far as the average stays above -100 dB, about where a
+# spectrogram goes dark. A wall is a step down to the band under Nyquist, so it is
+# searched from where the curve last clears that band by _TOP_MARGIN_DB.
 _REACH_FLOOR_DB = -100.0
 _TOP_MARGIN_DB = 10.0
+# How far the band under a wall must sit above the band above it for the step to be measured at all.
+_WALL_MEASURE_DEPTH_DB = 15.0
+# A lossy wall: a step at least this deep, falling at least this fast. A mastering roll-off is
+# shallower or slower.
 _WALL_MIN_DEPTH_DB = 20.0
 _WALL_MIN_SLOPE_DB_PER_KHZ = 20.0
-# Where a wall's floor lands for MP3/AAC lowpasses; 20.6 kHz keeps LAME 320 (≤20.4)
-# apart from sample-rate-conversion walls (≥20.9). Both tables key on floor_hz.
+# Where a wall's floor lands for MP3/AAC lowpasses; 20.6 kHz keeps LAME 320 (<= 20.4 kHz)
+# apart from sample-rate-conversion walls (>= 20.9 kHz). Both tables key on floor_hz.
 _LOSSY_WALL_HZ = (12_800.0, 20_600.0)
 _ENCODER_LOWPASSES = (
     ("MP3 at ~80 kbps", 12_800.0, 13_700.0),
-    ("MP3 at 96–112 kbps", 15_000.0, 15_600.0),
+    ("MP3 at 96-112 kbps", 15_000.0, 15_600.0),
     ("MP3 at 128 kbps", 16_500.0, 17_100.0),
     ("MP3 at ~160 kbps or AAC at ~128 kbps", 17_200.0, 18_700.0),
     ("MP3 at 192 kbps or V2", 18_750.0, 19_100.0),
-    ("MP3 at 224–256 kbps or V0", 19_300.0, 19_800.0),
+    ("MP3 at 224-256 kbps or V0", 19_300.0, 19_800.0),
     ("MP3 at 320 kbps", 20_100.0, 20_600.0),
 )
+# The gate. The high bands watched for switching between content and the floor.
 _TEXTURE_BANDS = (
     (16_000.0, 17_000.0),
     (17_000.0, 18_000.0),
@@ -65,13 +76,19 @@ _TEXTURE_BANDS = (
     (19_000.0, 20_000.0),
     (20_000.0, 21_000.0),
 )
+# A frame is "loud" when its 2-8 kHz level is within this of the track's 90th percentile, and
+# gating is only measured over at least this many loud frames (about 2 s).
 _LOUD_WINDOW_DB = 20.0
 _MIN_LOUD_FRAMES = 40
 # 16-bit rounding noise averages -132 dB per bin at TEXTURE_FFT, TPDF dither
 # -128. A quiet band that sits here was empty, not merely quiet.
 _DIGITAL_FLOOR_DB = -126.5
+# A band is "off" within this of the quietest any band gets, and "on" at least this far above it.
 _OFF_MARGIN_DB = 6.0
 _ON_MARGIN_DB = 20.0
+# Share of loud frames a band must spend both on and off: enough with a wall, enough alone to
+# ask for a look, and enough alone to count as a lossy mark; the _ABRUPT values are the share
+# of on/off switches that must happen between adjacent frames, as an encoder's do.
 _GATED_WITH_WALL = 0.08
 _GATED_LOOK, _GATED_LOOK_ABRUPT = 0.12, 0.25
 _GATED_STRONG, _GATED_STRONG_ABRUPT = 0.25, 0.40
@@ -79,7 +96,7 @@ _MAX_TRACK_NOTES = 8
 
 
 class SpectrumResult(msgspec.Struct, frozen=True):
-    """One track's measurements, reduced to what the UI and the report show."""
+    """One track's measurements."""
 
     file: str
     image: str
@@ -130,7 +147,7 @@ class Gating(NamedTuple):
 _NO_GATING = Gating(0.0, "", 0.0, 0.0)
 
 
-def decode_mono(path: str) -> tuple[np.ndarray, int]:
+def decode_mono(path: str) -> tuple[NDArray[np.float32], int]:
     """Decode up to MAX_SAMPLES of the track, downmixed to mono float32."""
     container = av.open(path)
     try:
@@ -138,7 +155,7 @@ def decode_mono(path: str) -> tuple[np.ndarray, int]:
         sample_rate = stream.rate or 44100
         # Downmix: a cutoff that exists in one channel only still shows here.
         resampler = av.AudioResampler(format="fltp", layout="mono", rate=sample_rate)
-        chunks: list[np.ndarray] = []
+        chunks: list[NDArray[Any]] = []
         total = 0
         for frame in container.decode(stream):
             for resampled in resampler.resample(frame):
@@ -156,7 +173,7 @@ def decode_mono(path: str) -> tuple[np.ndarray, int]:
     return samples[:MAX_SAMPLES].astype(np.float32, copy=False), sample_rate
 
 
-def _frame_powers(samples: np.ndarray, size: int, hop: int, chunk: int = 256):
+def _frame_powers(samples: NDArray[np.floating], size: int, hop: int, chunk: int = 256):
     """Yield Hann-windowed power spectra in blocks; a full-scale sine reads ~0 dB."""
     window = np.hanning(size).astype(np.float32)
     scale = (size * 0.5) ** 2
@@ -167,11 +184,13 @@ def _frame_powers(samples: np.ndarray, size: int, hop: int, chunk: int = 256):
         yield np.abs(np.fft.rfft(samples[index] * window, axis=1)) ** 2 / scale
 
 
-def _db(power: np.ndarray) -> np.ndarray:
+def _db(power: NDArray[np.floating]) -> NDArray[np.floating]:
     return 10 * np.log10(np.maximum(power, 1e-30))
 
 
-def average_spectrum(samples: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray, int]:
+def average_spectrum(
+    samples: NDArray[np.floating], sample_rate: int
+) -> tuple[NDArray[np.floating], NDArray[np.floating], int]:
     """Welch-average the track into one magnitude curve: (frequencies, dB, windows)."""
     acc = np.zeros(FFT_SIZE // 2 + 1, dtype=np.float64)
     windows = 0
@@ -181,13 +200,13 @@ def average_spectrum(samples: np.ndarray, sample_rate: int) -> tuple[np.ndarray,
     return np.fft.rfftfreq(FFT_SIZE, 1 / sample_rate), _db(acc / max(windows, 1)), windows
 
 
-def _smooth(values: np.ndarray, bins: int = 21) -> np.ndarray:
+def _smooth(values: NDArray[np.floating], bins: int = 21) -> NDArray[np.floating]:
     # Edge padding: zero padding would drag the last bins towards 0 dB.
     padded = np.pad(values, bins // 2, mode="edge")
     return np.convolve(padded, np.ones(bins) / bins, mode="valid")
 
 
-def measure_wall(freqs: np.ndarray, db: np.ndarray) -> Wall:
+def measure_wall(freqs: NDArray[np.floating], db: NDArray[np.floating]) -> Wall:
     """Where the energy stops, and whether it stops at a wall or slides away.
 
     Everything is measured against the band under Nyquist, never the peak: a
@@ -216,7 +235,7 @@ def measure_wall(freqs: np.ndarray, db: np.ndarray) -> Wall:
         return Wall(reach, 0.0, 0.0, 0.0, 0.0, top)
     level_under = float(np.median(curve[under]))
     depth = level_under - top
-    if depth < 15:
+    if depth < _WALL_MEASURE_DEPTH_DB:
         return Wall(reach, 0.0, 0.0, depth, 0.0, top)
     knee = float(freqs[np.nonzero(curve >= level_under - 6)[0][-1]])
     floored = np.nonzero((freqs > knee) & (curve <= top + 3))[0]
@@ -225,7 +244,7 @@ def measure_wall(freqs: np.ndarray, db: np.ndarray) -> Wall:
     return Wall(reach, knee, floor_hz, depth, depth / (width / 1000), top)
 
 
-def measure_gating(samples: np.ndarray, sample_rate: int) -> Gating:
+def measure_gating(samples: NDArray[np.floating], sample_rate: int) -> Gating:
     """How often a high band sits at its floor while the music is loud.
 
     The floor is the quietest the bands ever get; whether that quiet is digital
@@ -238,8 +257,8 @@ def measure_gating(samples: np.ndarray, sample_rate: int) -> Gating:
     if not bands or not mid_mask.any():
         return _NO_GATING
     masks = [(freqs >= lo) & (freqs < hi) for lo, hi in bands]
-    mids: list[np.ndarray] = []
-    levels: list[list[np.ndarray]] = [[] for _ in bands]
+    mids: list[NDArray[np.floating]] = []
+    levels: list[list[NDArray[np.floating]]] = [[] for _ in bands]
     for power in _frame_powers(samples, TEXTURE_FFT, TEXTURE_HOP):
         mids.append(power[:, mid_mask].mean(axis=1))
         for i, mask in enumerate(masks):
@@ -262,13 +281,13 @@ def measure_gating(samples: np.ndarray, sample_rate: int) -> Gating:
         share = float(min(off.mean(), on.mean()))
         if share <= best.share:
             continue
-        label = f"{lo / 1000:g}–{hi / 1000:g} kHz"
+        label = f"{lo / 1000:g}-{hi / 1000:g} kHz"
         best = Gating(share, label, _abruptness(on, off), float(np.median(band[off])))
     return best
 
 
-def _abruptness(on: np.ndarray, off: np.ndarray) -> float:
-    """Share of on/off switches with no in-between frame — an encoder gates, a decay slides."""
+def _abruptness(on: NDArray[np.bool_], off: NDArray[np.bool_]) -> float:
+    """Share of on/off switches with no in-between frame: an encoder gates, a decay slides."""
     state = np.full(len(on), -1)
     state[on] = 1
     state[off] = 0
@@ -294,7 +313,12 @@ def encoder_hint(floor_hz: float) -> str:
 
 
 def render_plot(
-    freqs: np.ndarray, db: np.ndarray, sample_rate: int, out_path: str, title: str, wall: Wall | None = None
+    freqs: NDArray[np.floating],
+    db: NDArray[np.floating],
+    sample_rate: int,
+    out_path: str,
+    title: str,
+    wall: Wall | None = None,
 ) -> None:
     """Draw the curve with a labelled kHz/dB grid, and mark the wall the notes talk about."""
     if sample_rate <= 0:
@@ -333,31 +357,43 @@ def render_plot(
     img.save(out_path)
 
 
-def _analyse_one(album_path: str, filename: str, out_dir: str, index: int) -> SpectrumResult:
+def _reason(e: Exception, path: str, name: str) -> str:
+    """The error's text, naming path as name: the reports name no folder above the album."""
+    return (str(e) or type(e).__name__).replace(path, name)
+
+
+def _analyse_one(album_path: str, filename: str, out_path: str | None) -> SpectrumResult:
+    """Measure a file, and draw its averaged spectrum to out_path unless it is None."""
+    path = os.path.join(album_path, filename)
     try:
-        samples, sample_rate = decode_mono(os.path.join(album_path, filename))
+        samples, sample_rate = decode_mono(path)
         freqs, db, windows = average_spectrum(samples, sample_rate)
     except Exception as e:
-        # One unreadable file must not cost the spectrograms that did generate.
-        return SpectrumResult(file=filename, image="", sample_rate=0, windows=0, error=str(e))
+        # One unreadable file must not cost the measurements of the others.
+        return SpectrumResult(file=filename, image="", sample_rate=0, windows=0, error=_reason(e, path, filename))
     if not windows:
         return SpectrumResult(
             file=filename, image="", sample_rate=sample_rate, windows=0, error="too little audio to average a spectrum"
         )
     wall = measure_wall(freqs, db)
     gating = measure_gating(samples, sample_rate)
-    image = f"{index + 1:02d} Frequency.png"
-    out_path = os.path.join(out_dir, image)
-    try:
-        render_plot(freqs, db, sample_rate, out_path, filename, wall)
-    except Exception as e:
-        # A half-written PNG owned by no result would still be listed and posted.
-        with contextlib.suppress(OSError):
-            os.remove(out_path)
-        return SpectrumResult(file=filename, image="", sample_rate=sample_rate, windows=windows, error=str(e))
+    if out_path is not None:
+        try:
+            render_plot(freqs, db, sample_rate, out_path, filename, wall)
+        except Exception as e:
+            # A half-written PNG would still show in the spectrals viewer.
+            with contextlib.suppress(OSError):
+                os.remove(out_path)
+            return SpectrumResult(
+                file=filename,
+                image="",
+                sample_rate=sample_rate,
+                windows=windows,
+                error=_reason(e, out_path, os.path.basename(out_path)),
+            )
     return SpectrumResult(
         file=filename,
-        image=image,
+        image=os.path.basename(out_path) if out_path is not None else "",
         sample_rate=sample_rate,
         windows=windows,
         reach_hz=wall.reach_hz,
@@ -375,7 +411,7 @@ def _analyse_one(album_path: str, filename: str, out_dir: str, index: int) -> Sp
 
 
 def _finite(value: float) -> float:
-    # NaN serialises to a literal the browser's JSON.parse rejects.
+    # A corrupt decode gives NaN, which no threshold compares true against and no note should print.
     return value if math.isfinite(value) else 0.0
 
 
@@ -390,7 +426,7 @@ def has_lossy_wall(result: SpectrumResult) -> bool:
 
 
 def classify(result: SpectrumResult) -> str:
-    """One of silent, clean, look, lossy — from the two marks, never from the cutoff alone."""
+    """One of silent, clean, look, lossy: from the two marks, never from the cutoff alone."""
     if result.error or result.sample_rate <= 0 or not result.reach_hz:
         return "silent"
     wall = has_lossy_wall(result)
@@ -405,7 +441,7 @@ def classify(result: SpectrumResult) -> str:
 
 
 def describe(result: SpectrumResult) -> str:
-    """One sentence of measurements for a track, in the words the notes and the report share."""
+    """One sentence of measurements for a track."""
     if result.error:
         return f"{result.file}: could not be analysed ({result.error})"
     verdict = classify(result)
@@ -424,11 +460,11 @@ def describe(result: SpectrumResult) -> str:
         if has_lossy_wall(result):
             return (
                 f"{result.file}: brick-wall at {khz}{hires} ({result.drop_db:.0f} dB down over "
-                f"{result.floor_hz - result.knee_hz:.0f} Hz{where}) and {gate} — both marks of a lossy encoder."
+                f"{result.floor_hz - result.knee_hz:.0f} Hz{where}) and {gate}: both marks of a lossy encoder."
             )
         return (
-            f"{result.file}: no lowpass in the encoder range, but {gate}, switching abruptly — "
-            f"a lossy encoder running short of bits does this."
+            f"{result.file}: no lowpass in the encoder range, but {gate}, switching abruptly. "
+            f"A lossy encoder running short of bits does this."
         )
     if verdict == "look":
         if has_lossy_wall(result):
@@ -456,14 +492,24 @@ def describe(result: SpectrumResult) -> str:
 
 
 def summarize(results: list[SpectrumResult]) -> tuple[str, list[str]]:
-    """The folder's level and the lines that speak for it as a whole, per-track lines aside."""
+    """The folder's level and the lines that speak for it as a whole, per-track lines aside.
+
+    The level is "suspect" (a track carries a lossy encoder's marks), "look" (one mark, not both), "ok", or
+    "none" when nothing could be measured.
+    """
     analysed = [r for r in results if not r.error and r.sample_rate > 0]
+    failed = [r for r in results if r not in analysed]
+    unread = (
+        [f"{len(failed)} of {len(results)} files could not be analysed, e.g. {describe(failed[0])}"]
+        if failed and analysed
+        else []
+    )
     if not analysed:
-        return "ok", ["No file could be analysed."] if results else []
+        return "none", [f"No file could be analysed, e.g. {describe(failed[0])}"] if failed else []
     verdicts = {r.file: classify(r) for r in analysed}
     measured = [r for r in analysed if verdicts[r.file] != "silent"]
     if not measured:
-        return "ok", ["No track carried enough signal to measure."]
+        return "none", ["No track carried enough signal to measure.", *unread]
     lossy = [r for r in measured if verdicts[r.file] == "lossy"]
     look = [r for r in measured if verdicts[r.file] == "look"]
     clean = [r for r in measured if verdicts[r.file] == "clean"]
@@ -471,7 +517,8 @@ def summarize(results: list[SpectrumResult]) -> tuple[str, list[str]]:
         if len(lossy) == len(measured):
             return "suspect", [
                 "Every track carries the marks of a lossy encoder. Read the spectrals with that in mind: if it "
-                "holds, this is a transcode or a lossy master, and the trackers want an approval before upload."
+                "holds, this is a transcode or a lossy master.",
+                *unread,
             ]
         carry = "carries" if len(lossy) == 1 else "carry"
         rest = (
@@ -479,40 +526,52 @@ def summarize(results: list[SpectrumResult]) -> tuple[str, list[str]]:
             if clean and not look
             else "."
         )
-        return "suspect", [f"{len(lossy)} of {len(measured)} tracks {carry} the marks of a lossy encoder{rest}"]
+        return "suspect", [
+            f"{len(lossy)} of {len(measured)} tracks {carry} the marks of a lossy encoder{rest}",
+            *unread,
+        ]
     if look:
         return "look", [
             f"{len(look)} of {len(measured)} tracks show one of the two marks, not both. "
-            "Read the spectrogram and the zoom before deciding."
+            "Read the spectrogram and the zoom before deciding.",
+            *unread,
         ]
     reaches = [r.reach_hz for r in measured]
     low, high = min(reaches) / 1000, max(reaches) / 1000
-    span = f"{low:.1f} kHz" if high - low < 0.5 else f"{low:.1f}–{high:.1f} kHz"
+    span = f"{low:.1f} kHz" if high - low < 0.5 else f"{low:.1f}-{high:.1f} kHz"
     notes = [f"Nothing here has the shape of a lossy encoder. Energy reaches {span} across the tracks."]
     if high - low >= 1.5:
         notes.append(
             "Cutoffs that differ between tracks are normal for compilations and for masters made in "
             "different sessions; they say nothing about where the files came from."
         )
-    return "ok", notes
+    return "ok", [*notes, *unread]
 
 
-def assess(results: list[SpectrumResult]) -> dict:
-    """What the numbers show per flagged track, then what they add up to for the folder."""
+def assess(results: list[SpectrumResult]) -> tuple[str, list[str]]:
+    """What the numbers show per flagged track, then what they add up to for the folder: (level, notes).
+
+    See summarize for the levels.
+    """
     if not results:
-        return {"level": "ok", "notes": []}
+        return "none", []
     flagged = [r for r in results if classify(r) in ("lossy", "look")]
     notes = [describe(r) for r in flagged[:_MAX_TRACK_NOTES]]
     if len(flagged) > _MAX_TRACK_NOTES:
-        notes.append(f"… and {len(flagged) - _MAX_TRACK_NOTES} more tracks like these.")
+        notes.append(f"... and {len(flagged) - _MAX_TRACK_NOTES} more tracks like these.")
     level, summary = summarize(results)
-    return {"level": level, "notes": notes + summary}
+    return level, notes + summary
 
 
-async def generate_frequency_plots(album_path: str, files: list[str], out_dir: str) -> list[SpectrumResult]:
-    """One averaged-spectrum plot per file, written into an existing folder."""
-    results: list[SpectrumResult] = []
-    for index, filename in enumerate(files):
-        results.append(await asyncio.to_thread(_analyse_one, album_path, filename, out_dir, index))
-        report_progress(index + 1, len(files), f"Frequency analysis ({filename})")
-    return results
+async def generate_frequency_plots(
+    album_path: str, files: list[str], plot_paths: Mapping[str, str]
+) -> list[SpectrumResult]:
+    """Measure each file, and write the averaged-spectrum plot of each file in plot_paths to its path there.
+
+    Each file is decoded once, up to MAX_SAMPLES. A file that cannot be measured gets a result with its error.
+    """
+    return await process_files(
+        files,
+        lambda filename, _index: anyio.to_thread.run_sync(_analyse_one, album_path, filename, plot_paths.get(filename)),
+        "Frequency analysis",
+    )

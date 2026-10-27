@@ -83,7 +83,7 @@ async def check_spectrals(
     if not spectral_ids:
         all_spectral_ids = await generate_spectrals_all(path, spectrals_path, audio_info)
         if lossy_master is None and check_lma:
-            measured = await print_frequency_guidance(path, spectrals_path)
+            measured = await print_frequency_guidance(path, spectrals_path, all_spectral_ids)
         while True:
             await interaction.show_spectrals(spectrals_path, all_spectral_ids)
             if lossy_master is None and check_lma:
@@ -105,7 +105,7 @@ async def check_spectrals(
     else:
         spectral_ids = await generate_spectrals_ids(path, spectral_ids, spectrals_path, audio_info)
         if lossy_master is None and check_lma:
-            measured = await print_frequency_guidance(path, spectrals_path)
+            measured = await print_frequency_guidance(path, spectrals_path, spectral_ids)
             lossy_master = await prompt_lossy_master(
                 force_prompt_lossy_master or measured == "suspect",
                 suggested="y" if measured == "suspect" else "n",
@@ -115,21 +115,35 @@ async def check_spectrals(
     return lossy_master, spectral_ids
 
 
-async def print_frequency_guidance(path: str, spectrals_path: str) -> str:
+FREQUENCY_HEADINGS = {
+    "suspect": ("the marks of a lossy encoder", "red"),
+    "look": ("one mark of a lossy encoder, not both", "yellow"),
+    "ok": ("no mark of a lossy encoder", "green"),
+    "none": ("nothing could be measured", "yellow"),
+}
+
+
+def frequency_plot_paths(spectral_ids: dict[int, str], spectrals_path: str) -> dict[str, str]:
+    """Each track with spectrals gets its averaged-spectrum plot in the spectrals folder, under its spectral ID."""
+    return {name: os.path.join(spectrals_path, f"{sid:02d} Frequency.png") for sid, name in spectral_ids.items()}
+
+
+async def print_frequency_guidance(path: str, spectrals_path: str, spectral_ids: dict[int, str]) -> str:
     """Print the frequency analysis as guidance for the lossy-master question; returns the folder level."""
     try:
-        spectra = await generate_frequency_plots(path, get_audio_files(path, True), spectrals_path)
-        verdict = assess(spectra)
+        plot_paths = frequency_plot_paths(spectral_ids, spectrals_path)
+        spectra = await generate_frequency_plots(path, get_audio_files(path, True), plot_paths)
+        level, notes = assess(spectra)
     except Exception as e:
         # Advisory output must never cost an upload.
         click.secho(f"\nFrequency analysis skipped: {e}", fg="yellow")
         return "ok"
-    colour = {"suspect": "red", "look": "yellow"}.get(verdict["level"], "green")
-    click.secho(f"\nFrequency analysis: {verdict['level']}", fg=colour, bold=True)
-    for note in verdict["notes"]:
+    heading, colour = FREQUENCY_HEADINGS[level]
+    click.secho(f"\nFrequency analysis: {heading}", fg=colour, bold=True)
+    for note in notes:
         click.secho(f"  {note}")
     click.secho("  A measurement, not a verdict: read the spectrals before answering.", fg="cyan")
-    return verdict["level"]
+    return level
 
 
 async def handle_spectrals_upload_and_deletion(

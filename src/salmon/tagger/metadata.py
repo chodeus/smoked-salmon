@@ -9,7 +9,7 @@ import asyncclick as click
 import msgspec
 
 from salmon import cfg, interaction
-from salmon.checks.source import is_store_url, tag_urls
+from salmon.checks.source import is_store_url
 from salmon.common import handle_scrape_errors, make_searchstrs, re_strip
 from salmon.common.strings import artist_keys, comparable
 from salmon.search import SEARCHSOURCES, run_metasearch
@@ -17,6 +17,7 @@ from salmon.sources.deezer import DeezerBase, album_upc
 from salmon.tagger.combine import combine_metadatas, get_source_from_link
 from salmon.tagger.sources import METASOURCES
 from salmon.tagger.sources.base import generate_artists, standardize_genres
+from salmon.tagger.tag_urls import tag_urls
 
 _NOT_ALBUM_PAGE = re.compile(r"/(?:track|playlist)/", re.IGNORECASE)
 _TYPE_SUFFIX = re.compile(r"\s*(?:-\s*(?:EP|Single)|[(\[](?:EP|Single)[)\]])\s*$", re.IGNORECASE)

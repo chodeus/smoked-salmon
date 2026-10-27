@@ -17,6 +17,7 @@ import threading
 import time
 import unicodedata
 from collections.abc import Callable, Coroutine
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import asyncclick as click
@@ -166,13 +167,14 @@ def spectral_stubs(monkeypatch, tmp_path, specs_requests):
         (specs_dir / "01-intro.png").write_bytes(PNG1)
         (specs_dir / "02-mittelteil.png").write_bytes(PNG2)
         (specs_dir / "notes.txt").write_text("not an image")
-        return {1: "01-intro.png", 2: "02-mittelteil.png"}
+        return {1: "01. Intro.flac", 2: "02. Mittelteil.flac"}
 
-    async def fake_generate_frequency_plots(path, files, out_dir):
-        (specs_dir / "01 Frequency.png").write_bytes(PNGF)
+    async def fake_generate_frequency_plots(path, files, plot_paths):
+        plot = plot_paths["01. Intro.flac"]
+        Path(plot).write_bytes(PNGF)
         return [
             SpectrumResult(
-                file="01. Intro.flac", image="01 Frequency.png", sample_rate=44100, cutoff_hz=21800.0, windows=9
+                file="01. Intro.flac", image=os.path.basename(plot), sample_rate=44100, cutoff_hz=21800.0, windows=9
             )
         ]
 
@@ -209,7 +211,7 @@ def integrity_stub(monkeypatch):
     async def fake_check_integrity(path):
         return IntegrityResult(True, "\x1b[32mok\x1b[0m")
 
-    monkeypatch.setattr("salmon.checks.album.check_integrity", fake_check_integrity)
+    monkeypatch.setattr("salmon.checks.album_web.check_integrity", fake_check_integrity)
 
 
 def run_generate_to_done(client: TestClient, album_dir) -> str:
@@ -1196,7 +1198,7 @@ def test_job_factory_error_is_surfaced_in_job_dict(client, album_dir, monkeypatc
     async def broken_check_integrity(path):
         raise ValueError("integrity exploded")
 
-    monkeypatch.setattr("salmon.checks.album.check_integrity", broken_check_integrity)
+    monkeypatch.setattr("salmon.checks.album_web.check_integrity", broken_check_integrity)
     resp = client.post("/api/checks/run", json={"path": str(album_dir), "checks": ["integrity"]})
     assert resp.status_code == 200
     data = join_job(client, resp.json()["id"])
@@ -1266,10 +1268,11 @@ def test_spectrals_generate_happy_path(client, album_dir, spectral_stubs):
     assert data["result"]["album_path"] == str(album_dir)
     assert data["result"]["spectrals_path"] == str(spectral_stubs)
     # keys are stringified for JSON, non-png files are excluded, list sorted
-    assert data["result"]["spectral_ids"] == {"1": "01-intro.png", "2": "02-mittelteil.png"}
+    assert data["result"]["spectral_ids"] == {"1": "01. Intro.flac", "2": "02. Mittelteil.flac"}
     # Frequency plots are shown but never posted, so they stay out of "files".
     assert data["result"]["files"] == ["01-intro.png", "02-mittelteil.png"]
     assert data["result"]["frequency"][0]["image"] == "01 Frequency.png"
+    assert data["result"]["assessment"] == {"level": "none", "notes": ["No track carried enough signal to measure."]}
 
 
 def test_only_the_spectrograms_are_sent_to_the_image_host(client, album_dir, spectral_stubs, monkeypatch):

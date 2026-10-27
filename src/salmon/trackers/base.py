@@ -1164,7 +1164,8 @@ class BaseGazelleApi:
         resp = await self._request("GET", url, params=params, timeout_secs=5, prefer_api_key=True)
 
         try:
-            resp_json = msgspec.json.decode(resp.text)
+            # An answer that is not an object fails as one that is not JSON, not on .get below.
+            resp_json = msgspec.json.decode(resp.text, type=dict)
         except (msgspec.DecodeError, ValueError):
             resp_json = {"status": "error", "error": resp.text}
 

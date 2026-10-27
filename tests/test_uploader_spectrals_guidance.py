@@ -1,5 +1,7 @@
 """The lossy-master question: the measurements are printed before it, and it never answers itself."""
 
+import os
+
 import pytest
 
 from salmon import cfg, interaction
@@ -41,8 +43,9 @@ def flow(monkeypatch, tmp_path):
         events.append("spectrograms-all")
         return {1: "01.flac"}
 
-    async def frequency(path, files, out_dir):
+    async def frequency(path, files, plot_paths):
         events.append("measure")
+        state["plot_paths"] = plot_paths
         return state["spectra"]
 
     async def view(spectrals_path, ids):
@@ -60,7 +63,8 @@ def flow(monkeypatch, tmp_path):
 
     async def generate_ids(path, track_ids, spectrals_path, audio_info):
         events.append("spectrograms-ids")
-        return {i: f"{i:02d}.flac" for i in track_ids}
+        # As _generate_spectrals does: the chosen tracks are numbered from 1.
+        return {index + 1: f"{i:02d}.flac" for index, i in enumerate(track_ids)}
 
     monkeypatch.setattr(sp, "create_specs_folder", lambda path, spectrals_path=None: str(tmp_path))
     monkeypatch.setattr(sp, "generate_spectrals_all", generate_all)
@@ -80,7 +84,7 @@ async def test_the_measurements_are_printed_before_the_question(flow):
     assert events[:2] == ["spectrograms-all", "measure"]
     assert events.index("measure") < events.index("view") < events.index("prompt")
     joined = "\n".join(printed)
-    assert "Frequency analysis: suspect" in joined
+    assert "Frequency analysis: the marks of a lossy encoder" in joined
     assert "01.flac: brick-wall at 16.6 kHz" in joined
     assert "A measurement, not a verdict" in joined
 
@@ -91,6 +95,33 @@ async def test_preselected_ids_are_generated_before_the_guidance_and_the_questio
     assert events == ["spectrograms-ids", "measure", "prompt"]
     assert lossy is False
     assert ids == {1: "01.flac"}
+
+
+async def test_a_chosen_tracks_plot_takes_its_spectrals_number(flow, monkeypatch, tmp_path):
+    _events, _printed, state = flow
+    monkeypatch.setattr(sp, "get_audio_files", lambda path, *_a: ["01.flac", "02.flac"])
+    await sp.check_spectrals("/album", {"01.flac": {}, "02.flac": {}}, None, (2,))
+    assert state["plot_paths"] == {"02.flac": str(tmp_path / "01 Frequency.png")}
+
+
+async def test_frequency_plots_are_numbered_as_the_real_spectrals_are(monkeypatch, tmp_path):
+    album = tmp_path / "album"
+    album.mkdir()
+    for name in ("01.flac", "02.flac"):
+        (album / name).write_bytes(b"")
+    written: list[str] = []
+
+    async def sox(command, **_kw):
+        written.extend(os.path.basename(arg) for arg in command if arg.endswith(".png"))
+
+    monkeypatch.setattr(sp.anyio, "run_process", sox)
+    monkeypatch.setattr(cfg.upload.compression, "compress_spectrals", False)
+    info = {"01.flac": {"duration": 60}, "02.flac": {"duration": 60}}
+    ids = await sp.generate_spectrals_ids(str(album), (2,), str(tmp_path), info)
+    plots = sp.frequency_plot_paths(ids, str(tmp_path))
+    assert list(plots) == ["02.flac"]
+    number = os.path.basename(plots["02.flac"]).split()[0]
+    assert f"{number} Full.png" in written
 
 
 async def test_the_answer_is_the_persons_not_the_measurements(flow):

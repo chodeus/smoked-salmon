@@ -20,7 +20,7 @@ from salmon.trackers.base import TagRules
 # A FLAC storing verbatim, uncompressed frames still leaves a small margin below the raw PCM
 # rate for the frame headers' own overhead.
 UNCOMPRESSED_RATIO = 0.99
-STANDARD_SAMPLE_RATES = {44100, 48000, 88200, 96000, 176400, 192000}
+STANDARD_SAMPLE_RATES = frozenset({44100, 48000, 88200, 96000, 176400, 192000})
 
 
 def _has_id3v1_block(filepath: str) -> bool:
