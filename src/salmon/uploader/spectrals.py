@@ -35,7 +35,6 @@ from salmon.errors import (
 )
 from salmon.images import upload_spectrals as upload_spectral_imgs
 from salmon.uploader import record
-from salmon.uploader.frequency import assess, generate_frequency_plots
 from salmon.web import create_app_async, spectrals
 
 if TYPE_CHECKING:
@@ -131,9 +130,12 @@ def frequency_plot_paths(spectral_ids: dict[int, str], spectrals_path: str) -> d
 async def print_frequency_guidance(path: str, spectrals_path: str, spectral_ids: dict[int, str]) -> str:
     """Print the frequency analysis as guidance for the lossy-master question; returns the folder level."""
     try:
+        # numpy, PyAV and Pillow: loaded when the analysis runs, not when salmon starts.
+        from salmon.uploader import frequency
+
         plot_paths = frequency_plot_paths(spectral_ids, spectrals_path)
-        spectra = await generate_frequency_plots(path, get_audio_files(path, True), plot_paths)
-        level, notes = assess(spectra)
+        spectra = await frequency.generate_frequency_plots(path, get_audio_files(path, True), plot_paths)
+        level, notes = frequency.assess(spectra)
     except Exception as e:
         # Advisory output must never cost an upload.
         click.secho(f"\nFrequency analysis skipped: {e}", fg="yellow")

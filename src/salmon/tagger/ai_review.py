@@ -5,31 +5,23 @@ import re
 import time
 from copy import deepcopy
 from functools import lru_cache
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
 import asyncclick as click
 import msgspec
-import openai
 import requests
 from bs4 import BeautifulSoup
-from openai.types.responses import (
-    Response,
-    ResponseCompletedEvent,
-    ResponseCreatedEvent,
-    ResponseFailedEvent,
-    ResponseFunctionWebSearch,
-    ResponseIncompleteEvent,
-    ResponseInProgressEvent,
-    ResponseOutputItemDoneEvent,
-    ResponseQueuedEvent,
-    ResponseReasoningSummaryTextDoneEvent,
-)
 
 from salmon import cfg, interaction
 from salmon.constants import ARTIST_IMPORTANCES
 from salmon.errors import InvalidMetadataError
 from salmon.tagger.sources.base import standardize_genres
+
+# openai takes about 0.3 s to import, so it is imported where a review runs, not when salmon starts.
+if TYPE_CHECKING:
+    import openai
+    from openai.types.responses import Response, ResponseFunctionWebSearch
 
 POLL_INTERVAL_SECONDS = 5
 STATUS_HEARTBEAT_SECONDS = 15
@@ -380,10 +372,10 @@ def _emit_ai_status_heartbeat(
 
 
 async def _poll_response(
-    client: openai.AsyncOpenAI,
-    response: Response,
+    client: "openai.AsyncOpenAI",
+    response: "Response",
     timeout_seconds: int,
-) -> Response:
+) -> "Response":
     response_id = response.id
     if not response_id or response.status in (None, "completed"):
         return response
@@ -421,7 +413,7 @@ async def _poll_response(
     )
 
 
-def _extract_output_text(response: Response) -> str:
+def _extract_output_text(response: "Response") -> str:
     texts: list[str] = []
     for item in response.output:
         if item.type != "message":
@@ -432,7 +424,7 @@ def _extract_output_text(response: Response) -> str:
     return "\n".join(texts).strip()
 
 
-def _extract_reasoning_summary(response: Response) -> str | None:
+def _extract_reasoning_summary(response: "Response") -> str | None:
     summaries: list[str] = []
     for item in response.output:
         if item.type != "reasoning":
@@ -446,7 +438,7 @@ def _extract_reasoning_summary(response: Response) -> str | None:
     return summaries[-1]
 
 
-def _describe_web_search_action(item: ResponseFunctionWebSearch) -> str:
+def _describe_web_search_action(item: "ResponseFunctionWebSearch") -> str:
     action = item.action
     if action.type == "search":
         # openai 3.x moved the singular query to a queries list and made both optional.
@@ -496,7 +488,7 @@ def _choose_ai_anchor_url(metadata: dict[str, Any], source_url: str | None) -> s
     return None
 
 
-def _extract_opened_page_urls(response: Response) -> set[str]:
+def _extract_opened_page_urls(response: "Response") -> set[str]:
     urls: set[str] = set()
     for item in response.output:
         if item.type != "web_search_call" or item.status != "completed":
@@ -710,7 +702,7 @@ def _apply_ai_review_guardrails(
 
 
 def _extract_progress_updates(
-    response: Response,
+    response: "Response",
     seen_progress_events: set[tuple[str, str, str]],
     last_reasoning_summary: str | None,
 ) -> tuple[list[str], str | None]:
@@ -744,7 +736,7 @@ def _extract_progress_updates(
 
 
 def _emit_progress_from_response(
-    response: Response, seen_progress_events: set[tuple[str, str, str]], last_reasoning_summary: str | None
+    response: "Response", seen_progress_events: set[tuple[str, str, str]], last_reasoning_summary: str | None
 ) -> str | None:
     progress_lines, last_reasoning_summary = _extract_progress_updates(
         response, seen_progress_events, last_reasoning_summary
@@ -754,10 +746,22 @@ def _emit_progress_from_response(
 
 
 async def _stream_response(
-    client: openai.AsyncOpenAI,
+    client: "openai.AsyncOpenAI",
     payload: dict[str, Any],
     timeout_seconds: int,
-) -> Response:
+) -> "Response":
+    from openai.types.responses import (
+        ResponseCompletedEvent,
+        ResponseCreatedEvent,
+        ResponseFailedEvent,
+        ResponseFunctionWebSearch,
+        ResponseIncompleteEvent,
+        ResponseInProgressEvent,
+        ResponseOutputItemDoneEvent,
+        ResponseQueuedEvent,
+        ResponseReasoningSummaryTextDoneEvent,
+    )
+
     started_at = time.monotonic()
     seen_progress_events: set[tuple[str, str, str]] = set()
     last_reasoning_summary: str | None = None
@@ -820,7 +824,7 @@ def _should_use_background() -> bool:
 
 
 async def _request_ai_review_chat(
-    client: openai.AsyncOpenAI,
+    client: "openai.AsyncOpenAI",
     metadata: dict[str, Any],
     tag_baseline: dict[str, Any],
     source_url: str | None,
@@ -872,6 +876,8 @@ async def _request_ai_review(
     user_instruction: str | None,
     previous_response_id: str | None,
 ) -> tuple[dict[str, Any], str | None]:
+    import openai
+
     ai_cfg = cfg.upload.ai_review
     use_background = _should_use_background()
     client = openai.AsyncOpenAI(api_key=ai_cfg.api_key, base_url=ai_cfg.base_url)
