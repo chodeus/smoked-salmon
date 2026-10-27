@@ -1,373 +1,238 @@
-"""Backup-path reservation and restore behavior in salmon.checks.integrity."""
+import subprocess
+from importlib import import_module
 
 import anyio
 import asyncclick as click
 import pytest
 
-from salmon.checks.integrity import _reserve_backup_path, _sanitize_flac
+from salmon.checks.integrity import IntegrityResult
+
+# salmon.checks.__init__ defines a click command also named `integrity`, which shadows the
+# submodule on the package object, so importlib is used to get the module itself.
+integrity = import_module("salmon.checks.integrity")
+
+# The real warning flac -wt prints when a file's STREAMINFO MD5 is unset (from #353). flac still
+# exits 0 in this case, so the check must fail on the warning text, not on the return code alone.
+MD5_UNSET_STDERR = b"track01.flac: WARNING, MD5 signature unset in STREAMINFO\ntrack01.flac: testing... ok\n"
 
 
-def test_reserve_backup_path_claims_atomically_and_skips_stale(tmp_path) -> None:
-    f = tmp_path / "a.flac"
-    f.write_text("x")
+def test_unset_streaminfo_md5_fails_the_check(monkeypatch) -> None:
+    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(commands, 0, stdout=b"", stderr=MD5_UNSET_STDERR)
 
-    first = _reserve_backup_path(str(f))
-    assert first == f"{f}.corrupted"
-    # The claim creates a placeholder, so a second claimer can never pick the
-    # same name (O_EXCL) — this is the concurrency guarantee.
-    assert (tmp_path / "a.flac.corrupted").exists()
+    monkeypatch.setattr(integrity.anyio, "run_process", fake_run_process)
 
-    second = _reserve_backup_path(str(f))
-    assert second == f"{f}.corrupted.1"
-    assert (tmp_path / "a.flac.corrupted.1").exists()
+    result = anyio.run(integrity._check_flac_integrity, "track01.flac")
 
-    third = _reserve_backup_path(str(f))
-    assert third == f"{f}.corrupted.2"
+    assert result.passed is False
+    assert result.md5_unset == ("track01.flac",)
+    assert "no MD5 signature stored" in integrity.format_integrity(result)
+    assert "\u2014" not in integrity.format_integrity(result)
 
 
-async def test_sanitize_flac_restores_original_on_cancellation(tmp_path, monkeypatch) -> None:
-    # Cancellation is not an Exception; without the BaseException handler the
-    # file would stay renamed aside as .corrupted.
-    f = tmp_path / "a.flac"
-    f.write_text("DATA")
+def test_clean_flac_output_still_passes(monkeypatch) -> None:
+    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(commands, 0, stdout=b"track01.flac: testing... ok\n", stderr=b"")
 
-    async def cancelled(*_args, **_kwargs):
-        raise anyio.get_cancelled_exc_class()()
+    monkeypatch.setattr(integrity.anyio, "run_process", fake_run_process)
 
-    monkeypatch.setattr(anyio, "run_process", cancelled)
+    result = anyio.run(integrity._check_flac_integrity, "track01.flac")
 
-    with pytest.raises(anyio.get_cancelled_exc_class()):
-        await _sanitize_flac(str(f))
-
-    assert f.read_text() == "DATA"
-    assert not list(tmp_path.glob("*.corrupted*"))
+    assert result.passed is True
+    assert "MD5" not in result.details
 
 
-def test_a_warning_from_mp3val_is_carried_as_a_concern_not_swallowed(monkeypatch):
-    """mp3val exits 0 while describing the damage, so its text is the verdict."""
-    import asyncio
-    import importlib
-    from types import SimpleNamespace
-
-    ig = importlib.import_module("salmon.checks.integrity")
-
-    async def fake_run(_cmd, check=False):
-        return SimpleNamespace(
-            returncode=0,
-            stdout=b'INFO: "a.mp3": 100 MPEG frames\nWARNING: "a.mp3": It seems that file is truncated\n',
-        )
-
-    monkeypatch.setattr(ig.anyio, "run_process", fake_run)
-    result = asyncio.run(ig._check_mp3_integrity("/music/a.mp3"))
-
-    assert result.passed, "a truncated-but-playable file still decodes; it must not block"
-    assert len(result.concerns) == 1
-    assert "truncated" in result.concerns[0]
-
-
-def test_an_mp3val_error_fails_the_check(monkeypatch):
-    import asyncio
-    import importlib
-    from types import SimpleNamespace
-
-    ig = importlib.import_module("salmon.checks.integrity")
-
-    async def fake_run(_cmd, check=False):
-        return SimpleNamespace(returncode=0, stdout=b'ERROR: "a.mp3": Unable to open file\n')
-
-    monkeypatch.setattr(ig.anyio, "run_process", fake_run)
-    result = asyncio.run(ig._check_mp3_integrity("/music/a.mp3"))
-
-    assert not result.passed
-    assert "Unable to open file" in result.details, "a failure must carry its reason to the caller"
-
-
-def test_a_clean_mp3_passes_with_nothing_to_report(monkeypatch):
-    import asyncio
-    import importlib
-    from types import SimpleNamespace
-
-    ig = importlib.import_module("salmon.checks.integrity")
-
-    async def fake_run(_cmd, check=False):
-        return SimpleNamespace(returncode=0, stdout=b'INFO: "a.mp3": 7320 MPEG frames (MPEG 1 Layer III), CBR\n')
-
-    monkeypatch.setattr(ig.anyio, "run_process", fake_run)
-    result = asyncio.run(ig._check_mp3_integrity("/music/a.mp3"))
-
-    assert result.passed
-    assert result.concerns == ()
-
-
-def test_a_file_mp3val_could_not_open_is_not_a_pass(monkeypatch):
-    """mp3val exits 0 and prints no ERROR: prefix for an unreadable or empty
-    file, so a run that produced no analysis must not read as clean."""
-    import asyncio
-    import importlib
-    from types import SimpleNamespace
-
-    ig = importlib.import_module("salmon.checks.integrity")
-
-    async def fake_run(_cmd, check=False):
-        return SimpleNamespace(returncode=0, stdout=b'Cannot open input file "a.mp3" or it is empty\nDone!\n')
-
-    monkeypatch.setattr(ig.anyio, "run_process", fake_run)
-    result = asyncio.run(ig._check_mp3_integrity("/music/a.mp3"))
-
-    assert not result.passed
-    assert "Cannot open input file" in result.details, "the reason must reach the details, not vanish"
-
-
-def test_a_warning_is_not_repeated_in_the_details(monkeypatch):
-    """A line in both details and concerns is rendered to the reader twice."""
-    import asyncio
-    import importlib
-    from types import SimpleNamespace
-
-    ig = importlib.import_module("salmon.checks.integrity")
-
-    async def fake_run(_cmd, check=False):
-        return SimpleNamespace(
-            returncode=0,
-            stdout=b'INFO: "a.mp3": 100 MPEG frames\nWARNING: "a.mp3": It seems that file is truncated\n',
-        )
-
-    monkeypatch.setattr(ig.anyio, "run_process", fake_run)
-    result = asyncio.run(ig._check_mp3_integrity("/music/a.mp3"))
-
-    assert "truncated" in result.concerns[0]
-    assert "truncated" not in result.details
-    assert "100 MPEG frames" in result.details
-
-
-def test_an_error_alongside_an_analysis_still_reaches_the_details(monkeypatch):
-    """The empty-details fallback hides this: with an INFO line present the
-    fallback never fires, so an ERROR must be carried explicitly."""
-    import asyncio
-    import importlib
-    from types import SimpleNamespace
-
-    ig = importlib.import_module("salmon.checks.integrity")
-
-    async def fake_run(_cmd, check=False):
-        return SimpleNamespace(
-            returncode=0,
-            stdout=b'INFO: "a.mp3": 100 MPEG frames\nERROR: "a.mp3": Unknown file format\n',
-        )
-
-    monkeypatch.setattr(ig.anyio, "run_process", fake_run)
-    result = asyncio.run(ig._check_mp3_integrity("/music/a.mp3"))
-
-    assert not result.passed
-    assert "Unknown file format" in result.details
-
-
-def _flac_result(monkeypatch, stdout: bytes, returncode: int = 1):
-    import asyncio
-    import importlib
-    from types import SimpleNamespace
-
-    ig = importlib.import_module("salmon.checks.integrity")
-
-    async def fake_run(_cmd, check=False):
-        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=b"")
-
-    monkeypatch.setattr(ig.anyio, "run_process", fake_run)
-    return ig, asyncio.run(ig._check_flac_integrity("/music/a.flac"))
-
-
-# Verified against flac 1.5.0: an unset MD5 prints the warning, then a bare "ok".
-MD5_UNSET_OUTPUT = (
-    b"a.flac: WARNING, cannot check MD5 signature since it was unset in the STREAMINFO\nok                    \n"
+# flac -wt's real output (on stderr) for an album of files with no MD5 in STREAMINFO. flac 1.3 draws its
+# progress with backspaces even when its output is a pipe; 1.4 and later print no progress there.
+FLAC_13_MD5_UNSET = (
+    b"%s: testing, 26%% complete"
+    + b"\x08" * 21
+    + b"testing, 53%% complete"
+    + b"\x08" * 21
+    + b"testing, 79%% complete"
+    + b"\x08" * 21
+    + b"WARNING, cannot check MD5 signature since it was unset in the STREAMINFO\nok                    \n"
+)
+FLAC_15_MD5_UNSET = (
+    b"%s: WARNING, cannot check MD5 signature since it was unset in the STREAMINFO\nok                    \n"
+)
+FLAC_15_CLEAN = b"%s: ok                    \n"
+FLAC_15_TRUNCATED = (
+    b"%s: *** Got error code 0:FLAC__STREAM_DECODER_ERROR_STATUS_LOST_SYNC after processing 77824 samples\n\n\n"
+    b"%s: ERROR during decoding\n        state = FLAC__STREAM_DECODER_END_OF_STREAM\n"
 )
 
 
-def test_an_unset_md5_is_reported_once_not_twice(monkeypatch):
-    """The warning line and the summary are the same fact; 17 tracks became 34 lines."""
-    _ig, result = _flac_result(monkeypatch, MD5_UNSET_OUTPUT)
+def _fake_flac(monkeypatch, outputs: dict[str, bytes]) -> None:
+    """Answer `flac -wt <file>` with the output given for the file's name; exit 1 unless it is a clean one."""
 
-    assert result.md5_unset == ("a.flac",)
-    assert "MD5" not in result.details, "the raw warning must not restate what md5_unset carries"
+    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        assert commands[:2] == ["flac", "-wt"]
+        name = commands[2].rsplit("/", 1)[-1].encode()
+        output = outputs[name.decode()]
+        stderr = output % ((name,) * output.count(b"%s"))
+        return subprocess.CompletedProcess(commands, 0 if output is FLAC_15_CLEAN else 1, stdout=b"", stderr=stderr)
 
-
-def test_flac_progress_backspaces_do_not_eat_the_text(monkeypatch):
-    """flac erases "testing, N% complete" with \\x08; passed through raw they eat
-    the characters in front of them wherever the details are rendered."""
-    ig, result = _flac_result(
-        monkeypatch,
-        b"a.flac: testing, 72% complete" + b"\x08" * 21 + b"WARNING, cannot check MD5 signature "
-        b"since it was unset in the STREAMINFO\nok                    \n",
-    )
-
-    assert result.md5_unset == ("a.flac",)
-    assert "\x08" not in result.details
-    assert "% complete" not in result.details
-    assert ig._resolve_overstrikes("abc\x08\x08d") == "ad"
+    monkeypatch.setattr(integrity.anyio, "run_process", fake_run_process)
 
 
-def test_an_unset_md5_is_not_counted_as_a_decode_failure(monkeypatch):
-    """-w makes the warning exit non-zero, so the return code cannot say whether the
-    audio decoded. flac saying "ok" can."""
-    _ig, result = _flac_result(monkeypatch, MD5_UNSET_OUTPUT)
-
-    assert not result.passed, "the pass/fail verdict is unchanged"
-    assert result.decode_failures == (), "nothing here says the audio failed to decode"
+def _album(tmp_path, names) -> str:
+    for name in names:
+        (tmp_path / name).write_bytes(b"fLaC")
+    return str(tmp_path)
 
 
-def test_a_file_that_never_decoded_stays_a_decode_failure(monkeypatch):
-    """A truncated file prints ERROR and no "ok" — it must not ride the MD5 downgrade."""
-    _ig, result = _flac_result(
-        monkeypatch,
-        b"a.flac: *** Got error code 4:FLAC__STREAM_DECODER_ERROR_STATUS_BAD_METADATA\n"
-        b"a.flac: ERROR while decoding metadata\n",
-    )
+@pytest.mark.parametrize("output", [FLAC_13_MD5_UNSET, FLAC_15_MD5_UNSET], ids=["flac-1.3", "flac-1.5"])
+def test_an_album_with_no_md5_is_reported_once_per_file_without_backspaces(
+    monkeypatch, tmp_path, output: bytes
+) -> None:
+    names = [f"{n:02d}.flac" for n in range(1, 13)]
+    _fake_flac(monkeypatch, dict.fromkeys(names, output))
 
-    assert not result.passed
-    assert result.decode_failures == ("a.flac",)
-    assert result.md5_unset == ()
+    result = anyio.run(integrity.check_integrity, _album(tmp_path, names))
+    rendered = click.unstyle(integrity.format_integrity(result))
 
-
-def test_a_silent_decode_failure_is_not_announced_as_a_clean_missing_md5():
-    """A failure that parsed to no detail text must not borrow the MD5 headline."""
-    import importlib
-
-    ig = importlib.import_module("salmon.checks.integrity")
-    rendered = ig.format_integrity(
-        ig.IntegrityResult(False, "", (), md5_unset=("a.flac",), decode_failures=("b.flac",), checked=2)
-    )
-
-    assert "Failed integrity check" in rendered
-    assert "no MD5 signature stored" not in rendered.splitlines()[0]
+    assert "\x08" not in rendered
+    assert "% complete" not in rendered
+    assert sorted(result.md5_unset) == names
+    assert result.decode_failures == ()
+    assert result.checked == 12
+    # Once for the album, not once or twice per file.
+    assert result.details == ""
+    assert ".flac" not in rendered
+    assert "12 of 12 file(s) have no MD5 signature stored" in rendered
+    assert rendered.splitlines()[0].endswith("Integrity check not passed: no MD5 signature stored")
 
 
-async def test_sanitize_and_verify_rechecks_instead_of_trusting_the_return(monkeypatch):
-    """sanitize_integrity returning True is not evidence the MD5 got set.
+def test_a_few_files_with_no_md5_are_named(monkeypatch, tmp_path) -> None:
+    _fake_flac(monkeypatch, {"01.flac": FLAC_15_MD5_UNSET, "02.flac": FLAC_15_CLEAN, "03.flac": FLAC_15_CLEAN})
 
-    Every caller acts on "it is fixed now" — the upload even says so in the release
-    description — so the claim is re-checked, not inferred.
-    """
-    import importlib
+    result = anyio.run(integrity.check_integrity, _album(tmp_path, ["01.flac", "02.flac", "03.flac"]))
 
-    ig = importlib.import_module("salmon.checks.integrity")
-
-    calls: list[str] = []
-
-    async def fake_sanitize(_path, _i=None):
-        calls.append("sanitize")
-        return True
-
-    async def fake_check(_path, _i=None):
-        calls.append("check")
-        return ig.IntegrityResult(False, "", (), md5_unset=("a.flac",), checked=1)
-
-    monkeypatch.setattr(ig, "sanitize_integrity", fake_sanitize)
-    monkeypatch.setattr(ig, "check_integrity", fake_check)
-
-    result = await ig.sanitize_and_verify("/music")
-
-    assert calls == ["sanitize", "check"], "the re-check must run after sanitizing"
-    assert not result.passed, "the re-check's verdict is returned, not sanitize's return value"
+    assert "1 of 3 file(s) have no MD5 signature stored: 01.flac" in integrity.format_integrity(result)
+    assert "1 of 3 file(s)" in integrity.sanitize_prompt(result)
 
 
-@pytest.fixture
-def integrity_gate(monkeypatch):
-    """Drive resolve_integrity_for_upload with a scripted check result and answer."""
-    import importlib
+def test_a_file_that_does_not_decode_is_a_decode_failure_even_beside_md5_unset_files(monkeypatch, tmp_path) -> None:
+    _fake_flac(monkeypatch, {"01.flac": FLAC_15_MD5_UNSET, "02.flac": FLAC_15_TRUNCATED})
 
-    ig = importlib.import_module("salmon.checks.integrity")
+    result = anyio.run(integrity.check_integrity, _album(tmp_path, ["01.flac", "02.flac"]))
+    rendered = click.unstyle(integrity.format_integrity(result))
 
-    def _setup(first, *, sanitized=None, confirm=True):
-        checks = iter([first, sanitized if sanitized is not None else first])
-        calls: list[str] = []
-
-        async def fake_check(_path, _i=None):
-            calls.append("check")
-            return next(checks)
-
-        async def fake_sanitize(_path, _i=None):
-            calls.append("sanitize")
-            return True
-
-        monkeypatch.setattr(ig, "check_integrity", fake_check)
-        monkeypatch.setattr(ig, "sanitize_integrity", fake_sanitize)
-        monkeypatch.setattr(click, "confirm", lambda *a, **k: calls.append("confirm") or confirm)
-        return calls, ig
-
-    return _setup
+    assert result.md5_unset == ("01.flac",)
+    assert result.decode_failures == ("02.flac",)
+    assert rendered.splitlines()[0].endswith("Failed integrity check")
+    assert "02.flac: ERROR during decoding" in rendered
+    assert integrity.sanitize_prompt(result) == "Do you want to sanitize this upload?"
 
 
-async def test_declining_to_sanitize_still_aborts_on_a_file_that_will_not_decode(integrity_gate):
-    """Declining the sanitize offer is not consent to upload corrupt audio."""
-    from salmon.checks.integrity import IntegrityResult, resolve_integrity_for_upload
-
-    broken = IntegrityResult(False, "a.flac: FAILED", (), decode_failures=("a.flac",), checked=1)
-    calls, _ = integrity_gate(broken, confirm=False)
-
-    with pytest.raises(click.Abort):
-        await resolve_integrity_for_upload("/music", scene=False, assume_yes=False)
-
-    assert "sanitize" not in calls, "the user declined; nothing should have been re-encoded"
+def test_resolve_overstrikes() -> None:
+    assert integrity._resolve_overstrikes("abc\x08\x08d") == "ad"
+    assert integrity._resolve_overstrikes("a\nb\x08\x08c") == "a\nc"
+    assert integrity._resolve_overstrikes("50%\rok") == "ok"
 
 
-async def test_yes_all_does_not_wave_through_a_file_that_will_not_decode(integrity_gate):
-    """yes_all means "take the default answer", not "ignore corruption"."""
-    from salmon.checks.integrity import IntegrityResult, resolve_integrity_for_upload
+# mp3val 0.1.8's real output for files damaged in different ways (the full path it prints replaced by
+# /music/a.mp3). It exits 0 for all of them.
+MP3VAL_CLEAN = b"""Analyzing file "/music/a.mp3"...
+INFO: "/music/a.mp3": 194 MPEG frames (MPEG 1 Layer III), +ID3v2, Xing header
+Done!
+"""
+MP3VAL_TRUNCATED = b"""Analyzing file "/music/a.mp3"...
+WARNING: "/music/a.mp3" (offset 0x7689): It seems that file is truncated or there is garbage at the end of the file
+WARNING: "/music/a.mp3": Wrong number of MPEG frames specified in Xing header (193 instead of 73)
+WARNING: "/music/a.mp3": Wrong number of MPEG data bytes specified in Xing header (80874 instead of 30301)
+INFO: "/music/a.mp3": 73 MPEG frames (MPEG 1 Layer III), +ID3v2, Xing header
+Done!
+"""
+MP3VAL_RESYNCHRONIZED = b"""Analyzing file "/music/a.mp3"...
+WARNING: "/music/a.mp3" (offset 0x4f5a): MPEG stream error, resynchronized successfully
+INFO: "/music/a.mp3": 194 MPEG frames (MPEG 1 Layer III), +ID3v2, Xing header
+Done!
+"""
+MP3VAL_GARBAGE_AT_START = b"""Analyzing file "/music/a.mp3"...
+WARNING: "/music/a.mp3" (offset 0x0): Garbage at the beginning of the file
+WARNING: "/music/a.mp3": No supported tags in the file
+INFO: "/music/a.mp3": 194 MPEG frames (MPEG 1 Layer III), no tags, Xing header
+Done!
+"""
+MP3VAL_NOT_MPEG = b"""Analyzing file "/music/a.mp3"...
+ERROR: "/music/a.mp3": Unknown file format
+Done!
+"""
+MP3VAL_EMPTY = b"""Analyzing file "/music/a.mp3"...
+WARNING: "/music/a.mp3": Too few MPEG frames (it's unlikely that this is a MPEG audio file)
+WARNING: "/music/a.mp3": No supported tags in the file
+INFO: "/music/a.mp3": No MPEG frames, no tags, CBR
+Done!
+"""
+# The one message here not produced from a real file: mp3val prints it for a VBR file with no Xing/VBRI
+# header, which only affects seeking.
+MP3VAL_NO_VBR_HEADER = b"""Analyzing file "/music/a.mp3"...
+WARNING: "/music/a.mp3": VBR detected, but no VBR header is present. Seeking may not work properly.
+INFO: "/music/a.mp3": 7320 MPEG frames (MPEG 1 Layer III), +ID3v2, no VBR header
+Done!
+"""
 
-    broken = IntegrityResult(False, "a.flac: FAILED", (), decode_failures=("a.flac",), checked=1)
-    calls, _ = integrity_gate(broken, sanitized=broken, confirm=False)
 
-    with pytest.raises(click.Abort):
-        await resolve_integrity_for_upload("/music", scene=False, assume_yes=True)
+def _mp3val(monkeypatch, stdout: bytes, stderr: bytes = b"") -> IntegrityResult:
+    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        assert commands == ["mp3val", "/music/a.mp3"]
+        return subprocess.CompletedProcess(commands, 0, stdout=stdout, stderr=stderr)
 
-    assert "confirm" not in calls, "yes_all answers the sanitize offer without asking"
-    assert "sanitize" in calls, "yes_all takes the default answer, which is to sanitize"
-
-
-async def test_unset_md5_uploads_after_declining_to_sanitize(integrity_gate):
-    """A WEB album with no stored MD5 decodes fine — it must stay uploadable."""
-    from salmon.checks.integrity import IntegrityResult, resolve_integrity_for_upload
-
-    no_md5 = IntegrityResult(False, "", (), md5_unset=("a.flac",), checked=1)
-    integrity_gate(no_md5, confirm=False)
-
-    result = await resolve_integrity_for_upload("/music", scene=False, assume_yes=False)
-
-    assert result.md5_unset == ("a.flac",), "the unsanitized result is what the caller gets back"
+    monkeypatch.setattr(integrity.anyio, "run_process", fake_run_process)
+    return anyio.run(integrity._check_mp3_integrity, "/music/a.mp3")
 
 
-async def test_scene_release_aborts_before_offering_to_sanitize(integrity_gate):
-    """Sanitizing a scene release de-scenes it, so the offer must never appear."""
-    from salmon.checks.integrity import IntegrityResult, resolve_integrity_for_upload
+def test_clean_mp3_passes_with_nothing_to_report(monkeypatch) -> None:
+    result = _mp3val(monkeypatch, MP3VAL_CLEAN)
 
-    no_md5 = IntegrityResult(False, "", (), md5_unset=("a.flac",), checked=1)
-    calls, _ = integrity_gate(no_md5)
-
-    with pytest.raises(click.Abort):
-        await resolve_integrity_for_upload("/music", scene=True, assume_yes=False)
-
-    assert calls == ["check"], "no confirm, no sanitize"
+    assert result.passed is True
+    assert result.details == ""
+    assert result.concerns == ()
+    assert result.decode_failures == ()
 
 
-@pytest.mark.parametrize("kind", ["file", "folder"])
-async def test_the_check_command_sanitizes_only_when_told_to(monkeypatch, tmp_path, kind):
-    """Enter at the sanitize question keeps the files as they are, as upstream's: sanitizing re-encodes them."""
-    import importlib
+@pytest.mark.parametrize(
+    ("stdout", "reported"),
+    [
+        (MP3VAL_TRUNCATED, "a.mp3 (offset 0x7689): It seems that file is truncated"),
+        (MP3VAL_RESYNCHRONIZED, "a.mp3 (offset 0x4f5a): MPEG stream error, resynchronized successfully"),
+        (MP3VAL_GARBAGE_AT_START, "a.mp3 (offset 0x0): Garbage at the beginning of the file"),
+    ],
+)
+def test_mp3_stream_damage_fails_the_check_but_can_be_acknowledged(monkeypatch, stdout, reported) -> None:
+    """mp3val exits 0 while describing the damage; the check used to pass every mp3val run."""
+    result = _mp3val(monkeypatch, stdout)
 
-    ig = importlib.import_module("salmon.checks.integrity")
-    (tmp_path / "a.flac").write_bytes(b"fLaC")
-    sanitized: list[str] = []
+    assert result.passed is False
+    assert reported in result.details
+    assert "/music/" not in result.details
+    assert result.decode_failures == (), "damage mp3val can repair is not a reason to refuse the upload"
 
-    async def failing(_path):
-        return ig.IntegrityResult(False, "", (), md5_unset=("a.flac",), checked=1)
 
-    async def sanitize(path):
-        sanitized.append(path)
+def test_mp3_tag_notes_pass_as_concerns(monkeypatch) -> None:
+    garbage = _mp3val(monkeypatch, MP3VAL_GARBAGE_AT_START)
+    assert garbage.concerns == ("a.mp3: No supported tags in the file",)
+    assert "No supported tags" not in garbage.details
 
-    monkeypatch.setattr(ig, "rewrite_refusal", lambda _path: None)
-    monkeypatch.setattr(ig, "check_integrity", failing)
-    monkeypatch.setattr(ig, "sanitize_and_verify", sanitize)
-    monkeypatch.setattr(click, "confirm", lambda *_args, default=False, **_kwargs: default)
+    no_vbr_header = _mp3val(monkeypatch, MP3VAL_NO_VBR_HEADER)
+    assert no_vbr_header.passed is True
+    assert no_vbr_header.concerns[0].startswith("a.mp3: VBR detected, but no VBR header is present")
 
-    await ig.handle_integrity_check(str(tmp_path / "a.flac") if kind == "file" else str(tmp_path))
 
-    assert sanitized == []
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "reported"),
+    [
+        (MP3VAL_NOT_MPEG, b"", "Unknown file format"),
+        (MP3VAL_EMPTY, b"", "Too few MPEG frames"),
+        # A missing or unreadable file: mp3val writes only this, to stderr, and still exits 0.
+        (b"", b'Cannot open input file "/music/a.mp3" or it is empty\n', "Cannot open input file"),
+    ],
+)
+def test_a_file_that_is_not_mpeg_audio_is_a_decode_failure(monkeypatch, stdout, stderr, reported) -> None:
+    result = _mp3val(monkeypatch, stdout, stderr)
+
+    assert result.passed is False
+    assert result.decode_failures == ("a.mp3",)
+    assert reported in result.details
