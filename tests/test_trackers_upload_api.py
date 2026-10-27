@@ -330,6 +330,14 @@ async def test_api_call_non_json_body_raises_request_failed_with_body(api):
     assert "<html>maintenance</html>" in str(excinfo.value)
 
 
+@pytest.mark.parametrize("body", ["[]", '"maintenance"', "null", "42"])
+async def test_api_call_json_that_is_not_an_object_raises_request_failed(api, body):
+    script_requests(api, [http(text=body)])
+    with pytest.raises(RequestFailedError) as excinfo:
+        await api.api_call("index")
+    assert body in str(excinfo.value)
+
+
 async def test_api_call_non_json_body_is_masked_and_capped(api):
     script_requests(api, [http(text=f"<html>{'x' * 2000}{api.cookie}</html>")])
     with pytest.raises(RequestFailedError) as excinfo:
