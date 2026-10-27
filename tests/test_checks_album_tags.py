@@ -2,7 +2,7 @@
 
 import anyio
 import pytest
-from test_tag_rules_upstream import (  # pyright: ignore[reportMissingImports]
+from test_checks_tag_rules import (  # pyright: ignore[reportMissingImports]
     _write_mp3_v1_and_blank_v2,
     _write_mp3_v2_only,
 )

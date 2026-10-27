@@ -113,7 +113,7 @@ def flow(monkeypatch):
         "concat_track_data": _sync({"01.flac": {}}),
         "resolve_cover_url": recording("resolve_cover_url", (True, None)),
         "check_embedded_pictures": _sync(),
-        "collect_upload_warnings": _sync([]),
+        "upload_warnings": _sync([]),
         "check_requests": recording("check_requests"),
         "check_existing_group": recording("check_existing_group", 5),
         "recheck_edition": recording("recheck_edition", 5),

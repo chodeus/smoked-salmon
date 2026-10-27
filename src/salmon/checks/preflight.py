@@ -21,13 +21,7 @@ from salmon.checks.high_rate import sixteen_bit_notice
 # checks/__init__.py shadows the module.
 from salmon.checks.integrity import md5_unset_summary
 from salmon.checks.source import detect_source
-from salmon.checks.tag_rules import (
-    MAX_PATH_LENGTH,
-    SIXTEEN_BIT_ABOVE_48KHZ,
-    collect_upload_warnings,
-    in_torrent_path,
-    path_limit_warning,
-)
+from salmon.checks.tag_rules import collect_upload_warnings, in_torrent_path, path_limit_warning
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.tagger.pre_data import construct_artists_li, parse_format, parse_title
 from salmon.tagger.tags import gather_tags
@@ -365,7 +359,8 @@ def dupe_matches(base_url: str, results: list[dict]) -> list[dict]:
 
 def sixteen_bit_row(tracker: str, track_data: dict) -> Row | None:
     """The tracker's rule on 16bit files above 48 kHz, when the files break it: blocks for a refusal."""
-    rule = SIXTEEN_BIT_ABOVE_48KHZ.get(tracker, "")
+    site_class = salmon.trackers.tracker_classes.get(tracker)
+    rule = site_class.TAG_RULES.sixteen_bit_above_48khz if site_class else ""
     if not (notice := sixteen_bit_notice(tracker, rule, track_data)):
         return None
     return Row(
@@ -385,7 +380,8 @@ def rules_row(tracker: str, folder_name: str, track_data: dict, other_files: Seq
         return Row(f"rules:{tracker}", label, SKIP, "The audio could not be read, so these rules were not checked.")
     warnings = [*collect_upload_warnings(tracker, folder_name, track_data), *long_paths]
     if not warnings:
-        limit = MAX_PATH_LENGTH.get(tracker)
+        site_class = salmon.trackers.tracker_classes.get(tracker)
+        limit = site_class.TAG_RULES.max_path_length if site_class else None
         paths = f"Paths are within {tracker}'s {limit}-character limit" if limit else f"{tracker} sets no path limit"
         return Row(f"rules:{tracker}", label, OK, f"{paths}, and sample rates are standard.")
     return Row(f"rules:{tracker}", label, WARN, " ".join(warnings[:2]), _notes(warnings))

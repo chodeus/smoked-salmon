@@ -1,7 +1,7 @@
 """Path-length truncation safety in salmon.tagger.folderstructure."""
 
 from salmon import cfg
-from salmon.tagger.folderstructure import _check_path_lengths
+from salmon.tagger.folderstructure import DEFAULT_MAX_PATH_LENGTH, _check_path_lengths
 
 
 def test_truncation_still_renames_distinct_names(tmp_path, monkeypatch) -> None:
@@ -11,7 +11,7 @@ def test_truncation_still_renames_distinct_names(tmp_path, monkeypatch) -> None:
     long_file = album / ("y" * 200 + ".flac")
     long_file.write_text("Y")
 
-    _check_path_lengths(str(album), False)
+    _check_path_lengths(str(album), False, DEFAULT_MAX_PATH_LENGTH)
 
     assert not long_file.exists()
     truncated = list(album.glob("*.flac"))

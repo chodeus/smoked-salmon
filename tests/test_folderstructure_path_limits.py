@@ -1,4 +1,10 @@
-"""The path limit is the run's trackers' (MAX_PATH_LENGTH), not always the strictest."""
+"""The path-length limit now comes from the tracker's TAG_RULES instead of a hard-coded 180.
+
+_check_path_lengths blocks (a scene release raises directly rather than offering to auto-fix, which
+is the simplest way to assert the limit without going through the interactive confirm loop).
+_max_path_length_for_run picks the value a whole run is checked against: the tracker's own limit, or
+the strictest among every tracker configured, when the run might go on to another of them.
+"""
 
 import os
 
@@ -7,9 +13,10 @@ import pytest
 import salmon.trackers
 import salmon.uploader as uploader
 from salmon import cfg
-from salmon.checks.tag_rules import MAX_PATH_LENGTH, STRICTEST_PATH_LENGTH
 from salmon.errors import NoncompliantFolderStructure
-from salmon.tagger.folderstructure import _check_path_lengths
+from salmon.tagger.folderstructure import DEFAULT_MAX_PATH_LENGTH, _check_path_lengths
+from salmon.trackers.ops import OpsApi
+from salmon.trackers.red import RedApi
 
 
 def _folder_with_file(tmp_path, folder_name: str, name_length: int):
@@ -26,13 +33,13 @@ def test_red_180_limit_blocks_at_181(tmp_path) -> None:
     folder = _folder_with_file(tmp_path, "F", 179)
 
     with pytest.raises(NoncompliantFolderStructure):
-        _check_path_lengths(folder, scene=True, max_path_length=MAX_PATH_LENGTH["RED"])
+        _check_path_lengths(folder, scene=True, max_path_length=RedApi.TAG_RULES.max_path_length)
 
 
 def test_red_180_limit_allows_exactly_180(tmp_path) -> None:
     folder = _folder_with_file(tmp_path, "F", 178)
 
-    _check_path_lengths(folder, scene=True, max_path_length=MAX_PATH_LENGTH["RED"])
+    _check_path_lengths(folder, scene=True, max_path_length=RedApi.TAG_RULES.max_path_length)
 
 
 def test_ops_255_limit_allows_up_to_255_and_blocks_at_256(tmp_path) -> None:
@@ -41,13 +48,13 @@ def test_ops_255_limit_allows_up_to_255_and_blocks_at_256(tmp_path) -> None:
     allowed = _folder_with_file(tmp_path / "allowed", "F", 253)
     blocked = _folder_with_file(tmp_path / "blocked", "F", 254)
 
-    _check_path_lengths(allowed, scene=True, max_path_length=MAX_PATH_LENGTH["OPS"])
+    _check_path_lengths(allowed, scene=True, max_path_length=OpsApi.TAG_RULES.max_path_length)
     with pytest.raises(NoncompliantFolderStructure):
-        _check_path_lengths(blocked, scene=True, max_path_length=MAX_PATH_LENGTH["OPS"])
+        _check_path_lengths(blocked, scene=True, max_path_length=OpsApi.TAG_RULES.max_path_length)
 
 
 def test_salmon_tag_has_no_tracker_and_keeps_180() -> None:
-    assert STRICTEST_PATH_LENGTH == 180
+    assert DEFAULT_MAX_PATH_LENGTH == 180
 
 
 def test_a_single_configured_tracker_run_uses_that_trackers_own_limit(monkeypatch) -> None:

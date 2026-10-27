@@ -1,4 +1,5 @@
-"""A FLAC's ID3 tag is stripped (a scene release only warned about) and the upload goes on."""
+"""FLAC tag issues (an ID3 tag stripped, an uncompressed FLAC warned about) are handled but never
+block the upload."""
 
 import struct
 
@@ -45,7 +46,7 @@ async def _edit_metadata(path: str, *, scene: bool = False, recompress: bool = F
     return await uploader.edit_metadata(path, {}, metadata, None, "WEB", {}, recompress, False, None, True)
 
 
-def test_id3_is_stripped_and_the_upload_goes_on(monkeypatch, tmp_path, capsys) -> None:
+def test_id3_is_stripped_and_uncompressed_is_warned_and_the_upload_goes_on(monkeypatch, tmp_path, capsys) -> None:
     raw = 44100 * 16 * 2
     path = tmp_path / "01.flac"
     _write_flac(path, title="Hello")
@@ -59,9 +60,10 @@ def test_id3_is_stripped_and_the_upload_goes_on(monkeypatch, tmp_path, capsys) -
     assert result_path == str(tmp_path)
     out = click.unstyle(capsys.readouterr().out)
     assert "Removed an ID3 tag from 01.flac" in out
+    assert "FLAC file looks uncompressed" in out
     assert "RED and OPS" in out
-    assert FLAC(str(path))["title"] == ["Hello"], "stripping must not touch the rest of the tags"
     assert has_id3_tag(str(path)) is False
+    assert FLAC(str(path))["title"] == ["Hello"], "stripping must not touch the rest of the tags"
 
 
 def test_a_scene_release_is_only_warned_about_and_not_modified(monkeypatch, tmp_path, capsys) -> None:
@@ -78,6 +80,39 @@ def test_a_scene_release_is_only_warned_about_and_not_modified(monkeypatch, tmp_
     out = click.unstyle(capsys.readouterr().out)
     assert "FLAC file contains an ID3 tag" in out
     assert "Removed" not in out
+
+
+def test_a_scene_release_with_recompress_still_warns_about_an_uncompressed_flac(monkeypatch, tmp_path, capsys) -> None:
+    """recompress_path never runs for a scene release (it is guarded by `not scene`), so passing
+    the raw -c flag into process_tag_issues would wrongly suppress the warning for a file that is
+    never actually going to be recompressed."""
+    raw = 44100 * 16 * 2
+    path = tmp_path / "01.flac"
+    _write_flac(path)
+    audio_info = {"01.flac": {"sample rate": 44100, "precision": 16, "channels": 2, "bit rate": raw}}
+    _edit_metadata_stubs(monkeypatch, audio_info)
+    monkeypatch.setattr(uploader.cfg.upload, "yes_all", True)
+
+    anyio.run(lambda: _edit_metadata(str(tmp_path), scene=True, recompress=True))
+
+    out = click.unstyle(capsys.readouterr().out)
+    assert "FLAC file looks uncompressed" in out
+
+
+def test_a_release_about_to_be_recompressed_is_not_warned_about_an_uncompressed_flac(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    raw = 44100 * 16 * 2
+    _write_flac(tmp_path / "01.flac")
+    _edit_metadata_stubs(
+        monkeypatch, {"01.flac": {"sample rate": 44100, "precision": 16, "channels": 2, "bit rate": raw}}
+    )
+    monkeypatch.setattr(uploader, "recompress_path", lambda *a, **k: anyio.sleep(0))
+    monkeypatch.setattr(uploader.cfg.upload, "yes_all", True)
+
+    anyio.run(lambda: _edit_metadata(str(tmp_path), recompress=True))
+
+    assert "FLAC file looks uncompressed" not in click.unstyle(capsys.readouterr().out)
 
 
 def test_a_clean_release_prints_no_tag_notes(monkeypatch, tmp_path, capsys) -> None:

@@ -4,11 +4,11 @@ import os
 
 import pytest
 
-from salmon.checks.tag_rules import STRICTEST_PATH_LENGTH, in_torrent_path
+from salmon.checks.tag_rules import in_torrent_path
 from salmon.errors import NoncompliantFolderStructure
-from salmon.tagger.folderstructure import _check_path_lengths
+from salmon.tagger.folderstructure import DEFAULT_MAX_PATH_LENGTH, _check_path_lengths
 
-LIMIT = STRICTEST_PATH_LENGTH
+LIMIT = DEFAULT_MAX_PATH_LENGTH
 
 
 def _album(tmp_path, in_torrent_len, folder="Album Folder"):
@@ -48,7 +48,7 @@ def test_measurement_does_not_depend_on_where_the_album_sits_on_disk(tmp_path):
 def test_an_over_limit_path_is_truncated_to_exactly_the_limit(tmp_path):
     album = _album(tmp_path / "a", LIMIT + 20)
 
-    _check_path_lengths(album, scene=False)
+    _check_path_lengths(album, scene=False, max_path_length=LIMIT)
 
     assert _measured(album) == LIMIT, "truncation must land exactly on the limit, not near it"
     assert len(os.listdir(album)) == 1, "the file was renamed, not duplicated or lost"
@@ -59,7 +59,7 @@ def test_a_path_within_the_limit_is_left_alone(tmp_path):
     album = _album(tmp_path / "a", LIMIT)
     before = os.listdir(album)
 
-    _check_path_lengths(album, scene=False)
+    _check_path_lengths(album, scene=False, max_path_length=LIMIT)
 
     assert os.listdir(album) == before
 
@@ -73,7 +73,7 @@ def test_a_filename_too_short_to_absorb_the_overshoot_raises(tmp_path):
     (sub / "ab.flac").write_bytes(b"x")
 
     with pytest.raises(NoncompliantFolderStructure):
-        _check_path_lengths(str(album), scene=False)
+        _check_path_lengths(str(album), scene=False, max_path_length=LIMIT)
 
 
 def test_a_scene_release_is_never_auto_truncated(tmp_path):
@@ -81,6 +81,6 @@ def test_a_scene_release_is_never_auto_truncated(tmp_path):
     before = os.listdir(album)
 
     with pytest.raises(NoncompliantFolderStructure):
-        _check_path_lengths(album, scene=True)
+        _check_path_lengths(album, scene=True, max_path_length=LIMIT)
 
     assert os.listdir(album) == before, "a scene release must be left for manual descening"

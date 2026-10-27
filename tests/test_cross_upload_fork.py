@@ -341,3 +341,15 @@ def test_an_upload_whose_group_id_does_not_come_back_gets_no_conversions(monkeyp
     assert run.result.exit_code == 0, run.output
     assert len(run.target.posts()) == 1
     assert "No group id came back for" in run.output
+
+
+@pytest.mark.parametrize(("length", "refused"), [(255, False), (256, True)])
+def test_a_path_is_held_to_the_targets_own_limit(monkeypatch, dirs, length: int, refused: bool) -> None:  # noqa: F811
+    album = _album(dirs.downloads / FOLDER)
+    (album / f"{'x' * (length - len(FOLDER) - 1 - len('.txt'))}.txt").write_text("notes")
+    run = _cross_upload(
+        monkeypatch, dirs, [str(TORRENT_ID), "-yyy"], input="\n", prepare=_source_has(album), source="RED", target="OPS"
+    )
+
+    assert ("1 path(s) are longer than OPS's 255 characters" in run.output) is refused
+    assert len(run.target.posts()) == (0 if refused else 1)
