@@ -38,7 +38,7 @@ def _decode_first_second(path: str) -> NDArray[np.int32]:
         Array of shape (n_frames, 2) with dtype int32 for stereo audio.
 
     Raises:
-        ValueError: If the file is not FLAC, not stereo, or cannot be decoded.
+        ValueError: If the file is not FLAC or cannot be decoded.
     """
     container = av.open(path)
     try:

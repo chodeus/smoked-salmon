@@ -64,7 +64,7 @@ MD5_UNSET_OUTPUT = (
 
 
 def test_an_unset_md5_is_reported_once_not_twice(monkeypatch):
-    """The warning line and the summary are the same fact; 17 tracks became 34 lines."""
+    """An unset MD5 shows once, as md5_unset, not again among the details."""
     _ig, result = _flac_result(monkeypatch, MD5_UNSET_OUTPUT)
 
     assert result.md5_unset == ("a.flac",)
@@ -72,8 +72,7 @@ def test_an_unset_md5_is_reported_once_not_twice(monkeypatch):
 
 
 def test_flac_progress_backspaces_do_not_eat_the_text(monkeypatch):
-    """flac erases "testing, N% complete" with \\x08; passed through raw they eat
-    the characters in front of them wherever the details are rendered."""
+    """flac's \\x08 progress erasures are applied, not passed on to eat the text before them."""
     ig, result = _flac_result(
         monkeypatch,
         b"a.flac: testing, 72% complete" + b"\x08" * 21 + b"WARNING, cannot check MD5 signature "
@@ -87,8 +86,7 @@ def test_flac_progress_backspaces_do_not_eat_the_text(monkeypatch):
 
 
 def test_an_unset_md5_is_not_counted_as_a_decode_failure(monkeypatch):
-    """-w makes the warning exit non-zero, so the return code cannot say whether the
-    audio decoded. flac saying "ok" can."""
+    """flac's "ok" after the MD5 warning marks audio that decoded, whatever the exit code."""
     _ig, result = _flac_result(monkeypatch, MD5_UNSET_OUTPUT)
 
     assert not result.passed, "the pass/fail verdict is unchanged"
@@ -96,7 +94,7 @@ def test_an_unset_md5_is_not_counted_as_a_decode_failure(monkeypatch):
 
 
 def test_a_file_that_never_decoded_stays_a_decode_failure(monkeypatch):
-    """A truncated file prints ERROR and no "ok" — it must not ride the MD5 downgrade."""
+    """A file flac reports an ERROR for, with no "ok", stays a decode failure beside an unset MD5."""
     _ig, result = _flac_result(
         monkeypatch,
         b"a.flac: *** Got error code 4:FLAC__STREAM_DECODER_ERROR_STATUS_BAD_METADATA\n"
@@ -122,11 +120,7 @@ def test_a_silent_decode_failure_is_not_announced_as_a_clean_missing_md5():
 
 
 async def test_sanitize_and_verify_rechecks_instead_of_trusting_the_return(monkeypatch):
-    """sanitize_integrity returning True is not evidence the MD5 got set.
-
-    Every caller acts on "it is fixed now" — the upload even says so in the release
-    description — so the claim is re-checked, not inferred.
-    """
+    """The result after sanitizing is the re-check's, not sanitize_integrity's return value."""
     import importlib
 
     ig = importlib.import_module("salmon.checks.integrity")
@@ -252,3 +246,20 @@ async def test_the_check_command_sanitizes_only_when_told_to(monkeypatch, tmp_pa
     await ig.handle_integrity_check(str(tmp_path / "a.flac") if kind == "file" else str(tmp_path))
 
     assert sanitized == []
+
+
+@pytest.mark.parametrize(("check", "tool"), [("_check_flac_integrity", "flac"), ("_check_mp3_integrity", "mp3val")])
+def test_a_tool_that_cannot_run_is_named_and_still_fails_closed(monkeypatch, check, tool):
+    import importlib
+
+    integrity = importlib.import_module("salmon.checks.integrity")
+
+    async def missing(*_args, **_kwargs):
+        raise FileNotFoundError(f"No such file or directory: '{tool}'")
+
+    monkeypatch.setattr(integrity.anyio, "run_process", missing)
+    result = anyio.run(getattr(integrity, check), "/album/01.x")
+
+    assert result.passed is False
+    assert result.decode_failures == ("01.x",)
+    assert f"01.x: could not run {tool} (No such file or directory: '{tool}')" in click.unstyle(result.details)

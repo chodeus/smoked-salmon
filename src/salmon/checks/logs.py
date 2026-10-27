@@ -299,7 +299,7 @@ def log_score(cambia_output: Any) -> int | None:
 def log_checksum(cambia_output: Any) -> cambia.Integrity:
     """Mismatch if any appended log's checksum fails, else Unknown if any has none, else Match.
 
-    Every appended log carries its own checksum; an edited rerip log must not pass on the first one's.
+    Each appended log is checked by its own checksum; an edited rerip log must not pass on the first one's.
     """
     integrities = [parsed_log.checksum.integrity for parsed_log in cambia_output.parsed.parsed_logs]
     if cambia.Integrity.Mismatch in integrities:
