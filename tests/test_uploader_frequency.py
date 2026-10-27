@@ -354,6 +354,15 @@ def test_a_file_that_is_not_audio_gives_an_error_not_an_exception(tmp_path):
     assert fq.assess([result])[0] == "none"
 
 
+def test_an_error_names_the_file_and_no_folder_above_it(tmp_path):
+    album = tmp_path / "music" / "Album"
+    album.mkdir(parents=True)
+    (album / "broken.flac").write_bytes(b"fLaC not really")
+    error = fq._analyse_one(str(album), "broken.flac", None).error or ""
+    assert "broken.flac" in error
+    assert str(tmp_path) not in error
+
+
 def test_a_corrupt_spectrum_never_yields_a_non_finite_measurement():
     freqs = np.fft.rfftfreq(fq.FFT_SIZE, 1 / RATE)
     wall = fq.measure_wall(freqs, np.full(len(freqs), np.nan))
@@ -374,6 +383,15 @@ def test_a_failed_plot_costs_only_its_own_file(tmp_path, monkeypatch):
     assert result.error == "no space left on device"
     assert result.image == ""
     assert not (tmp_path / "01 Spectrum.png").exists(), "a half-written plot would still show in the viewer"
+
+
+def test_a_failed_plot_names_the_plot_and_no_folder(tmp_path, monkeypatch):
+    def boom(_freqs, _db, _rate, out_path, *_args, **_kwargs):
+        raise OSError(28, "No space left on device", out_path)
+
+    monkeypatch.setattr(fq, "render_plot", boom)
+    result = _analyse(tmp_path, "full.flac", noise(3))
+    assert result.error == "[Errno 28] No space left on device: '01 Spectrum.png'"
 
 
 def test_a_plot_is_written_where_it_is_asked_for_and_only_there(tmp_path):

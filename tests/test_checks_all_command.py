@@ -365,6 +365,18 @@ def test_a_failed_analysis_is_reported_as_failed_not_as_no_lossless_file(album, 
     assert "no lossless file" not in result.output
 
 
+@pytest.mark.usefixtures("no_tracker")
+def test_a_track_the_analysis_cannot_read_names_no_other_path_in_the_report(album, monkeypatch):
+    def unreadable(path, *_args):
+        raise OSError(5, "Input/output error", path)
+
+    monkeypatch.setattr(frequency, "decode_mono", unreadable)
+    result = _run(str(album), "--report")
+    report = result.output[result.output.index(f"\n{FOLDER}\n\n1. Lossless or lossy") :]
+    assert "01 Track 1.flac: could not be analysed ([Errno 5] Input/output error: '01 Track 1.flac')" in report
+    assert str(album.parent) not in report
+
+
 def test_a_folder_without_audio_is_a_usage_error(tmp_path):
     folder = tmp_path / "Not an album"
     folder.mkdir()

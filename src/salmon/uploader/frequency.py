@@ -357,14 +357,20 @@ def render_plot(
     img.save(out_path)
 
 
+def _reason(e: Exception, path: str, name: str) -> str:
+    """The error's text, naming path as name: the reports name no folder above the album."""
+    return (str(e) or type(e).__name__).replace(path, name)
+
+
 def _analyse_one(album_path: str, filename: str, out_path: str | None) -> SpectrumResult:
     """Measure a file, and draw its averaged spectrum to out_path unless it is None."""
+    path = os.path.join(album_path, filename)
     try:
-        samples, sample_rate = decode_mono(os.path.join(album_path, filename))
+        samples, sample_rate = decode_mono(path)
         freqs, db, windows = average_spectrum(samples, sample_rate)
     except Exception as e:
         # One unreadable file must not cost the measurements of the others.
-        return SpectrumResult(file=filename, image="", sample_rate=0, windows=0, error=str(e) or type(e).__name__)
+        return SpectrumResult(file=filename, image="", sample_rate=0, windows=0, error=_reason(e, path, filename))
     if not windows:
         return SpectrumResult(
             file=filename, image="", sample_rate=sample_rate, windows=0, error="too little audio to average a spectrum"
@@ -379,7 +385,11 @@ def _analyse_one(album_path: str, filename: str, out_path: str | None) -> Spectr
             with contextlib.suppress(OSError):
                 os.remove(out_path)
             return SpectrumResult(
-                file=filename, image="", sample_rate=sample_rate, windows=windows, error=str(e) or type(e).__name__
+                file=filename,
+                image="",
+                sample_rate=sample_rate,
+                windows=windows,
+                error=_reason(e, out_path, os.path.basename(out_path)),
             )
     return SpectrumResult(
         file=filename,
