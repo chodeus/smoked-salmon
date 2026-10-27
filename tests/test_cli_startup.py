@@ -1,9 +1,11 @@
 """``salmon --help`` must not import the heavy libraries that only some commands need (#367)."""
 
 import json
+import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 # Each of these adds from 30 ms (av) to 300 ms (openai) to every salmon start. salmon.uploader.frequency loads
 # numpy and av.
@@ -38,7 +40,10 @@ print(json.dumps({{name: name in sys.modules for name in {HEAVY_MODULES!r} + ("s
 def test_help_does_not_import_heavy_modules() -> None:
     # A fresh interpreter: this test process has usually imported everything already.
     # It inherits the test config through XDG_CONFIG_HOME (see conftest.py).
-    result = subprocess.run([sys.executable, "-c", SCRIPT], capture_output=True, text=True, check=False)
+    # conftest.py puts this checkout's src first; the subprocess must test the same copy.
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [src, os.environ.get("PYTHONPATH")]))}
+    result = subprocess.run([sys.executable, "-c", SCRIPT], capture_output=True, text=True, check=False, env=env)
 
     assert result.returncode == 0, result.stderr
     assert "Usage: salmon" in result.stdout
