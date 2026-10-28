@@ -9,6 +9,24 @@ from salmon import cfg
 from salmon.tagger import foldername
 
 
+def test_compile_artist_str_excludes_arranger() -> None:
+    # Only main artists appear in the folder name, exactly like producer already does.
+    artist_str = foldername._compile_artist_str(
+        [("Main Artist", "main"), ("Some Arranger", "arranger"), ("Some Producer", "producer")]
+    )
+
+    assert artist_str == "Main Artist"
+
+
+def test_compile_artist_str_keeps_the_order_given() -> None:
+    # The folder used to sort the main artists, so "Zed Leader & Alpha Band" became "Alpha Band & Zed Leader".
+    artist_str = foldername._compile_artist_str(
+        [("Zed Leader", "main"), ("Alpha Band", "main"), ("Zed Leader", "main"), ("Some Guest", "guest")]
+    )
+
+    assert artist_str == "Zed Leader & Alpha Band"
+
+
 def test_hardlink_fallback_survives_a_partial_tree(tmp_path, monkeypatch) -> None:
     # os.link fails after the first file: the plain copy must cope with the file already linked.
     source = tmp_path / "source_folder"

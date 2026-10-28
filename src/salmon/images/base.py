@@ -6,7 +6,7 @@ from typing import Any
 
 import aiohttp
 
-from salmon import dryrun
+from salmon import dryrun, proxy
 
 mimetypes.init()
 
@@ -37,6 +37,10 @@ def _refused_in_dry_run(upload_file: _UploadFile) -> _UploadFile:
 class BaseImageUploader:
     """Base class for image uploaders: subclasses implement the async upload_file, which refuses in a dry run."""
 
+    # The host's key in [proxy.services], whose proxy `_http_session()` goes through. None for a
+    # host that sends nothing through it.
+    proxy_service: str | None = None
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         # Every upload goes through upload_file, whatever it sends its requests through.
@@ -57,7 +61,7 @@ class BaseImageUploader:
     async def connections(self, limit: int) -> AsyncIterator[None]:
         """Send the uploads made inside this block over one pool of at most `limit` reused connections."""
         async with aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=limit), timeout=UPLOAD_TIMEOUT
+            connector=proxy.connector(self.proxy_service, fixed_hosts=True, limit=limit), timeout=UPLOAD_TIMEOUT
         ) as session:
             self._session = session
             try:
@@ -71,7 +75,9 @@ class BaseImageUploader:
         if self._session is not None:
             yield self._session
         else:
-            async with aiohttp.ClientSession(timeout=UPLOAD_TIMEOUT) as session:
+            async with aiohttp.ClientSession(
+                timeout=UPLOAD_TIMEOUT, **proxy.session_kwargs(self.proxy_service, fixed_hosts=True)
+            ) as session:
                 yield session
 
     def validate_file(self, filename: str) -> None:

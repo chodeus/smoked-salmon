@@ -1,4 +1,11 @@
-"""salmon resolves names through the OS (getaddrinfo, never c-ares) and still decodes brotli and zstd answers."""
+"""salmon resolves names through the OS and still decodes the encodings aiohttp's speedups extra gave it (#682).
+
+aiohttp[speedups] installs aiodns, which makes aiohttp's DefaultResolver its AsyncResolver: c-ares, reading
+/etc/resolv.conf itself and skipping NSS, so a machine whose lookups only work through systemd-resolved fails with
+"Could not contact DNS servers" (#682, and #279 on Windows). salmon depends on the two codecs it wanted from
+the extra instead, so every session it or a library opens resolves names with getaddrinfo, as every other program
+on the machine does.
+"""
 
 import importlib.util
 
@@ -44,10 +51,5 @@ async def _get_json_encoded(encoding: str, body: bytes) -> dict:
     ("encoding", "body"),
     [("br", brotli.compress(PAYLOAD)), ("zstd", zstd.compress(PAYLOAD))],
 )
-def test_a_compressed_answer_is_decoded(monkeypatch: pytest.MonkeyPatch, encoding: str, body: bytes) -> None:
-    # The scrapers refuse a non-public address, and the fake answers on loopback.
-    monkeypatch.setattr(base, "is_public_ip", lambda _ip: True)
-
-    decoded = anyio.run(_get_json_encoded, encoding, body)
-
-    assert decoded == {"title": "Album"}
+def test_a_compressed_answer_is_decoded(encoding: str, body: bytes) -> None:
+    assert anyio.run(_get_json_encoded, encoding, body) == {"title": "Album"}

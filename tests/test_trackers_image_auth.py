@@ -23,7 +23,7 @@ IMAGE = b"\xff\xd8\xff\xe0 an image"
 
 
 class FakeRed(BaseGazelleApi):
-    site_code = "FAKERED"
+    site_code = "RED"
     site_string = "FakeRED"
     tracker_url = "https://announce.fake.example"
     SIGNED_IMAGES = True

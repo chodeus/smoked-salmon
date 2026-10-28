@@ -1,8 +1,13 @@
+import ssl
+import subprocess
 import sys
+import textwrap
 from copy import deepcopy
 from pathlib import Path
 
 import anyio
+import openai
+from aiohttp import web
 from openai.types.responses import Response, ResponseFunctionWebSearch, ResponseReasoningItem
 from openai.types.responses.response_function_web_search import ActionFind, ActionOpenPage, ActionSearch
 from openai.types.responses.response_reasoning_item import Summary
@@ -19,6 +24,7 @@ from salmon.tagger.ai_review import (
     _build_release_reference,
     _build_request_payload,
     _choose_ai_anchor_url,
+    _describe_web_search_action,
     _emit_ai_status_heartbeat,
     _extract_opened_page_urls,
     _extract_progress_updates,
@@ -99,6 +105,10 @@ def make_metadata() -> dict:
             }
         },
     }
+
+
+async def _names_label(_url: str, _label: str) -> bool:
+    return True
 
 
 def make_review(**metadata_overrides) -> dict:
@@ -485,7 +495,7 @@ def test_apply_ai_review_guardrails_ignores_unsupported_label_changes() -> None:
     metadata["label"] = "doin' fine"
     review = make_review(label="Crash Blossoms Money World Suicide Mob")
 
-    sanitized_review, warnings = _apply_ai_review_guardrails(metadata, review, None)
+    sanitized_review, warnings = anyio.run(_apply_ai_review_guardrails, metadata, review, None)
 
     assert sanitized_review["metadata"]["label"] == "doin' fine"
     assert warnings == [
@@ -499,7 +509,7 @@ def test_apply_ai_review_guardrails_allows_self_released_without_opened_label_ci
     metadata["label"] = "doin' fine"
     review = make_review(label="Self-Released")
 
-    sanitized_review, warnings = _apply_ai_review_guardrails(metadata, review, None)
+    sanitized_review, warnings = anyio.run(_apply_ai_review_guardrails, metadata, review, None)
 
     assert sanitized_review["metadata"]["label"] == "Self-Released"
     assert warnings == []
@@ -516,9 +526,9 @@ def test_apply_ai_review_guardrails_accepts_explicit_opened_label_evidence(monke
         }
     ]
     review["_opened_page_urls"] = ["https://example.com/release"]
-    monkeypatch.setattr(ai_review, "_url_explicitly_names_label", lambda _url, _label: True)
+    monkeypatch.setattr(ai_review, "_url_explicitly_names_label", _names_label)
 
-    sanitized_review, warnings = _apply_ai_review_guardrails(metadata, review, None)
+    sanitized_review, warnings = anyio.run(_apply_ai_review_guardrails, metadata, review, None)
 
     assert sanitized_review["metadata"]["label"] == "New Label"
     assert warnings == []
@@ -535,9 +545,9 @@ def test_apply_ai_review_guardrails_accepts_annotated_label_support(monkeypatch)
         }
     ]
     review["_opened_page_urls"] = ["https://example.com/release"]
-    monkeypatch.setattr(ai_review, "_url_explicitly_names_label", lambda _url, _label: True)
+    monkeypatch.setattr(ai_review, "_url_explicitly_names_label", _names_label)
 
-    sanitized_review, warnings = _apply_ai_review_guardrails(metadata, review, None)
+    sanitized_review, warnings = anyio.run(_apply_ai_review_guardrails, metadata, review, None)
 
     assert sanitized_review["metadata"]["label"] == "ITModels"
     assert warnings == []
@@ -580,7 +590,7 @@ def test_apply_ai_review_guardrails_preserves_existing_guest_artists() -> None:
         ]
     )
 
-    sanitized_review, warnings = _apply_ai_review_guardrails(metadata, review, None)
+    sanitized_review, warnings = anyio.run(_apply_ai_review_guardrails, metadata, review, None)
 
     assert sanitized_review["metadata"]["artists"] == [
         {"name": "doin' fine", "role": "main"},
@@ -613,7 +623,7 @@ def test_apply_ai_review_guardrails_allows_guest_to_main_promotion() -> None:
         ]
     )
 
-    sanitized_review, warnings = _apply_ai_review_guardrails(metadata, review, None)
+    sanitized_review, warnings = anyio.run(_apply_ai_review_guardrails, metadata, review, None)
 
     assert sanitized_review["metadata"]["artists"] == [
         {"name": "Anna Zak", "role": "main"},
@@ -633,7 +643,7 @@ def test_apply_ai_review_guardrails_drops_unopened_url_additions() -> None:
     )
     review["_opened_page_urls"] = ["https://old.example/release"]
 
-    sanitized_review, warnings = _apply_ai_review_guardrails(metadata, review, None)
+    sanitized_review, warnings = anyio.run(_apply_ai_review_guardrails, metadata, review, None)
 
     assert sanitized_review["metadata"]["urls"] == ["https://old.example/release"]
     assert warnings == [
@@ -905,10 +915,10 @@ def test_review_metadata_with_ai_yes_all_auto_applies(monkeypatch) -> None:
         return review, "response-1"
 
     async def fail_prompt(*_args, **_kwargs):
-        raise AssertionError("click.prompt should not run when yes-all auto-applies AI suggestions")
+        raise AssertionError("click.prompt should not run when -yyy auto-applies AI suggestions")
 
     def fail_confirm(*_args, **_kwargs):
-        raise AssertionError("click.confirm should not run when yes-all is enabled")
+        raise AssertionError("click.confirm should not run when -yyy is enabled")
 
     try:
         cfg.upload.ai_review.enabled = True
@@ -931,3 +941,84 @@ def test_review_metadata_with_ai_yes_all_auto_applies(monkeypatch) -> None:
 
     assert result["year"] == "2003"
     assert sequence == ["ai"]
+
+
+def _web_search(action) -> ResponseFunctionWebSearch:
+    return ResponseFunctionWebSearch(id="ws_1", type="web_search_call", status="completed", action=action)
+
+
+def test_describe_web_search_action_tolerates_missing_query_and_url() -> None:
+    # openai 3 types these fields as Optional; a search with no query or a page open with no URL
+    # must describe as nothing instead of calling .strip() on None.
+    assert _describe_web_search_action(_web_search(ActionSearch(type="search", query=None))) == ""
+    assert _describe_web_search_action(_web_search(ActionSearch(type="search", query="  "))) == ""
+    assert _describe_web_search_action(_web_search(ActionOpenPage(type="open_page", url=None))) == ""
+    assert _describe_web_search_action(_web_search(ActionOpenPage(type="open_page", url="  "))) == ""
+
+
+def test_describe_web_search_action_describes_known_actions() -> None:
+    assert _describe_web_search_action(_web_search(ActionSearch(type="search", query=" a b "))) == "search | a b"
+    assert (
+        _describe_web_search_action(_web_search(ActionOpenPage(type="open_page", url=" https://example.com/x ")))
+        == "open page | https://example.com/x"
+    )
+    find = ActionFind(type="find_in_page", pattern="p", url="https://example.com/x")
+    assert _describe_web_search_action(_web_search(find)) == ""
+
+
+def test_importing_ai_review_and_building_a_client_leaves_ssl_unpatched() -> None:
+    # openai 3 pulls in httpx2 and truststore. truststore must only back the openai client's own
+    # SSL context, never replace ssl.SSLContext process-wide, or aiohttp's tracker traffic changes.
+    # Regression guard: it holds today; this fails if openai or httpx2 ever injects truststore globally.
+    script = textwrap.dedent(
+        """
+        import ssl
+
+        original = (ssl.SSLContext, ssl.create_default_context)
+
+        import openai
+        import salmon.tagger.ai_review  # noqa: F401
+
+        openai.AsyncOpenAI(api_key="k", base_url="https://192.0.2.1:8443/v1")
+
+        assert (ssl.SSLContext, ssl.create_default_context) == original, "ssl was patched"
+        assert type(ssl.create_default_context()) is original[0]
+        """
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    # The test process itself must not be patched either.
+    assert type(ssl.create_default_context()) is ssl.SSLContext
+
+
+def test_client_with_custom_base_url_reaches_a_local_server_and_maps_404() -> None:
+    # Regression guard: openai-compatible servers (local LLMs) keep working through base_url alone.
+    seen: list[str] = []
+
+    async def responses(request: web.Request) -> web.Response:
+        seen.append(request.path)
+        return web.json_response({"error": {"message": "not found"}}, status=404)
+
+    async def run() -> None:
+        app = web.Application()
+        app.router.add_post("/v1/responses", responses)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
+        try:
+            client = openai.AsyncOpenAI(api_key="k", base_url=f"http://127.0.0.1:{port}/v1", max_retries=0)
+            try:
+                await client.responses.create(model="m", input="hi")
+            except openai.NotFoundError:
+                pass
+            else:
+                raise AssertionError("expected NotFoundError")
+            finally:
+                await client.close()
+        finally:
+            await runner.cleanup()
+
+    anyio.run(run)
+    assert seen == ["/v1/responses"]

@@ -8,7 +8,6 @@ from email.utils import formatdate
 from types import SimpleNamespace
 from typing import Any
 
-import aiohttp
 import anyio
 import pytest
 from aiohttp import web
@@ -17,7 +16,6 @@ from salmon import cfg
 from salmon.common.urls import parse_retry_after
 from salmon.errors import ScrapeError
 from salmon.search.tidal import COUNTRIES, Searcher
-from salmon.sources import base as sources_base
 from salmon.sources import tidal as tidal_source
 from salmon.sources.tidal import MAX_PAGES, TidalBase
 from salmon.tagger.sources.tidal import Scraper
@@ -172,8 +170,6 @@ def tidal(monkeypatch: pytest.MonkeyPatch) -> FakeTidal:
     monkeypatch.setattr(cfg.metadata.tidal, "client_secret", "a-secret")
     monkeypatch.setattr(TidalBase, "_access_token", None)
     monkeypatch.setattr(TidalBase, "_token_expiry", 0.0)
-    # The fake server is on loopback, which the public-only connector refuses.
-    monkeypatch.setattr(sources_base, "_public_only_session", lambda timeout: aiohttp.ClientSession(timeout=timeout))
     return FakeTidal()
 
 

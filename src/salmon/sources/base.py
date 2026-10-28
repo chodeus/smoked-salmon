@@ -1,4 +1,3 @@
-import errno
 import re
 from random import choice
 from string import Formatter
@@ -6,33 +5,14 @@ from typing import Any
 
 import aiohttp
 import msgspec
-from aiohttp.abc import ResolveResult
 from bs4 import BeautifulSoup
 
-from salmon.common import is_public_ip
+from salmon import ssrf
 from salmon.constants import UAGENTS
 from salmon.errors import ScrapeError
+from salmon.proxy import session_kwargs
 
 HEADERS = {"User-Agent": choice(UAGENTS)}
-
-
-class _PublicOnlyConnector(aiohttp.TCPConnector):
-    """Refuses any address the connector would use, on every hop a redirect chain takes."""
-
-    async def _resolve_host(self, host: str, port: int, traces: Any = None) -> list[ResolveResult]:
-        # Hooked here, not on the resolver: the connector short-circuits that for an IP literal.
-        results = await super()._resolve_host(host, port, traces)
-        for result in results:
-            if not is_public_ip(result["host"]):
-                # aiohttp turns an OSError from here into ClientConnectorDNSError, which
-                # fetch_page already converts to ScrapeError.
-                raise OSError(errno.EPERM, f"refusing to connect to a non-public address for {host}")
-        return results
-
-
-def _public_only_session(timeout: aiohttp.ClientTimeout) -> aiohttp.ClientSession:
-    """A session whose every connection — including each redirect hop — must be a public address."""
-    return aiohttp.ClientSession(timeout=timeout, connector=_PublicOnlyConnector())
 
 
 class IdentData(msgspec.Struct, frozen=True):
@@ -54,6 +34,8 @@ class BaseScraper:
     release_format: str = ""
     get_params: dict[str, Any] | None = None
     is_json_api: bool = True
+    # The store's key in [proxy.services], whose proxy its sessions go through. None for no proxy.
+    proxy_service: str | None = None
 
     @classmethod
     def format_url(cls, rls_id: Any, rls_name: str | None = None, url: str | None = None) -> str:
@@ -111,7 +93,7 @@ class BaseScraper:
         timeout = aiohttp.ClientTimeout(total=10)
         try:
             async with (
-                _public_only_session(timeout) as session,
+                aiohttp.ClientSession(timeout=timeout, **session_kwargs(self.proxy_service)) as session,
                 session.get(full_url, params=params, headers=headers) as resp,
             ):
                 return await self.handle_json_response(resp)
@@ -119,6 +101,8 @@ class BaseScraper:
             raise ScrapeError(f"{self.__class__.__name__}: Did not receive JSON from API.") from e
         except msgspec.DecodeError as e:
             raise ScrapeError(f"{self.__class__.__name__}: Did not receive JSON from API.") from e
+        except ssrf.NonPublicAddressError as e:
+            raise ScrapeError(f"{self.__class__.__name__}: {e}") from e
         except (TimeoutError, aiohttp.ClientError) as e:
             # aiohttp repeats the request URL, query params included; name the type only.
             raise ScrapeError(f"{self.__class__.__name__}: Request failed ({type(e).__name__}).") from e
@@ -144,7 +128,7 @@ class BaseScraper:
         timeout = aiohttp.ClientTimeout(total=7)
         try:
             async with (
-                _public_only_session(timeout) as session,
+                aiohttp.ClientSession(timeout=timeout, **session_kwargs(self.proxy_service)) as session,
                 session.get(
                     url,
                     params=params,

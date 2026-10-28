@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import asyncclick as click
 
-from salmon import cfg, interaction
+from salmon import cfg, interaction, ssrf
 from salmon.common.progress import reset_progress_callback, set_progress_callback
 from salmon.common.redaction import redact_url
 from salmon.errors import AbortAndDeleteFolder, NoAnswerError, UnknownOutcomeError
@@ -458,6 +458,8 @@ class JobManager:
                     output.to(asker.lines.write),
                     interaction.using(WebInteraction(asker)),
                     accounts.cancelled_with(asker.cancel_requested),
+                    # The URLs a job fetches come from the browser and from store pages: public addresses only.
+                    ssrf.public_only(),
                 ):
                     task = loop.create_task(_in_click_context(_recorded(factory(job))))
                 job._thread_task = task

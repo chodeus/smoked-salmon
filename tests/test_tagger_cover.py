@@ -267,6 +267,20 @@ async def test_a_cover_download_that_times_out_says_so(tmp_path, monkeypatch, ca
     assert "Failed to download cover image (ERROR TimeoutError)" in out
 
 
+async def test_a_cover_download_over_the_size_limit_is_refused(tmp_path, monkeypatch, capsys, cover_server) -> None:
+    monkeypatch.setattr(cover, "MAX_IMAGE_BYTES", 2 * 1024 * 1024)
+    body = _jpeg() + bytes(3 * 1024 * 1024)
+
+    async def oversized(_request: web.Request) -> web.Response:
+        return web.Response(body=body, content_type="image/jpeg")
+
+    result = await cover._download_cover(str(tmp_path), await cover_server(oversized))
+
+    assert result is None
+    assert list(tmp_path.iterdir()) == []
+    assert "Failed to download cover image (ERROR over 2 MiB)" in capsys.readouterr().out
+
+
 def _noisy_jpeg() -> bytes:
     """A JPEG big enough that a cut-off copy still has a whole header."""
     buffer = io.BytesIO()
