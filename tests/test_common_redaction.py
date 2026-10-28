@@ -214,6 +214,10 @@ def test_response_headers_mask_cookie_values_credentials_and_known_secrets() -> 
     assert shown["Server"] == "nginx [REDACTED]"
 
 
+def test_a_response_header_naming_a_secret_is_masked() -> None:
+    assert redact_tracker_headers([("X-Client-Secret", "newly-issued-0123")]) == {"X-Client-Secret": "[REDACTED]"}
+
+
 @pytest.mark.parametrize(
     ("text", "marker"),
     [

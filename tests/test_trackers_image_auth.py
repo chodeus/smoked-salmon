@@ -246,3 +246,15 @@ async def test_debug_output_masks_a_known_secret_a_response_header_repeats(red, 
     printed = capsys.readouterr()
     assert '"X-Echo":"request from [REDACTED]"' in printed.out
     assert "an-api-key" not in printed.out + printed.err
+
+
+async def test_debug_output_masks_a_signed_image_link_in_a_response_header(red, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cfg.tracker, "debug_connection", True)
+    api, tracker = await red()
+    tracker.headers = {"Link": f"<{api.base_url}/i/1.jpg?h={KEY}&e={EXPIRY}&u={USER}>; rel=preload"}
+
+    await api._request("GET", f"{api.base_url}/ajax.php", params={"action": "index"}, needs_authkey=False)
+
+    printed = capsys.readouterr()
+    assert "/i/1.jpg?h=[REDACTED]&e=[REDACTED]&u=[REDACTED]>; rel=preload" in printed.out
+    assert [value for value in AUTH.values() if value in printed.out + printed.err] == []

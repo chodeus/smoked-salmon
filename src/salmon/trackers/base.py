@@ -884,7 +884,11 @@ class BaseGazelleApi:
 
                         if _dumping():
                             _secho(f"[DEBUG] status: {resp.status}", fg="cyan")
-                            headers_shown = redact_tracker_headers(resp.headers.items(), self._secrets())
+                            # Through _redact as well: a header may carry an image link signed for this account.
+                            headers_shown = {
+                                name: self._redact(value)
+                                for name, value in redact_tracker_headers(resp.headers.items(), self._secrets()).items()
+                            }
                             _secho(
                                 f"[DEBUG] response headers: {msgspec.json.encode(headers_shown).decode()}", fg="cyan"
                             )

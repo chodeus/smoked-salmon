@@ -262,8 +262,7 @@ def redact_command(args: list[str], known: Iterable[str | None] = ()) -> str:
 
 
 # What a Gazelle tracker sends back carries its own secrets: the authkey (auth, authkey), the passkey
-# (passkey, torrent_pass), the session cookie and an api key; and the keeplogged cookie and the image host's
-# cookies (imgauth_h, imgauth_u, imgauth_e).
+# (passkey, torrent_pass), the session cookie and an api key.
 _TRACKER_KEYS = r"(?:auth|authkey|passkey|torrent_pass|session|api_?key|authorization|keeplogged|imgauth_[hue])"
 # "authkey": "..." in JSON (or a Python repr of it), authkey = "..." in a page's script. A value ends at its closing
 # quote, or at its line's end when an excerpt cut it off; a backslash escapes the next character.
@@ -281,7 +280,7 @@ _INPUT_TAG = re.compile(r"""<input\b(?:[^>"']|"[^"]*"|'[^']*')*>""", re.IGNORECA
 _SECRET_FIELD_NAME = re.compile(rf"""\bname\s*=\s*(["']?){_TRACKER_KEYS}\1(?=[\s/>])""", re.IGNORECASE)
 _FIELD_VALUE = re.compile(r"""(\bvalue\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s"'>]+)""", re.IGNORECASE)
 # A response header naming a credential. A cookie keeps its name and attributes, only its value is masked.
-_SECRET_HEADER_NAME = re.compile(r"auth|token|key|session|pass", re.IGNORECASE)
+_SECRET_HEADER_NAME = re.compile(r"auth|token|key|session|pass|secret", re.IGNORECASE)
 _COOKIE_VALUE = re.compile(r"^(\s*[^=;\s]+=)[^;]*")
 
 

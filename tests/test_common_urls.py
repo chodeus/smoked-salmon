@@ -39,10 +39,11 @@ def test_no_valid_wait_is_none(value: str | None) -> None:
 
 @pytest.mark.parametrize("usegmt", [True, False], ids=["gmt", "naive"])
 @pytest.mark.usefixtures("far_from_utc")
-def test_http_date_is_the_wait_until_then_in_utc(usegmt: bool) -> None:
-    wait = parse_retry_after(formatdate(time.time() + 30, usegmt=usegmt))
-    assert wait is not None
-    assert 28 < wait <= 30
+def test_http_date_is_the_wait_until_then_in_utc(usegmt: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    now = 1_800_000_000.0
+    # A fixed clock: formatdate drops the fraction of a second, so a stalled run would fall short of a bound.
+    monkeypatch.setattr("salmon.common.urls.time", lambda: now)
+    assert parse_retry_after(formatdate(now + 30, usegmt=usegmt)) == 30
 
 
 def test_http_date_already_past_is_none() -> None:
