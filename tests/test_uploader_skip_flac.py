@@ -681,3 +681,12 @@ def test_the_do_not_upload_list_still_blocks(monkeypatch) -> None:
     assert transcoded == []
     assert "upload_and_report" not in calls
     assert "choose_tracker" not in calls
+
+
+def test_the_run_ends_after_its_tracker(monkeypatch, capsys) -> None:
+    _answers(monkeypatch, "*")
+
+    calls, _transcoded = _flow(monkeypatch, _group(_torrent(11)))
+
+    assert "choose_tracker" not in calls
+    assert "Done uploading this release." in capsys.readouterr().out

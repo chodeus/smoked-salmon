@@ -11,6 +11,7 @@ from salmon.common.redaction import redact_command, redact_secrets, secret_value
 from salmon.config.validations import Seedbox
 from salmon.uploader import seedbox
 from salmon.uploader.torrent_client import DelugeClient, QBittorrentClient, TorrentClient, TransmissionClient
+from salmon.webui import output
 
 
 def _fake_rclone(
@@ -97,6 +98,22 @@ def test_rclone_writes_its_progress_straight_to_salmons_stdout(monkeypatch, tmp_
     assert f"{['copy', '/tmp/Artist - Album', 'seedbox:/music/Artist - Album', '--checksum', '-P']} " in out
     assert salmons_stdout in out
     assert "Rclone upload successful" in out
+
+
+@needs_posix
+def test_in_a_web_job_what_rclone_writes_to_its_stdout_reaches_the_jobs_log_masked(
+    monkeypatch, tmp_path, capfd
+) -> None:
+    _fake_rclone(monkeypatch, tmp_path, stdout="NOTICE: copied with UNIQUESECRET\n")
+    logged: list[tuple[str, bool]] = []
+
+    with output.capturing(), output.to(lambda text, err: logged.append((text, err))):
+        assert _upload_with_fake_rclone(_box(url="sbox", extra_args=["--sftp-pass", "UNIQUESECRET"])) is True
+
+    log = "".join(text for text, err in logged if not err)
+    assert "NOTICE: copied with [REDACTED]" in log
+    out, err = capfd.readouterr()
+    assert "UNIQUESECRET" not in log + out + err
 
 
 @pytest.mark.parametrize(
