@@ -132,8 +132,8 @@ class TransmissionClient(TorrentClient):
             click.secho("Adding torrent to Transmission...", fg="yellow")
             # transmission-rpc's add_torrent returns next(iter(response.values())): a duplicate
             # torrent already in the client comes back as a Torrent object too, the same as a
-            # fresh add, so it cannot be told apart here without reaching into its private
-            # _request. Reported as success either way.
+            # fresh add (its _request maps both alike), so it cannot be told apart here.
+            # Reported as success either way.
             result = self.client.add_torrent(
                 torrent=torrent,
                 download_dir=remote_folder,
