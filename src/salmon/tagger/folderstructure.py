@@ -119,7 +119,8 @@ async def _check_invisible_characters(path: str, scene: bool) -> None:
 
     Raises:
         NoncompliantFolderStructure: If a scene release has such names, the user declines the
-            rename, a rename would replace a path that exists, or nothing would be left of a name.
+            rename, a rename would replace a path that exists, nothing would be left of a name,
+            or a folder could not be read.
         click.Abort: If the release folder's own name holds such a character.
     """
     folder_name = os.path.basename(os.path.normpath(path))
@@ -134,11 +135,11 @@ async def _check_invisible_characters(path: str, scene: bool) -> None:
     root_chars = invisible_chars(folder_name)
     for error in unreadable:
         click.secho(f"Could not read {error.filename} to check its names: {error.strerror}", fg="red")
+    if unreadable:
+        raise NoncompliantFolderStructure
 
     if not offending and not root_chars:
-        if not unreadable:
-            click.secho("No names hold invisible Unicode characters.", fg="green")
-        return
+        return click.secho("No names hold invisible Unicode characters.", fg="green")
 
     click.secho("The following names hold invisible or unusual Unicode characters:", fg="red", bold=True)
     listing = [(shown, chars) for _, shown, chars in offending]
