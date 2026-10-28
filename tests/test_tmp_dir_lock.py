@@ -126,6 +126,30 @@ def test_no_clean_tmp_dir_deletes_nothing_but_still_takes_the_shared_lock(
     assert exclusive_blocked
 
 
+@needs_flock
+def test_a_salmon_that_does_not_clean_leaves_the_lock_shared(tmp_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert fcntl is not None
+    monkeypatch.setattr(cfg.directory, "clean_tmp_dir", False)
+
+    salmon.run.cleanup_tmp_dir()
+
+    # Another salmon starting now is not kept waiting.
+    shared_blocked = _blocked(tmp_dir / ".salmon.lock", fcntl.LOCK_SH)
+    assert not shared_blocked
+
+
+@needs_flock
+def test_a_lock_name_that_is_no_regular_file_is_not_locked(tmp_dir: Path) -> None:
+    try:
+        (tmp_dir / ".salmon.lock").symlink_to(os.devnull)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"this filesystem refuses symlinks: {error}")
+
+    claim = tmp_lock.claim(str(tmp_dir), exclusive=True)
+
+    assert claim is tmp_lock.Claim.UNLOCKED
+
+
 def test_no_tmp_dir_takes_no_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg.directory, "tmp_dir", None)
     monkeypatch.setattr(cfg.directory, "clean_tmp_dir", True)

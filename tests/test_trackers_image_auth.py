@@ -42,6 +42,7 @@ class Tracker:
     def __init__(self) -> None:
         self.answer: Any = {"status": "success", "response": {"h": KEY, "e": int(EXPIRY), "u": int(USER)}}
         self.page: Any = {"status": "success", "response": {}}
+        self.headers: dict[str, str] = {}
         self.seen: list[web.Request] = []
 
     async def handle(self, request: web.Request) -> web.Response:
@@ -52,7 +53,7 @@ class Tracker:
             return web.Response(body=IMAGE, content_type="image/jpeg")
         if request.query.get("action") == "imgauth":
             return web.json_response(self.answer)
-        return web.json_response(self.page)
+        return web.json_response(self.page, headers=self.headers)
 
 
 @pytest.fixture(autouse=True)
@@ -233,3 +234,15 @@ async def test_a_network_error_naming_the_signed_url_shows_none_of_it(red, monke
     shown = f"{caught.value}{printed.out}{printed.err}"
     assert "Connection lost on GET" in shown
     assert [value for value in AUTH.values() if value in shown] == []
+
+
+async def test_debug_output_masks_a_known_secret_a_response_header_repeats(red, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cfg.tracker, "debug_connection", True)
+    api, tracker = await red()
+    tracker.headers = {"X-Echo": f"request from {api.api_key}"}
+
+    await api._request("GET", f"{api.base_url}/ajax.php", params={"action": "index"}, needs_authkey=False)
+
+    printed = capsys.readouterr()
+    assert '"X-Echo":"request from [REDACTED]"' in printed.out
+    assert "an-api-key" not in printed.out + printed.err

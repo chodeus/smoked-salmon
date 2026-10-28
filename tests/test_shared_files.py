@@ -124,3 +124,12 @@ def test_an_entry_that_vanishes_mid_walk_counts_as_sharing_files(monkeypatch, se
     monkeypatch.setattr(os, "lstat", lstat)
 
     assert shares_files(str(album))
+
+
+def test_a_file_gone_between_the_two_checks_counts_as_sharing_files(monkeypatch, seeded) -> None:
+    downloads, _seeding = seeded
+    gone = _album(downloads / "Album") / "gone.flac"
+    # Still a file when isfile looked; gone when its links are counted.
+    monkeypatch.setattr(os.path, "isfile", lambda path: os.fspath(path) == str(gone))
+
+    assert shares_files(str(gone))

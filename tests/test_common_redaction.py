@@ -138,6 +138,12 @@ def test_a_masked_known_value_keeps_what_follows_it() -> None:
     )
 
 
+def test_a_flag_value_a_known_secret_masked_keeps_what_follows_it() -> None:
+    assert redact_secrets("--sftp-pass=hunter2:/music/Album failed", known=["hunter2"]) == (
+        "--sftp-pass=[REDACTED]:/music/Album failed"
+    )
+
+
 def test_a_value_only_partly_known_is_still_masked_whole() -> None:
     assert redact_secrets("pass=hunter2xyz rest", known=["hunter2"]) == "pass=[REDACTED] rest"
 
