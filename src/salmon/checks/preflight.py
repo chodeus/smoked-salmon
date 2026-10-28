@@ -310,7 +310,11 @@ def dupe_row(tracker: str, results: list[dict], release: dict | None = None) -> 
             f"{found} This release's source or encoding is not known from the files, so check them by hand.",
             _notes(names),
         )
-    held = [describe_torrent(torrent, group) for group in results for torrent in held_in_group(group, release)]
+    held = [
+        describe_torrent(torrent, group.get("group") or {})
+        for group in results
+        for torrent in held_in_group(group, release)
+    ]
     if held:
         return Row(
             f"dupe:{tracker}",

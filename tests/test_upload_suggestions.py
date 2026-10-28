@@ -116,9 +116,9 @@ def test_suggest_group_picks_the_matching_result_or_a_new_group() -> None:
     release = {"artists": [("Illy", "main")], "title": "journaling", "year": 2022}
 
     assert dupe_checker.suggest_group(results, release) == "2"
-    assert dupe_checker.suggest_group(results, {**release, "year": 2019}) == "N"
-    assert dupe_checker.suggest_group([], release) == "N"
-    assert dupe_checker.suggest_group(results, None) == "N"
+    assert dupe_checker.suggest_group(results, {**release, "year": 2019}) == ""
+    assert dupe_checker.suggest_group([], release) == ""
+    assert dupe_checker.suggest_group(results, None) == ""
 
 
 def _sg_result(group_id: int, name: str = "Album", year: Any = 2020, artist: str = "Artist") -> dict:
@@ -152,7 +152,7 @@ def test_names_match_as_the_tracker_escapes_them_and_credits_joint_artists() -> 
     ids=["another year", "our year unknown", "two groups match", "a guest's group"],
 )
 def test_no_single_matching_group_leaves_a_new_group_the_default(results, release) -> None:
-    assert dupe_checker.suggest_group(results, release) == "N"
+    assert dupe_checker.suggest_group(results, release) == ""
 
 
 def test_a_remaster_defaults_to_the_group_of_its_original_year() -> None:
@@ -166,12 +166,12 @@ def test_without_a_group_year_the_year_is_compared() -> None:
     del release["group_year"]
 
     assert dupe_checker.suggest_group([_sg_result(1, year=2015), _sg_result(2)], release) == "2"
-    assert dupe_checker.suggest_group([_sg_result(1, year=2018)], release) == "N"
+    assert dupe_checker.suggest_group([_sg_result(1, year=2018)], release) == ""
 
 
 def test_a_group_of_another_year_than_our_group_year_is_no_default() -> None:
     # The edition year alone does not match when the group year says otherwise.
-    assert dupe_checker.suggest_group([_sg_result(1, year=2023)], _sg_release(year="2023", group_year="2018")) == "N"
+    assert dupe_checker.suggest_group([_sg_result(1, year=2023)], _sg_release(year="2023", group_year="2018")) == ""
 
 
 def test_dupe_prompt_pretypes_the_matching_result(monkeypatch) -> None:
@@ -181,7 +181,7 @@ def test_dupe_prompt_pretypes_the_matching_result(monkeypatch) -> None:
 
     result = anyio.run(dupe_checker._prompt_for_group_id, site, results, True, "2")
     assert result == 200
-    result = anyio.run(dupe_checker._prompt_for_group_id, site, results, True, "N")
+    result = anyio.run(dupe_checker._prompt_for_group_id, site, results, True, "")
     assert result is None
 
 
@@ -225,10 +225,16 @@ def test_comparable_keeps_letters_of_every_script() -> None:
     assert comparable(None) == "" and comparable(0) == "0"
 
 
+def test_names_from_the_site_are_compared_with_their_entities_decoded() -> None:
+    results = [_sg_result(1, name="Rock &amp; Roll", artist="Artist &amp; Band")]
+    release = _sg_release(title="Rock & Roll", artists=[("Artist & Band", "main")])
+    assert dupe_checker.suggest_group(results, release) == "1"
+
+
 def test_an_empty_title_never_pre_types_a_result() -> None:
     results = [{"groupId": 100, "groupName": "", "groupYear": 2022, "artist": "Illy"}]
 
-    assert dupe_checker.suggest_group(results, {"artists": [("Illy", "main")], "title": None, "year": 2022}) == "N"
+    assert dupe_checker.suggest_group(results, {"artists": [("Illy", "main")], "title": None, "year": 2022}) == ""
 
 
 def test_suggest_group_skips_a_result_without_a_group_id() -> None:

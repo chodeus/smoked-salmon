@@ -546,6 +546,22 @@ def test_a_red_upload_with_a_log_goes_through_its_upload_page_and_the_budget_cou
     assert _within_the_plans_bound(run)
 
 
+def test_the_site_log_check_gets_the_release_title(monkeypatch, dirs) -> None:
+    album = _album(dirs.downloads / FOLDER)
+    titles: list[str | None] = []
+
+    async def recent_uploads(_site, _searchstrs, our_title=None):
+        titles.append(our_title)
+        return []
+
+    monkeypatch.setattr("salmon.uploader.dupe_checker.dupe_check_recent_torrents", recent_uploads)
+    monkeypatch.setattr(RedApi, "has_session_cookie", property(lambda _self: True))
+    run = _cross_upload(monkeypatch, dirs, [str(TORRENT_ID), "-yyy"], input="\n", prepare=_source_has(album))
+
+    assert run.result.exit_code == 0, run.output
+    assert titles == ["SAMPLE VOL. I (RMX)"]
+
+
 def test_the_site_log_is_read_when_the_search_is_empty_and_a_cookie_is_set(monkeypatch, dirs) -> None:
     album = _album(dirs.downloads / FOLDER)
 

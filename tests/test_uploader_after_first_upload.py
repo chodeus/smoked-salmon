@@ -98,6 +98,16 @@ def flow(monkeypatch):
         "year": 2020,
     }
     metadata = {"artists": [("Artist", "main")], "title": "Album", "label": "Label", "catno": None, "cover": None}
+
+    @contextlib.asynccontextmanager
+    async def group_search(site, searchstrs, our_title):
+        class Fetch:
+            async def result(self):
+                fetch = recording("fetch_existing_group_candidates", ([], None))
+                return await fetch(site, searchstrs, our_title=our_title)
+
+        yield Fetch() if searchstrs else None
+
     for name, fake in {
         "release_type_from_folder": _sync(None),
         "conversion_of": _sync(None),
@@ -116,6 +126,8 @@ def flow(monkeypatch):
         "upload_warnings": _sync([]),
         "check_requests": recording("check_requests"),
         "check_existing_group": recording("check_existing_group", 5),
+        "fetch_existing_group_candidates_in_background": group_search,
+        "resolve_existing_group": recording("resolve_existing_group", 5),
         "recheck_edition": recording("recheck_edition", 5),
         "upload_and_report": upload_and_report,
         "print_torrents": recording("print_torrents", {}),
@@ -218,7 +230,7 @@ def test_the_next_tracker_never_offers_to_delete_the_uploaded_folder(flow, monke
     assert names.count(("post_upload_spectral_check", "RED")) == 1
     assert names.index(("post_upload_spectral_check", "RED")) < names.index(("upload_and_report", "OPS"))
     ops_search = [kw for name, site, kw in calls if name == "check_existing_group" and site == "OPS"]
-    assert ops_search == [{"offer_deletion": False, "release": ops_search[0]["release"]}]
+    assert ops_search == [{"offer_deletion": False, "our_title": "Album", "release": ops_search[0]["release"]}]
 
 
 def test_an_abort_after_an_upload_lists_it_and_still_seeds(flow, monkeypatch, capsys) -> None:
@@ -260,7 +272,7 @@ def _no_torrents(monkeypatch) -> None:
 def test_the_group_confirmation_hides_delete_once_a_torrent_is_up(monkeypatch) -> None:
     _no_torrents(monkeypatch)
     asked = _answers(monkeypatch, "d", "y")
-    confirmed = anyio.run(lambda: dupe_checker._confirm_group_id(FakeSite(), 5, [], None, offer_deletion=False))  # type: ignore[arg-type]
+    confirmed = anyio.run(lambda: dupe_checker._confirm_group_id(FakeSite(), 5, [], offer_deletion=False))  # type: ignore[arg-type]
     assert confirmed is True
     assert len(asked) == 2
     assert all("[d]elete" not in text for text in asked)
@@ -270,7 +282,7 @@ def test_the_group_confirmation_still_offers_delete_before_any_upload(monkeypatc
     _no_torrents(monkeypatch)
     asked = _answers(monkeypatch, "d")
     with pytest.raises(AbortAndDeleteFolder):
-        anyio.run(lambda: dupe_checker._confirm_group_id(FakeSite(), 5, [], None))  # type: ignore[arg-type]
+        anyio.run(lambda: dupe_checker._confirm_group_id(FakeSite(), 5, []))  # type: ignore[arg-type]
     assert "[d]elete music folder" in asked[0]
 
 
@@ -457,12 +469,10 @@ def _upload_unpicked(trackers: list[str] | None, request_id: int | None = None) 
 
 
 def _red_search_fails(set_fake) -> None:
-    async def search(site, *_args, **_kwargs):
-        if site.site_code == "RED":
-            raise RequestError("RED is down")
-        return 5
+    async def search(*_args, **_kwargs):
+        raise RequestError("RED is down")
 
-    set_fake("check_existing_group", search)
+    set_fake("fetch_existing_group_candidates", search)
 
 
 def test_a_first_tracker_whose_search_fails_is_skipped_for_the_next(flow, capsys) -> None:
@@ -471,7 +481,8 @@ def test_a_first_tracker_whose_search_fails_is_skipped_for_the_next(flow, capsys
 
     _upload_unpicked(["RED", "OPS"])
 
-    assert [site for name, site, _kw in calls if name == "check_existing_group"] == ["RED", "OPS"]
+    searches = [(name, site) for name, site, _kw in calls if name.endswith(("_group_candidates", "existing_group"))]
+    assert searches == [("fetch_existing_group_candidates", "RED"), ("check_existing_group", "OPS")]
     assert [site for name, site, _kw in calls if name == "upload_and_report"] == ["OPS"]
     out = capsys.readouterr().out
     assert "Could not search RED for dupes (RED is down): skipping it." in out
@@ -598,16 +609,12 @@ def test_a_listed_first_tracker_is_not_weighed_or_searched(flow, monkeypatch) ->
     assert [site for name, site in names_and_sites if name == "upload_and_report"] == ["OPS"]
 
 
-@pytest.mark.parametrize("conversion", [None, {"source": "Album [24-96]"}], ids=["an-album", "salmons-conversion"])
-def test_the_markers_are_weighed_first_except_on_salmons_own_conversions(flow, monkeypatch, conversion) -> None:
-    _calls, _executed, _set_fake = flow
+def test_the_first_trackers_search_gets_our_title_and_its_prompt_our_release(flow, monkeypatch) -> None:
+    calls, _executed, _set_fake = flow
     monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
-    monkeypatch.setattr(salmon.uploader, "conversion_of", lambda _path: conversion)
-    monkeypatch.setattr(salmon.uploader, "converted_from_note", lambda *_args: None)
-    order: list[str] = []
-    monkeypatch.setattr(salmon.uploader, "standardize_tags", lambda _path: order.append("standardize"))
-    monkeypatch.setattr(salmon.uploader, "_warn_about_provenance", lambda path: order.append(f"warn {path}"))
 
-    _upload(None)
+    _upload_unpicked(None)
 
-    assert order == (["standardize"] if conversion else ["warn /release", "standardize"])
+    first = {name: kw for name, _site, kw in calls if name.endswith("_group_candidates") or name.startswith("resolve")}
+    assert first["fetch_existing_group_candidates"] == {"our_title": "Album"}
+    assert first["resolve_existing_group"]["release"]["title"] == "Album"

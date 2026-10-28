@@ -135,6 +135,5 @@ async def print_group_info(gazelle_site: "BaseGazelleApi", group_id: int, source
 
     for t in group["torrents"]:
         if t["media"] == source:
-            # OPS sends no "remastered" key: describe_torrent reads the edition fields instead.
-            click.echo(unescape(f"> {describe_torrent(t, group)}"))
+            click.echo(unescape(f"> {describe_torrent(t, group['group'])}"))
     return group
