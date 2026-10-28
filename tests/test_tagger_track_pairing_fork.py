@@ -68,3 +68,11 @@ def test_a_scraped_track_without_a_local_one_merges_nothing():
         combine_tracks(base, deepcopy(meta), True)
 
     assert base == untouched
+
+
+def test_a_zero_padded_track_number_is_the_slot_a_source_numbers_without_one():
+    base = {"1": {"03": _track("Work", "03"), "04": _track("Django", "04", isrc="GBAAA2600002")}}
+    meta = {"1": {"3": _track("Django (Original Mix)", "3", isrc="GBAAA2600002")}}
+
+    with pytest.raises(TrackCombineError, match="Disc 1 track 3 would hold two local tracks"):
+        combine_tracks(base, meta, True)

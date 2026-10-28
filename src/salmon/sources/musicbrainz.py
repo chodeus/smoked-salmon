@@ -36,7 +36,7 @@ class MusicBrainzBase(BaseScraper):
         Raises:
             ValueError: If URL is invalid.
         """
-        match = re.search(r"/release/([a-f0-9\-]+)$", url)
+        match = self.regex.match(url)
         if not match:
             raise ValueError("Invalid MusicBrainz URL.")
         rls_id = match[1]

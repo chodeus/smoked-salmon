@@ -10,6 +10,7 @@ from salmon.common import re_strip
 from salmon.common.strings import comparable
 from salmon.errors import TrackCombineError
 from salmon.tagger.pairing import pair_by_content
+from salmon.tagger.retagger import _to_number
 from salmon.tagger.sources import METASOURCES
 from salmon.tagger.sources.base import determine_label_type, generate_artists, standardize_genres
 
@@ -220,15 +221,20 @@ def _refuse_renumbering_that_loses_a_track(btracks, mtracks, ordered, update_tra
     two paired tracks taking the same number on one disc (a track keeps its own disc when it is renumbered).
     Pairing by content can pair a local track anywhere in the folder, not only at its own rank."""
     paired = {id(btrack) for btrack in ordered if btrack is not None}
-    taken = {(btrack["disc#"], btrack["track#"]) for btrack in btracks if id(btrack) not in paired}
+    # As numbers: a file's own "03" and a source's "3" are one slot once retagged.
+    taken = {_slot(btrack["disc#"], btrack["track#"]) for btrack in btracks if id(btrack) not in paired}
     for mtrack, btrack in zip(mtracks, ordered, strict=True):
         if btrack is None:
             continue  # combine_tracks raises for a scraped track without a local one.
         new_num = mtrack["track#"] if (update_track_numbers and mtrack["track#"]) else btrack["track#"]
-        slot = (btrack["disc#"], new_num)
+        slot = _slot(btrack["disc#"], new_num)
         if slot in taken:
             raise TrackCombineError(f"Disc {slot[0]} track {slot[1]} would hold two local tracks, losing one.")
         taken.add(slot)
+
+
+def _slot(disc, track):
+    return (_to_number(disc), _to_number(track))
 
 
 def _print_pairing(mtracks, ordered, reasons):

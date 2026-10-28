@@ -124,16 +124,21 @@ async def _check_invisible_characters(path: str, scene: bool) -> None:
     """
     folder_name = os.path.basename(os.path.normpath(path))
     offending: list[tuple[str, str, list[str]]] = []
-    for root, dirs, files in os.walk(path, topdown=False):
+    unreadable: list[OSError] = []
+    for root, dirs, files in os.walk(path, topdown=False, onerror=unreadable.append):
         for name in [*files, *dirs]:
             if chars := invisible_chars(name):
                 offending.append(
                     (os.path.join(root, name), os.path.join(folder_name, os.path.relpath(root, path), name), chars)
                 )
     root_chars = invisible_chars(folder_name)
+    for error in unreadable:
+        click.secho(f"Could not read {error.filename} to check its names: {error.strerror}", fg="red")
 
     if not offending and not root_chars:
-        return click.secho("No names hold invisible Unicode characters.", fg="green")
+        if not unreadable:
+            click.secho("No names hold invisible Unicode characters.", fg="green")
+        return
 
     click.secho("The following names hold invisible or unusual Unicode characters:", fg="red", bold=True)
     listing = [(shown, chars) for _, shown, chars in offending]

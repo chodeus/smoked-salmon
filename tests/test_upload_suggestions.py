@@ -6,6 +6,7 @@ from typing import Any, cast
 
 import anyio
 import asyncclick as click
+import musicbrainzngs
 import pytest
 from test_tagger_metadata_source_url import make_release_data
 
@@ -13,6 +14,7 @@ import salmon.tagger as tagger
 import salmon.trackers as trackers
 from salmon.common.strings import comparable
 from salmon.errors import ScrapeError
+from salmon.sources.musicbrainz import MusicBrainzBase
 from salmon.sources.qobuz import QobuzBase
 from salmon.tagger import metadata as metadata_mod
 from salmon.tagger import review
@@ -371,3 +373,18 @@ def test_a_tracked_bandcamp_link_is_the_same_album_as_its_plain_one() -> None:
 )
 def test_a_store_link_with_a_query_is_its_own_stores(url, source) -> None:
     assert metadata_mod._metasource_of(url) == source
+
+
+def test_a_musicbrainz_link_with_a_query_fetches_its_release(monkeypatch) -> None:
+    asked = []
+
+    def get_release_by_id(rls_id, includes):
+        asked.append(rls_id)
+        return {"release": {}}
+
+    monkeypatch.setattr(musicbrainzngs, "get_release_by_id", get_release_by_id)
+    url = "https://musicbrainz.org/release/0f3c8f2a-1b2c-4d5e-8f90-123456789abc/?tab=tracks"
+
+    anyio.run(lambda: MusicBrainzBase().fetch_data(url))
+
+    assert asked == ["0f3c8f2a-1b2c-4d5e-8f90-123456789abc"]
