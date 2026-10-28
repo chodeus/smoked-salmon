@@ -208,6 +208,11 @@ class TagFile:
             frame = getattr(id3, tag_key)(text=f"{track}/{value}")
             tags.delall(tag_key)
             tags.add(frame)
+        elif key == "comment":
+            # Only the comment _comment reads: a described COMM frame (iTunNORM) is a player's own data.
+            for stale in [f for f in tags.getall("COMM") if not f.desc]:
+                tags.delall(stale.HashKey)
+            tags.add(id3.COMM(text=value))
         else:
             try:
                 tag_key, desc = TAG_FIELDS["MP3"][key][0].split(":")

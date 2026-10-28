@@ -12,7 +12,7 @@ musicbrainzngs.set_useragent("salmon", "1.0", "noreply@salm.on")
 class MusicBrainzBase(BaseScraper):
     url = site_url = "https://musicbrainz.org"
     release_format = "/release/{rls_id}"
-    regex = re.compile(r"^https?://(?:www\.)?musicbrainz.org/release/([a-f0-9\-]+)$")
+    regex = re.compile(r"^https?://(?:www\.)?musicbrainz.org/release/([a-f0-9\-]+)/?(?=$|[?#])")
 
     async def fetch_data(
         self,

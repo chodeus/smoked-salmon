@@ -263,7 +263,7 @@ async def _alias_artists(metadata):
                     metadata["tracks"][dnum][tnum]["artists"].pop(i)
 
 
-# Where the track count stops meaning a single, then an EP. From 30 minutes, any release is an album.
+# Where the track count stops meaning a single, then an EP. From 30 minutes, an album whatever the count.
 _SINGLE_MAX_TRACKS = 3
 _EP_MAX_TRACKS = 6
 _ALBUM_MIN_SECONDS = 30 * 60

@@ -358,3 +358,16 @@ def test_a_tracked_bandcamp_link_is_the_same_album_as_its_plain_one() -> None:
     assert plain is not None
     assert metadata_mod._album_identity("https://artist.bandcamp.com/album/some-album?from=fanpub_fnb") == plain
     assert metadata_mod._album_identity("https://artist.bandcamp.com/album/some-album#buyFullDiscography") == plain
+
+
+@pytest.mark.parametrize(
+    ("url", "source"),
+    [
+        ("https://open.qobuz.com/album/0887396827479?utm_source=share", "Qobuz"),
+        ("https://www.qobuz.com/gb-en/album/some-album/0887396827479#tracks", "Qobuz"),
+        ("https://www.beatport.com/release/some-release/1234567?utm_source=share", "Beatport"),
+        ("https://musicbrainz.org/release/0f3c8f2a-1b2c-4d5e-8f90-123456789abc?tab=tracks", "MusicBrainz"),
+    ],
+)
+def test_a_store_link_with_a_query_is_its_own_stores(url, source) -> None:
+    assert metadata_mod._metasource_of(url) == source

@@ -223,8 +223,8 @@ def _bracketed(foldername, position) -> bool:
 def _token_span(foldername, token):
     """Where the name's last resolution token is, or None.
 
-    It must stand alone ("1924-48" in a title holds "24-48" but not as a token) and sit in a bracket group, unless
-    the folder template places {resolution} itself: a bare "24-96" in a title is then the title's.
+    It must stand alone ("1924-48" in a title holds "24-48" but not as a token). Unless the folder template places
+    {resolution} itself, it must also sit in a bracket group: without it in the template, a bare "24-96" is the title's.
     """
     if not token:
         return None
