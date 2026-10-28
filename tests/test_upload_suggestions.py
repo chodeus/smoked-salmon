@@ -1,18 +1,25 @@
 """Suggested answers: every prompt stays, but the answer the files already imply is pre-typed."""
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any, cast
 
 import anyio
 import asyncclick as click
+import musicbrainzngs
 import pytest
+from test_tagger_metadata_source_url import make_release_data
 
+import salmon.tagger as tagger
 import salmon.trackers as trackers
 from salmon.common.strings import comparable
+from salmon.errors import ScrapeError
+from salmon.sources.musicbrainz import MusicBrainzBase
+from salmon.sources.qobuz import QobuzBase
 from salmon.tagger import metadata as metadata_mod
 from salmon.tagger import review
 from salmon.tagger import tag_urls as src
-from salmon.uploader import dupe_checker
+from salmon.uploader import dupe_checker, staging
 
 QOBUZ_URL = "https://www.qobuz.com/au-en/album/journaling-illy/ul39e7xjbuqrb"
 DEEZER_URL = "https://www.deezer.com/album/322064097"
@@ -285,3 +292,99 @@ def test_the_metadata_prompt_says_how_several_answers_combine(monkeypatch) -> No
 
     assert "separated by spaces" in messages[0]
     assert "[a]bort" in messages[0]
+
+
+def test_an_unstarred_store_url_says_why_it_is_not_the_source(capsys) -> None:
+    metadata_mod._explain_default("https://www.qobuz.com/album/x/0887396827479", {})
+
+    out = capsys.readouterr().out
+    assert "(not starred: not a WEB release)" in out
+
+
+def test_a_store_url_that_fails_to_scrape_is_reported_and_left_out(monkeypatch, capsys) -> None:
+    class FailingScraper:
+        regex = QobuzBase.regex
+
+        async def scrape_release(self, url: str):
+            raise ScrapeError("no such album")
+
+    async def answer(*_args, **_kwargs):
+        return "https://open.qobuz.com/album/0887396827479"
+
+    monkeypatch.setattr(metadata_mod.click, "prompt", answer)
+    monkeypatch.setattr(metadata_mod, "METASOURCES", {"Qobuz": SimpleNamespace(Scraper=FailingScraper)})
+
+    metadata, _source_url = anyio.run(metadata_mod._select_choice, {}, make_release_data())
+
+    out = capsys.readouterr().out
+    assert metadata["title"] == "Example Release"
+    assert "Scrape error: no such album" in out
+
+
+def test_salmon_tag_pretypes_the_release_type_its_library_folder_names(monkeypatch, tmp_path) -> None:
+    album = tmp_path / "Artist" / "EP" / "Album"
+    album.mkdir(parents=True)
+    hints = []
+
+    @contextmanager
+    def in_place(path, scratch):
+        yield path, None
+
+    async def release_data(*_args, **_kwargs):
+        return {"title": "Album"}
+
+    async def scraped(*_args):
+        return {"title": "Album"}, None
+
+    async def review_then_stop(metadata, rls_data, source_url, validator, review, **_kwargs):
+        hints.append(review.keywords["rls_type_hint"])
+        raise click.Abort
+
+    monkeypatch.setattr(staging, "staged_source", in_place)
+    monkeypatch.setattr(tagger, "standardize_tags", lambda path: None)
+    monkeypatch.setattr(tagger, "gather_tags", lambda path: {})
+    monkeypatch.setattr(tagger, "gather_audio_info", lambda path: {})
+    monkeypatch.setattr(tagger, "construct_rls_data", release_data)
+    monkeypatch.setattr(tagger, "get_metadata", scraped)
+    monkeypatch.setattr(tagger, "review_metadata_with_ai", review_then_stop)
+
+    with pytest.raises(click.Abort):
+        anyio.run(tagger.run_tag, tagger.TagOptions(path=str(album), source="WEB"))
+
+    assert hints == ["EP"]
+
+
+def test_a_tracked_bandcamp_link_is_the_same_album_as_its_plain_one() -> None:
+    plain = metadata_mod._album_identity("https://artist.bandcamp.com/album/some-album")
+
+    assert plain is not None
+    assert metadata_mod._album_identity("https://artist.bandcamp.com/album/some-album?from=fanpub_fnb") == plain
+    assert metadata_mod._album_identity("https://artist.bandcamp.com/album/some-album#buyFullDiscography") == plain
+
+
+@pytest.mark.parametrize(
+    ("url", "source"),
+    [
+        ("https://open.qobuz.com/album/0887396827479?utm_source=share", "Qobuz"),
+        ("https://www.qobuz.com/gb-en/album/some-album/0887396827479#tracks", "Qobuz"),
+        ("https://www.beatport.com/release/some-release/1234567?utm_source=share", "Beatport"),
+        ("https://musicbrainz.org/release/0f3c8f2a-1b2c-4d5e-8f90-123456789abc?tab=tracks", "MusicBrainz"),
+    ],
+)
+def test_a_store_link_with_a_query_is_its_own_stores(url, source) -> None:
+    assert metadata_mod._metasource_of(url) == source
+
+
+def test_a_musicbrainz_link_with_a_query_fetches_its_release(monkeypatch) -> None:
+    asked = []
+
+    def get_release_by_id(rls_id, includes):
+        asked.append(rls_id)
+        return {"release": {}}
+
+    monkeypatch.setattr(musicbrainzngs, "get_release_by_id", get_release_by_id)
+    url = "https://musicbrainz.org/release/0f3c8f2a-1b2c-4d5e-8f90-123456789abc/?tab=tracks"
+
+    anyio.run(lambda: MusicBrainzBase().fetch_data(url))
+
+    assert asked == ["0f3c8f2a-1b2c-4d5e-8f90-123456789abc"]

@@ -4,6 +4,7 @@ import re
 from copy import copy
 from itertools import islice
 from typing import Any
+from urllib.parse import urlsplit
 
 import asyncclick as click
 import msgspec
@@ -14,41 +15,10 @@ from salmon.common import handle_scrape_errors, make_searchstrs, re_strip
 from salmon.common.strings import artist_keys, comparable
 from salmon.search import SEARCHSOURCES, run_metasearch
 from salmon.sources.deezer import DeezerBase, album_upc
-from salmon.tagger.combine import combine_metadatas, get_source_from_link
+from salmon.tagger.combine import combine_metadatas
 from salmon.tagger.sources import METASOURCES
 from salmon.tagger.sources.base import generate_artists, standardize_genres
 from salmon.tagger.tag_urls import tag_urls
-
-_NOT_ALBUM_PAGE = re.compile(r"/(?:track|playlist)/", re.IGNORECASE)
-_TYPE_SUFFIX = re.compile(r"\s*(?:-\s*(?:EP|Single)|[(\[](?:EP|Single)[)\]])\s*$", re.IGNORECASE)
-
-
-def _metasource_of(url: str) -> str | None:
-    """The metadata source that scrapes this URL, if any."""
-    return next((name for name, source in METASOURCES.items() if source.Scraper.regex.match(url)), None)
-
-
-def files_store_url(path: str) -> str | None:
-    """The one scraped-store album URL the files' tags hold (SOURCE, URL, WWW, ...); None for none or two."""
-    sourced, other = tag_urls(path)
-
-    def album(url: str) -> bool:
-        return is_store_url(url) and not _NOT_ALBUM_PAGE.search(url) and get_source_from_link(url) is not None
-
-    if len({_album_identity(url) for url in sourced + other if album(url)}) != 1:
-        return None
-    return next((url for url in sourced if album(url)), None)
-
-
-def _album_identity(url: str) -> tuple[str, ...] | None:
-    """(source, release id) of a store album URL, so its other forms (locale, host, slash) count once."""
-    source = get_source_from_link(url)
-    match = METASOURCES[source].Scraper.regex.search(url) if source else None
-    if source is None or match is None:
-        return None
-    groups = [group.lower() for group in match.groups() if group]
-    # The release id is the last group; a Bandcamp slug is unique only on its own host, the first group.
-    return (source, groups[0], groups[-1]) if source == "Bandcamp" else (source, groups[-1])
 
 
 async def get_metadata(
@@ -89,8 +59,7 @@ async def get_metadata(
         searchstrs, filter=False, track_count=len(tags), artists=artists_list, album=album_title
     )
     choices = _print_search_results(search_results, rls_data)
-    store = files_store_url(path)
-    default = suggest_choice(choices, search_results, rls_data, len(tags), store)
+    default = suggest_choice(choices, search_results, rls_data, len(tags), files_store_url(path))
     _explain_default(default, choices)
     metadata, source_url = await _select_choice(choices, rls_data, default=default)
     return await _finish_metadata(metadata, path), source_url
@@ -161,26 +130,29 @@ def _combine_scraped(
     return meta
 
 
+def _deezer_album_ids(urls: list[str]) -> set[str]:
+    """The distinct Deezer album IDs among `urls`; one album in several URL forms is one ID."""
+    ids = set()
+    for url in urls:
+        match = DeezerBase.regex.search(url)
+        if match and match[1] == "album":
+            ids.add(match[2])
+    return ids
+
+
 async def fill_upc_from_deezer(metadata: dict[str, Any], path: str) -> None:
-    """Fill an empty UPC from the files' own Deezer album URL, in one request; another store's may differ."""
+    """Take a missing UPC from the files' own Deezer album; another store's release may carry a different barcode.
+
+    Makes one request at most, and only when the UPC is still empty and the files' tags name exactly one
+    Deezer album: with two different albums (a compilation, a mistagged track) any pick could be the wrong barcode.
+    """
     if metadata.get("upc"):
         return
     sourced, other = tag_urls(path)
-    deezer_albums = [
-        url for url in (*sourced, *other) if (found := DeezerBase.regex.search(url)) and found[1] == "album"
-    ]
-    albums = {_album_identity(url): url for url in deezer_albums}
-    # Two Deezer albums in the tags say nothing about which edition this is.
-    if len(albums) != 1:
+    ids = _deezer_album_ids([*sourced, *other])
+    if len(ids) != 1:
         return
-    metadata["upc"] = await album_upc(next(iter(albums.values())))
-
-
-def _dedupe_catno_against_upc(metadata: dict[str, Any]) -> None:
-    """Clear the catalogue number when it only repeats the UPC; either key may be missing."""
-    catno = metadata.get("catno")
-    if catno and catno.replace(" ", "") == str(metadata.get("upc")):
-        metadata["catno"] = None
+    metadata["upc"] = await album_upc(f"https://www.deezer.com/album/{ids.pop()}")
 
 
 def _print_search_results(results, rls_data=None):
@@ -223,19 +195,48 @@ def _print_search_results(results, rls_data=None):
     return choices
 
 
-def suggest_choice(
-    choices: dict[int, tuple[str, str]],
-    search_results: dict[str, Any],
-    rls_data: dict[str, Any],
-    track_count: int,
-    url: str | None,
-) -> str | None:
-    """The metadata prompt's default: the files' URL (starred for WEB) and the matching result of another store."""
-    parts = [f"{'*' if rls_data.get('source') == 'WEB' else ''}{url}"] if url else []
-    match = _matching_choice(choices, search_results, rls_data, track_count)
-    if match is not None and (url is None or choices[match][0] != get_source_from_link(url)):
-        parts.append(str(match))
-    return " ".join(parts) or None
+# A store's page for one track or a playlist: not the album's.
+_NOT_ALBUM_PAGE = re.compile(r"/(?:track|playlist)/", re.IGNORECASE)
+# What a store appends to a title to say the release type: "Title - EP", "Title (Single)".
+_TYPE_SUFFIX = re.compile(r"\s*(?:-\s*(?:EP|Single)|[(\[](?:EP|Single)[)\]])\s*$", re.IGNORECASE)
+
+
+def _metasource_of(url: str) -> str | None:
+    """The metadata source that scrapes this URL, if any."""
+    return next((name for name, source in METASOURCES.items() if source.Scraper.regex.match(url)), None)
+
+
+def files_store_url(path: str) -> str | None:
+    """The store album URL the files' own tags give under a source key (SOURCE, URL, WWW, ...).
+
+    Only a URL of a store a metadata source scrapes counts, and only when it is the only store album
+    URL the tags hold, under any key: two different ones give none.
+    """
+    sourced, other = tag_urls(path)
+
+    def album(url: str) -> bool:
+        return is_store_url(url) and not _NOT_ALBUM_PAGE.search(url) and _metasource_of(url) is not None
+
+    if len({_album_identity(url) for url in sourced + other if album(url)}) != 1:
+        return None
+    return next((url for url in sourced if album(url)), None)
+
+
+def _album_identity(url: str) -> tuple[str, ...] | None:
+    """(source, release id) of a store album URL, or (source, host, slug) for Bandcamp, so its other forms
+    (locale, host, slash) count once."""
+    source = _metasource_of(url)
+    # A query (Bandcamp's "?from=...") or fragment is no part of the album's identity.
+    bare = urlsplit(url)._replace(query="", fragment="").geturl()
+    match = METASOURCES[source].Scraper.regex.search(bare) if source else None
+    if source is None or match is None:
+        return None
+    groups = [group.rstrip("/") for group in match.groups() if group]
+    # The release id is the last group, kept as written. A Bandcamp slug is unique only on its own host, the
+    # first group; Bandcamp writes both in lowercase, so their case does not matter.
+    if source == "Bandcamp":
+        return (source, groups[0].lower(), groups[-1].lower())
+    return (source, groups[-1])
 
 
 def _comparable_title(title: object) -> str:
@@ -245,7 +246,11 @@ def _comparable_title(title: object) -> str:
 def _matching_choice(
     choices: dict[int, tuple[str, str]], search_results: dict[str, Any], rls_data: dict[str, Any], track_count: int
 ) -> int | None:
-    """The first result matching the tags' artist, title, track count and year (missing passes), alone in its source."""
+    """The search result whose artist, title, track count and year agree with the files' own tags.
+
+    A count or year a result does not give is not held against it. Two matching results from the same
+    source (an explicit and a clean version, say) give none from that source.
+    """
     title = _comparable_title(rls_data.get("title"))
     artists = artist_keys(rls_data.get("artists"))
     year = str(rls_data.get("year") or "")[:4]
@@ -267,6 +272,35 @@ def _matching_choice(
     return None
 
 
+def suggest_choice(
+    choices: dict[int, tuple[str, str]],
+    search_results: dict[str, Any],
+    rls_data: dict[str, Any],
+    track_count: int,
+    url: str | None,
+) -> str | None:
+    """The metadata prompt's default: the files' store URL, and the search result that matches them.
+
+    The URL is starred (the release's source) only for a WEB release. The matching result is left
+    out when it is from the URL's own store, which already gives that source's metadata.
+
+    Args:
+        choices: The numbered search results, as printed.
+        search_results: What the search returned, by source and release ID.
+        rls_data: The release data built from the tags.
+        track_count: The number of audio files.
+        url: The files' store URL (files_store_url), or None.
+
+    Returns:
+        The answer an empty reply gives, or None for no default.
+    """
+    parts = [f"{'*' if rls_data.get('source') == 'WEB' else ''}{url}"] if url else []
+    match = _matching_choice(choices, search_results, rls_data, track_count)
+    if match is not None and (url is None or choices[match][0] != _metasource_of(url)):
+        parts.append(str(match))
+    return " ".join(parts) or None
+
+
 async def _select_choice(
     choices: dict[int, tuple[str, str]], rls_data: dict[str, Any] | None, default: str | None = None
 ) -> tuple[dict[str, Any], str | None]:
@@ -277,6 +311,7 @@ async def _select_choice(
     Args:
         choices: Dictionary of choice ID to (source, release_id) tuples.
         rls_data: Release data dictionary.
+        default: The answer an empty reply gives (suggest_choice), or None to require one.
 
     Returns:
         Tuple of (metadata dict, source URL or None).
@@ -452,3 +487,13 @@ def clean_metadata(metadata):
 
     _dedupe_catno_against_upc(metadata)
     return metadata
+
+
+def _dedupe_catno_against_upc(metadata: dict[str, Any]) -> None:
+    """Clear the catalogue number when it is really just the UPC repeated.
+
+    Uses `.get` rather than indexing: manually edited metadata can omit either key entirely.
+    """
+    catno = metadata.get("catno")
+    if catno and catno.replace(" ", "") == str(metadata.get("upc")):
+        metadata["catno"] = None

@@ -142,3 +142,42 @@ def test_a_track_with_no_genre_takes_no_composer_credit() -> None:
     track = SimpleNamespace(artist=["Main Act"], composer="Main Act", conductor=None, genre=None)
 
     assert construct_track_artists(track) == [("Main Act", "main")]
+
+
+def test_construct_track_artists_ignores_composer_outside_classical() -> None:
+    track = SimpleNamespace(artist="Adele", composer=["Adele", "Paul Epworth"], genre=["Pop"])
+
+    assert construct_track_artists(track) == [("Adele", "main")]
+
+
+def test_construct_track_artists_ignores_conductor_outside_classical() -> None:
+    track = SimpleNamespace(artist="Some Band", conductor="Some Band", composer=None, genre="Rock")
+
+    assert construct_track_artists(track) == [("Some Band", "main")]
+
+
+def test_construct_track_artists_without_genre_is_not_classical() -> None:
+    track = SimpleNamespace(artist="Some Band", conductor="Maestro", composer="Writer")
+
+    assert construct_track_artists(track) == [("Some Band", "main")]
+
+
+def test_construct_track_artists_classical_list_genre_keeps_roles() -> None:
+    track = SimpleNamespace(artist="Orchestra", conductor="Maestro", composer="Writer", genre=["Classical", "Baroque"])
+
+    assert construct_track_artists(track) == [
+        ("Orchestra", "main"),
+        ("Maestro", "conductor"),
+        ("Writer", "composer"),
+    ]
+
+
+def test_construct_artists_li_keeps_main_artist_named_in_composer_on_pop_album() -> None:
+    from salmon.tagger.pre_data import construct_artists_li
+
+    tags = {
+        "01.flac": SimpleNamespace(artist="Adele", composer=["Adele", "Paul Epworth"], genre=["Pop"]),
+        "02.flac": SimpleNamespace(artist="Adele", composer="Adele", genre=["Pop"]),
+    }
+
+    assert construct_artists_li(tags) == [("Adele", "main")]

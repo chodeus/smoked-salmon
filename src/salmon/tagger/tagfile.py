@@ -86,6 +86,8 @@ class TagFile:
                 field = TAG_FIELDS["MP3"][attr][0]
                 if field.startswith("TXXX:") and isinstance(mut.tags, ID3Tags):
                     return _txxx_values(mut.tags, field)
+                if field == "COMM" and isinstance(mut.tags, ID3Tags):
+                    return _comment(mut.tags)
                 return self.parse_tag(attr, "MP3")
             elif isinstance(mut, mp4.MP4):
                 tag = self.parse_tag(attr, "AAC")
@@ -124,8 +126,8 @@ class TagFile:
                         val = str(frame.text[0])
                         if "number" in attr:
                             return val.split("/")[0]
-                        elif "total" in attr and "/" in val:
-                            return val.split("/")[1]
+                        # "3" alone holds no total.
+                        return val.split("/")[1] if "/" in val else None
                     except (AttributeError, KeyError):
                         # AAC: MP4 tags are tuples like (track, total)
                         tag_val = tags[field]
@@ -206,11 +208,17 @@ class TagFile:
             frame = getattr(id3, tag_key)(text=f"{track}/{value}")
             tags.delall(tag_key)
             tags.add(frame)
+        elif key == "comment":
+            # Only the comment _comment reads: a described COMM frame (iTunNORM) is a player's own data.
+            for stale in [f for f in tags.getall("COMM") if not f.desc]:
+                tags.delall(stale.HashKey)
+            tags.add(id3.COMM(text=value))
         else:
             try:
                 tag_key, desc = TAG_FIELDS["MP3"][key][0].split(":")
-                # A TXXX description is case-sensitive in the frame's key: a stale "artists" frame would stay beside it.
-                for stale in [frame for frame in tags.getall(tag_key) if frame.desc.lower() == desc.lower()]:
+                # A TXXX description is case-sensitive in the frame's key, so a stale "artists" frame would
+                # sit next to the new "ARTISTS" one.
+                for stale in [f for f in tags.getall(tag_key) if f.desc.lower() == desc.lower()]:
                     tags.delall(stale.HashKey)
                 frame = getattr(id3, tag_key)(encoding=3, desc=desc, text=value)
                 tags.add(frame)
@@ -261,37 +269,6 @@ def _txxx_values(tags: ID3Tags, field: str) -> list[str] | None:
     return [value for frame in tags.getall("TXXX") if frame.desc.lower() == desc for value in frame.text] or None
 
 
-_FORMATS = ((flac.FLAC, "FLAC"), (mp3.MP3, "MP3"), (mp4.MP4, "AAC"))
-
-
-def keeps_field(tags: Any, field: str) -> bool:
-    """Whether the file behind ``tags`` has the field at all (an M4A has no ARTISTS); a stand-in keeps every field."""
-    mut = getattr(tags, "mut", None)
-    kind = next((name for cls, name in _FORMATS if isinstance(mut, cls)), None)
-    return kind is None or field in TAG_FIELDS[kind]
-
-
-def as_stored(tags: Any, value: Any) -> Any:
-    """A value as the file behind ``tags`` keeps it: text, or a list of texts that an M4A joins into one."""
-    if not isinstance(value, list):
-        return str(value)
-    values = [str(v) for v in value]
-    return "; ".join(values) if isinstance(getattr(tags, "mut", None), mp4.MP4) else values
-
-
-def parse_tag_number(tracktags, field):
-    """The tag's number, or None when it is absent or not a number (unlike ``_get_tag_number``, no default)."""
-    value = tracktags.get(field) if isinstance(tracktags, dict) else getattr(tracktags, field, None)
-
-    if isinstance(value, list) and value:
-        value = value[0]
-    if value is None:
-        return None
-    if isinstance(value, str):
-        value = value.split("/")[0]
-        # str.isdecimal(), not str.isdigit(): isdigit() accepts some Unicode digits (superscript
-        # "2") that int() then rejects, while isdecimal() is true for exactly what int() accepts.
-        return int(value) if value.isdecimal() else None
-    if isinstance(value, int):
-        return value
-    return None
+def _comment(tags: ID3Tags) -> str | None:
+    """The comment players show: COMM frames without a description, in any language (iTunNORM and the like are not)."""
+    return "; ".join(text for frame in tags.getall("COMM") if not frame.desc for text in frame.text) or None

@@ -11,13 +11,6 @@ from salmon.errors import InvalidMetadataError
 from salmon.tagger.metadata import _print_metadata
 from salmon.tagger.sources.base import generate_artists, standardize_genres
 
-_SINGLE_MAX_TRACKS = 3
-_EP_MAX_TRACKS = 6
-_ALBUM_MIN_SECONDS = 30 * 60
-_SINGLE_TRACK_MAX_SECONDS = 10 * 60
-_TITLE_SAYS_EP = re.compile(r"\bE\.?P\b\.?", re.IGNORECASE)
-_TITLE_SAYS_SINGLE = re.compile(r"\bsingle\b", re.IGNORECASE)
-
 _CLASSICAL_GENRES = {
     "classical",
     "baroque",
@@ -37,7 +30,12 @@ _DEFERRED_PRE_AI_METADATA_ERRORS = {
 
 
 async def review_metadata(metadata, validator, enforce_required_fields: bool = True, rls_type_hint: str | None = None):
-    """Check the metadata, then offer edits; `rls_type_hint` is pre-typed when the release type has to be asked."""
+    """
+    Validate that the metadata is per the user's wishes and then offer the user
+    the ability to edit it.
+
+    rls_type_hint (suggest_release_type) is the default answer when the release type has to be asked.
+    """
     if enforce_required_fields:
         await _check_for_empty_release_type(metadata, rls_type_hint)
         await _check_for_empty_genre_list(metadata)
@@ -265,6 +263,57 @@ async def _alias_artists(metadata):
                     metadata["tracks"][dnum][tnum]["artists"].pop(i)
 
 
+# Where the track count stops meaning a single, then an EP. From 30 minutes, an album whatever the count.
+_SINGLE_MAX_TRACKS = 3
+_EP_MAX_TRACKS = 6
+_ALBUM_MIN_SECONDS = 30 * 60
+# A single's track past this length makes it an EP.
+_SINGLE_TRACK_MAX_SECONDS = 10 * 60
+_TITLE_SAYS_EP = re.compile(r"\bE\.?P\b\.?", re.IGNORECASE)
+_TITLE_SAYS_SINGLE = re.compile(r"\bsingle\b", re.IGNORECASE)
+
+
+_TYPE_FROM_FOLDER = {name.lower(): name for name in RELEASE_TYPES}
+
+
+def release_type_from_folder(path: str) -> str | None:
+    """Release type named by the album's parent folder, as Lidarr's Artist/Type/Album layout does."""
+    parent = os.path.basename(os.path.dirname(os.path.abspath(path))).lower()
+    return _TYPE_FROM_FOLDER.get(parent)
+
+
+def suggest_release_type(folder_hint: str | None, title: str | None, durations: Sequence[float]) -> str | None:
+    """The release type the files' track count and length imply, as the release type prompt's default.
+
+    The type the album's library folder names (release_type_from_folder) comes first. Else 1 to 3 tracks
+    are a single, 4 to 6 an EP, more an album; 30 minutes or more in all, an album, and a single with a track
+    past 10 minutes, an EP. A title that names another type ("... EP", "(Single)")
+    contradicts it: then there is no default.
+
+    Args:
+        folder_hint: The release type the library folder names, or None.
+        title: The release title from the tags.
+        durations: Each audio file's length in seconds; unknown lengths are 0.
+    """
+    if folder_hint:
+        return folder_hint
+    if not durations:
+        return None
+    total = sum(durations)
+    if total >= _ALBUM_MIN_SECONDS or len(durations) > _EP_MAX_TRACKS:
+        rls_type = "Album"
+    elif len(durations) > _SINGLE_MAX_TRACKS or max(durations) > _SINGLE_TRACK_MAX_SECONDS:
+        rls_type = "EP"
+    else:
+        rls_type = "Single"
+    title = title or ""
+    if _TITLE_SAYS_EP.search(title) and rls_type != "EP":
+        return None
+    if _TITLE_SAYS_SINGLE.search(title) and rls_type != "Single":
+        return None
+    return rls_type
+
+
 async def _edit_release_type(metadata, default: str | None = None):
     _print_release_types()
     types = {r.lower(): r for r in RELEASE_TYPES}
@@ -284,37 +333,6 @@ async def _edit_release_type(metadata, default: str | None = None):
             metadata["rls_type"] = types[rtype]
             return
         click.secho(f"{rtype} is not a valid release type.", fg="red")
-
-
-_TYPE_FROM_FOLDER = {name.lower(): name for name in RELEASE_TYPES}
-
-
-def release_type_from_folder(path: str) -> str | None:
-    """Release type named by the album's parent folder, as Lidarr's Artist/Type/Album layout does."""
-    parent = os.path.basename(os.path.dirname(os.path.abspath(path))).lower()
-    return _TYPE_FROM_FOLDER.get(parent)
-
-
-def suggest_release_type(folder_hint: str | None, title: str | None, durations: Sequence[float]) -> str | None:
-    """Release type default: the library folder's word, else by track count and length; None if the title disagrees."""
-    if folder_hint:
-        return folder_hint
-    if not durations:
-        return None
-    # A length mutagen cannot read is 0, so unknown lengths leave the track count to decide.
-    total = sum(durations)
-    if total >= _ALBUM_MIN_SECONDS or len(durations) > _EP_MAX_TRACKS:
-        rls_type = "Album"
-    elif len(durations) > _SINGLE_MAX_TRACKS or max(durations) > _SINGLE_TRACK_MAX_SECONDS:
-        rls_type = "EP"
-    else:
-        rls_type = "Single"
-    title = title or ""
-    if _TITLE_SAYS_EP.search(title) and rls_type != "EP":
-        return None
-    if _TITLE_SAYS_SINGLE.search(title) and rls_type != "Single":
-        return None
-    return rls_type
 
 
 def _print_release_types():

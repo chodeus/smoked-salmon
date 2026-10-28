@@ -99,7 +99,7 @@ class Scraper(BeatportBase, MetadataMixin):
                 for remixer in track["remixers"]:
                     artists.append((remixer["name"], "remixer"))
 
-                # "Original Mix" is a useless version: kept only when the config keeps those.
+                # Get title with mix name. "Original Mix" is a useless version: kept only when the config keeps those.
                 # Beatport sometimes pads the name with a space, which would double up before the mix name.
                 title = track["name"].strip()
                 mix_name = track["mix_name"]
@@ -113,6 +113,7 @@ class Scraper(BeatportBase, MetadataMixin):
                     title=title,
                     streamable=track["is_available_for_streaming"],
                     isrc=track["isrc"],
+                    duration=(track["length_ms"] // 1000 if track.get("length_ms") else None),
                 )
             return dict(tracks)
         except (KeyError, IndexError) as e:

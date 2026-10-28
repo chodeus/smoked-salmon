@@ -73,7 +73,20 @@ def check_hybrid(tags):
 
 
 async def recompress_path(path: str, files: list[str] | None = None) -> None:
-    """Recompress FLACs in parallel (`files` relative to path, else all if all are FLAC); UploadError on any failure."""
+    """Recompress flacs in the directory to the configured compression level.
+
+    Files are re-encoded in parallel, capped by `cfg.upload.simultaneous_threads`.
+    A file that fails to re-encode keeps its original content untouched.
+
+    Args:
+        path: Path to the directory containing FLAC files.
+        files: Relative paths (within `path`) of the FLAC files to recompress. When
+            omitted, every FLAC, MP3 and M4A file under `path` is discovered, and the
+            whole folder is skipped if any of them is not a FLAC.
+
+    Raises:
+        UploadError: If one or more files failed to recompress.
+    """
     if files is None:
         files = get_audio_files(path)
         if not files or not all(f.lower().endswith(".flac") for f in files):

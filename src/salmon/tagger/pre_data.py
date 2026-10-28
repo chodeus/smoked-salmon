@@ -64,7 +64,7 @@ async def construct_rls_data(
         metadata["label"] = tag_track.label
         metadata["catno"] = tag_track.catno
         metadata["genres"] = split_genres(tag_track.genre)
-    metadata["tracks"] = create_track_list(tags, overwrite)
+    metadata["tracks"] = create_track_list(tags, overwrite, audio_info)
 
     metadata["source"] = source
     metadata["scene"] = scene
@@ -137,20 +137,16 @@ async def parse_encoding(format_, audio_info, supplied_encoding, prompt_encoding
     raise click.Abort
 
 
-def create_track_list(tags, overwrite):
+def create_track_list(tags, overwrite, audio_info=None):
     """Generate the track data from each track tag."""
+    audio_info = audio_info or {}
     tracks = defaultdict(dict)
-    for trackindex, (_, track) in enumerate(sorted(tags.items(), key=lambda k: _tracknumber_sort_key(k[0])), 1):
+    for trackindex, (filename, track) in enumerate(sorted(tags.items(), key=lambda k: _tracknumber_sort_key(k[0])), 1):
         discnumber = track.discnumber or "1"
-        tracknumber = (
-            str(track.tracknumber).split("/")[0]
-            if (
-                track.tracknumber
-                and str(track.tracknumber).split("/")[0].isdigit()
-                and int(str(track.tracknumber).split("/")[0]) > 0
-            )
-            else str(trackindex)
-        )
+        own_number = str(track.tracknumber).split("/")[0] if track.tracknumber else ""
+        # isdecimal(), not isdigit(): isdigit() accepts some Unicode digits (superscript "2") that int() rejects.
+        numbered = own_number.isdecimal() and int(own_number) > 0
+        tracknumber = own_number if numbered else str(trackindex)
         tracks[discnumber][tracknumber] = {
             "track#": tracknumber,
             "disc#": discnumber,
@@ -164,6 +160,10 @@ def create_track_list(tags, overwrite):
             "explicit": None,
             "format": None,
             "streamable": None,
+            # Used to match files against a metadata source's tracklist: a track numbered by its own TRACKNUMBER
+            # tag keeps that number unless its ISRC or exact title says otherwise (tagger.pairing).
+            "duration": audio_info.get(filename, {}).get("duration"),
+            "numbered": numbered,
         }
         if overwrite:
             tracks[discnumber][tracknumber]["artists"] = []
@@ -195,7 +195,11 @@ def parse_artists(artist_list):
 
 
 def _extract_feat(artist):
-    """Split a `feat.` credit off an artist string as (guests, rest); guests end at the bracket closing the credit's."""
+    """Split a `feat.` credit off an artist string, returning (guests, rest).
+
+    The guests run to the closing bracket that matches the one opening the credit, or to the end of
+    the string for a bare `feat.`. Brackets inside the guests, such as a Discogs `(27)`, stay balanced.
+    """
     feat = _RE_FEAT_START.search(artist)
     if not feat:
         return "", artist
@@ -211,10 +215,9 @@ def _extract_feat(artist):
 
 
 def construct_track_artists(track):
-    """Build track artists from the artist tag, plus the composer and conductor tags on a classical track."""
+    """Build track artists, adding the conductor and composer tags as credits on classical tracks only."""
     artists = parse_artists(track.artist)
     if not is_classical(track):
-        # Elsewhere COMPOSER lists the songwriters, often the main artist too.
         return list(dict.fromkeys(artists))
     conductors = _parse_role_names(getattr(track, "conductor", None))
     composers = _parse_role_names(getattr(track, "composer", None))

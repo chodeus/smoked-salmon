@@ -480,3 +480,57 @@ def test_check_renames_nothing_when_two_names_clean_to_one_on_a_volume_that_igno
         anyio.run(lambda: _check_invisible_characters(str(root), False))
 
     assert _names(root) == before
+
+
+def test_check_of_clean_names_says_so(tmp_path, capsys) -> None:
+    root = tmp_path / "Artist - Album [WEB FLAC]"
+    root.mkdir()
+    (root / "01. Title.flac").write_bytes(b"")
+
+    anyio.run(lambda: _check_invisible_characters(str(root), False))
+
+    out = capsys.readouterr().out
+    assert "No names hold invisible Unicode characters." in out
+
+
+def test_check_stops_when_a_folder_cannot_be_read(tmp_path, monkeypatch, capsys) -> None:
+    root = tmp_path / "Artist - Album [WEB FLAC]"
+    (root / "Sc\x1bans").mkdir(parents=True)
+    real_scandir = os.scandir
+
+    def scandir(path):
+        if os.path.basename(path) == "Sc\x1bans":
+            raise PermissionError(13, "Permission denied", path)
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+
+    with pytest.raises(NoncompliantFolderStructure):
+        anyio.run(lambda: _check_invisible_characters(str(root), False))
+
+    out = capsys.readouterr().out
+    assert "No names hold invisible Unicode characters." not in out
+    assert f"Could not read {root / 'Sc<U+001B>ans'} to check its names: Permission denied" in out
+    assert "\x1b" not in out
+
+
+def test_check_of_a_scene_release_stops_without_asking_to_descene_when_a_folder_cannot_be_read(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    root = tmp_path / "Artist-Album-WEB-FLAC-2024-GRP"
+    (root / "Scans").mkdir(parents=True)
+    real_scandir = os.scandir
+
+    def scandir(path):
+        if os.path.basename(path) == "Scans":
+            raise PermissionError(13, "Permission denied", path)
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+
+    with pytest.raises(click.Abort):
+        anyio.run(lambda: check_folder_structure(str(root), True))
+
+    out = capsys.readouterr().out
+    assert f"Could not read {root / 'Scans'} to check its names: Permission denied" in out
+    assert "descene" not in out

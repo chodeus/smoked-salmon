@@ -1,8 +1,4 @@
-"""A Beatport track's title: its mix name kept, Original Mix only when useless versions are kept."""
-
 import asyncio
-
-import pytest
 
 from salmon import cfg
 from salmon.tagger.sources.beatport import Scraper
@@ -29,32 +25,24 @@ def titles(soup: dict) -> list[str]:
     return [t["title"] for t in tracks["1"].values()]
 
 
-@pytest.fixture(autouse=True)
-def _strip_useless_versions(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cfg.upload.formatting, "strip_useless_versions", True)
+def test_beatport_drops_original_mix_by_default() -> None:
+    soup = make_soup(track(1, "Django", "Original Mix"), track(2, "Work", "Extended Mix"))
 
-
-def test_beatport_drops_original_mix_when_useless_versions_are_stripped() -> None:
-    found = titles(make_soup(track(1, "Django", "Original Mix"), track(2, "Work", "Extended Mix")))
-
-    assert found == ["Django", "Work (Extended Mix)"]
+    assert titles(soup) == ["Django", "Work (Extended Mix)"]
 
 
 def test_beatport_keeps_original_mix_when_useless_versions_are_kept(monkeypatch) -> None:
     monkeypatch.setattr(cfg.upload.formatting, "strip_useless_versions", False)
+    soup = make_soup(track(1, "Django", "Original Mix"), track(2, "Work", "Extended Mix"))
 
-    found = titles(make_soup(track(1, "Django", "Original Mix"), track(2, "Work", "Extended Mix")))
-
-    assert found == ["Django (Original Mix)", "Work (Extended Mix)"]
+    assert titles(soup) == ["Django (Original Mix)", "Work (Extended Mix)"]
 
 
 def test_beatport_name_padded_with_a_space_gets_no_double_space() -> None:
-    found = titles(make_soup(track(1, "A better place ", "Extended Mix"), track(2, "Lonely Drive ", "Original Mix")))
+    soup = make_soup(track(1, "A better place ", "Extended Mix"), track(2, "Lonely Drive ", "Original Mix"))
 
-    assert found == ["A better place (Extended Mix)", "Lonely Drive"]
+    assert titles(soup) == ["A better place (Extended Mix)", "Lonely Drive"]
 
 
 def test_beatport_track_without_a_mix_name_keeps_its_name() -> None:
-    found = titles(make_soup(track(1, "Django", None)))
-
-    assert found == ["Django"]
+    assert titles(make_soup(track(1, "Django", None))) == ["Django"]
