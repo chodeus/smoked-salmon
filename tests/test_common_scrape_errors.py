@@ -2,7 +2,8 @@ import asyncio
 
 from salmon.common import handle_scrape_errors
 from salmon.errors import ScrapeError
-from salmon.webui import output
+from salmon.trackers import base as tracker_base
+from salmon.webui import egress, output
 
 
 def test_scrape_error_uses_message_as_exception_text() -> None:
@@ -49,19 +50,22 @@ def test_handle_scrape_errors_keeps_traceback_for_unexpected_failures(monkeypatc
 
 
 def test_in_a_web_job_an_unexpected_failure_keeps_its_traceback_out_of_the_log(monkeypatch, capsys) -> None:
-    messages: list[tuple[str, dict]] = []
-
-    def fake_secho(message: str, **kwargs) -> None:
-        messages.append((message, kwargs))
+    secret = "scrape-token-0123456789"
+    monkeypatch.setattr(egress, "_configured_secrets", lambda: (secret,))
+    monkeypatch.setattr(tracker_base, "_learned_secrets", set())
+    logged: list[str] = []
 
     async def raise_error() -> None:
-        raise RuntimeError("boom")
+        raise RuntimeError(f"GET https://api.example/?token={secret} failed")
 
-    monkeypatch.setattr("salmon.common.click.secho", fake_secho)
-
-    with output.to(lambda _text, _err: None):
+    with output.capturing(), output.to(lambda text, _err: logged.append(text)):
         result = asyncio.run(handle_scrape_errors(raise_error()))
 
+    log = "".join(logged)
+    server_stderr = capsys.readouterr().err
     assert result is None
-    assert messages == [("Unexpected scrape error: boom", {"fg": "red", "bold": True})]
-    assert "Traceback" in capsys.readouterr().err
+    assert "Unexpected scrape error" in log
+    assert "Traceback" not in log
+    # The traceback goes to the server's own stderr, masked.
+    assert "Traceback" in server_stderr
+    assert secret not in server_stderr
