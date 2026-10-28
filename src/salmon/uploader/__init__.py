@@ -717,7 +717,8 @@ async def upload(
             asks about no other. None asks after each upload, as configured.
         offer_others: `trackers` were not named with -t (the config's default_trackers, or the tracker asked for):
             after them, offer the other configured trackers, as configured.
-        conversions: The conversion kinds selected by default after a FLAC; None follows upload.conversions.
+        conversions: The conversion kinds to make after a FLAC, without asking (see ``conversion_kind``). None
+            follows upload.conversions, which is asked about.
         skip_search: Take the metadata from source_url without searching the stores, when a metadata source
             scrapes it.
     """
