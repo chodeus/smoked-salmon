@@ -495,11 +495,11 @@ def test_check_of_clean_names_says_so(tmp_path, capsys) -> None:
 
 def test_check_stops_when_a_folder_cannot_be_read(tmp_path, monkeypatch, capsys) -> None:
     root = tmp_path / "Artist - Album [WEB FLAC]"
-    (root / "Scans").mkdir(parents=True)
+    (root / "Sc\x1bans").mkdir(parents=True)
     real_scandir = os.scandir
 
     def scandir(path):
-        if os.path.basename(path) == "Scans":
+        if os.path.basename(path) == "Sc\x1bans":
             raise PermissionError(13, "Permission denied", path)
         return real_scandir(path)
 
@@ -510,4 +510,5 @@ def test_check_stops_when_a_folder_cannot_be_read(tmp_path, monkeypatch, capsys)
 
     out = capsys.readouterr().out
     assert "No names hold invisible Unicode characters." not in out
-    assert f"Could not read {root / 'Scans'} to check its names: Permission denied" in out
+    assert f"Could not read {root / 'Sc<U+001B>ans'} to check its names: Permission denied" in out
+    assert "\x1b" not in out

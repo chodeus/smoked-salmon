@@ -134,7 +134,7 @@ async def _check_invisible_characters(path: str, scene: bool) -> None:
                 )
     root_chars = invisible_chars(folder_name)
     for error in unreadable:
-        click.secho(f"Could not read {error.filename} to check its names: {error.strerror}", fg="red")
+        click.secho(f"Could not read {show_invisible(error.filename)} to check its names: {error.strerror}", fg="red")
     if unreadable:
         raise NoncompliantFolderStructure
 
