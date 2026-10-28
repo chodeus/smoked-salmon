@@ -1,10 +1,12 @@
 import collections
 import os
 import posixpath
+import subprocess
 import sys
 import unicodedata
 
 import anyio
+import anyio.abc
 import asyncclick as click
 
 from salmon import cfg, dryrun
@@ -12,15 +14,26 @@ from salmon.common.redaction import redact_command, redact_secrets, secret_value
 from salmon.config.validations import Seedbox
 from salmon.errors import DryRunRefused
 from salmon.uploader.torrent_client import TorrentClient, TorrentClientGenerator
+from salmon.webui import output
+
+# A path override shorter than this is not masked: it would match inside every path in the output.
+_MIN_MASKED_PATH = 4
 
 
 def _path_override(extra_args: list[str]) -> str | None:
     """The last --sftp-path-override value in extra_args, as rclone reads it; None without one."""
     override = None
-    for arg, following in zip(extra_args, [*extra_args[1:], None], strict=False):
-        name, equals, value = arg.partition("=")
+    i = 0
+    while i < len(extra_args):
+        name, equals, value = extra_args[i].partition("=")
+        i += 1
         if name == "--sftp-path-override":
-            override = value if equals else following
+            if equals:
+                override = value
+            else:
+                # The next argument is this flag's value, whatever it looks like.
+                override = extra_args[i] if i < len(extra_args) else None
+                i += 1
     return override
 
 
@@ -45,14 +58,31 @@ def _resolve_shell_path(remote_folder: str, extra_args: list[str]) -> str:
 def seedbox_secrets(seedbox: Seedbox) -> list[str]:
     """The secrets a seedbox's rclone remote, extra_args and torrent client URL carry, to mask wherever echoed."""
     secrets = [*secret_values(seedbox.extra_args, seedbox.url), *url_secrets(seedbox.torrent_client)]
-    if override := _path_override(seedbox.extra_args):
-        # A home folder names the account; the client gets the path without its "@", and an error can repeat it.
-        secrets.append(override.removeprefix("@"))
+    raw = _path_override(seedbox.extra_args)
+    if raw:
+        override = raw.removeprefix("@")
+        if len(override) >= _MIN_MASKED_PATH and override != "/":
+            # A home folder names the account; the client gets the path without its "@", and an error can repeat it.
+            secrets.append(override)
+        else:
+            # Masking "/" or a few characters would wreck every path in the output.
+            # Only the occurrence the override added: another secret may have the same value.
+            if raw in secrets:
+                secrets.remove(raw)
     return secrets
 
 
 async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str) -> bool:
-    """Upload a local folder to the rclone remote and return whether rclone succeeded."""
+    """Upload a local folder to a rclone remote.
+
+    Args:
+        seedbox: Seedbox config providing the rclone remote URL and extra args.
+        remote_folder: Destination directory on the remote.
+        path: Local folder path to upload.
+
+    Returns:
+        True if rclone exited successfully, False otherwise.
+    """
     folder_name = os.path.basename(path)
     if _normalizes_to_nfc(seedbox):
         # rclone makes every name it copies NFC with the flag, but not this explicit destination name.
@@ -62,27 +92,59 @@ async def _rclone_upload_folder(seedbox: Seedbox, remote_folder: str, path: str)
     secrets = seedbox_secrets(seedbox)
     click.secho(redact_secrets(f"Starting Rclone upload to {seedbox.url}:{remote_folder}", secrets), fg="cyan")
     click.secho(f"Executing: {redact_command(commands, secrets)}", fg="yellow")
-    # Captured rather than passed to the terminal: the job log is where a failure has to be readable.
-    try:
-        result = await anyio.run_process(commands, check=False)
-    except OSError as error:
-        click.secho(f"rclone could not start: {redact_secrets(str(error), secrets)}", fg="red")
-        return False
-    if result.returncode == 0:
+    returncode = await _run_rclone(commands, secrets)
+    if returncode == 0:
         click.secho(
             redact_secrets(f"Rclone upload successful: {path} to {seedbox.url}:{remote_path}", secrets), fg="green"
         )
         return True
-    click.secho(f"Rclone upload failed with exit code {result.returncode}", fg="red")
-    for line in _output_tail(result.stderr) or _output_tail(result.stdout):
-        click.secho(f"  rclone: {redact_secrets(line, secrets)}", fg="red")
+    click.secho(f"Rclone upload failed with exit code {returncode}", fg="red")
     return False
 
 
-def _output_tail(output: bytes | None, lines: int = 12) -> list[str]:
-    """Last non-empty lines of a captured stream, so rclone's own error reaches the log."""
-    text = (output or b"").decode(errors="replace")
-    return [line for line in text.splitlines() if line.strip()][-lines:]
+async def _run_rclone(commands: list[str], secrets: list[str]) -> int:
+    """Run rclone, printing its stderr with the seedbox's secrets masked.
+
+    rclone's stdout goes to the terminal as it is, so -P can render live progress. Its stderr is
+    printed a line at a time as it comes: that is where rclone names a remote it could not open
+    (a connection string with its password) and, with -vv, its whole command line. With -P, what
+    rclone logs once the copy has started goes to stdout, within the progress display, instead.
+
+    In a salmon web job there is no terminal: what rclone writes to its stdout would reach the server's,
+    not the job's log. Its stdout is then read too, and printed a line at a time, masked, as its stderr.
+
+    Args:
+        commands: The rclone command line.
+        secrets: Values to mask in what rclone prints, from seedbox_secrets.
+
+    Returns:
+        rclone's exit code.
+    """
+    in_job = output.in_job()
+    stdout = subprocess.PIPE if in_job else None
+    async with await anyio.open_process(commands, stdin=None, stdout=stdout, stderr=subprocess.PIPE) as process:
+        assert process.stderr is not None
+        async with anyio.create_task_group() as task_group:
+            if process.stdout is not None:
+                task_group.start_soon(_print_rclone_output, process.stdout, secrets, False)
+            await _print_rclone_output(process.stderr, secrets, True)
+        return await process.wait()
+
+
+async def _print_rclone_output(stream: anyio.abc.ByteReceiveStream, secrets: list[str], err: bool) -> None:
+    """Print what rclone writes to `stream` a line at a time, to salmon's stderr (or stdout), masked."""
+    pending = b""
+    async for chunk in stream:
+        *lines, pending = (pending + chunk).split(b"\n")
+        for line in lines:
+            _print_rclone_line(line, secrets, err)
+    if pending:
+        _print_rclone_line(pending, secrets, err)
+
+
+def _print_rclone_line(line: bytes, secrets: list[str], err: bool = True) -> None:
+    """Print a line rclone wrote, to salmon's stderr (or stdout), with the seedbox's secrets masked."""
+    click.echo(redact_secrets(line.decode(errors="replace").rstrip("\r"), secrets), err=err)
 
 
 async def _add_to_downloader(
@@ -147,6 +209,7 @@ def _normalizes_to_nfc(seedbox: Seedbox) -> bool:
     """Whether rclone makes the names it copies NFC: the last such flag in extra_args, else its variable."""
     flags = [arg.partition("=") for arg in seedbox.extra_args if arg.partition("=")[0] == _UNICODE_FLAG]
     if not flags:
+        # salmon starts rclone with its own environment.
         return os.environ.get(_UNICODE_ENV, "") in _GO_TRUE
     _, has_value, value = flags[-1]
     return not has_value or value in _GO_TRUE
@@ -158,7 +221,7 @@ def _unmatched_normalization(seedbox: Seedbox, form: str) -> str | None:
         if form == "NFD":
             return "rclone cannot copy names as NFD"
         if not _normalizes_to_nfc(seedbox):
-            return f"rclone copies names as they are while {_UNICODE_FLAG} is off (extra_args, else {_UNICODE_ENV})"
+            return f"rclone copies names as they are, without {_UNICODE_FLAG} in its extra_args or {_UNICODE_ENV} set"
         return None
     # macOS finds a file whatever the form of its name; Linux compares the bytes.
     if sys.platform.startswith("linux"):
@@ -193,8 +256,11 @@ class UploadManager:
 
     def __init__(self) -> None:
         self._client_cache: dict[str, TorrentClient] = {}
-        # (seedbox, local_path, task_type, folder): folder is the release folder, so a failed copy
-        # skips only that folder's seeds on that seedbox.
+        # Each task: (seedbox, local_path, task_type, folder). `folder` is the release folder the
+        # task belongs to: itself for a "folder" task, and the folder its torrent was built from
+        # for a "seed" task. It lets a failed copy skip only the seeds for its own folder, not
+        # every seed queued for that seedbox (a folder task's copy failing must not stop the seed
+        # of a different release, or a different format of the same release, on the same seedbox).
         self.tasks: collections.deque[tuple[Seedbox, str, str, str]] = collections.deque()
         if dryrun.active():
             # Setting up a torrent client logs into it. A dry run queues nothing, so it needs none.
@@ -245,18 +311,21 @@ class UploadManager:
             directory: Local folder path (for "folder" tasks) or .torrent file path (for "seed" tasks).
             task_type: Either "folder" to transfer files or "seed" to add to the download client.
             is_flac: Whether the release is FLAC; skips seedboxes with flac_only=True if False.
-            folder: For a "seed" task (required), the release folder its torrent was built from.
+            folder: For a "seed" task (required), the release folder its torrent was built from, so a
+                failed copy of that folder skips this seed. Ignored for a "folder" task, which always uses
+                its own path.
             site_code: Tracker this upload went to. Skips a seedbox whose `trackers` is set and
                 does not contain it; a seedbox with no `trackers` still matches every tracker.
 
         Raises:
             DryRunRefused: In a dry run, which copies nothing to a seedbox and adds nothing to a client.
+            ValueError: For a "seed" task without its `folder`: a failed copy of it could not skip the seed.
         """
         dryrun.refuse(f"queue {directory} for a seedbox copy or a torrent client")
-        task_folder = folder if task_type == "seed" else directory
-        if task_folder is None:
+        if task_type == "seed" and not folder:
             raise ValueError("A seed task needs the folder its torrent was built from.")
         click.secho(f"Preparing upload tasks for: {directory}", fg="cyan")
+        task_folder = folder if task_type == "seed" and folder else directory
         for seedbox in _enabled_seedboxes():
             if seedbox.torrent_client not in self._client_cache:
                 continue
@@ -332,7 +401,9 @@ class UploadManager:
             except Exception as e:
                 click.secho(f"Critical error during task: {redact_secrets(str(e), secrets)}", fg="red")
                 if task_type == "folder":
-                    # A raising folder task is a failed copy too: its seeds must not be added.
+                    # A folder task that raised (rclone missing, unexpected I/O error, ...) is a
+                    # failed copy too: the seed task must not add a torrent for files that may not
+                    # be on the remote.
                     failed_folders.add((id(seedbox), folder))
                     failed_copies += 1
                 elif task_type == "seed":

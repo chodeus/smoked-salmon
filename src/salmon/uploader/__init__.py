@@ -1,10 +1,10 @@
-import contextlib
 import functools
 import os
 import platform
 import shutil
+import tempfile
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
@@ -117,6 +117,8 @@ from salmon.uploader.upload import (
 )
 
 if TYPE_CHECKING:
+    from torf import Torrent
+
     from salmon.tagger.tagfile import TagFile
     from salmon.trackers.base import BaseGazelleApi
 
@@ -268,9 +270,8 @@ def validate_conversions(ctx, param, value: str | None) -> tuple[str, ...] | Non
 @click.option(
     "--conversions",
     callback=validate_conversions,
-    help="The conversions to select by default after a FLAC, and to make with -yyy: a comma-separated list of "
-    f"{', '.join(CONVERSION_KINDS)}, or none, or all. Overrides upload.conversions for this run. "
-    "Every possible conversion is still offered at the prompt.",
+    help="Makes these conversions after the FLAC, without asking: a comma-separated list of "
+    f"{', '.join(CONVERSION_KINDS)}, or none, or all. Overrides upload.conversions for this run.",
 )
 async def up(
     path: str,
@@ -1111,13 +1112,14 @@ async def _upload_staged(
 
         seedbox_uploader = UploadManager()
         uploaded: list[str] = []  # The URL of each torrent uploaded, for an abort to list
+        flac_url = f"{gazelle_site.base_url}/torrents.php?torrentid={source_flac['id']}" if source_flac else None
 
         try:
             while True:
                 # Loop until we don't want to upload to any more sites.
                 if not tracker:
                     # After a tracker whose Do-Not-Upload list forbids the release: the run may have none left.
-                    if source_flac is not None or not remaining_gazelle_sites or not go_on:
+                    if flac_url or not remaining_gazelle_sites or not go_on:
                         break
                     if next_named := next((code for code in remaining_gazelle_sites if code in (trackers or ())), None):
                         tracker = next_named
@@ -1182,23 +1184,20 @@ async def _upload_staged(
                     # Uploaded to this tracker's specs host, unless a tracker using the same host already did.
                     spectral_urls = await spectral_uploads.urls_for(gazelle_site.site_code, spectral_ids)
 
-                if source_flac is None and not request_id and cfg.upload.requests.check_requests:
+                if not flac_url and not request_id and cfg.upload.requests.check_requests:
                     request_id = await check_requests(gazelle_site, searchstrs)
 
                 for rule_warning in upload_warnings(track_data):
                     click.secho(f"⚠ {rule_warning}", fg="yellow", bold=True)
 
-                group_link = f"{gazelle_site.base_url}/torrents.php?id={group_id}" if group_id else source_url
                 try:
-                    if source_flac is not None:
-                        url, held = _existing_flac_result(
-                            gazelle_site,
-                            flac_group or {},
-                            source_flac,
-                            metadata,
-                            get_downconversion_options(rls_data, track_data, quiet=True),
-                        )
+                    held: set[str] = set()
+                    if flac_url and source_flac is not None:
+                        click.secho(f"\nNot uploading the FLAC: transcoding from {flac_url}", fg="yellow")
+                        url = flac_url
+                        held = _held_conversions(flac_group or {}, metadata, source_flac, rls_data, track_data)
                     else:
+                        group_link = f"{gazelle_site.base_url}/torrents.php?id={group_id}" if group_id else source_url
                         torrent_id, group_id, torrent_path, torrent_content, url = await upload_and_report(
                             gazelle_site,
                             path,
@@ -1219,7 +1218,6 @@ async def _upload_staged(
                         )
 
                         request_id = None
-                        held = set()
                         uploaded.append(url)
 
                         # A request fill can answer without a torrent id (0): the check, on the FLAC's torrent, waits.
@@ -1246,28 +1244,25 @@ async def _upload_staged(
                             )
 
                         if not group_id:
-                            # Conversions with no group id would each start a new group beside this one.
+                            # Conversions sent with no group id would each start a new group beside this one.
                             click.secho(
                                 f"\nNo group id came back for {url}: no conversions are offered for it.", fg="yellow"
                             )
                         elif not dryrun.active():
                             group = await print_torrents(gazelle_site, group_id, highlight_torrent_id=torrent_id)
-                            options = get_downconversion_options(rls_data, track_data, quiet=True)
-                            held = _held_options(group, metadata, {"id": torrent_id}, options, uploaded=True)
-
-                    if (
-                        group_id
-                        and (conversion_options := get_downconversion_options(rls_data, track_data, quiet=True))
-                        and (
-                            source_flac is not None
-                            or await interaction.assume_defaults()
-                            or await interaction.confirm(
-                                click.style("\nWould you like to check downconversion options?", fg="magenta"),
-                                default=bool(wanted_conversions(conversion_options, held, conversions)),
+                            # Read from the group just printed: no request of its own.
+                            held = _held_conversions(
+                                group, metadata, {"id": torrent_id}, rls_data, track_data, uploaded=True
                             )
+
+                    # Nothing to convert (an MP3 upload) asks nothing, nor does an upload whose group is not known.
+                    conversion_options = (
+                        get_downconversion_options(rls_data, track_data, quiet=True) if group_id else []
+                    )
+                    if conversion_options:
+                        selected_tasks = await choose_conversions(
+                            rls_data, track_data, conversion_options, held, conversions, ask_first=not flac_url
                         )
-                    ):
-                        selected_tasks = await prompt_downconversion_choice(rls_data, track_data, held, conversions)
                         if selected_tasks:
                             display_names = [task["name"] for task in selected_tasks]
                             click.secho(
@@ -1304,7 +1299,7 @@ async def _upload_staged(
                         record.note_unknown_outcome(e)
 
                 tracker = None
-                if source_flac is not None or not remaining_gazelle_sites or not go_on:
+                if flac_url or not remaining_gazelle_sites or not go_on:
                     click.secho("\nDone uploading this release.", fg="green")
                     break
 
@@ -1566,41 +1561,37 @@ def get_downconversion_options(rls_data, track_data, quiet: bool = False):
 
 
 def downconversion_format(task: dict[str, Any]) -> tuple[str, str]:
-    """Format and encoding of the torrent a downconversion task makes."""
+    """Give the format and encoding of the torrent a downconversion task makes."""
     if task["action"] == "transcode":
         return "MP3", {"320": "320", "V0": "V0 (VBR)"}[task["encoding"]]
     return "FLAC", "Lossless" if task["target_bitdepth"] == 16 else "24bit Lossless"
 
 
-def _existing_flac_result(
-    gazelle_site: "BaseGazelleApi",
-    group: dict[str, Any],
-    source_flac: dict[str, Any],
-    release: dict[str, Any],
-    options: list[dict[str, Any]],
-) -> tuple[str, set[str]]:
-    """Stands in for the FLAC upload: the permalink the transcodes link to, and the options already held."""
-    url = f"{gazelle_site.base_url}/torrents.php?torrentid={source_flac['id']}"
-    click.secho(f"\nNot uploading the FLAC: transcoding from {url}", fg="yellow")
-    return url, _held_options(group, release, source_flac, options)
-
-
-def _held_options(
+def _held_conversions(
     group: dict[str, Any],
     release: dict[str, Any],
     source_flac: dict[str, Any],
-    options: list[dict[str, Any]],
+    rls_data: dict[str, Any],
+    track_data: dict[str, Any],
     *,
     uploaded: bool = False,
 ) -> set[str]:
-    """The options the release's edition already holds, the source FLAC aside, each named as a dupe risk."""
-    formats = {option["name"]: downconversion_format(option) for option in options}
-    held = held_formats(group, release, source_flac, formats, uploaded=uploaded)
-    for name in sorted(held):
-        click.secho(
-            f"\nDUPE RISK: this edition already has {name}; the site removes exact duplicates.", fg="red", bold=True
-        )
-    return held
+    """The names of the conversions offered for this release that its edition in the group already holds.
+
+    Args:
+        group: The group, as the tracker's torrentgroup API returns it.
+        release: The reviewed release metadata.
+        source_flac: The FLAC the conversions are made from (the torrent just uploaded, or the one
+            --skip-flac-upload transcodes), which never counts as held.
+        rls_data: The release data the conversions are offered for.
+        track_data: The tracks' audio info.
+        uploaded: Whether this run sent the source FLAC (see held_formats).
+    """
+    formats = {
+        option["name"]: downconversion_format(option)
+        for option in get_downconversion_options(rls_data, track_data, quiet=True)
+    }
+    return held_formats(group, release, source_flac, formats, uploaded=uploaded)
 
 
 def conversion_kind(task: dict[str, Any]) -> str:
@@ -1620,6 +1611,62 @@ def wanted_conversions(
     return [option for option in options if conversion_kind(option) in kinds and option["name"] not in held]
 
 
+def _applicable_conversions(options: list[dict[str, Any]], conversions: tuple[str, ...] | None) -> bool:
+    """Whether any offered option is of a kind in `conversions` (None: upload.conversions), held or not."""
+    kinds = cfg.upload.conversions if conversions is None else conversions
+    return any(conversion_kind(option) in kinds for option in options)
+
+
+def _warn_held_conversions(held: set[str] | frozenset[str]) -> None:
+    for name in sorted(held):
+        click.secho(
+            f"\nDUPE RISK: this edition already has {name}; the site removes exact duplicates.", fg="red", bold=True
+        )
+
+
+async def choose_conversions(
+    rls_data,
+    track_data,
+    options: list[dict[str, Any]],
+    held: set[str] | frozenset[str] = frozenset(),
+    conversions: tuple[str, ...] | None = None,
+    *,
+    ask_first: bool = True,
+) -> list[dict[str, Any]]:
+    """Choose the conversions to make after an upload to one tracker, asking only what the run leaves open.
+
+    A selection for the run (`conversions`, from --conversions) is final: what it names, minus `held`, is made
+    without a question. A selection that names nothing offered (an empty one, or kinds this release cannot give,
+    or the same from upload.conversions) makes none, also without a question. Only a run that relies on an
+    upload.conversions that names something offered is asked: whether to check the options (unless `ask_first`
+    is false: transcodes only), then which. -yyy takes the default choice.
+
+    Args:
+        rls_data: The release data the conversions are offered for.
+        track_data: The tracks' audio info.
+        options: The conversions offered for this upload.
+        held: The names of the conversions the edition already holds.
+        conversions: The kinds selected for this run (--conversions), or None to follow upload.conversions.
+        ask_first: Whether to ask "check downconversion options?" before the choice.
+    """
+    if not _applicable_conversions(options, conversions):
+        click.secho("\nNo conversions selected for this upload.", fg="yellow")
+        return []
+    if conversions is not None:
+        _warn_held_conversions(held)
+        return wanted_conversions(options, held, conversions)
+    if (
+        ask_first
+        and not await interaction.assume_defaults()
+        and not await interaction.confirm(
+            click.style("\nWould you like to check downconversion options?", fg="magenta"),
+            default=bool(wanted_conversions(options, held, conversions)),
+        )
+    ):
+        return []
+    return await prompt_downconversion_choice(rls_data, track_data, held, conversions)
+
+
 async def prompt_downconversion_choice(
     rls_data,
     track_data,
@@ -1629,14 +1676,17 @@ async def prompt_downconversion_choice(
     """
     Prompt user to select downconversion formats.
     Returns a list of selected task dictionaries.
-    Options in `held` are already in the edition: they are left out unless picked by number.
-    `conversions` (None: upload.conversions) names the kinds selected by default and made with -yyy.
+    Options named in `held` are already in the edition: they are flagged as a dupe risk and left out
+    of the default choice and of -yyy, but can still be picked by number.
+    `conversions` (None: upload.conversions) names the kinds selected by default and made with -yyy:
+    every option is still listed, and any can be picked by number.
     """
     options = get_downconversion_options(rls_data, track_data)
 
     if not options:
         return []
 
+    _warn_held_conversions(held)
     wanted = wanted_conversions(options, held, conversions)
     if await interaction.assume_defaults():
         return wanted
@@ -2012,7 +2062,25 @@ def finish_upload(
     *,
     copy_folder: bool = True,
 ) -> str:
-    """Write the uploaded torrent with its URL and queue it for seeding; it is up, so nothing here may raise."""
+    """Write the uploaded torrent with its URL, and queue it for the seedboxes.
+
+    The tracker has the torrent by now: the .torrent rewrite or the clipboard failing says so and does not stop the
+    rest, so the torrent is still reported and its seedbox tasks still queued.
+
+    Args:
+        gazelle_site: The tracker it was uploaded to.
+        path: The folder the torrent was made from.
+        torrent_id: The uploaded torrent's ID.
+        torrent_path: Where the .torrent file is.
+        torrent_content: The torrent.
+        format: The torrent's format, e.g. "FLAC".
+        seedbox_uploader: Seedbox upload manager.
+        copy_folder: Copy the folder to the seedboxes before adding the torrent. False when they already have
+            it, as for a cross-upload, whose files already seed the other tracker's torrent.
+
+    Returns:
+        The uploaded torrent's URL. In a dry run, nothing is written, seeded or copied.
+    """
     url = f"{gazelle_site.base_url}/torrents.php?torrentid={torrent_id}"
     if dryrun.active():
         # Nothing was uploaded: nothing to seed, and no URL to copy.
@@ -2021,15 +2089,7 @@ def finish_upload(
         return url
 
     torrent_content.comment = url
-    part = f"{torrent_path}.part"
-    try:
-        # Replaced whole: a write that fails partway would leave no torrent to seed from.
-        torrent_content.write(part, overwrite=True)
-        os.replace(part, torrent_path)
-    except (OSError, TorfError) as err:
-        with contextlib.suppress(OSError):
-            os.remove(part)
-        click.secho(f"Could not add the URL to {torrent_path} ({err}); it seeds without it.", fg="yellow")
+    _rewrite_torrent(torrent_content, torrent_path)
 
     # Display success message
     click.secho(
@@ -2037,6 +2097,7 @@ def finish_upload(
         fg="green",
         bold=True,
     )
+    record.note_upload(gazelle_site.site_code, format, url)
 
     # Copy URL to clipboard
     if cfg.upload.description.copy_uploaded_url_to_clipboard:
@@ -2047,7 +2108,6 @@ def finish_upload(
         click.secho("Add uploading task.", fg="green")
         is_flac = format.upper() == "FLAC"
         site_code = gazelle_site.site_code
-        # Not for a cross-upload: the seedbox has the folder already, seeding the other tracker's torrent.
         if copy_folder:
             seedbox_uploader.add_upload_task(path, task_type="folder", is_flac=is_flac, site_code=site_code)
         seedbox_uploader.add_upload_task(
@@ -2055,6 +2115,31 @@ def finish_upload(
         )
 
     return url
+
+
+def _rewrite_torrent(torrent_content: "Torrent", torrent_path: str) -> None:
+    """Write the torrent over its .torrent file whole, or not at all.
+
+    Written to a new file of its own beside it first, then moved over it: a write that fails part way (a full disk)
+    leaves the .torrent the upload was made from, without the URL, which seeds just as well. No other file is written
+    or removed, whatever its name.
+    """
+    folder, name = os.path.split(torrent_path)
+    temp = None
+    try:
+        handle, temp = tempfile.mkstemp(dir=folder or ".", prefix=f"{name}.", suffix=".part")
+        os.close(handle)
+        # mkstemp's file is readable by its owner only: give it the mode of the .torrent it replaces, which a
+        # torrent client running as another user may read.
+        with suppress(FileNotFoundError):
+            shutil.copymode(torrent_path, temp)
+        torrent_content.write(temp, overwrite=True)
+        os.replace(temp, torrent_path)
+    except (OSError, TorfError) as err:
+        if temp is not None:
+            with suppress(OSError):
+                os.remove(temp)
+        click.secho(f"Could not add the URL to {torrent_path} ({err}): it seeds without it.", fg="yellow")
 
 
 def convert_genres(genres, year=None):

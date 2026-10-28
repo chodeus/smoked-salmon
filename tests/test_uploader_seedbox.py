@@ -1,6 +1,6 @@
 import os
-import subprocess
 import sys
+import time
 import unicodedata
 
 import anyio
@@ -11,406 +11,6 @@ from salmon.common.redaction import redact_command, redact_secrets, secret_value
 from salmon.config.validations import Seedbox
 from salmon.uploader import seedbox
 from salmon.uploader.torrent_client import DelugeClient, QBittorrentClient, TorrentClient, TransmissionClient
-
-
-def test_rclone_upload_folder_reports_success(monkeypatch) -> None:
-    run_process_calls: list[tuple[list[str], dict[str, object]]] = []
-    messages: list[str] = []
-
-    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        run_process_calls.append((commands, kwargs))
-        return subprocess.CompletedProcess(commands, 0, stdout=b"", stderr=b"")
-
-    monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
-    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
-
-    ok = anyio.run(
-        seedbox._rclone_upload_folder,
-        Seedbox(url="seedbox", extra_args=["--checksum"]),
-        "/music",
-        "/tmp/Artist - Album",
-    )
-
-    assert ok is True
-    assert run_process_calls == [
-        (
-            ["rclone", "copy", "/tmp/Artist - Album", "seedbox:/music/Artist - Album", "--checksum"],
-            {"check": False},
-        )
-    ]
-    assert any("Rclone upload successful" in message for message in messages)
-
-
-def test_rclone_upload_folder_reports_the_failure_and_rclones_own_error(monkeypatch) -> None:
-    messages: list[str] = []
-    stderr = (
-        b"2026/09/09 15:52:18 ERROR : 01. track.flac: Failed to copy: update stor: 1 error occurred:\n"
-        b"\t* 426 Failure reading network stream.\n"
-    )
-
-    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(commands, 7, stdout=b"", stderr=stderr)
-
-    monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
-    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
-
-    ok = anyio.run(
-        seedbox._rclone_upload_folder,
-        Seedbox(url="seedbox"),
-        "/music",
-        "/tmp/Artist - Album",
-    )
-
-    assert ok is False
-    assert "Rclone upload failed with exit code 7" in messages
-    assert any("426 Failure reading network stream" in message for message in messages)
-
-
-def test_rclone_upload_folder_treats_a_launch_failure_as_a_failed_copy(monkeypatch) -> None:
-    messages: list[str] = []
-
-    async def missing_binary(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        raise FileNotFoundError(2, "No such file or directory", "rclone")
-
-    monkeypatch.setattr(seedbox.anyio, "run_process", missing_binary)
-    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
-
-    ok = anyio.run(seedbox._rclone_upload_folder, Seedbox(url="seedbox"), "/music", "/tmp/Artist - Album")
-
-    assert ok is False
-    assert any("rclone could not start" in message for message in messages)
-
-
-def _rclone_commands(monkeypatch, box: Seedbox, folder: str, variable: str | None = None) -> list[str]:
-    """The command _rclone_upload_folder runs to copy /downloads/<folder> into /music, with rclone's variable set."""
-    calls: list[list[str]] = []
-    if variable is None:
-        monkeypatch.delenv(seedbox._UNICODE_ENV, raising=False)
-    else:
-        monkeypatch.setenv(seedbox._UNICODE_ENV, variable)
-
-    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        calls.append(commands)
-        return subprocess.CompletedProcess(commands, 0, stdout=b"", stderr=b"")
-
-    monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
-    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: None)
-    anyio.run(seedbox._rclone_upload_folder, box, "/music", f"/downloads/{folder}")
-    return calls[0]
-
-
-@pytest.mark.parametrize("flag", ["--local-unicode-normalization", "--local-unicode-normalization=true"])
-def test_rclone_destination_folder_is_nfc_with_the_unicode_flag(monkeypatch, flag: str) -> None:
-    nfd = unicodedata.normalize("NFD", "Café")
-
-    commands = _rclone_commands(monkeypatch, Seedbox(url="box", extra_args=[flag]), nfd)
-
-    assert commands[2:4] == [f"/downloads/{nfd}", f"box:/music/{unicodedata.normalize('NFC', 'Café')}"]
-
-
-def test_rclone_destination_folder_keeps_its_name_without_the_unicode_flag(monkeypatch) -> None:
-    nfd = unicodedata.normalize("NFD", "Café")
-
-    commands = _rclone_commands(monkeypatch, Seedbox(url="box", extra_args=["--checksum"]), nfd)
-
-    assert commands[2:4] == [f"/downloads/{nfd}", f"box:/music/{nfd}"]
-
-
-@pytest.mark.parametrize("variable", ["true", "1"])
-def test_rclone_destination_folder_is_nfc_with_the_unicode_variable(monkeypatch, variable: str) -> None:
-    nfd = unicodedata.normalize("NFD", "Café")
-
-    commands = _rclone_commands(monkeypatch, Seedbox(url="box", extra_args=["--checksum"]), nfd, variable)
-
-    assert commands[3] == f"box:/music/{unicodedata.normalize('NFC', 'Café')}"
-
-
-@pytest.mark.parametrize(
-    ("extra_args", "variable"),
-    [
-        (["--checksum"], "false"),
-        (["--local-unicode-normalization=false"], "true"),
-        (["--local-unicode-normalization", "--local-unicode-normalization=false"], None),
-    ],
-    ids=["variable-false", "flag-false-beats-variable", "last-flag-wins"],
-)
-def test_rclone_destination_folder_keeps_its_name_when_rclone_does_not_normalize(
-    monkeypatch, extra_args: list[str], variable: str | None
-) -> None:
-    nfd = unicodedata.normalize("NFD", "Café")
-
-    commands = _rclone_commands(monkeypatch, Seedbox(url="box", extra_args=extra_args), nfd, variable)
-
-    assert commands[3] == f"box:/music/{nfd}"
-
-
-def test_rclone_command_and_output_are_redacted_before_they_reach_the_log(monkeypatch) -> None:
-    messages: list[str] = []
-    stderr = (
-        b"2026/09/09 15:52:18 ERROR : ftp://dean:hunter2@box.example/music: 530 Login incorrect\n"
-        b"authentication failed for hunter2\n"
-    )
-
-    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(commands, 1, stdout=b"", stderr=stderr)
-
-    monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
-    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
-
-    ok = anyio.run(
-        seedbox._rclone_upload_folder,
-        Seedbox(
-            url="seedbox",
-            extra_args=[
-                "--ftp-pass",
-                "hunter2",
-                "--sftp-pass=hunter2",
-                "--sftp-key-pem",
-                "-----BEGIN KEY----- hunter2 -----END KEY-----",
-                "--ftp-pass",
-                "it's hunter2",
-                "--sftp-key-pem=BEGIN KEY hunter2 DATA",
-            ],
-        ),
-        "/music",
-        "/tmp/Artist - Album",
-    )
-
-    assert ok is False
-    assert not any("hunter2" in message for message in messages)
-    assert any("[REDACTED]" in message for message in messages)
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("key_pem=hunter2", "key_pem=[REDACTED]"),
-        ("--session hunter2", "--session [REDACTED]"),
-        ("--sftp-key-pem=hunter2", "--sftp-key-pem=[REDACTED]"),
-        ("token=hunter2", "token=[REDACTED]"),
-        ("sftp://dean:hunter2@box/x", "sftp://[REDACTED]@box/x"),
-        ("copy /music sbox:storage/red --transfers 4", "copy /music sbox:storage/red --transfers 4"),
-        # rclone connection strings may quote a value that has spaces in it, such as a PEM key.
-        (":sftp,key_pem='-----BEGIN KEY----- hunter2 -----END KEY-----',user=x:", ":sftp,key_pem=[REDACTED],user=x:"),
-        ('--sftp-key-pem "-----BEGIN KEY----- hunter2"', "--sftp-key-pem [REDACTED]"),
-        # rclone doubles a quote inside a quoted value.
-        (":sftp,pass='hunter''2',user=x:", ":sftp,pass=[REDACTED],user=x:"),
-    ],
-)
-def test_redact_masks_suffixed_option_names_and_sessions(text: str, expected: str) -> None:
-    assert seedbox.redact_secrets(text) == expected
-
-
-def test_a_credential_bearing_remote_never_reaches_the_log(monkeypatch) -> None:
-    # rclone accepts connection strings as remotes, so the "url" itself can carry a password.
-    messages: list[str] = []
-
-    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(commands, 0, stdout=b"", stderr=b"")
-
-    monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
-    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
-
-    ok = anyio.run(
-        seedbox._rclone_upload_folder,
-        Seedbox(url=":ftp,host=box.example,user=dean,pass=hunter2"),
-        "/music",
-        "/tmp/Artist - Album",
-    )
-
-    shown = ":ftp,host=box.example,user=dean,pass=[REDACTED]"
-    assert ok is True
-    assert messages[0] == f"Starting Rclone upload to {shown}"
-    assert messages[1].startswith(f"Executing: rclone copy '/tmp/Artist - Album' '{shown}")
-    assert messages[2].startswith(f"Rclone upload successful: /tmp/Artist - Album to {shown}")
-    assert not any("hunter2" in message for message in messages)
-
-
-def _manager(monkeypatch, seedboxes):
-    """UploadManager whose torrent clients are stubbed out (no network)."""
-    monkeypatch.setattr(seedbox.cfg, "seedbox", seedboxes)
-    monkeypatch.setattr(seedbox.click, "secho", lambda *a, **k: None)
-    monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", lambda url: object())
-    return seedbox.UploadManager()
-
-
-def _sb(name, trackers, directory, url="sbox"):
-    return Seedbox(
-        name=name,
-        enabled=True,
-        type="rclone",
-        url=url,
-        directory=directory,
-        torrent_client="qbittorrent+http://u:p@host:10086/",
-        trackers=trackers,
-    )
-
-
-def test_add_upload_task_routes_to_the_matching_tracker_only(monkeypatch) -> None:
-    manager = _manager(monkeypatch, [_sb("red", ["RED"], "storage/red"), _sb("ops", ["OPS"], "storage/ops")])
-
-    manager.add_upload_task("/tmp/Artist - Album", "folder", True, site_code="RED")
-
-    assert [(sb.name, sb.directory) for sb, *_ in manager.tasks] == [("red", "storage/red")]
-
-
-def test_add_upload_task_sends_each_tracker_to_its_own_destination(monkeypatch) -> None:
-    manager = _manager(monkeypatch, [_sb("red", ["RED"], "storage/red"), _sb("ops", ["OPS"], "storage/ops")])
-
-    manager.add_upload_task("/tmp/Artist - Album", "folder", True, site_code="RED")
-    manager.add_upload_task("/tmp/Artist - Album", "folder", True, site_code="OPS")
-
-    assert sorted(sb.directory for sb, *_ in manager.tasks) == ["storage/ops", "storage/red"]
-
-
-def test_add_upload_task_without_trackers_still_matches_every_site(monkeypatch) -> None:
-    # Back-compat: existing single-destination configs have no `trackers` key.
-    manager = _manager(monkeypatch, [_sb("all", [], "storage/uploads")])
-
-    manager.add_upload_task("/tmp/Artist - Album", "folder", True, site_code="OPS")
-    manager.add_upload_task("/tmp/Artist - Album2", "folder", True, site_code="RED")
-
-    assert len(manager.tasks) == 2
-
-
-def test_add_upload_task_with_no_site_code_skips_pinned_seedboxes(monkeypatch) -> None:
-    manager = _manager(monkeypatch, [_sb("red", ["RED"], "storage/red"), _sb("all", [], "storage/uploads")])
-
-    manager.add_upload_task("/tmp/Artist - Album", "folder", True)
-
-    assert [sb.name for sb, *_ in manager.tasks] == ["all"]
-
-
-def test_a_failed_copy_skips_only_its_own_seedbox_even_when_names_repeat(monkeypatch) -> None:
-    # Two destinations with the default empty name: only the one whose copy failed skips its seed.
-    manager = _manager(
-        monkeypatch, [_sb("", ["RED"], "storage/a", url="boxa"), _sb("", ["RED"], "storage/b", url="boxb")]
-    )
-    seeded: list[str] = []
-
-    async def fake_copy(sb, _remote_folder, _path) -> bool:
-        return sb.url != "boxa"
-
-    async def fake_add(_client, shell_path, *_args) -> bool:
-        seeded.append(shell_path)
-        return True
-
-    monkeypatch.setattr(seedbox, "_rclone_upload_folder", fake_copy)
-    monkeypatch.setattr(seedbox, "_add_to_downloader", fake_add)
-    manager.add_upload_task("/tmp/Artist - Album", "folder", True, site_code="RED")
-    manager.add_upload_task(
-        "/tmp/Artist - Album - RED.torrent", "seed", True, folder="/tmp/Artist - Album", site_code="RED"
-    )
-    anyio.run(manager.execute_upload)
-
-    assert seeded == ["storage/b"]
-
-
-def test_seedbox_trackers_are_uppercased() -> None:
-    assert Seedbox(trackers=["red", "ops"]).trackers == ["RED", "OPS"]
-
-
-def test_seedbox_rejects_unknown_tracker() -> None:
-    with pytest.raises(ValueError, match="Unknown tracker"):
-        Seedbox(name="typo", trackers=["REDD"])
-
-
-def test_redact_command_masks_an_equals_form_secret_whole() -> None:
-    shown = redact_command(["rclone", "copy", "a", "b", "--sftp-key-pem=BEGIN KEY PRIVATEPART DATA"])
-    assert "PRIVATEPART" not in shown
-    assert "--sftp-key-pem=[REDACTED]" in shown
-
-
-def test_redact_command_shows_only_allowlisted_flag_values() -> None:
-    shown = redact_command(
-        ["rclone", "copy", "a", "b", "--transfers", "4", "--http-headers", '"Authorization","hunter2"', "--bwlimit=8M"]
-    )
-    assert "--transfers 4" in shown
-    assert "--bwlimit=8M" in shown
-    assert "hunter2" not in shown
-    assert "Authorization" not in shown
-
-
-def test_an_echoed_header_credential_never_reaches_the_log(monkeypatch) -> None:
-    messages: list[str] = []
-
-    async def fake_run_process(commands: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(commands, 1, stdout=b"", stderr=b"401 for Authorization: hunter2\n")
-
-    monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
-    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
-
-    anyio.run(
-        seedbox._rclone_upload_folder,
-        Seedbox(url="web", extra_args=["--http-headers", "Authorization,hunter2"]),
-        "/music",
-        "/tmp/Album",
-    )
-
-    assert any(message.startswith("  rclone:") and "401 for" in message for message in messages)
-    assert not any("hunter2" in message for message in messages)
-
-
-def test_a_short_known_secret_is_masked_as_a_whole_word() -> None:
-    assert redact_secrets("authentication failed for ab", known=["ab"]) == "authentication failed for [REDACTED]"
-    assert redact_secrets("about tabs", known=["ab"]) == "about tabs"
-
-
-def test_a_pem_value_starting_with_dashes_is_masked_and_collected() -> None:
-    pem = "-----BEGIN OPENSSH PRIVATE KEY----- UNIQUEKEYMATERIAL -----END OPENSSH PRIVATE KEY-----"
-    args = ["rclone", "copy", "a", "b", "--sftp-key-pem", pem]
-    assert "UNIQUEKEYMATERIAL" not in redact_command(args)
-    assert pem in secret_values(args)
-
-
-def test_a_dumped_auth_header_is_masked() -> None:
-    dumped = "2026/09/26 DEBUG : HTTP REQUEST\nAuthorization: Bearer UNIQUETOKEN\nUser-Agent: rclone/v1.72.0"
-    shown = redact_secrets(dumped)
-    assert "UNIQUETOKEN" not in shown
-    assert "User-Agent: rclone/v1.72.0" in shown
-
-
-def test_a_secret_value_that_looks_like_a_flag_is_still_masked() -> None:
-    args = ["rclone", "copy", "a", "b", "--sftp-pass", "-UNIQUEMATERIAL", "--progress", "--transfers", "4"]
-    shown = redact_command(args)
-    assert "UNIQUEMATERIAL" not in shown
-    # A known switch takes no value, so what follows it is shown as usual.
-    assert "--progress --transfers 4" in shown
-    assert "-UNIQUEMATERIAL" in secret_values(args)
-
-
-@pytest.mark.parametrize(
-    ("args", "remote", "secret"),
-    [
-        ([], ":http,headers='Authorization,UNIQUETOKEN':", "UNIQUETOKEN"),
-        ([], ":http,url='https://user:UNIQUEMATERIAL@example.com':", "UNIQUEMATERIAL"),
-        (["--http-url", "https://user:UNIQUEARGPASS@example.com"], "web", "UNIQUEARGPASS"),
-    ],
-    ids=["connection-string header list", "connection-string url", "url argument"],
-)
-def test_embedded_credentials_are_collected_for_echoed_errors(args, remote, secret) -> None:
-    assert secret in secret_values(args, remote)
-    assert secret not in redact_secrets(f"401 for {secret}", secret_values(args, remote))
-
-
-# Ported from upstream (smokin-salmon/smoked-salmon), adapted to the fork's opt-in seedboxes and captured rclone.
-
-
-def _box(**fields) -> Seedbox:
-    return Seedbox(**{"enabled": True, **fields})
-
-
-def _route_rclone(monkeypatch, run) -> None:
-    """Fake rclone with run(commands, secrets) -> exit code, the seam upstream's tests use."""
-
-    async def fake_run_process(commands, **_kwargs):
-        return subprocess.CompletedProcess(commands, await run(commands, []), stdout=b"", stderr=b"")
-
-    monkeypatch.setattr(seedbox.anyio, "run_process", fake_run_process)
-
-
-async def _async_true() -> bool:
-    return True
 
 
 def _fake_rclone(
@@ -439,6 +39,11 @@ def _upload_with_fake_rclone(seedbox_config: Seedbox) -> bool:
 needs_posix = pytest.mark.skipif(sys.platform == "win32", reason="the fake rclone is a script with a shebang")
 
 
+def _box(**fields) -> Seedbox:
+    """A seedbox entry that takes part: the fork's are off unless they say enabled = true."""
+    return Seedbox(**{"enabled": True, **fields})
+
+
 @needs_posix
 @pytest.mark.parametrize(
     ("url", "extra_args"),
@@ -458,8 +63,7 @@ def test_the_rclone_command_salmon_prints_hides_the_seedbox_secrets(
 ) -> None:
     _fake_rclone(monkeypatch, tmp_path)
 
-    ok = _upload_with_fake_rclone(_box(url=url, extra_args=extra_args))
-    assert ok is True
+    assert _upload_with_fake_rclone(_box(url=url, extra_args=extra_args)) is True
 
     out, err = capfd.readouterr()
     assert "Executing: rclone copy" in out
@@ -480,64 +84,94 @@ def test_the_rclone_command_salmon_prints_keeps_harmless_values(monkeypatch, tmp
     ) in capfd.readouterr().out
 
 
+@needs_posix
+def test_rclone_writes_its_progress_straight_to_salmons_stdout(monkeypatch, tmp_path, capfd) -> None:
+    # -P draws live progress on rclone's stdout, which only renders if it is salmon's own (the
+    # terminal), not a pipe salmon reads.
+    _fake_rclone(monkeypatch, tmp_path, code="print(sys.argv[1:], os.fstat(1).st_dev, os.fstat(1).st_ino)")
+    salmons_stdout = f"{os.fstat(1).st_dev} {os.fstat(1).st_ino}"
+
+    assert _upload_with_fake_rclone(_box(url="seedbox", extra_args=["--checksum", "-P"])) is True
+
+    out = capfd.readouterr().out
+    assert f"{['copy', '/tmp/Artist - Album', 'seedbox:/music/Artist - Album', '--checksum', '-P']} " in out
+    assert salmons_stdout in out
+    assert "Rclone upload successful" in out
+
+
 @pytest.mark.parametrize(
     "extra_args",
     [["--sftp-path-override", "@/home/UNIQUEBOXUSER"], ["--sftp-path-override=@/home/UNIQUEBOXUSER"]],
 )
 def test_the_rclone_command_salmon_prints_hides_the_seedbox_home_folder(extra_args) -> None:
-    shown = redact_command(["rclone", "copy", "a", "sbox:b", *extra_args])
+    secrets = seedbox.seedbox_secrets(_box(url="sbox", extra_args=extra_args))
+    shown = redact_command(["rclone", "copy", "a", "sbox:b", *extra_args], secrets)
 
     assert "UNIQUEBOXUSER" not in shown
     assert "--sftp-path-override" in shown
 
 
-def test_a_path_override_with_no_value_is_no_override() -> None:
-    box = _box(url="sbox", directory="/music", extra_args=["-P", "--sftp-path-override"])
+@pytest.mark.parametrize(
+    ("extra_args", "expected"),
+    [
+        (["--sftp-path-override", "@/a"], "@/a"),
+        (["--sftp-path-override=@/a"], "@/a"),
+        (["--sftp-path-override", "@/a", "--sftp-path-override=/b"], "/b"),
+        (["--sftp-path-override=/b", "--sftp-path-override", "@/a"], "@/a"),
+        (["-P", "--sftp-path-override"], None),
+        (["--sftp-path-override", "@/a", "--sftp-path-override"], None),
+        (["-P"], None),
+        (["--sftp-path-override", "--sftp-path-override=/target"], "--sftp-path-override=/target"),
+    ],
+)
+def test_path_override_is_the_last_one_in_either_form(extra_args, expected) -> None:
+    assert seedbox._path_override(extra_args) == expected
 
-    assert seedbox._resolve_shell_path(box.directory, box.extra_args) == "/music"
-    assert seedbox.seedbox_secrets(box) is not None
+
+def test_a_path_override_with_no_value_is_no_override() -> None:
+    extra_args = ["-P", "--sftp-path-override"]
+
+    assert seedbox._resolve_shell_path("/music", extra_args) == "/music"
+    assert seedbox.seedbox_secrets(_box(url="sbox", extra_args=extra_args)) == []
+
+
+def test_the_last_path_override_decides_the_seed_path() -> None:
+    extra_args = ["--sftp-path-override", "/first", "--sftp-path-override=@/home/last"]
+
+    assert seedbox._resolve_shell_path("/music", extra_args) == "/home/last/music"
 
 
 @pytest.mark.parametrize("override", ["@/home/UNIQUEBOXUSER", "/home/UNIQUEBOXUSER/music"])
-def test_a_client_error_repeating_the_seed_path_hides_the_seedbox_home_folder(monkeypatch, tmp_path, override) -> None:
-    box = _box(url="sbox", directory="/music", extra_args=["--sftp-path-override", override])
-    shell_path = seedbox._resolve_shell_path(box.directory, box.extra_args)
-    torrent = tmp_path / "Album.torrent"
-    torrent.write_bytes(b"d4:infod4:name5:Albumee")
-    messages: list[str] = []
-    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
+def test_an_error_repeating_the_seed_path_hides_the_seedbox_home_folder(override) -> None:
+    box = _box(url="sbox", extra_args=["--sftp-path-override", override])
+    shell_path = seedbox._resolve_shell_path("/music", box.extra_args)
 
-    class RefusingClient(TorrentClient):
-        def login(self) -> None:
-            return None
+    shown = redact_secrets(f"cannot create {shell_path}/Album", seedbox.seedbox_secrets(box))
 
-        def add_to_downloader(self, remote_folder, torrent, is_paused, label) -> bool:
-            raise RuntimeError(f"cannot create {remote_folder}/Album")
+    assert "UNIQUEBOXUSER" not in shown
 
-    added = anyio.run(
-        seedbox._add_to_downloader,
-        RefusingClient(),
-        shell_path,
-        str(torrent),
-        "salmon",
-        False,
-        seedbox.seedbox_secrets(box),
-        "sbox",
-    )
 
-    assert added is False
-    assert messages and "UNIQUEBOXUSER" not in "\n".join(messages)
+@pytest.mark.parametrize("override", ["/", "@/", "@", "/ab", "@/ab"])
+def test_a_root_or_tiny_path_override_is_not_masked(override) -> None:
+    box = _box(url="sbox", extra_args=["--sftp-path-override", override])
+
+    assert seedbox.seedbox_secrets(box) == []
+    assert redact_secrets("copied /music/Album to /", seedbox.seedbox_secrets(box)) == "copied /music/Album to /"
+
+
+def test_a_tiny_path_override_does_not_unmask_a_password_with_the_same_value() -> None:
+    box = _box(url="sbox", extra_args=["--sftp-pass", "/ab", "--sftp-path-override", "/ab"])
+
+    assert "/ab" in seedbox.seedbox_secrets(box)
 
 
 @needs_posix
 def test_rclone_upload_folder_reports_nonzero_exit_code(monkeypatch, tmp_path, capfd) -> None:
     _fake_rclone(monkeypatch, tmp_path, exit_code=7)
 
-    ok = _upload_with_fake_rclone(_box(url="seedbox", extra_args=["-P"]))
-    out = capfd.readouterr().out
+    assert _upload_with_fake_rclone(_box(url="seedbox", extra_args=["-P"])) is False
 
-    assert ok is False
-    assert "Rclone upload failed with exit code 7" in out
+    assert "Rclone upload failed with exit code 7" in capfd.readouterr().out
 
 
 @needs_posix
@@ -578,14 +212,28 @@ def test_what_rclone_echoes_on_stderr_is_masked(
 ) -> None:
     _fake_rclone(monkeypatch, tmp_path, stderr=echo if "no newline" in echo else echo + "\n", exit_code=1)
 
-    ok = _upload_with_fake_rclone(_box(url=url, extra_args=extra_args))
-    assert ok is False
+    assert _upload_with_fake_rclone(_box(url=url, extra_args=extra_args)) is False
 
     out, err = capfd.readouterr()
     # rclone's own line is still shown, only its secret is masked.
-    assert echo[:20] in out
-    assert "[REDACTED]" in out
+    assert echo[:20] in err
+    assert "[REDACTED]" in err
     assert "UNIQUESECRET" not in out + err
+
+
+@needs_posix
+def test_rclone_errors_are_printed_as_they_come(monkeypatch, tmp_path) -> None:
+    printed: list[tuple[float, str]] = []
+    monkeypatch.setattr(seedbox.click, "echo", lambda message, **kwargs: printed.append((time.monotonic(), message)))
+    _fake_rclone(
+        monkeypatch, tmp_path, code="sys.stderr.write('early\\n'); sys.stderr.flush(); time.sleep(1)", stderr="late\n"
+    )
+
+    _upload_with_fake_rclone(_box(url="sbox"))
+
+    assert [message for _, message in printed] == ["early", "late"]
+    # Not held back until rclone exits: an error or a prompt during a long copy shows at once.
+    assert printed[1][0] - printed[0][0] > 0.5
 
 
 class _RecordingClient:
@@ -605,7 +253,15 @@ def _run_upload(
     seedboxes: list[Seedbox],
     rclone_exit_codes: dict[str, int] | None = None,
 ) -> tuple[dict[str, _RecordingClient], list[list[str]]]:
-    """Upload one release to seedboxes with a fake client; rclone exits per URL, default 0."""
+    """Queue one release on the given seedboxes and run the upload with a fake client and rclone.
+
+    Args:
+        rclone_exit_codes: Maps a seedbox URL to the exit code its rclone call should return.
+            Seedboxes not listed succeed (exit code 0).
+
+    Returns:
+        The torrent clients salmon logged in to, by URL, and the rclone commands it ran.
+    """
     clients: dict[str, _RecordingClient] = {}
     rclone_calls: list[list[str]] = []
     rclone_exit_codes = rclone_exit_codes or {}
@@ -622,7 +278,7 @@ def _run_upload(
         "parse_libtc_url",
         staticmethod(lambda url: clients.setdefault(url, _RecordingClient())),
     )
-    _route_rclone(monkeypatch, fake_run_rclone)
+    monkeypatch.setattr(seedbox, "_run_rclone", fake_run_rclone)
     monkeypatch.setattr(seedbox.click, "secho", lambda *args, **kwargs: None)
 
     release = tmp_path / "Artist - Album (2020) [WEB FLAC]"
@@ -758,8 +414,9 @@ def test_successful_rclone_copy_still_seeds(monkeypatch, tmp_path) -> None:
 
 
 def test_failed_copy_only_skips_seeding_its_own_folder(monkeypatch, tmp_path) -> None:
-    # A run queues several releases (a FLAC plus each transcode): a failed copy skips only its own
-    # folder's seed, not every seed queued for that seedbox.
+    # An upload run queues several releases (a FLAC plus each transcode). A failed copy of one
+    # folder used to be keyed by seedbox alone, so it skipped the seed of every other folder
+    # queued for that seedbox too, including ones whose files did arrive.
     clients: dict[str, _RecordingClient] = {}
     rclone_calls: list[list[str]] = []
 
@@ -779,7 +436,7 @@ def test_failed_copy_only_skips_seeding_its_own_folder(monkeypatch, tmp_path) ->
         "parse_libtc_url",
         staticmethod(lambda url: clients.setdefault(url, _RecordingClient())),
     )
-    _route_rclone(monkeypatch, fake_run_rclone)
+    monkeypatch.setattr(seedbox, "_run_rclone", fake_run_rclone)
     monkeypatch.setattr(seedbox.click, "secho", lambda *args, **kwargs: None)
 
     release1 = tmp_path / "Artist - Album1 (2020) [WEB FLAC]"
@@ -823,7 +480,7 @@ def test_failed_copy_skips_both_torrents_of_multi_tracker_upload(monkeypatch, tm
         "parse_libtc_url",
         staticmethod(lambda url: clients.setdefault(url, _RecordingClient())),
     )
-    _route_rclone(monkeypatch, fake_run_rclone)
+    monkeypatch.setattr(seedbox, "_run_rclone", fake_run_rclone)
     monkeypatch.setattr(seedbox.click, "secho", lambda *args, **kwargs: None)
 
     release = tmp_path / "Artist - Album (2020) [WEB FLAC]"
@@ -862,7 +519,7 @@ def test_rclone_not_installed_skips_seeding(monkeypatch, tmp_path) -> None:
         "parse_libtc_url",
         staticmethod(lambda url: clients.setdefault(url, _RecordingClient())),
     )
-    _route_rclone(monkeypatch, fake_run_rclone)
+    monkeypatch.setattr(seedbox, "_run_rclone", fake_run_rclone)
     monkeypatch.setattr(seedbox.click, "secho", lambda *args, **kwargs: None)
 
     release = tmp_path / "Artist - Album (2020) [WEB FLAC]"
@@ -879,52 +536,39 @@ def test_rclone_not_installed_skips_seeding(monkeypatch, tmp_path) -> None:
     assert client.torrents == []
 
 
-def test_a_folder_task_that_raises_skips_its_seed_and_masks_the_error(monkeypatch, tmp_path, capsys) -> None:
-    clients: dict[str, _RecordingClient] = {}
+def test_a_seed_task_without_its_folder_is_refused(monkeypatch) -> None:
+    # Without its folder, a seed task could not be skipped when the copy of that folder failed.
+    manager = _manager_with_boxes(monkeypatch, [_box(type="rclone", url="box", torrent_client="x")])
 
-    async def broken(*_args) -> bool:
-        raise RuntimeError("remote box:UNIQUESECRET went away")
+    with pytest.raises(ValueError, match="folder"):
+        manager.add_upload_task("/torrents/Album.torrent", task_type="seed", is_flac=True)
+
+    assert not manager.tasks
+
+
+def test_a_skipped_seed_names_its_seedbox(monkeypatch, tmp_path, capsys) -> None:
+    async def fail(commands: list[str], secrets: list[str]) -> int:
+        return 1
 
     monkeypatch.setattr(
         seedbox.cfg,
         "seedbox",
-        [
-            _box(
-                type="rclone",
-                url="box",
-                extra_args=["--sftp-pass", "UNIQUESECRET"],
-                torrent_client="qbittorrent+http://b:1",
-            )
-        ],
+        [_box(type="rclone", name="My Box", url="box", torrent_client="qbittorrent+http://box:8080")],
     )
-    monkeypatch.setattr(
-        seedbox.TorrentClientGenerator,
-        "parse_libtc_url",
-        staticmethod(lambda url: clients.setdefault(url, _RecordingClient())),
-    )
-    monkeypatch.setattr(seedbox, "_rclone_upload_folder", broken)
+    monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", staticmethod(lambda url: _RecordingClient()))
+    monkeypatch.setattr(seedbox, "_run_rclone", fail)
 
     anyio.run(_queue_one_release(tmp_path).execute_upload)
 
     out = capsys.readouterr().out
-    assert clients["qbittorrent+http://b:1"].torrents == []
-    assert "Critical error during task" in out
-    assert "UNIQUESECRET" not in out
-
-
-def test_a_seed_task_without_its_folder_is_refused(monkeypatch) -> None:
-    monkeypatch.setattr(seedbox.cfg, "seedbox", [])
-    manager = seedbox.UploadManager()
-
-    with pytest.raises(ValueError, match="folder"):
-        manager.add_upload_task("/torrents/Album.torrent", task_type="seed", is_flac=True)
+    assert "Skipping seed on My Box: the Rclone upload of" in out
 
 
 @pytest.mark.parametrize(
     ("written", "decoded"), [("pa%40ss-UNIQUE", "pa@ss-UNIQUE"), ("pa%20ss-UNIQUE", "pa ss-UNIQUE")]
 )
 def test_a_percent_encoded_client_password_is_masked_decoded_too(written, decoded) -> None:
-    box = _box(torrent_client=f"qbittorrent+http://user:{written}@b:1")
+    box = _box(type="local", torrent_client=f"qbittorrent+http://dean:{written}@box:8080")
 
     assert {written, decoded} <= set(seedbox.seedbox_secrets(box))
 
@@ -940,7 +584,7 @@ def test_a_percent_encoded_client_password_is_masked_decoded_too(written, decode
     ],
 )
 def test_a_client_error_repeating_a_proxy_key_in_the_client_url_hides_it(key, error) -> None:
-    box = _box(torrent_client=f"qbittorrent+http://proxy.local:7476/proxy/{key}")
+    box = _box(type="local", torrent_client=f"qbittorrent+http://proxy.local:7476/proxy/{key}")
 
     assert key not in redact_secrets(error.format(key=key), seedbox.seedbox_secrets(box))
 
@@ -1003,12 +647,12 @@ def test_a_failed_task_never_prints_the_seedbox_secrets(monkeypatch, tmp_path, c
         [_box(type="rclone", url="box", extra_args=["--sftp-pass", "UNIQUESECRET"], torrent_client="x")],
     )
     monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", staticmethod(lambda url: _RecordingClient()))
-    _route_rclone(monkeypatch, refuse)
+    monkeypatch.setattr(seedbox, "_run_rclone", refuse)
 
     anyio.run(_queue_one_release(tmp_path).execute_upload)
 
     out = capsys.readouterr().out
-    assert "rclone could not start: could not start rclone copy" in out
+    assert "Critical error during task: could not start rclone copy" in out
     assert "UNIQUESECRET" not in out
 
 
@@ -1069,8 +713,7 @@ def test_qbittorrent_fails_response_is_reported_as_not_added(monkeypatch, capsys
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is False
-    out = capsys.readouterr().out
-    assert "successfully" not in out.lower()
+    assert "successfully" not in capsys.readouterr().out.lower()
 
 
 def test_qbittorrent_ok_response_is_reported_as_added(monkeypatch, capsys) -> None:
@@ -1083,12 +726,11 @@ def test_qbittorrent_ok_response_is_reported_as_added(monkeypatch, capsys) -> No
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is True
-    out = capsys.readouterr().out
-    assert "Torrent added successfully" in out
+    assert "Torrent added successfully" in capsys.readouterr().out
 
 
 def test_qbittorrent_api_2_14_metadata_success_is_reported_as_added(monkeypatch, capsys) -> None:
-    # Web API 2.14+ (qBittorrent 5.2+) answers with a JSON object instead of "Ok."/"Fails.".
+    # Web API v2.14.0+ (qBittorrent 5.2+) answers with a JSON object instead of "Ok."/"Fails.".
     class FakeApi:
         def torrents_add(self, **kwargs):
             return {"success_count": 1, "failure_count": 0, "pending_count": 0, "added_torrent_ids": ["abc"]}
@@ -1098,8 +740,7 @@ def test_qbittorrent_api_2_14_metadata_success_is_reported_as_added(monkeypatch,
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is True
-    out = capsys.readouterr().out
-    assert "Torrent added successfully" in out
+    assert "Torrent added successfully" in capsys.readouterr().out
 
 
 def test_qbittorrent_api_2_14_metadata_failure_is_reported_as_not_added(monkeypatch, capsys) -> None:
@@ -1112,8 +753,7 @@ def test_qbittorrent_api_2_14_metadata_failure_is_reported_as_not_added(monkeypa
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is False
-    out = capsys.readouterr().out
-    assert "successfully" not in out.lower()
+    assert "successfully" not in capsys.readouterr().out.lower()
 
 
 def test_deluge_none_result_is_reported_as_not_added(monkeypatch, capsys) -> None:
@@ -1127,8 +767,7 @@ def test_deluge_none_result_is_reported_as_not_added(monkeypatch, capsys) -> Non
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is False
-    out = capsys.readouterr().out
-    assert "successfully" not in out.lower()
+    assert "successfully" not in capsys.readouterr().out.lower()
 
 
 def test_deluge_torrent_id_is_reported_as_added(monkeypatch, capsys) -> None:
@@ -1141,8 +780,34 @@ def test_deluge_torrent_id_is_reported_as_added(monkeypatch, capsys) -> None:
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is True
+    assert "Torrent added successfully" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("set_error", "expected"),
+    [
+        ("Unknown Label: salmon, UNIQUESECRET", "Failed to create/set label"),
+        ("access denied for UNIQUESECRET", "Failed to set label"),
+    ],
+    ids=["label could not be created", "label could not be set"],
+)
+def test_a_deluge_label_error_never_prints_its_password(monkeypatch, capsys, set_error, expected) -> None:
+    class FakeApi:
+        def call(self, method, *args):
+            if method == "core.add_torrent_file":
+                return "abc123"
+            if method == "label.add":
+                raise RuntimeError("label.add refused for UNIQUESECRET")
+            raise RuntimeError(set_error)
+
+    client = _connected_client(monkeypatch, DelugeClient, FakeApi())
+
+    added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="salmon")
+
     out = capsys.readouterr().out
-    assert "Torrent added successfully" in out
+    assert added is True
+    assert expected in out
+    assert "UNIQUESECRET" not in out
 
 
 def test_transmission_torrent_result_is_reported_as_added(monkeypatch, capsys) -> None:
@@ -1155,8 +820,7 @@ def test_transmission_torrent_result_is_reported_as_added(monkeypatch, capsys) -
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is True
-    out = capsys.readouterr().out
-    assert "Torrent added successfully" in out
+    assert "Torrent added successfully" in capsys.readouterr().out
 
 
 def test_a_client_call_that_raises_is_reported_as_not_added(monkeypatch, capsys) -> None:
@@ -1169,8 +833,7 @@ def test_a_client_call_that_raises_is_reported_as_not_added(monkeypatch, capsys)
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is False
-    out = capsys.readouterr().out
-    assert "successfully" not in out.lower()
+    assert "successfully" not in capsys.readouterr().out.lower()
 
 
 def test_a_client_that_never_connected_is_reported_as_not_added(monkeypatch, capsys) -> None:
@@ -1179,8 +842,7 @@ def test_a_client_that_never_connected_is_reported_as_not_added(monkeypatch, cap
     added = client.add_to_downloader("/music", b"torrent", is_paused=False, label="")
 
     assert added is False
-    out = capsys.readouterr().out
-    assert "successfully" not in out.lower()
+    assert "successfully" not in capsys.readouterr().out.lower()
 
 
 class _RefusingClient:
@@ -1220,9 +882,51 @@ def test_seedbox_reports_a_refused_torrent_by_masked_url_without_a_name(monkeypa
 
     out = capsys.readouterr().out
     assert "Torrent added to client successfully" not in out
-
     assert "Torrent was not added to the client on :sftp,host=box,pass=[REDACTED]" in out
     assert "UNIQUESECRET" not in out
+
+
+async def _async_true() -> bool:
+    return True
+
+
+def _manager_with_boxes(monkeypatch, seedboxes: list[Seedbox]) -> "seedbox.UploadManager":
+    """UploadManager with the given seedboxes and a stubbed torrent client (no network)."""
+    monkeypatch.setattr(seedbox.cfg, "seedbox", seedboxes)
+    monkeypatch.setattr(seedbox.click, "secho", lambda *args, **kwargs: None)
+    monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", staticmethod(lambda url: _RecordingClient()))
+    return seedbox.UploadManager()
+
+
+def test_add_upload_task_skips_a_box_pinned_to_a_different_tracker(monkeypatch) -> None:
+    manager = _manager_with_boxes(
+        monkeypatch, [_box(name="red-box", trackers=["RED"], torrent_client="qbittorrent+http://box:8080")]
+    )
+
+    manager.add_upload_task("/tmp/Artist - Album", task_type="folder", is_flac=True, site_code="OPS")
+
+    assert list(manager.tasks) == []
+
+
+def test_add_upload_task_reaches_an_unpinned_box_for_any_tracker(monkeypatch) -> None:
+    manager = _manager_with_boxes(monkeypatch, [_box(name="any-box", torrent_client="qbittorrent+http://box:8080")])
+
+    manager.add_upload_task("/tmp/Artist - Album", task_type="folder", is_flac=True, site_code="RED")
+    manager.add_upload_task("/tmp/Artist - Album2", task_type="folder", is_flac=True, site_code="OPS")
+
+    assert len(manager.tasks) == 2
+
+
+def test_add_upload_task_reaches_a_box_pinned_to_both_trackers(monkeypatch) -> None:
+    manager = _manager_with_boxes(
+        monkeypatch,
+        [_box(name="both-box", trackers=["RED", "OPS"], torrent_client="qbittorrent+http://box:8080")],
+    )
+
+    manager.add_upload_task("/tmp/Artist - Album", task_type="folder", is_flac=True, site_code="RED")
+    manager.add_upload_task("/tmp/Artist - Album2", task_type="folder", is_flac=True, site_code="OPS")
+
+    assert len(manager.tasks) == 2
 
 
 def test_red_and_ops_upload_seeds_only_the_pinned_box_for_each_and_copies_the_folder_once(
@@ -1264,7 +968,7 @@ def test_red_and_ops_upload_seeds_only_the_pinned_box_for_each_and_copies_the_fo
         "parse_libtc_url",
         staticmethod(lambda url: clients.setdefault(url, _RecordingClient())),
     )
-    _route_rclone(monkeypatch, fake_run_rclone)
+    monkeypatch.setattr(seedbox, "_run_rclone", fake_run_rclone)
     monkeypatch.setattr(seedbox.click, "secho", lambda *args, **kwargs: None)
 
     release = tmp_path / "Artist - Album (2020) [WEB FLAC]"
@@ -1285,3 +989,286 @@ def test_red_and_ops_upload_seeds_only_the_pinned_box_for_each_and_copies_the_fo
     assert len(rclone_calls) == 2
     assert clients["qbittorrent+http://red:8080"].torrents == [torrent_red.read_bytes()]
     assert clients["qbittorrent+http://ops:8080"].torrents == [torrent_ops.read_bytes()]
+
+
+def test_seedbox_trackers_are_uppercased() -> None:
+    assert _box(trackers=["red", "ops"]).trackers == ["RED", "OPS"]
+
+
+def test_seedbox_rejects_unknown_tracker() -> None:
+    with pytest.raises(ValueError, match="Unknown tracker"):
+        _box(name="typo-box", trackers=["REDD"])
+
+
+@needs_posix
+@pytest.mark.parametrize("flag", ["--local-unicode-normalization", "--local-unicode-normalization=true"])
+def test_rclone_destination_folder_is_nfc_with_the_unicode_flag(monkeypatch, tmp_path, capfd, flag: str) -> None:
+    _fake_rclone(monkeypatch, tmp_path, code="print(sys.argv[1:])")
+    nfd = unicodedata.normalize("NFD", "Café")
+
+    anyio.run(seedbox._rclone_upload_folder, _box(url="box", extra_args=[flag]), "/music", f"/tmp/{nfd}")
+
+    out = capfd.readouterr().out
+    assert f"box:/music/{unicodedata.normalize('NFC', 'Café')}'" in out
+    assert f"box:/music/{nfd}'" not in out
+
+
+@needs_posix
+def test_rclone_destination_folder_keeps_its_name_without_the_unicode_flag(monkeypatch, tmp_path, capfd) -> None:
+    _fake_rclone(monkeypatch, tmp_path, code="print(sys.argv[1:])")
+    nfd = unicodedata.normalize("NFD", "Café")
+
+    anyio.run(seedbox._rclone_upload_folder, _box(url="box", extra_args=["--checksum"]), "/music", f"/tmp/{nfd}")
+
+    assert f"box:/music/{nfd}'" in capfd.readouterr().out
+
+
+def _manager(monkeypatch, seedboxes):
+    """UploadManager whose torrent clients are stubbed out (no network)."""
+    monkeypatch.setattr(seedbox.cfg, "seedbox", seedboxes)
+    monkeypatch.setattr(seedbox.click, "secho", lambda *a, **k: None)
+    monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", lambda url: object())
+    return seedbox.UploadManager()
+
+
+def _sb(name, trackers, directory, url="sbox"):
+    return Seedbox(
+        name=name,
+        enabled=True,
+        type="rclone",
+        url=url,
+        directory=directory,
+        torrent_client="qbittorrent+http://u:p@host:10086/",
+        trackers=trackers,
+    )
+
+
+def test_add_upload_task_routes_to_the_matching_tracker_only(monkeypatch) -> None:
+    manager = _manager(monkeypatch, [_sb("red", ["RED"], "storage/red"), _sb("ops", ["OPS"], "storage/ops")])
+
+    manager.add_upload_task("/tmp/Artist - Album", "folder", True, site_code="RED")
+
+    assert [(sb.name, sb.directory) for sb, *_ in manager.tasks] == [("red", "storage/red")]
+
+
+def test_add_upload_task_sends_each_tracker_to_its_own_destination(monkeypatch) -> None:
+    manager = _manager(monkeypatch, [_sb("red", ["RED"], "storage/red"), _sb("ops", ["OPS"], "storage/ops")])
+
+    manager.add_upload_task("/tmp/Artist - Album", "folder", True, site_code="RED")
+    manager.add_upload_task("/tmp/Artist - Album", "folder", True, site_code="OPS")
+
+    assert sorted(sb.directory for sb, *_ in manager.tasks) == ["storage/ops", "storage/red"]
+
+
+def test_add_upload_task_with_no_site_code_skips_pinned_seedboxes(monkeypatch) -> None:
+    manager = _manager(monkeypatch, [_sb("red", ["RED"], "storage/red"), _sb("all", [], "storage/uploads")])
+
+    manager.add_upload_task("/tmp/Artist - Album", "folder", True)
+
+    assert [sb.name for sb, *_ in manager.tasks] == ["all"]
+
+
+def test_a_failed_copy_skips_only_its_own_seedbox_even_when_names_repeat(monkeypatch) -> None:
+    # Two destinations with the default empty name: only the one whose copy failed skips its seed.
+    manager = _manager(
+        monkeypatch, [_sb("", ["RED"], "storage/a", url="boxa"), _sb("", ["RED"], "storage/b", url="boxb")]
+    )
+    seeded: list[str] = []
+
+    async def fake_copy(sb, _remote_folder, _path) -> bool:
+        return sb.url != "boxa"
+
+    async def fake_add(_client, shell_path, *_args) -> bool:
+        seeded.append(shell_path)
+        return True
+
+    monkeypatch.setattr(seedbox, "_rclone_upload_folder", fake_copy)
+    monkeypatch.setattr(seedbox, "_add_to_downloader", fake_add)
+    manager.add_upload_task("/tmp/Artist - Album", "folder", True, site_code="RED")
+    manager.add_upload_task(
+        "/tmp/Artist - Album - RED.torrent", "seed", True, folder="/tmp/Artist - Album", site_code="RED"
+    )
+    anyio.run(manager.execute_upload)
+
+    assert seeded == ["storage/b"]
+
+
+def test_a_folder_task_that_raises_skips_its_seed_and_masks_the_error(monkeypatch, tmp_path, capsys) -> None:
+    clients: dict[str, _RecordingClient] = {}
+
+    async def broken(*_args) -> bool:
+        raise RuntimeError("remote box:UNIQUESECRET went away")
+
+    monkeypatch.setattr(
+        seedbox.cfg,
+        "seedbox",
+        [
+            _box(
+                type="rclone",
+                url="box",
+                extra_args=["--sftp-pass", "UNIQUESECRET"],
+                torrent_client="qbittorrent+http://b:1",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        seedbox.TorrentClientGenerator,
+        "parse_libtc_url",
+        staticmethod(lambda url: clients.setdefault(url, _RecordingClient())),
+    )
+    monkeypatch.setattr(seedbox, "_rclone_upload_folder", broken)
+
+    anyio.run(_queue_one_release(tmp_path).execute_upload)
+
+    out = capsys.readouterr().out
+    assert clients["qbittorrent+http://b:1"].torrents == []
+    assert "Critical error during task" in out
+    assert "UNIQUESECRET" not in out
+
+
+@pytest.mark.parametrize("override", ["@/home/UNIQUEBOXUSER", "/home/UNIQUEBOXUSER/music"])
+def test_a_client_error_repeating_the_seed_path_hides_the_seedbox_home_folder(monkeypatch, tmp_path, override) -> None:
+    box = _box(url="sbox", directory="/music", extra_args=["--sftp-path-override", override])
+    shell_path = seedbox._resolve_shell_path(box.directory, box.extra_args)
+    torrent = tmp_path / "Album.torrent"
+    torrent.write_bytes(b"d4:infod4:name5:Albumee")
+    messages: list[str] = []
+    monkeypatch.setattr(seedbox.click, "secho", lambda message, **kwargs: messages.append(message))
+
+    class RefusingClient(TorrentClient):
+        def login(self) -> None:
+            return None
+
+        def add_to_downloader(self, remote_folder, torrent, is_paused, label) -> bool:
+            raise RuntimeError(f"cannot create {remote_folder}/Album")
+
+    added = anyio.run(
+        seedbox._add_to_downloader,
+        RefusingClient(),
+        shell_path,
+        str(torrent),
+        "salmon",
+        False,
+        seedbox.seedbox_secrets(box),
+        "sbox",
+    )
+
+    assert added is False
+    assert messages and "UNIQUEBOXUSER" not in "\n".join(messages)
+
+
+@pytest.mark.parametrize(
+    ("args", "remote", "secret"),
+    [
+        ([], ":http,headers='Authorization,UNIQUETOKEN':", "UNIQUETOKEN"),
+        ([], ":http,url='https://user:UNIQUEMATERIAL@example.com':", "UNIQUEMATERIAL"),
+        (["--http-url", "https://user:UNIQUEARGPASS@example.com"], "web", "UNIQUEARGPASS"),
+    ],
+    ids=["connection-string header list", "connection-string url", "url argument"],
+)
+def test_embedded_credentials_are_collected_for_echoed_errors(args, remote, secret) -> None:
+    assert secret in secret_values(args, remote)
+    assert secret not in redact_secrets(f"401 for {secret}", secret_values(args, remote))
+
+
+def test_a_dumped_auth_header_is_masked() -> None:
+    dumped = "2026/09/26 DEBUG : HTTP REQUEST\nAuthorization: Bearer UNIQUETOKEN\nUser-Agent: rclone/v1.72.0"
+    shown = redact_secrets(dumped)
+    assert "UNIQUETOKEN" not in shown
+    assert "User-Agent: rclone/v1.72.0" in shown
+
+
+def test_a_pem_value_starting_with_dashes_is_masked_and_collected() -> None:
+    pem = "-----BEGIN OPENSSH PRIVATE KEY----- UNIQUEKEYMATERIAL -----END OPENSSH PRIVATE KEY-----"
+    args = ["rclone", "copy", "a", "b", "--sftp-key-pem", pem]
+    assert "UNIQUEKEYMATERIAL" not in redact_command(args)
+    assert pem in secret_values(args)
+
+
+def test_a_secret_value_that_looks_like_a_flag_is_still_masked() -> None:
+    args = ["rclone", "copy", "a", "b", "--sftp-pass", "-UNIQUEMATERIAL", "--progress", "--transfers", "4"]
+    shown = redact_command(args)
+    assert "UNIQUEMATERIAL" not in shown
+    # A known switch takes no value, so what follows it is shown as usual.
+    assert "--progress --transfers 4" in shown
+    assert "-UNIQUEMATERIAL" in secret_values(args)
+
+
+def test_a_short_known_secret_is_masked_as_a_whole_word() -> None:
+    assert redact_secrets("authentication failed for ab", known=["ab"]) == "authentication failed for [REDACTED]"
+    assert redact_secrets("about tabs", known=["ab"]) == "about tabs"
+
+
+def test_redact_command_masks_an_equals_form_secret_whole() -> None:
+    shown = redact_command(["rclone", "copy", "a", "b", "--sftp-key-pem=BEGIN KEY PRIVATEPART DATA"])
+    assert "PRIVATEPART" not in shown
+    assert "--sftp-key-pem=[REDACTED]" in shown
+
+
+def test_redact_command_shows_only_allowlisted_flag_values() -> None:
+    shown = redact_command(
+        ["rclone", "copy", "a", "b", "--transfers", "4", "--http-headers", '"Authorization","hunter2"', "--bwlimit=8M"]
+    )
+    assert "--transfers 4" in shown
+    assert "--bwlimit=8M" in shown
+    assert "hunter2" not in shown
+    assert "Authorization" not in shown
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("key_pem=hunter2", "key_pem=[REDACTED]"),
+        ("--session hunter2", "--session [REDACTED]"),
+        ("--sftp-key-pem=hunter2", "--sftp-key-pem=[REDACTED]"),
+        ("token=hunter2", "token=[REDACTED]"),
+        ("sftp://dean:hunter2@box/x", "sftp://[REDACTED]@box/x"),
+        ("copy /music sbox:storage/red --transfers 4", "copy /music sbox:storage/red --transfers 4"),
+        # rclone connection strings may quote a value that has spaces in it, such as a PEM key.
+        (":sftp,key_pem='-----BEGIN KEY----- hunter2 -----END KEY-----',user=x:", ":sftp,key_pem=[REDACTED],user=x:"),
+        ('--sftp-key-pem "-----BEGIN KEY----- hunter2"', "--sftp-key-pem [REDACTED]"),
+        # rclone doubles a quote inside a quoted value.
+        (":sftp,pass='hunter''2',user=x:", ":sftp,pass=[REDACTED],user=x:"),
+    ],
+)
+def test_redact_masks_suffixed_option_names_and_sessions(text: str, expected: str) -> None:
+    assert seedbox.redact_secrets(text) == expected
+
+
+@needs_posix
+@pytest.mark.parametrize("variable", ["true", "1"])
+def test_rclone_destination_folder_is_nfc_with_the_unicode_variable(
+    monkeypatch, tmp_path, capfd, variable: str
+) -> None:
+    _fake_rclone(monkeypatch, tmp_path, code="print(sys.argv[1:])")
+    monkeypatch.setenv(seedbox._UNICODE_ENV, variable)
+    nfd = unicodedata.normalize("NFD", "Café")
+
+    anyio.run(seedbox._rclone_upload_folder, _box(url="box", extra_args=["--checksum"]), "/music", f"/tmp/{nfd}")
+
+    assert f"box:/music/{unicodedata.normalize('NFC', 'Café')}'" in capfd.readouterr().out
+
+
+@needs_posix
+@pytest.mark.parametrize(
+    ("extra_args", "variable"),
+    [
+        (["--checksum"], "false"),
+        (["--local-unicode-normalization=false"], "true"),
+        (["--local-unicode-normalization", "--local-unicode-normalization=false"], None),
+    ],
+    ids=["variable-false", "flag-false-beats-variable", "last-flag-wins"],
+)
+def test_rclone_destination_folder_keeps_its_name_when_rclone_does_not_normalize(
+    monkeypatch, tmp_path, capfd, extra_args: list[str], variable: str | None
+) -> None:
+    _fake_rclone(monkeypatch, tmp_path, code="print(sys.argv[1:])")
+    if variable is None:
+        monkeypatch.delenv(seedbox._UNICODE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(seedbox._UNICODE_ENV, variable)
+    nfd = unicodedata.normalize("NFD", "Café")
+
+    anyio.run(seedbox._rclone_upload_folder, _box(url="box", extra_args=extra_args), "/music", f"/tmp/{nfd}")
+
+    assert f"box:/music/{nfd}'" in capfd.readouterr().out

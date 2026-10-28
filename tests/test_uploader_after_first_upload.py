@@ -553,7 +553,7 @@ def test_a_pick_is_weighed_as_the_tags_had_it_though_the_scrape_edits_them(flow,
     assert weighed_years == [2020]
 
 
-def test_conversions_the_edition_already_holds_are_left_out_after_the_flac(flow, monkeypatch, capsys) -> None:
+def test_conversions_the_edition_already_holds_are_left_out_after_the_flac(flow, monkeypatch) -> None:
     _calls, _executed, set_fake = flow
     monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
     monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
@@ -592,8 +592,6 @@ def test_conversions_the_edition_already_holds_are_left_out_after_the_flac(flow,
     _upload(None)
 
     assert offered == [{"MP3 V0"}]
-    out = capsys.readouterr().out
-    assert "DUPE RISK: this edition already has MP3 V0" in out
 
 
 def test_a_listed_first_tracker_is_not_weighed_or_searched(flow, monkeypatch) -> None:
