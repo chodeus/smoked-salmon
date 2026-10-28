@@ -1,8 +1,10 @@
 import asyncio
+import contextlib
 import inspect
 import json
 import re
 import time
+from collections import OrderedDict
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
@@ -542,13 +544,14 @@ def _page_explicitly_names_label(page_text: str, label: str) -> bool:
 
 
 # The text of the cited pages fetched so far, by URL: at most PAGE_TEXT_CACHE_SIZE, the oldest dropped first.
-_page_texts: dict[str, str] = {}
+# Read and changed one call at a time: each salmon web job runs on a thread of its own.
+_page_texts: OrderedDict[str, str] = OrderedDict()
 PAGE_TEXT_CACHE_SIZE = 64
 
 
 async def _fetch_release_page_text(url: str) -> str:
-    if url in _page_texts:
-        return _page_texts[url]
+    if (cached := _page_texts.get(url)) is not None:
+        return cached
     timeout = aiohttp.ClientTimeout(total=15)
     # The AI chose this URL: salmon web's guard applies (salmon.ssrf).
     async with (
@@ -560,7 +563,9 @@ async def _fetch_release_page_text(url: str) -> str:
     soup = BeautifulSoup(html, "lxml")
     text = f"{soup.get_text(' ', strip=True)} {html}"
     if len(_page_texts) >= PAGE_TEXT_CACHE_SIZE:
-        del _page_texts[next(iter(_page_texts))]
+        # Another job may have emptied it since.
+        with contextlib.suppress(KeyError):
+            _page_texts.popitem(last=False)
     _page_texts[url] = text
     return text
 

@@ -2,6 +2,7 @@ import ssl
 import subprocess
 import sys
 import textwrap
+from collections import OrderedDict
 from copy import deepcopy
 from pathlib import Path
 
@@ -1022,3 +1023,34 @@ def test_client_with_custom_base_url_reaches_a_local_server_and_maps_404() -> No
 
     anyio.run(run)
     assert seen == ["/v1/responses"]
+
+
+class _EmptiedByAnotherJob(OrderedDict):
+    """A page cache that was full at the size check and that another job emptied before the eviction."""
+
+    def __len__(self) -> int:
+        return ai_review.PAGE_TEXT_CACHE_SIZE
+
+
+def test_a_cited_page_is_cached_when_another_job_emptied_the_full_cache_first(monkeypatch) -> None:
+    monkeypatch.setattr(ai_review, "_page_texts", _EmptiedByAnotherJob())
+
+    async def page(_request: web.Request) -> web.Response:
+        return web.Response(text="<p>Released on Some Label</p>", content_type="text/html")
+
+    async def run() -> tuple[str, str]:
+        app = web.Application()
+        app.router.add_get("/release", page)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        await web.TCPSite(runner, "127.0.0.1", 0).start()
+        url = f"http://127.0.0.1:{runner.addresses[0][1]}/release"
+        try:
+            return url, await ai_review._fetch_release_page_text(url)
+        finally:
+            await runner.cleanup()
+
+    url, text = anyio.run(run)
+
+    assert "Released on Some Label" in text
+    assert list(ai_review._page_texts) == [url]

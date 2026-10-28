@@ -108,8 +108,9 @@ def test_the_search_route_fetches_with_the_public_address_guard_on(monkeypatch) 
     seen = _guard_seen(monkeypatch, search, "run_metasearch", {})
 
     with web_client() as c:
-        assert c.get("/api/search", params={"q": "artist album"}).status_code == 200
+        status = c.get("/api/search", params={"q": "artist album"}).status_code
 
+    assert status == 200
     assert seen == [True]
     assert not ssrf.active()
 
@@ -118,8 +119,9 @@ def test_the_metadata_route_fetches_with_the_public_address_guard_on(monkeypatch
     seen = _guard_seen(monkeypatch, search, "run_metadata", {"title": "Album"})
 
     with web_client() as c:
-        assert c.get("/api/metadata", params={"url": "https://8.8.8.8/album/x"}).status_code == 200
+        status = c.get("/api/metadata", params={"url": "https://8.8.8.8/album/x"}).status_code
 
+    assert status == 200
     assert seen == [True]
 
 
@@ -127,6 +129,7 @@ def test_the_descgen_route_fetches_with_the_public_address_guard_on(monkeypatch)
     seen = _guard_seen(monkeypatch, tools, "build_tracklist_description", "a description")
 
     with web_client() as c:
-        assert c.post("/api/descgen", json={"urls": ["https://8.8.8.8/album/x"]}).status_code == 200
+        status = c.post("/api/descgen", json={"urls": ["https://8.8.8.8/album/x"]}).status_code
 
+    assert status == 200
     assert seen == [True]
