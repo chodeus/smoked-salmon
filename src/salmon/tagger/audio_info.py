@@ -81,8 +81,8 @@ async def recompress_path(path: str, files: list[str] | None = None) -> None:
     Args:
         path: Path to the directory containing FLAC files.
         files: Relative paths (within `path`) of the FLAC files to recompress. When
-            omitted, every audio file under `path` is discovered, and the whole
-            folder is skipped if any of them is not a FLAC.
+            omitted, every FLAC, MP3 and M4A file under `path` is discovered, and the
+            whole folder is skipped if any of them is not a FLAC.
 
     Raises:
         UploadError: If one or more files failed to recompress.
