@@ -21,6 +21,7 @@ from salmon.common import decade_tag
 from salmon.constants import RELEASE_TYPES
 from salmon.errors import RequestError, UploadError
 from salmon.uploader import _prompt_source, convert_genres, finish_upload, upload_and_report
+from salmon.uploader.record import recording
 from salmon.uploader.upload import (
     collect_logfiles,
     compile_data_existing_group,
@@ -1047,3 +1048,23 @@ def test_finish_upload_without_the_folder_queues_only_the_seed(monkeypatch, fake
     )
 
     assert [task[1] for task in seedbox.tasks] == ["seed"]
+
+
+def test_finish_upload_records_the_upload_for_the_run(monkeypatch, fake_tracker, tmp_path) -> None:
+    torrent_path = tmp_path / "album.torrent"
+    torrent_path.write_bytes(b"as generated")
+    monkeypatch.setattr(cfg.upload, "upload_to_seedbox", False)
+    monkeypatch.setattr(cfg.upload.description, "copy_uploaded_url_to_clipboard", False)
+
+    with recording() as record:
+        url = finish_upload(
+            fake_tracker,
+            "/fake/album",
+            1001,
+            str(torrent_path),
+            FakeTorrentContent(),
+            "MP3",
+            cast("Any", RecordingSeedbox()),
+        )
+
+    assert record.uploads == [{"tracker": "RED", "format": "MP3", "url": url}]

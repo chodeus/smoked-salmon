@@ -8,7 +8,6 @@ fakes; no real connections are made.
 """
 
 import base64
-import subprocess
 from types import SimpleNamespace
 from typing import Any
 
@@ -433,17 +432,16 @@ def test_qbittorrent_login_connection_error_returns_none(monkeypatch) -> None:
     assert client.client is None
 
 
-def test_qbittorrent_login_unexpected_error_returns_none(monkeypatch) -> None:
+def test_qbittorrent_login_unexpected_error_reaches_the_seedbox_setup(monkeypatch) -> None:
     class FakeQbt:
         def __init__(self, host, username, password):
             raise RuntimeError("boom")
 
     monkeypatch.setattr(tc.qbittorrentapi, "Client", FakeQbt)
-    # Like the other clients, unexpected login errors are caught so the
-    # constructor never blows up; the client is simply left as None.
-    client = QBittorrentClient(url="http://h:8080")
 
-    assert client.client is None
+    # UploadManager reports it masked and leaves the box out, rather than seeding through a client that is None.
+    with pytest.raises(RuntimeError, match="boom"):
+        QBittorrentClient(url="http://h:8080")
 
 
 def test_qbittorrent_add_to_downloader_passes_savepath_category_paused(monkeypatch) -> None:
@@ -1199,17 +1197,17 @@ async def test_execute_upload_end_to_end_seed_reads_torrent_and_injects(monkeypa
 
 
 async def test_execute_upload_end_to_end_folder_runs_rclone_before_seed(monkeypatch, tmp_path, fake_parse) -> None:
-    # Real _rclone_upload_folder with a stubbed subprocess: verifies ordering
+    # Real _rclone_upload_folder with rclone itself stubbed: verifies ordering
     # (files land on the remote before injection) and the rclone command line.
     torrent_path = tmp_path / "Album.torrent"
     torrent_path.write_bytes(b"bytes")
     events: list[str] = []
 
-    async def fake_run_process(commands, **kwargs):
+    async def fake_run_rclone(commands, secrets):
         events.append(f"rclone:{' '.join(commands)}")
-        return subprocess.CompletedProcess(commands, 0)
+        return 0
 
-    monkeypatch.setattr(seedbox_module.anyio, "run_process", fake_run_process)
+    monkeypatch.setattr(seedbox_module, "_run_rclone", fake_run_rclone)
     box = make_seedbox(type="rclone", url="mybox", directory="/remote/music", extra_args=["-P"])
     manager = make_manager(monkeypatch, [box])
     client = fake_parse.created[box.torrent_client]
