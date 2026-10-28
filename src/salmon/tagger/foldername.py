@@ -29,8 +29,12 @@ async def rename_folder(path, metadata, auto_rename, check=True, parent=None, or
     For scene releases, the name of the original folder is kept untouched, and
     the folder is copied to the download folder.
     `parent` replaces the download folder as the directory the renamed folder goes into.
-    `original` is the folder the user gave, when `path` is the run's copy of it: that one is kept, and the run says why.
+    `original` is the folder the user gave, passed only when `path` is a copy of it: with remove_source_dir on,
+    the copy is left for its run directory to remove, and the output says why `original` is kept.
     """
+    # Imported here: the uploader package imports this module.
+    from salmon.uploader.spectrals import get_spectrals_path, made_by_salmon
+
     old_base = os.path.basename(path)
     if _template_has_resolution():
         metadata = {**metadata, "resolution": _resolution(path)}
@@ -81,17 +85,15 @@ async def rename_folder(path, metadata, auto_rename, check=True, parent=None, or
     if not os.path.exists(new_path_dirname):
         os.makedirs(new_path_dirname)
 
-    # Imported here: the uploader package imports this module.
-    from salmon.uploader.spectrals import get_spectrals_path, made_by_salmon
-
     # Check if hardlinks can be used
     same_volume = os.stat(path).st_dev == os.stat(cfg.directory.download_directory).st_dev
     # A hardlink shares the inode, so a later tag write on the new folder would reach a library album.
     in_library = cfg.directory.protects(path)
     use_hardlinks = same_volume and cfg.directory.hardlinks and not in_library
 
-    # Spectrals salmon made before this rename follow the album, wherever they are and whatever remove_source_dir
-    # says. get_spectrals_path never names a Spectrals folder of the album's own: that is copied like any other.
+    # The spectrals salmon made before this rename are looked up by the new name afterwards: they move with the album,
+    # wherever they are and whatever remove_source_dir says. A Spectrals folder salmon did not make is the album's own,
+    # copied like any other folder (get_spectrals_path never names it).
     specs_path = get_spectrals_path(path)
     carry_specs = made_by_salmon(specs_path)
     in_source = carry_specs and _is_direct_child(specs_path, path)
@@ -116,8 +118,8 @@ async def rename_folder(path, metadata, auto_rename, check=True, parent=None, or
             click.secho(f"Copied folder to '{new_path}'.", fg="yellow")
 
     if carry_specs:
-        # Moved, not copied: the source must not keep a Spectrals folder the upload never deletes. Also for the same
-        # folder, as a case-only rename still renames salmon's folder outside it.
+        # Moved, not copied: the source must not keep a spectrals folder the upload never deletes. Also into the same
+        # folder: a case-only rename still renames salmon's folder outside it.
         _move_specs_folder(specs_path, get_spectrals_path(new_path))
 
     if (not same_folder or original is not None) and cfg.upload.formatting.remove_source_dir:
@@ -158,13 +160,16 @@ def _ignoring_top_level(top: str, name: str):
 
 
 def _move_specs_folder(src: str, dst: str) -> None:
-    """Move a spectrals folder to `dst`, replacing a stale one there, and carry salmon's claim on it."""
+    """Move salmon's spectrals folder to `dst`, replacing salmon's own stale one there. Works across volumes.
+
+    Raises:
+        UploadError: Something salmon did not make is at `dst`.
+    """
     # Imported here: the uploader package imports this module.
     from salmon.uploader.spectrals import carry_specs_claim, make_way_for_spectrals
 
     if os.path.exists(dst) and os.path.samefile(src, dst):
-        # A scene release keeps its name, so its folder outside the album is already in place.
-        return
+        return  # The album was renamed into itself, and its spectrals folder keeps its name.
     old_real = os.path.realpath(src)
     make_way_for_spectrals(dst)
     shutil.move(src, dst)
@@ -172,12 +177,21 @@ def _move_specs_folder(src: str, dst: str) -> None:
 
 
 def _resolution(path):
-    """Bit depth and sample rate of the folder's tracks, like "24-96"; blank for lossy, 16/44.1, zero or mixed."""
+    """
+    "<bits>-<kHz>"-style bit depth and sample rate for the folder's tracks, e.g. "24-96" or
+    "24-44.1". Blank for lossy files, for plain 16-bit/44.1kHz, for a missing or zero bit depth,
+    and when the tracks do not all share one bit depth and sample rate: a folder name must not
+    claim a single resolution for a hybrid release.
+    """
     return resolution_token(gather_audio_info(path))
 
 
 def resolution_token(audio_info):
-    """_resolution from a gather_audio_info mapping, so the converters know a name's exact token."""
+    """
+    Same as `_resolution`, from an already-gathered `gather_audio_info` mapping. The converters
+    use this to work out the exact token (if any) a source folder's name would carry, so they can
+    drop or replace it without guessing at a pattern that could also match unrelated text.
+    """
     bits = {info["precision"] for info in audio_info.values()}
     rates = {info["sample rate"] for info in audio_info.values()}
     if len(bits) != 1 or len(rates) != 1:
@@ -206,11 +220,14 @@ def _bracketed(foldername, position) -> bool:
 
 
 def _token_span(foldername, token):
-    """Where the name's last standalone token is, or None: "1924-48" in a title holds "24-48" but not as a token."""
+    """Where the name's last resolution token is, or None.
+
+    It must stand alone ("1924-48" in a title holds "24-48" but not as a token) and sit in a bracket group, unless
+    the folder template places {resolution} itself: a bare "24-96" in a title is then the title's.
+    """
     if not token:
         return None
     matches = list(re.finditer(r"(?<![\w.-])" + re.escape(token) + r"(?![\w.-])", foldername))
-    # Unless the template places {resolution} itself, a bare "24-96" outside brackets is the title's.
     if not _template_has_resolution():
         matches = [m for m in matches if _bracketed(foldername, m.start())]
     return matches[-1].span() if matches else None

@@ -62,9 +62,7 @@ class UpconvertCheckError(Exception):
 
 
 class UpconvertCheckNotApplicable(UpconvertCheckError):
-    """Raised when a file is out of scope for the upconvert check, not broken."""
-
-    pass
+    """Raised for a file the upconvert check does not apply to (a 16bit FLAC): out of scope, not a failure."""
 
 
 class NoncompliantFolderStructure(Exception):
@@ -79,41 +77,27 @@ class RequestFailedError(RequestError):
     pass
 
 
-class LoginError(RequestError):
-    pass
-
-
 class UnknownOutcomeError(RequestError):
-    """A request that changes state failed after it may have reached the tracker, so it is not re-sent."""
+    """A request that changes state on the tracker failed after it may have reached it.
+
+    The tracker may or may not have acted on it, so it is not sent again.
+    """
 
     pass
 
 
 class RateLimitedError(RequestError):
-    """The tracker rate limited a request and asks for a longer wait than salmon gives one request."""
+    """The tracker rate limited a request and asks to wait longer than salmon waits for one request.
 
-
-class EditedLogError(Exception):
-    """Raised when a log file has been edited."""
-
-    pass
-
-
-class CRCMismatchError(Exception):
-    """Raised when CRC values don't match between log and audio files."""
+    Raised on a 429, which the tracker answers without acting on the request, or for an idempotent
+    request, on another error status naming the rate limit. It is not sent again: the user tries
+    again later.
+    """
 
     pass
 
 
-class LogCheckSkipped(Exception):
-    """Raised when a log's CRCs can't be checked against the audio; not a verdict on the rip."""
-
-    pass
-
-
-class DryRunRefused(Exception):
-    """A step that would send something ran in a dry run and was stopped; not a RequestError, so no "failed upload"."""
-
+class LoginError(RequestError):
     pass
 
 
@@ -134,6 +118,55 @@ class TLSCertificateError(RequestError):
 
 
 class UploadRefusedError(RequestError):
-    """The tracker's form has no value for this torrent: raised before its upload request, other trackers unaffected."""
+    """The tracker's upload form has no value that describes this torrent.
+
+    Raised while the upload form data is built, before the upload request and the authentication
+    it needs, so the torrent is not uploaded to that tracker and other trackers are not affected.
+    Earlier requests to that tracker (group search, request check) may already have been sent.
+    """
 
     pass
+
+
+class DryRunRefused(Exception):
+    """A step that would send something ran during a dry run, and was stopped before it sent anything.
+
+    Not a RequestError: the upload flow reads those as a failed upload and goes on to the next one.
+    """
+
+    pass
+
+
+class EditedLogError(Exception):
+    """Raised when a log file has been edited."""
+
+    pass
+
+
+class CRCMismatchError(Exception):
+    """Raised when CRC values don't match between log and audio files."""
+
+    pass
+
+
+class LogCheckSkipped(Exception):
+    """Raised when a log's CRCs can't be checked against the audio; not a verdict on the rip."""
+
+    pass
+
+
+class AmbiguousTrackOrderError(Exception):
+    """Raised when retagging can't tell which file is which track from tags or folder layout."""
+
+    pass
+
+
+class NumberedTrackMoveError(Exception):
+    """Raised when retagging would give files that carry their own track numbers other tracks' tags.
+
+    ``moves`` holds ``(filename, its own "disc#" and "track#", track it would get, how that track was paired)``.
+    """
+
+    def __init__(self, moves):
+        super().__init__(f"{len(moves)} numbered file(s) would be retagged as other tracks.")
+        self.moves = moves

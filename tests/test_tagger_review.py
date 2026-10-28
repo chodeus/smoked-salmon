@@ -172,3 +172,20 @@ def test_editing_the_tracks_without_a_change_to_the_release_artists_says_nothing
 
     assert metadata["artists"] == [("Lead Act", "main"), ("Guest Act", "main")]
     assert "set them again" not in capsys.readouterr().out
+
+
+def test_enter_at_the_review_prompt_edits_nothing(monkeypatch) -> None:
+    metadata = make_metadata()
+    defaults = []
+
+    async def enter(*_args, **kwargs):
+        defaults.append(kwargs.get("default"))
+        return ""
+
+    monkeypatch.setattr(review_module, "_print_metadata", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(review_module.click, "prompt", enter)
+
+    result = anyio.run(review_module.review_metadata, metadata, lambda _metadata: None, False)
+
+    assert result is metadata
+    assert defaults == ["n"]

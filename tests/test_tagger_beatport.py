@@ -58,3 +58,9 @@ def test_beatport_track_without_a_mix_name_keeps_its_name() -> None:
     found = titles(make_soup(track(1, "Django", None)))
 
     assert found == ["Django"]
+
+
+def test_beatport_drops_original_mix_by_default() -> None:
+    soup = make_soup(track(1, "Django", "Original Mix"), track(2, "Work", "Extended Mix"))
+
+    assert titles(soup) == ["Django", "Work (Extended Mix)"]

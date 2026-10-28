@@ -480,3 +480,13 @@ def test_check_renames_nothing_when_two_names_clean_to_one_on_a_volume_that_igno
         anyio.run(lambda: _check_invisible_characters(str(root), False))
 
     assert _names(root) == before
+
+
+def test_check_of_clean_names_says_so(tmp_path, capsys) -> None:
+    root = tmp_path / "Artist - Album [WEB FLAC]"
+    root.mkdir()
+    (root / "01. Title.flac").write_bytes(b"")
+
+    anyio.run(lambda: _check_invisible_characters(str(root), False))
+
+    assert "No names hold invisible Unicode characters." in capsys.readouterr().out

@@ -102,30 +102,49 @@ async def _check_illegal_folders(path: str) -> None:
 
 
 async def _check_invisible_characters(path: str, scene: bool) -> None:
-    """Rename, once the user agrees, the sub-folders and files whose names hold characters a tracker refuses."""
+    """Verify that no folder or file name holds an invisible or odd Unicode character.
+
+    Unicode spaces such as the no-break space, zero-width characters and other format or control
+    characters make a tracker refuse the torrent. Offending sub-folders and files are renamed to
+    their cleaned names after the user agrees, sub-folders last so the paths stay valid while the
+    renaming goes on. A scene release is never renamed: it raises.
+
+    The release folder itself is renamed by ``rename_folder``, which cleans the names it builds, and
+    is not renamed here, as the caller keeps its path: a release folder that still holds such a
+    character (the user kept the old name) makes the upload abort.
+
+    Args:
+        path: Absolute path to the release folder being checked.
+        scene: Whether the release is a scene release.
+
+    Raises:
+        NoncompliantFolderStructure: If a scene release has such names, the user declines the
+            rename, a rename would replace a path that exists, or nothing would be left of a name.
+        click.Abort: If the release folder's own name holds such a character.
+    """
     folder_name = os.path.basename(os.path.normpath(path))
     offending: list[tuple[str, str, list[str]]] = []
-    # Deepest first, so a file is renamed before the folder that holds it.
     for root, dirs, files in os.walk(path, topdown=False):
         for name in [*files, *dirs]:
             if chars := invisible_chars(name):
-                shown = os.path.normpath(os.path.join(folder_name, os.path.relpath(root, path), name))
-                offending.append((os.path.join(root, name), shown, chars))
+                offending.append(
+                    (os.path.join(root, name), os.path.join(folder_name, os.path.relpath(root, path), name), chars)
+                )
     root_chars = invisible_chars(folder_name)
+
     if not offending and not root_chars:
-        return
+        return click.secho("No names hold invisible Unicode characters.", fg="green")
 
     click.secho("The following names hold invisible or unusual Unicode characters:", fg="red", bold=True)
     listing = [(shown, chars) for _, shown, chars in offending]
     if root_chars:
         listing.append((folder_name, root_chars))
     for shown, chars in listing:
-        click.echo(f" >> {show_invisible(shown)}")
+        click.echo(f" >> {show_invisible(os.path.normpath(shown))}")
         for char in chars:
             click.echo(f"      {char}")
     if scene:
         raise NoncompliantFolderStructure
-    # The release folder's own name is rename_folder's: it cleans the names it builds.
     if root_chars:
         click.secho(
             "The release folder's own name cannot be renamed here. Run again and accept the proposed folder name.",

@@ -1,13 +1,15 @@
 import os
+import struct
 from types import SimpleNamespace
 
 import anyio
 import asyncclick as click
 import msgspec
 import pytest
+from mutagen.flac import FLAC, VCFLACDict
 
 from salmon import cfg
-from salmon.errors import UploadError
+from salmon.errors import AmbiguousTrackOrderError, UploadError
 from salmon.tagger import renames
 from salmon.tagger.retagger import (
     Change,
@@ -17,8 +19,986 @@ from salmon.tagger.retagger import (
     delete_empty_folders,
     move_non_audio_files,
     rename_files,
+    retag_files,
     tag_files,
 )
+
+
+def _new_titles(changes) -> dict[str, str]:
+    return {
+        name: change.new for name, file_changes in changes.items() for change in file_changes if change.tag == "title"
+    }
+
+
+def _trackmeta(title, track_no, disc_no):
+    return {
+        "title": title,
+        "isrc": None,
+        "track#": track_no,
+        "disc#": disc_no,
+        "tracktotal": None,
+        "disctotal": None,
+        "artists": [("Some Artist", "main")],
+    }
+
+
+def _tagset(title, tracknumber, discnumber):
+    return SimpleNamespace(
+        artist=["Some Artist"],
+        title=title,
+        composer=None,
+        conductor=None,
+        comment=None,
+        isrc=None,
+        tracknumber=tracknumber,
+        discnumber=discnumber,
+        tracktotal=None,
+        disctotal=None,
+    )
+
+
+def test_create_track_changes_matches_files_by_disc_and_track_number():
+    # The tags dict is built out of disc/track order (as os.walk would give it),
+    # so a positional zip against the metadata tracklist would pair the wrong
+    # filename with the wrong track's changes.
+    tags = {
+        "1-02 Second.flac": _tagset("Old Second", tracknumber="2", discnumber="1"),
+        "1-01 First.flac": _tagset("Old First", tracknumber="1", discnumber="1"),
+        "2-01 Third.flac": _tagset("Old Third", tracknumber="1", discnumber="2"),
+    }
+    metadata = {
+        "tracks": {
+            "1": {
+                "1": _trackmeta("New First", "1", "1"),
+                "2": _trackmeta("New Second", "2", "1"),
+            },
+            "2": {
+                "1": _trackmeta("New Third", "1", "2"),
+            },
+        }
+    }
+
+    changes = create_track_changes(tags, metadata)
+
+    assert Change("title", "Old First", "New First") in changes["1-01 First.flac"]
+    assert Change("title", "Old Second", "New Second") in changes["1-02 Second.flac"]
+    assert Change("title", "Old Third", "New Third") in changes["2-01 Third.flac"]
+
+
+def test_create_track_changes_keeps_file_order_when_discnumber_tags_are_missing():
+    # A CD1/CD2 folder layout with no DISCNUMBER tag on any file: every file's disc
+    # defaults to 1, so (disc, track) pairs collide across discs (track 1 of CD1 and
+    # track 1 of CD2 both key as (1, 1)). Tags can't identify these files, so the
+    # existing file order (already correct, as get_audio_files gives it) must be kept
+    # instead of being reshuffled by an untrustworthy sort.
+    tags = {
+        "CD1/01.flac": _tagset("Old CD1 1", tracknumber="1", discnumber=None),
+        "CD1/02.flac": _tagset("Old CD1 2", tracknumber="2", discnumber=None),
+        "CD2/01.flac": _tagset("Old CD2 1", tracknumber="1", discnumber=None),
+        "CD2/02.flac": _tagset("Old CD2 2", tracknumber="2", discnumber=None),
+    }
+    metadata = {
+        "tracks": {
+            "1": {
+                "1": _trackmeta("New CD1 1", "1", "1"),
+                "2": _trackmeta("New CD1 2", "2", "1"),
+            },
+            "2": {
+                "1": _trackmeta("New CD2 1", "1", "2"),
+                "2": _trackmeta("New CD2 2", "2", "2"),
+            },
+        }
+    }
+
+    changes = create_track_changes(tags, metadata)
+
+    assert Change("title", "Old CD1 1", "New CD1 1") in changes["CD1/01.flac"]
+    assert Change("title", "Old CD1 2", "New CD1 2") in changes["CD1/02.flac"]
+    assert Change("title", "Old CD2 1", "New CD2 1") in changes["CD2/01.flac"]
+    assert Change("title", "Old CD2 2", "New CD2 2") in changes["CD2/02.flac"]
+
+
+def test_create_track_changes_falls_back_when_only_some_files_carry_a_discnumber_tag():
+    # CD1's file has a (nonstandard) DISCNUMBER/TRACKNUMBER pair that reads as a high track
+    # number; CD2's file has no DISCNUMBER tag at all, so it defaults to disc 1 with its own low
+    # track number. Neither pair collides, so a plain sort by (disc, track) would trust them: it
+    # would put CD2's file first and CD1's file second, backwards from the actual CD1/CD2 layout.
+    # A mix of files with and without a DISCNUMBER tag can't be trusted, so this must fall back to
+    # pairing by folder instead of mispairing off that sort.
+    tags = {
+        "CD1/01.flac": _tagset("Old CD1", tracknumber="5", discnumber="1"),
+        "CD2/01.flac": _tagset("Old CD2", tracknumber="1", discnumber=None),
+    }
+    metadata = {
+        "tracks": {
+            "1": {"1": _trackmeta("New CD1", "1", "1")},
+            "2": {"1": _trackmeta("New CD2", "1", "2")},
+        }
+    }
+
+    changes = create_track_changes(tags, metadata)
+
+    assert Change("title", "Old CD1", "New CD1") in changes["CD1/01.flac"]
+    assert Change("title", "Old CD2", "New CD2") in changes["CD2/01.flac"]
+
+
+def test_create_track_changes_trusts_continuous_track_numbers_with_no_discnumber_tag_anywhere():
+    # A flat, single folder holding a two-disc release with no DISCNUMBER tag on any file, and
+    # TRACKNUMBER counting straight through both discs (1..6, not restarting at each disc). Every
+    # file defaults to disc 1, so the (disc, track) keys are unique on tracknumber alone and this
+    # has always retagged correctly by a plain tag sort, positionally against the metadata's
+    # flattened disc 1 then disc 2 track list. DISCNUMBER being absent on every file (not just
+    # some) is exactly the case the disc-folder fallback is not needed for.
+    tags = {f"{n:02d}.flac": _tagset(f"Old {n}", tracknumber=str(n), discnumber=None) for n in range(1, 7)}
+    metadata = {
+        "tracks": {
+            "1": {str(t): _trackmeta(f"New 1-{t}", str(t), "1") for t in range(1, 4)},
+            "2": {str(t): _trackmeta(f"New 2-{t}", str(t), "2") for t in range(1, 4)},
+        }
+    }
+
+    changes = create_track_changes(tags, metadata)
+
+    assert Change("title", "Old 4", "New 2-1") in changes["04.flac"]
+
+
+def test_create_track_changes_falls_back_when_tag_pairs_do_not_match_the_metadata_discs():
+    # Every file carries a distinct, parseable DISCNUMBER/TRACKNUMBER pair, so the tags look
+    # trustworthy by uniqueness alone: (1, 1), (1, 2), (1, 3), (2, 1). But the metadata gives each
+    # of two discs two tracks, so disc 1 has no track "3" and disc 2's second track has no file at
+    # all. Trusting the unique-looking pairs would zip the file tagged (1, 3) onto disc 2's first
+    # track. The tag pairs must match the metadata's real disc/track pairs, not just be unique
+    # among themselves; the files aren't in a folder per disc either, so this must refuse.
+    tags = {
+        "a.flac": _tagset("Old a", tracknumber="1", discnumber="1"),
+        "b.flac": _tagset("Old b", tracknumber="2", discnumber="1"),
+        "c.flac": _tagset("Old c", tracknumber="3", discnumber="1"),
+        "d.flac": _tagset("Old d", tracknumber="1", discnumber="2"),
+    }
+    metadata = {
+        "tracks": {
+            "1": {"1": _trackmeta("New 1-1", "1", "1"), "2": _trackmeta("New 1-2", "2", "1")},
+            "2": {"1": _trackmeta("New 2-1", "1", "2"), "2": _trackmeta("New 2-2", "2", "2")},
+        }
+    }
+
+    with pytest.raises(AmbiguousTrackOrderError, match="DISCNUMBER"):
+        create_track_changes(tags, metadata)
+
+
+def test_create_track_changes_orders_ten_plus_discs_naturally():
+    # gather_tags lists CD10 before CD2 (a path with no leading number sorts as text). With no
+    # DISCNUMBER tags every file collides on (1, 1), so the fallback must order the disc folders
+    # naturally (CD2 before CD10), not lexically.
+    tags = {f"CD{disc}/01.flac": _tagset(f"Old CD{disc}", tracknumber="1", discnumber=None) for disc in (1, 10, 2)}
+    metadata = {"tracks": {str(disc): {"1": _trackmeta(f"New CD{disc}", "1", str(disc))} for disc in (1, 2, 10)}}
+
+    changes = create_track_changes(tags, metadata)
+
+    for disc in (1, 2, 10):
+        assert Change("title", f"Old CD{disc}", f"New CD{disc}") in changes[f"CD{disc}/01.flac"]
+
+
+def test_create_track_changes_refuses_a_flat_folder_without_disc_tags():
+    # Track-first names in one flat folder (01-CD1, 01-CD2, 02-CD1, 02-CD2): no DISCNUMBER tags,
+    # and the file order interleaves the two discs while the metadata goes disc by disc. Neither
+    # the tags nor a folder per disc can sort this out, so retagging must refuse rather than
+    # silently write CD2's titles onto CD1's files.
+    tags = {
+        name: _tagset(f"Old {name}", tracknumber=track, discnumber=None)
+        for name, track in (
+            ("01-CD1.flac", "1"),
+            ("01-CD2.flac", "1"),
+            ("02-CD1.flac", "2"),
+            ("02-CD2.flac", "2"),
+        )
+    }
+    metadata = {
+        "tracks": {
+            str(disc): {str(track): _trackmeta(f"New {disc}-{track}", str(track), str(disc)) for track in (1, 2)}
+            for disc in (1, 2)
+        }
+    }
+
+    with pytest.raises(AmbiguousTrackOrderError, match="DISCNUMBER"):
+        create_track_changes(tags, metadata)
+
+
+def test_tag_files_skips_retagging_a_flat_folder_without_disc_tags_instead_of_crashing(capsys):
+    # Same flat, disc-encoded-in-the-name layout as above, but exercised through tag_files, the
+    # entry point the uploader actually calls. It must print the refusal and return so the upload
+    # continues with the files' current tags, not raise out and abort the whole run.
+    tags = {
+        name: _tagset(f"Old {name}", tracknumber=track, discnumber=None)
+        for name, track in (
+            ("01-CD1.flac", "1"),
+            ("01-CD2.flac", "1"),
+            ("02-CD1.flac", "2"),
+            ("02-CD2.flac", "2"),
+        )
+    }
+    metadata = {
+        "title": "Some Album",
+        "edition_title": None,
+        "genres": [],
+        "group_year": None,
+        "label": None,
+        "catno": None,
+        "artists": [("Some Artist", "main")],
+        "upc": None,
+        "comment": None,
+        "tracks": {
+            str(disc): {str(track): _trackmeta(f"New {disc}-{track}", str(track), str(disc)) for track in (1, 2)}
+            for disc in (1, 2)
+        },
+    }
+
+    anyio.run(lambda: tag_files("/unused", tags, metadata, auto_rename=True))
+
+    output = capsys.readouterr().out
+    assert "DISCNUMBER" in output
+    assert "Skipping retagging procedure" in output
+
+
+def test_create_track_changes_refuses_disc_folders_whose_track_counts_differ_from_the_metadata():
+    # Three files under CD1, one under CD2, against metadata that expects two tracks per disc.
+    # The folder split cannot be trusted to line files up with the right disc's tracks.
+    tags = {
+        "CD1/01.flac": _tagset("a", tracknumber="1", discnumber=None),
+        "CD1/02.flac": _tagset("b", tracknumber="2", discnumber=None),
+        "CD1/03.flac": _tagset("c", tracknumber="3", discnumber=None),
+        "CD2/01.flac": _tagset("d", tracknumber="1", discnumber=None),
+    }
+    metadata = {
+        "tracks": {
+            str(disc): {str(track): _trackmeta(f"New {disc}-{track}", str(track), str(disc)) for track in (1, 2)}
+            for disc in (1, 2)
+        }
+    }
+
+    with pytest.raises(AmbiguousTrackOrderError, match="DISCNUMBER"):
+        create_track_changes(tags, metadata)
+
+
+def test_create_track_changes_orders_a_single_disc_single_folder_with_duplicate_track_tags_by_file_name():
+    # A single-disc release, one folder, every file tagged TRACKNUMBER=1 (the bad tags that are
+    # exactly why someone would retag). On master this falls back to file order and retags; the
+    # disc-folder fallback must keep doing that instead of refusing just because a single disc
+    # can't resolve any other way.
+    tags = {
+        "01 First.flac": _tagset("Old First", tracknumber="1", discnumber=None),
+        "02 Second.flac": _tagset("Old Second", tracknumber="1", discnumber=None),
+        "03 Third.flac": _tagset("Old Third", tracknumber="1", discnumber=None),
+    }
+    metadata = {
+        "tracks": {
+            "1": {
+                "1": _trackmeta("New First", "1", "1"),
+                "2": _trackmeta("New Second", "2", "1"),
+                "3": _trackmeta("New Third", "3", "1"),
+            }
+        }
+    }
+
+    changes = create_track_changes(tags, metadata)
+
+    assert Change("title", "Old First", "New First") in changes["01 First.flac"]
+    assert Change("title", "Old Second", "New Second") in changes["02 Second.flac"]
+    assert Change("title", "Old Third", "New Third") in changes["03 Third.flac"]
+
+
+def test_create_track_changes_orders_a_single_disc_single_folder_with_no_track_tags_by_file_name():
+    # No file in the folder carries a TRACKNUMBER tag at all: still not ambiguous when the file
+    # names are, so this must retag by file name order rather than refuse.
+    tags = {
+        "01 First.flac": _tagset("Old First", tracknumber=None, discnumber=None),
+        "02 Second.flac": _tagset("Old Second", tracknumber=None, discnumber=None),
+    }
+    metadata = {
+        "tracks": {
+            "1": {
+                "1": _trackmeta("New First", "1", "1"),
+                "2": _trackmeta("New Second", "2", "1"),
+            }
+        }
+    }
+
+    changes = create_track_changes(tags, metadata)
+
+    assert Change("title", "Old First", "New First") in changes["01 First.flac"]
+    assert Change("title", "Old Second", "New Second") in changes["02 Second.flac"]
+
+
+def test_create_track_changes_orders_by_file_name_when_a_name_holds_a_digit_int_cannot_parse():
+    # Same no-track-tag, single-disc, single-folder fallback as above, but one file's name has a
+    # superscript "2" next to ordinary digits ("01²2.flac"): str.isdigit() accepts it as a
+    # split segment on its own, and int() then rejects it. The natural-order file-name fallback
+    # must not raise out of retagging over a file name like that.
+    tags = {
+        "01²2.flac": _tagset("Old First", tracknumber=None, discnumber=None),
+        "02.flac": _tagset("Old Second", tracknumber=None, discnumber=None),
+    }
+    metadata = {
+        "tracks": {
+            "1": {
+                "1": _trackmeta("New First", "1", "1"),
+                "2": _trackmeta("New Second", "2", "1"),
+            }
+        }
+    }
+
+    changes = create_track_changes(tags, metadata)
+
+    assert Change("title", "Old First", "New First") in changes["01²2.flac"]
+    assert Change("title", "Old Second", "New Second") in changes["02.flac"]
+
+
+def test_tag_files_skips_retagging_when_one_disc_folder_is_genuinely_ambiguous(capsys):
+    # A two-disc release with a proper folder per disc: CD1's files have no track tags and tie
+    # under natural file-name order too (same name, different case), so CD1 alone can't be
+    # resolved. tag_files must print the refusal and return, leaving the upload to continue with
+    # the files' current tags, rather than raising out of tag_files and aborting the run.
+    tags = {
+        "CD1/Track.flac": _tagset("Old A", tracknumber=None, discnumber=None),
+        "CD1/track.flac": _tagset("Old B", tracknumber=None, discnumber=None),
+        "CD2/01.flac": _tagset("Old CD2 1", tracknumber="1", discnumber=None),
+    }
+    metadata = {
+        "title": "Some Album",
+        "edition_title": None,
+        "genres": [],
+        "group_year": None,
+        "label": None,
+        "catno": None,
+        "artists": [("Some Artist", "main")],
+        "upc": None,
+        "comment": None,
+        "tracks": {
+            "1": {
+                "1": _trackmeta("New CD1 1", "1", "1"),
+                "2": _trackmeta("New CD1 2", "2", "1"),
+            },
+            "2": {
+                "1": _trackmeta("New CD2 1", "1", "2"),
+            },
+        },
+    }
+
+    anyio.run(lambda: tag_files("/unused", tags, metadata, auto_rename=True))
+
+    output = capsys.readouterr().out
+    assert "DISCNUMBER" in output
+    assert "Skipping retagging procedure" in output
+
+
+def test_create_track_changes_handles_the_one_folder_disc_dot_track_layout():
+    # #479's one-folder layout keeps a multi-disc release flat, files named "<disc>.<track> ...".
+    # The tags already carry real DISCNUMBER/TRACKNUMBER values by that point, so this stays on
+    # the tag-sorted path rather than tripping the folder-collision fallback.
+    tags = {
+        "2.01 Third.flac": _tagset("Old Third", tracknumber="1", discnumber="2"),
+        "1.01 First.flac": _tagset("Old First", tracknumber="1", discnumber="1"),
+        "1.02 Second.flac": _tagset("Old Second", tracknumber="2", discnumber="1"),
+    }
+    metadata = {
+        "tracks": {
+            "1": {
+                "1": _trackmeta("New First", "1", "1"),
+                "2": _trackmeta("New Second", "2", "1"),
+            },
+            "2": {
+                "1": _trackmeta("New Third", "1", "2"),
+            },
+        }
+    }
+
+    changes = create_track_changes(tags, metadata)
+
+    assert Change("title", "Old First", "New First") in changes["1.01 First.flac"]
+    assert Change("title", "Old Second", "New Second") in changes["1.02 Second.flac"]
+    assert Change("title", "Old Third", "New Third") in changes["2.01 Third.flac"]
+
+
+def _two_discs_of_two():
+    return {
+        "tracks": {
+            str(disc): {str(track): _trackmeta(f"New {disc}-{track}", str(track), str(disc)) for track in (1, 2)}
+            for disc in (1, 2)
+        }
+    }
+
+
+def test_disc_tags_order_a_flat_folder_when_the_metadata_has_one_disc():
+    # A flat folder tagged as two discs of two, against metadata that lists the four tracks as one disc.
+    # The titles do not match (another language or edition), so only the tags can order the files: by
+    # file name, "02 Beta" (disc 1 track 2) would sort after "01 Gamma" (disc 2 track 1) and swap titles.
+    files = {
+        "01 Alpha.flac": ("1", "1"),
+        "02 Beta.flac": ("1", "2"),
+        "01 Gamma.flac": ("2", "1"),
+        "02 Delta.flac": ("2", "2"),
+    }
+    tags = {name: _tagset(f"Old {name}", tracknumber=track, discnumber=disc) for name, (disc, track) in files.items()}
+    metadata = {"tracks": {"1": {str(n): _trackmeta(f"New {n}", str(n), "1") for n in range(1, 5)}}}
+
+    changes = create_track_changes(tags, metadata)
+
+    for n, name in enumerate(files, 1):
+        assert Change("title", f"Old {name}", f"New {n}") in changes[name]
+
+
+def test_tracks_numbered_through_one_tagged_disc_fill_the_metadata_discs():
+    # Four files tagged disc 1, tracks 1 to 4, against two discs of two: the files line up with the
+    # tracklist in order, so they tag rather than refuse.
+    tags = {f"0{n}.flac": _tagset(f"Old {n}", tracknumber=str(n), discnumber="1") for n in range(1, 5)}
+
+    changes = create_track_changes(tags, _two_discs_of_two())
+
+    assert Change("title", "Old 3", "New 2-1") in changes["03.flac"]
+    assert Change("title", "Old 4", "New 2-2") in changes["04.flac"]
+
+
+def test_names_without_a_number_are_not_an_order():
+    # Two files share TRACKNUMBER 1 and their names carry no number: alphabetical order says nothing
+    # about which is track 1, so this must refuse rather than tag "Apple" as track 1.
+    tags = {name: _tagset(f"Old {name}", tracknumber="1", discnumber=None) for name in ("Zebra.flac", "Apple.flac")}
+    metadata = {"tracks": {"1": {"1": _trackmeta("New 1", "1", "1"), "2": _trackmeta("New 2", "2", "1")}}}
+
+    with pytest.raises(AmbiguousTrackOrderError, match="DISCNUMBER and TRACKNUMBER"):
+        create_track_changes(tags, metadata)
+
+
+def test_a_track_tag_that_pins_a_file_orders_unnumbered_names_that_agree_with_it():
+    tags = {
+        "Zebra.flac": _tagset("Old Zebra", tracknumber=None, discnumber=None),
+        "Apple.flac": _tagset("Old Apple", tracknumber="1", discnumber=None),
+    }
+    metadata = {"tracks": {"1": {"1": _trackmeta("New 1", "1", "1"), "2": _trackmeta("New 2", "2", "1")}}}
+
+    changes = create_track_changes(tags, metadata)
+
+    assert Change("title", "Old Apple", "New 1") in changes["Apple.flac"]
+    assert Change("title", "Old Zebra", "New 2") in changes["Zebra.flac"]
+
+
+def test_unnumbered_names_that_put_a_pinned_file_elsewhere_are_not_an_order():
+    # Zebra's tag says track 1, but by name it sorts second: the names would tag Apple as track 1.
+    tags = {
+        "Zebra.flac": _tagset("Old Zebra", tracknumber="1", discnumber=None),
+        "Apple.flac": _tagset("Old Apple", tracknumber=None, discnumber=None),
+    }
+    metadata = {"tracks": {"1": {"1": _trackmeta("New 1", "1", "1"), "2": _trackmeta("New 2", "2", "1")}}}
+
+    with pytest.raises(AmbiguousTrackOrderError, match="DISCNUMBER and TRACKNUMBER"):
+        create_track_changes(tags, metadata)
+
+
+def test_get_tag_number_reads_the_number_part_of_a_slash_pair():
+    assert _get_tag_number(SimpleNamespace(discnumber="3/12"), "discnumber") == 3
+
+
+def test_get_tag_number_defaults_missing_tags_to_one():
+    assert _get_tag_number(SimpleNamespace(discnumber=None), "discnumber") == 1
+    assert _get_tag_number({}, "discnumber") == 1
+
+
+def test_get_tag_number_unwraps_a_list_value():
+    assert _get_tag_number({"tracknumber": ["7"]}, "tracknumber") == 7
+
+
+def test_get_tag_number_defaults_a_digit_like_value_int_cannot_parse():
+    # "²" (superscript two) passes str.isdigit() but int() rejects it; a malformed
+    # TRACKNUMBER like this must read as unparseable rather than raise out of retagging.
+    assert _get_tag_number({"tracknumber": ["²"]}, "tracknumber") == 1
+
+
+def _formatting(**settings):
+    """The formatting config with fixed file templates, plus ``settings``, built as a config file would be."""
+    fields = msgspec.structs.asdict(cfg.upload.formatting)
+    fields.pop("split_multi_disc_into_folders", None)
+    fields.update(
+        file_template="{tracknumber}. {artist} - {title}",
+        one_album_artist_file_template="{tracknumber}. {title}",
+        no_artist_in_filename_if_only_one_album_artist=True,
+    )
+    fields.update(settings)
+    return msgspec.convert(fields, type(cfg.upload.formatting))
+
+
+def _single_folder(monkeypatch, **settings):
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting(split_multi_disc_into_folders=False, **settings))
+
+
+def _release(root, tracks, others=()):
+    """Write a release's files, each holding its own path, and return the tags and metadata of its tracks.
+
+    ``tracks`` maps a track's path to its (disc, track) numbers; a disc of None leaves the tag out.
+    """
+    tags = {}
+    discs = {}
+    for name, (disc, track) in tracks.items():
+        tags[name] = SimpleNamespace(
+            artist=["Some Artist"],
+            title=f"Title {disc}-{track}",
+            tracknumber=str(track),
+            discnumber=None if disc is None else str(disc),
+        )
+        discs.setdefault(str(disc or 1), {})[str(track)] = {"artists": [("Some Artist", "main")]}
+    for name in [*tracks, *others]:
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(name)
+    return tags, {"tracks": discs}
+
+
+def _tree(root):
+    """Every file and folder under ``root``, each file with the path it was written at."""
+    return sorted(
+        (path.relative_to(root).as_posix(), None if path.is_dir() else path.read_text()) for path in root.rglob("*")
+    )
+
+
+def _contents(root):
+    return sorted(text for _, text in _tree(root) if text is not None)
+
+
+def _two_discs(first=2, second=1, folder="Disc {}"):
+    tracks = {f"{folder.format(1)}/a{n:03d}.flac": (1, n) for n in range(1, first + 1)}
+    tracks.update({f"{folder.format(2)}/b{n:03d}.flac": (2, n) for n in range(1, second + 1)})
+    return tracks
+
+
+# Each case: the tracks, the other files, the source, and the names master gives them.
+DEFAULT_LAYOUT_CASES = {
+    "single-disc": (
+        {"a.flac": (1, 1), "b.flac": (1, 2)},
+        ["rip.log"],
+        "CD",
+        ["01. Title 1-1.flac", "02. Title 1-2.flac", "rip.log"],
+    ),
+    "multi-disc-cd": (
+        _two_discs(),
+        ["Disc 1/rip.log", "Disc 1/Scans/front.jpg", "Disc 2/rip.log", "cover.jpg"],
+        "CD",
+        [
+            "CD01",
+            "CD01/01. Title 1-1.flac",
+            "CD01/02. Title 1-2.flac",
+            "CD01/Scans",
+            "CD01/Scans/front.jpg",
+            "CD01/rip.log",
+            "CD02",
+            "CD02/01. Title 2-1.flac",
+            "CD02/rip.log",
+            "cover.jpg",
+        ],
+    ),
+    "multi-disc-vinyl": (
+        _two_discs(),
+        [],
+        "Vinyl",
+        ["LP01", "LP01/01. Title 1-1.flac", "LP01/02. Title 1-2.flac", "LP02", "LP02/01. Title 2-1.flac"],
+    ),
+    "multi-disc-web": (
+        _two_discs(),
+        [],
+        "WEB",
+        ["Part01", "Part01/01. Title 1-1.flac", "Part01/02. Title 1-2.flac", "Part02", "Part02/01. Title 2-1.flac"],
+    ),
+    "single-disc-100-tracks": (
+        {f"{n:03d}.flac": (1, n) for n in range(1, 102)},
+        [],
+        "CD",
+        sorted(f"{n:02d}. Title 1-{n}.flac" for n in range(1, 102)),
+    ),
+    "multi-disc-100-tracks": (
+        _two_discs(first=101, second=2),
+        [],
+        "CD",
+        sorted(
+            ["CD01", "CD02", "CD02/01. Title 2-1.flac", "CD02/02. Title 2-2.flac"]
+            + [f"CD01/{n:02d}. Title 1-{n}.flac" for n in range(1, 102)]
+        ),
+    ),
+}
+
+
+@pytest.mark.parametrize("setting", [{}, {"split_multi_disc_into_folders": True}], ids=["absent", "true"])
+@pytest.mark.parametrize("case", DEFAULT_LAYOUT_CASES)
+def test_rename_files_names_are_unchanged_by_default(tmp_path, monkeypatch, case, setting) -> None:
+    tracks, others, source, expected = DEFAULT_LAYOUT_CASES[case]
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting(**setting))
+    tags, metadata = _release(tmp_path, tracks, others)
+
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source=source))
+
+    assert [name for name, _ in _tree(tmp_path)] == expected
+
+
+@pytest.mark.parametrize("case", ["single-disc", "single-disc-100-tracks"])
+def test_rename_files_single_folder_setting_leaves_single_disc_releases_alone(tmp_path, monkeypatch, case) -> None:
+    tracks, others, source, expected = DEFAULT_LAYOUT_CASES[case]
+    _single_folder(monkeypatch)
+    tags, metadata = _release(tmp_path, tracks, others)
+
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source=source))
+
+    assert [name for name, _ in _tree(tmp_path)] == expected
+
+
+def test_rename_files_can_keep_a_multi_disc_release_in_one_folder(tmp_path, monkeypatch) -> None:
+    _single_folder(monkeypatch)
+    tags, metadata = _release(tmp_path, _two_discs())
+
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
+
+    assert _tree(tmp_path) == [
+        ("1.01. Title 1-1.flac", "Disc 1/a001.flac"),
+        ("1.02. Title 1-2.flac", "Disc 1/a002.flac"),
+        ("2.01. Title 2-1.flac", "Disc 2/b001.flac"),
+    ]
+
+
+def test_rename_files_single_folder_pads_numbers_to_the_largest(tmp_path, monkeypatch) -> None:
+    _single_folder(monkeypatch)
+    tags, metadata = _release(tmp_path, {"a.flac": (1, 1), "b.flac": (1, 100), "c.flac": (10, 1)})
+
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
+
+    assert [name for name, _ in _tree(tmp_path)] == [
+        "01.001. Title 1-1.flac",
+        "01.100. Title 1-100.flac",
+        "10.001. Title 10-1.flac",
+    ]
+
+
+def test_rename_files_single_folder_names_each_disc_folders_files_for_its_disc(tmp_path, monkeypatch) -> None:
+    _single_folder(monkeypatch)
+    others = [
+        f"Disc {disc}/{name}"
+        for disc in (1, 2)
+        for name in ("rip.log", "rip.cue", "cover.jpg", "folder.jpg", "Scans/front.jpg", "Scans/back.jpg")
+    ]
+    tags, metadata = _release(tmp_path, _two_discs(), [*others, "cover.jpg"])
+    before = _contents(tmp_path)
+
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
+
+    assert _contents(tmp_path) == before
+    assert _tree(tmp_path) == [
+        ("1.01. Title 1-1.flac", "Disc 1/a001.flac"),
+        ("1.02. Title 1-2.flac", "Disc 1/a002.flac"),
+        ("2.01. Title 2-1.flac", "Disc 2/b001.flac"),
+        ("Scans.1", None),
+        ("Scans.1/back.jpg", "Disc 1/Scans/back.jpg"),
+        ("Scans.1/front.jpg", "Disc 1/Scans/front.jpg"),
+        ("Scans.2", None),
+        ("Scans.2/back.jpg", "Disc 2/Scans/back.jpg"),
+        ("Scans.2/front.jpg", "Disc 2/Scans/front.jpg"),
+        ("cover.1.jpg", "Disc 1/cover.jpg"),
+        ("cover.2.jpg", "Disc 2/cover.jpg"),
+        ("cover.jpg", "cover.jpg"),
+        ("folder.1.jpg", "Disc 1/folder.jpg"),
+        ("folder.2.jpg", "Disc 2/folder.jpg"),
+        ("rip.1.cue", "Disc 1/rip.cue"),
+        ("rip.1.log", "Disc 1/rip.log"),
+        ("rip.2.cue", "Disc 2/rip.cue"),
+        ("rip.2.log", "Disc 2/rip.log"),
+    ]
+
+
+def test_rename_files_single_folder_keeps_the_names_from_a_folder_of_several_discs(tmp_path, monkeypatch) -> None:
+    # One folder holds both discs' tracks, so there is no one disc to name its other files for: they keep
+    # their names, and one that would replace a file already in the release folder is numbered.
+    _single_folder(monkeypatch)
+    tags, metadata = _release(tmp_path, _two_discs(folder="Audio"), ["Audio/rip.log", "Audio/cover.jpg", "cover.jpg"])
+    before = _contents(tmp_path)
+
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
+
+    tree = _tree(tmp_path)
+    assert _contents(tmp_path) == before
+    assert ("rip.log", "Audio/rip.log") in tree
+    assert ("cover.jpg", "cover.jpg") in tree
+    assert ("cover.1.jpg", "Audio/cover.jpg") in tree
+
+
+def test_rename_files_single_folder_moves_a_folder_of_tracks_inside_another_on_its_own_pass(
+    tmp_path, monkeypatch
+) -> None:
+    # Disc 1/Bonus holds tracks too: Disc 1's pass used to move it whole, and its own pass then found it gone.
+    _single_folder(monkeypatch)
+    tracks = {"Disc 1/a.flac": (1, 1), "Disc 1/Bonus/b.flac": (1, 2), "Disc 2/c.flac": (2, 1)}
+    tags, metadata = _release(tmp_path, tracks, ["Disc 1/rip.log", "Disc 1/Bonus/notes.txt", "Disc 2/rip.log"])
+    before = _contents(tmp_path)
+
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
+
+    assert _contents(tmp_path) == before
+    assert [(name, origin) for name, origin in _tree(tmp_path) if origin is not None] == [
+        ("1.01. Title 1-1.flac", "Disc 1/a.flac"),
+        ("1.02. Title 1-2.flac", "Disc 1/Bonus/b.flac"),
+        ("2.01. Title 2-1.flac", "Disc 2/c.flac"),
+        ("notes.1.txt", "Disc 1/Bonus/notes.txt"),
+        ("rip.1.log", "Disc 1/rip.log"),
+        ("rip.2.log", "Disc 2/rip.log"),
+    ]
+    assert not [d for d in tmp_path.rglob("*") if d.is_dir() and not any(d.iterdir())]
+    assert not (tmp_path / "Disc 1").exists()
+
+
+def test_delete_empty_folders_removes_an_emptied_chain_and_keeps_the_rest(tmp_path) -> None:
+    (tmp_path / "a" / "b" / "c").mkdir(parents=True)
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "keep.txt").write_text("x")
+
+    delete_empty_folders(str(tmp_path))
+
+    assert not (tmp_path / "a").exists()
+    assert (tmp_path / "d" / "keep.txt").exists()
+    assert tmp_path.exists()
+
+
+def test_delete_empty_folders_keeps_an_album_folder_left_with_nothing(tmp_path) -> None:
+    (tmp_path / "a").mkdir()
+    delete_empty_folders(str(tmp_path))
+
+    assert not (tmp_path / "a").exists()
+    assert tmp_path.is_dir()
+
+
+def test_delete_empty_folders_keeps_an_album_folder_with_nothing_in_it(tmp_path) -> None:
+    delete_empty_folders(str(tmp_path))
+
+    assert tmp_path.is_dir()
+
+
+def test_delete_empty_folders_does_not_follow_or_remove_a_symlink(tmp_path) -> None:
+    album = tmp_path / "album"
+    outside = tmp_path / "outside"
+    album.mkdir()
+    (outside / "inner").mkdir(parents=True)
+    try:
+        (album / "link").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks need privileges here")
+
+    delete_empty_folders(str(album))
+
+    assert (album / "link").is_symlink()
+    assert (outside / "inner").is_dir()
+
+
+@pytest.mark.parametrize(
+    ("tracks", "template"),
+    [
+        pytest.param(_two_discs(first=1, second=1), "{title}", id="same-title-on-two-discs"),
+        pytest.param({"CD1/01.flac": (None, 1), "CD2/01.flac": (None, 1)}, None, id="no-disc-numbers"),
+    ],
+)
+def test_rename_files_single_folder_renames_nothing_when_two_tracks_get_one_name(
+    tmp_path, monkeypatch, tracks, template
+) -> None:
+    templates = {"file_template": template, "one_album_artist_file_template": template} if template else {}
+    _single_folder(monkeypatch, **templates)
+    tags, metadata = _release(tmp_path, tracks, ["CD1/rip.log"])
+    metadata["tracks"].setdefault("2", metadata["tracks"]["1"])
+    for tagset in tags.values():
+        tagset.title = "Intro"
+    before = _tree(tmp_path)
+
+    # The fork stops the upload rather than going on unrenamed.
+    with pytest.raises(UploadError, match="overwrite"):
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
+
+    assert _tree(tmp_path) == before
+
+
+def test_rename_files_single_folder_renames_nothing_over_an_existing_file(tmp_path, monkeypatch) -> None:
+    _single_folder(monkeypatch)
+    tags, metadata = _release(tmp_path, _two_discs(), ["2.01. Title 2-1.flac"])
+    before = _tree(tmp_path)
+
+    with pytest.raises(UploadError, match="overwrite"):
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
+
+    assert _tree(tmp_path) == before
+
+
+def test_rename_files_single_folder_updates_the_spectral_file_names(tmp_path, monkeypatch) -> None:
+    _single_folder(monkeypatch)
+    tags, metadata = _release(tmp_path, _two_discs())
+    spectral_ids = {1: "Disc 1/a001.flac", 2: "Disc 1/a002.flac", 3: "Disc 2/b001.flac"}
+
+    anyio.run(
+        lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=spectral_ids, source="CD")
+    )
+
+    assert spectral_ids == {1: "1.01. Title 1-1.flac", 2: "1.02. Title 1-2.flac", 3: "2.01. Title 2-1.flac"}
+
+
+def test_rename_files_never_replaces_a_file_when_two_folders_go_to_one_disc_folder(tmp_path, monkeypatch) -> None:
+    # Two folders of disc 1 tracks both go to CD01: the second folder's cover.jpg used to replace the first's.
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
+    tracks = {"Disc 1/a.flac": (1, 1), "Disc 1 bonus/b.flac": (1, 2), "Disc 2/c.flac": (2, 1)}
+    tags, metadata = _release(tmp_path, tracks, ["Disc 1/cover.jpg", "Disc 1 bonus/cover.jpg"])
+    before = _contents(tmp_path)
+
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
+
+    tree = _tree(tmp_path)
+    assert _contents(tmp_path) == before
+    assert ("CD01/cover.jpg", "Disc 1/cover.jpg") in tree
+    assert ("CD01/cover.1.jpg", "Disc 1 bonus/cover.jpg") in tree
+
+
+def test_rename_files_renames_nothing_when_tracks_from_two_folders_get_one_name(tmp_path, monkeypatch) -> None:
+    # A single-disc release whose tracks sit in two folders: both are moved into the release folder, and
+    # the second one given the same name used to replace the first.
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
+    tags, metadata = _release(tmp_path, {"CD1/01.flac": (None, 1), "CD2/01.flac": (None, 1)})
+    for tagset in tags.values():
+        tagset.title = "Intro"
+    before = _tree(tmp_path)
+
+    with pytest.raises(UploadError, match="overwrite"):
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
+
+    assert _tree(tmp_path) == before
+
+
+def test_rename_files_renames_nothing_over_a_track_already_in_a_disc_folder(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
+    tracks = {"CD01/01. Title 1-1.flac": (1, 1), "Disc 1/dup.flac": (1, 1), "Disc 2/b.flac": (2, 1)}
+    tags, metadata = _release(tmp_path, tracks)
+    before = _tree(tmp_path)
+
+    with pytest.raises(UploadError, match="overwrite"):
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
+
+    assert _tree(tmp_path) == before
+
+
+def test_rename_files_moves_a_file_away_before_another_takes_its_name(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting(one_album_artist_file_template="{tracknumber}"))
+    tags, metadata = _release(tmp_path, {"01.flac": (1, 2), "02.flac": (1, 3)})
+
+    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
+
+    assert _tree(tmp_path) == [("02.flac", "01.flac"), ("03.flac", "02.flac")]
+
+
+def test_rename_files_renames_nothing_when_two_files_swap_names(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting(one_album_artist_file_template="{tracknumber}"))
+    tags, metadata = _release(tmp_path, {"01.flac": (1, 2), "02.flac": (1, 1)})
+    before = _tree(tmp_path)
+
+    with pytest.raises(UploadError, match="overwrite"):
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
+
+    assert _tree(tmp_path) == before
+
+
+def test_rename_files_stops_when_a_new_name_is_taken_after_the_check(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
+    tags, metadata = _release(tmp_path, {"a.flac": (1, 1), "b.flac": (1, 2)})
+
+    def confirm(*_args, **_kwargs):
+        (tmp_path / "02. Title 1-2.flac").write_text("someone else's")
+        return True
+
+    monkeypatch.setattr(click, "confirm", confirm)
+
+    with pytest.raises(UploadError) as raised:
+        anyio.run(
+            lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=False, spectral_ids=None, source="CD")
+        )
+
+    # The fork puts back the renames made before the stop.
+    assert _tree(tmp_path) == [
+        ("02. Title 1-2.flac", "someone else's"),
+        ("a.flac", "a.flac"),
+        ("b.flac", "b.flac"),
+    ]
+    assert "b.flac" in str(raised.value)
+
+
+def test_rename_files_stops_at_the_first_failed_rename_and_names_the_files_left(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
+    tags, metadata = _release(tmp_path, {"a.flac": (1, 1), "b.flac": (1, 2), "c.flac": (1, 3)})
+    link = os.link
+    calls = []
+
+    def failing_link(src, dst):
+        calls.append(src)
+        if len(calls) == 2:
+            raise PermissionError(13, "Permission denied", src)
+        link(src, dst)
+
+    # The fork renames a file by a hard link, and puts back the renames made before the stop.
+    monkeypatch.setattr(os, "link", failing_link)
+
+    with pytest.raises(UploadError) as raised:
+        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
+
+    assert len(calls) == 3
+    assert [name for name, _ in _tree(tmp_path)] == ["a.flac", "b.flac", "c.flac"]
+    message = str(raised.value)
+    assert "a.flac" in message
+    assert "b.flac" in message
+    assert "c.flac" in message
+    assert "undone" in message
+
+
+def _write_flac(path, **tags: str) -> None:
+    """A FLAC with no audio: a STREAMINFO block and the given Vorbis comments, key case preserved."""
+    streaminfo = struct.pack(">HH", 4096, 4096) + bytes(6)
+    streaminfo += ((44100 << 44) | (1 << 41) | (15 << 36)).to_bytes(8, "big") + bytes(16)
+    path.write_bytes(b"fLaC" + bytes([0x80]) + len(streaminfo).to_bytes(3, "big") + streaminfo)
+    audio = FLAC(path)
+    for key, value in tags.items():
+        audio[key] = value
+    audio.save()
+
+
+def test_retag_files_writes_uppercase_vorbis_comment_keys(tmp_path):
+    """Retagging replaces a comment, and mutagen keeps the case of the name it is given.
+
+    The field map is lowercase, so a file tagged ARTIST came back as artist. Vorbis comment names are
+    case-insensitive, but the spec recommends uppercase.
+    """
+    _write_flac(
+        tmp_path / "01.flac",
+        ARTIST="Old Artist",
+        title="Old Title",
+        ALBUM="Old Album",
+        CATALOGNUMBER="OLD",
+        ENCODER="reference",
+    )
+
+    retag_files(
+        str(tmp_path),
+        {"album": "New Album", "albumartist": "Album Artist", "catno": "CAT-1"},
+        {"01.flac": [Change("title", "Old Title", "New Title"), Change("artist", "Old Artist", "New Artist")]},
+    )
+
+    audio = FLAC(tmp_path / "01.flac")
+    comments = audio.tags
+    assert isinstance(comments, VCFLACDict)
+    # Iterate the comment, not .keys(): that normalizes every name to lowercase.
+    assert {key for key, _value in comments} == {
+        "TITLE",
+        "ARTIST",
+        "ALBUM",
+        "ALBUMARTIST",
+        "CATALOGNUMBER",
+        "ENCODER",
+    }
+    assert audio["title"] == ["New Title"]
+    assert audio["artist"] == ["New Artist"]
+    assert audio["album"] == ["New Album"]
+    assert audio["albumartist"] == ["Album Artist"]
+    assert audio["catalognumber"] == ["CAT-1"]
+    assert audio["encoder"] == ["reference"]
 
 
 def test_rename_files_can_flatten_multi_disc_tracks(tmp_path, monkeypatch) -> None:
@@ -167,90 +1147,6 @@ def test_move_non_audio_files_same_dir_is_a_noop(tmp_path) -> None:
     assert not (cd1 / "cover.1.jpg").exists()
 
 
-def _trackmeta(title, track_no, disc_no):
-    return {
-        "title": title,
-        "isrc": None,
-        "track#": track_no,
-        "disc#": disc_no,
-        "tracktotal": None,
-        "disctotal": None,
-        "artists": [("Some Artist", "main")],
-    }
-
-
-def _tagset(title, tracknumber, discnumber):
-    return SimpleNamespace(
-        artist=["Some Artist"],
-        title=title,
-        composer=None,
-        conductor=None,
-        comment=None,
-        isrc=None,
-        tracknumber=tracknumber,
-        discnumber=discnumber,
-        tracktotal=None,
-        disctotal=None,
-    )
-
-
-def test_create_track_changes_matches_files_by_disc_and_track_number():
-    # Tags arrive out of disc/track order, as os.walk gives them; a positional
-    # zip against the tracklist would pair files with the wrong track.
-    tags = {
-        "1-02 Second.flac": _tagset("Old Second", tracknumber="2", discnumber="1"),
-        "1-01 First.flac": _tagset("Old First", tracknumber="1", discnumber="1"),
-        "2-01 Third.flac": _tagset("Old Third", tracknumber="1", discnumber="2"),
-    }
-    metadata = {
-        "tracks": {
-            "1": {
-                "1": _trackmeta("New First", "1", "1"),
-                "2": _trackmeta("New Second", "2", "1"),
-            },
-            "2": {
-                "1": _trackmeta("New Third", "1", "2"),
-            },
-        }
-    }
-
-    changes = create_track_changes(tags, metadata)
-
-    assert Change("title", "Old First", "New First") in changes["1-01 First.flac"]
-    assert Change("title", "Old Second", "New Second") in changes["1-02 Second.flac"]
-    assert Change("title", "Old Third", "New Third") in changes["2-01 Third.flac"]
-
-
-def test_create_track_changes_uses_path_order_when_discnumber_tags_are_missing():
-    # No DISCNUMBER anywhere: CD1 and CD2 track 1 both key as (1, 1), so the
-    # paths, in natural order, decide instead of the colliding sort.
-    tags = {
-        "CD1/01.flac": _tagset("Old CD1 1", tracknumber="1", discnumber=None),
-        "CD1/02.flac": _tagset("Old CD1 2", tracknumber="2", discnumber=None),
-        "CD2/01.flac": _tagset("Old CD2 1", tracknumber="1", discnumber=None),
-        "CD2/02.flac": _tagset("Old CD2 2", tracknumber="2", discnumber=None),
-    }
-    metadata = {
-        "tracks": {
-            "1": {
-                "1": _trackmeta("New CD1 1", "1", "1"),
-                "2": _trackmeta("New CD1 2", "2", "1"),
-            },
-            "2": {
-                "1": _trackmeta("New CD2 1", "1", "2"),
-                "2": _trackmeta("New CD2 2", "2", "2"),
-            },
-        }
-    }
-
-    changes = create_track_changes(tags, metadata)
-
-    assert Change("title", "Old CD1 1", "New CD1 1") in changes["CD1/01.flac"]
-    assert Change("title", "Old CD1 2", "New CD1 2") in changes["CD1/02.flac"]
-    assert Change("title", "Old CD2 1", "New CD2 1") in changes["CD2/01.flac"]
-    assert Change("title", "Old CD2 2", "New CD2 2") in changes["CD2/02.flac"]
-
-
 def test_the_file_order_fallback_puts_disc_10_after_disc_2():
     # gather_tags lists CD10 before CD2 (a path with no leading number sorts as text).
     tags = {f"CD{disc}/01.flac": _tagset(f"Old CD{disc}", tracknumber="1", discnumber=None) for disc in (1, 10, 2)}
@@ -262,22 +1158,13 @@ def test_the_file_order_fallback_puts_disc_10_after_disc_2():
         assert Change("title", f"Old CD{disc}", f"New CD{disc}") in changes[f"CD{disc}/01.flac"]
 
 
-def _two_discs_of_two():
-    return {
-        "tracks": {
-            str(disc): {str(track): _trackmeta(f"New {disc}-{track}", str(track), str(disc)) for track in (1, 2)}
-            for disc in (1, 2)
-        }
-    }
-
-
 def test_a_flat_folder_without_disc_tags_is_refused_not_guessed():
     # Track-first names in one folder: no path order lines up with disc-first metadata.
     tags = {
         name: _tagset(f"Old {name}", tracknumber=name[1], discnumber=None)
         for name in ("01-CD1.flac", "01-CD2.flac", "02-CD1.flac", "02-CD2.flac")
     }
-    with pytest.raises(UploadError, match="DISCNUMBER and TRACKNUMBER"):
+    with pytest.raises(AmbiguousTrackOrderError, match="DISCNUMBER and TRACKNUMBER"):
         create_track_changes(tags, _two_discs_of_two())
 
 
@@ -288,7 +1175,7 @@ def test_disc_folders_that_do_not_match_the_discs_are_refused():
         "CD1/03.flac": _tagset("c", tracknumber="3", discnumber=None),
         "CD2/01.flac": _tagset("d", tracknumber="1", discnumber=None),
     }
-    with pytest.raises(UploadError, match="DISCNUMBER and TRACKNUMBER"):
+    with pytest.raises(AmbiguousTrackOrderError, match="DISCNUMBER and TRACKNUMBER"):
         create_track_changes(tags, _two_discs_of_two())
 
 
@@ -312,12 +1199,6 @@ def test_one_disc_without_track_tags_pairs_by_file_name():
         assert Change("title", f"Old {n}", f"New {n}") in changes[f"{n:02d} x.flac"]
 
 
-def _new_titles(changes) -> dict[str, str]:
-    return {
-        name: change.new for name, file_changes in changes.items() for change in file_changes if change.tag == "title"
-    }
-
-
 def test_a_disc_whose_track_tags_repeat_is_refused():
     # b.flac's track 1 is unambiguous, so file-name order must not override it.
     tags = {
@@ -325,7 +1206,7 @@ def test_a_disc_whose_track_tags_repeat_is_refused():
         for name, n in (("a.flac", "3"), ("b.flac", "1"), ("z.flac", "3"))
     }
     metadata = {"tracks": {"1": {str(n): _trackmeta(f"New {n}", str(n), "1") for n in range(1, 4)}}}
-    with pytest.raises(UploadError, match="track"):
+    with pytest.raises(AmbiguousTrackOrderError, match="track"):
         create_track_changes(tags, metadata)
 
 
@@ -344,7 +1225,7 @@ def test_a_disc_folder_with_an_unusable_track_tag_is_refused(bad):
             "2": {"1": _trackmeta("New 2-1", "1", "2")},
         }
     }
-    with pytest.raises(UploadError, match="track"):
+    with pytest.raises(AmbiguousTrackOrderError, match="track"):
         create_track_changes(tags, metadata)
 
 
@@ -377,7 +1258,7 @@ def test_names_that_sort_the_same_are_refused(names):
     tags = {name: _tagset(name, tracknumber=None, discnumber=None) for name in names}
     discs = {str(d): {"1": _trackmeta(f"New {d}", "1", str(d))} for d in (1, 2)} if "/" in names[0] else None
     metadata = {"tracks": discs or {"1": {str(n): _trackmeta(f"New {n}", str(n), "1") for n in (1, 2)}}}
-    with pytest.raises(UploadError, match="track"):
+    with pytest.raises(AmbiguousTrackOrderError, match="track"):
         create_track_changes(tags, metadata)
 
 
@@ -392,490 +1273,12 @@ def test_natural_key_orders_digit_runs_as_numbers():
     ]
 
 
-def test_get_tag_number_reads_the_number_part_of_a_slash_pair():
-    assert _get_tag_number(SimpleNamespace(discnumber="3/12"), "discnumber") == 3
-
-
-def test_get_tag_number_defaults_missing_tags_to_one():
-    assert _get_tag_number(SimpleNamespace(discnumber=None), "discnumber") == 1
-    assert _get_tag_number({}, "discnumber") == 1
-
-
-def test_get_tag_number_unwraps_a_list_value():
-    assert _get_tag_number({"tracknumber": ["7"]}, "tracknumber") == 7
-
-
-def test_create_track_changes_falls_back_when_only_some_files_carry_a_discnumber_tag():
-    # CD1's file has a DISCNUMBER/TRACKNUMBER pair, CD2's none: a (disc, track) sort would swap them,
-    # so a mix of files with and without DISCNUMBER pairs by folder.
-    tags = {
-        "CD1/01.flac": _tagset("Old CD1", tracknumber="5", discnumber="1"),
-        "CD2/01.flac": _tagset("Old CD2", tracknumber="1", discnumber=None),
-    }
-    metadata = {
-        "tracks": {
-            "1": {"1": _trackmeta("New CD1", "1", "1")},
-            "2": {"1": _trackmeta("New CD2", "1", "2")},
-        }
-    }
-
-    changes = create_track_changes(tags, metadata)
-
-    assert Change("title", "Old CD1", "New CD1") in changes["CD1/01.flac"]
-    assert Change("title", "Old CD2", "New CD2") in changes["CD2/01.flac"]
-
-
-def test_create_track_changes_trusts_continuous_track_numbers_with_no_discnumber_tag_anywhere():
-    # One flat folder, two discs, no DISCNUMBER, TRACKNUMBER counting through both: the keys are
-    # unique, so the plain tag sort retags it with no folder fallback.
-    tags = {f"{n:02d}.flac": _tagset(f"Old {n}", tracknumber=str(n), discnumber=None) for n in range(1, 7)}
-    metadata = {
-        "tracks": {
-            "1": {str(t): _trackmeta(f"New 1-{t}", str(t), "1") for t in range(1, 4)},
-            "2": {str(t): _trackmeta(f"New 2-{t}", str(t), "2") for t in range(1, 4)},
-        }
-    }
-
-    changes = create_track_changes(tags, metadata)
-
-    assert Change("title", "Old 4", "New 2-1") in changes["04.flac"]
-
-
-def test_create_track_changes_refuses_tag_pairs_that_do_not_match_the_metadata_discs():
-    # Unique, parseable pairs that are not the metadata's (disc 1 has no track 3), in one folder:
-    # zipping them would mispair, so this refuses.
-    tags = {
-        "a.flac": _tagset("Old a", tracknumber="1", discnumber="1"),
-        "b.flac": _tagset("Old b", tracknumber="2", discnumber="1"),
-        "c.flac": _tagset("Old c", tracknumber="3", discnumber="1"),
-        "d.flac": _tagset("Old d", tracknumber="1", discnumber="2"),
-    }
-    metadata = {
-        "tracks": {
-            "1": {"1": _trackmeta("New 1-1", "1", "1"), "2": _trackmeta("New 1-2", "2", "1")},
-            "2": {"1": _trackmeta("New 2-1", "1", "2"), "2": _trackmeta("New 2-2", "2", "2")},
-        }
-    }
-
-    with pytest.raises(UploadError, match="DISCNUMBER"):
-        create_track_changes(tags, metadata)
-
-
-def test_create_track_changes_orders_ten_plus_discs_naturally():
-    # No DISCNUMBER, so every file collides: the fallback orders disc folders naturally (CD2 before CD10).
-    tags = {f"CD{disc}/01.flac": _tagset(f"Old CD{disc}", tracknumber="1", discnumber=None) for disc in (1, 10, 2)}
-    metadata = {"tracks": {str(disc): {"1": _trackmeta(f"New CD{disc}", "1", str(disc))} for disc in (1, 2, 10)}}
-
-    changes = create_track_changes(tags, metadata)
-
-    for disc in (1, 2, 10):
-        assert Change("title", f"Old CD{disc}", f"New CD{disc}") in changes[f"CD{disc}/01.flac"]
-
-
-def test_create_track_changes_refuses_a_flat_folder_without_disc_tags():
-    # Track-first names in one flat folder interleave the discs: neither tags nor folders sort them,
-    # so retagging refuses.
-    tags = {
-        name: _tagset(f"Old {name}", tracknumber=track, discnumber=None)
-        for name, track in (
-            ("01-CD1.flac", "1"),
-            ("01-CD2.flac", "1"),
-            ("02-CD1.flac", "2"),
-            ("02-CD2.flac", "2"),
-        )
-    }
-    metadata = {
-        "tracks": {
-            str(disc): {str(track): _trackmeta(f"New {disc}-{track}", str(track), str(disc)) for track in (1, 2)}
-            for disc in (1, 2)
-        }
-    }
-
-    with pytest.raises(UploadError, match="DISCNUMBER"):
-        create_track_changes(tags, metadata)
-
-
-def test_tag_files_stops_on_a_flat_folder_without_disc_tags_instead_of_crashing():
-    # The same layout through tag_files: it raises UploadError, which stops the upload.
-    tags = {
-        name: _tagset(f"Old {name}", tracknumber=track, discnumber=None)
-        for name, track in (
-            ("01-CD1.flac", "1"),
-            ("01-CD2.flac", "1"),
-            ("02-CD1.flac", "2"),
-            ("02-CD2.flac", "2"),
-        )
-    }
-    metadata = {
-        "title": "Some Album",
-        "edition_title": None,
-        "genres": [],
-        "group_year": None,
-        "label": None,
-        "catno": None,
-        "artists": [("Some Artist", "main")],
-        "upc": None,
-        "comment": None,
-        "tracks": {
-            str(disc): {str(track): _trackmeta(f"New {disc}-{track}", str(track), str(disc)) for track in (1, 2)}
-            for disc in (1, 2)
-        },
-    }
-
-    # The fork stops the upload: uploading the uncorrected tags would break the tracker's tagging rules.
-    with pytest.raises(UploadError, match="DISCNUMBER"):
-        anyio.run(lambda: tag_files("/unused", tags, metadata, auto_rename=True))
-
-
-def test_create_track_changes_refuses_disc_folders_whose_track_counts_differ_from_the_metadata():
-    # Three files under CD1, one under CD2, against metadata that expects two tracks per disc.
-    # The folder split cannot be trusted to line files up with the right disc's tracks.
-    tags = {
-        "CD1/01.flac": _tagset("a", tracknumber="1", discnumber=None),
-        "CD1/02.flac": _tagset("b", tracknumber="2", discnumber=None),
-        "CD1/03.flac": _tagset("c", tracknumber="3", discnumber=None),
-        "CD2/01.flac": _tagset("d", tracknumber="1", discnumber=None),
-    }
-    metadata = {
-        "tracks": {
-            str(disc): {str(track): _trackmeta(f"New {disc}-{track}", str(track), str(disc)) for track in (1, 2)}
-            for disc in (1, 2)
-        }
-    }
-
-    with pytest.raises(UploadError, match="DISCNUMBER"):
-        create_track_changes(tags, metadata)
-
-
-def test_create_track_changes_orders_a_single_disc_single_folder_with_duplicate_track_tags_by_file_name():
-    # One disc, one folder, every file TRACKNUMBER=1: the fallback retags by file order, not a refusal.
-    tags = {
-        "01 First.flac": _tagset("Old First", tracknumber="1", discnumber=None),
-        "02 Second.flac": _tagset("Old Second", tracknumber="1", discnumber=None),
-        "03 Third.flac": _tagset("Old Third", tracknumber="1", discnumber=None),
-    }
-    metadata = {
-        "tracks": {
-            "1": {
-                "1": _trackmeta("New First", "1", "1"),
-                "2": _trackmeta("New Second", "2", "1"),
-                "3": _trackmeta("New Third", "3", "1"),
-            }
-        }
-    }
-
-    changes = create_track_changes(tags, metadata)
-
-    assert Change("title", "Old First", "New First") in changes["01 First.flac"]
-    assert Change("title", "Old Second", "New Second") in changes["02 Second.flac"]
-    assert Change("title", "Old Third", "New Third") in changes["03 Third.flac"]
-
-
-def test_create_track_changes_orders_a_single_disc_single_folder_with_no_track_tags_by_file_name():
-    # No file in the folder carries a TRACKNUMBER tag at all: still not ambiguous when the file
-    # names are, so this must retag by file name order rather than refuse.
-    tags = {
-        "01 First.flac": _tagset("Old First", tracknumber=None, discnumber=None),
-        "02 Second.flac": _tagset("Old Second", tracknumber=None, discnumber=None),
-    }
-    metadata = {
-        "tracks": {
-            "1": {
-                "1": _trackmeta("New First", "1", "1"),
-                "2": _trackmeta("New Second", "2", "1"),
-            }
-        }
-    }
-
-    changes = create_track_changes(tags, metadata)
-
-    assert Change("title", "Old First", "New First") in changes["01 First.flac"]
-    assert Change("title", "Old Second", "New Second") in changes["02 Second.flac"]
-
-
-def test_create_track_changes_orders_by_file_name_when_a_name_holds_a_digit_int_cannot_parse():
-    # A superscript "2" beside digits ("01²2.flac") must not raise out of the file-name fallback.
-    tags = {
-        "01²2.flac": _tagset("Old First", tracknumber=None, discnumber=None),
-        "02.flac": _tagset("Old Second", tracknumber=None, discnumber=None),
-    }
-    metadata = {
-        "tracks": {
-            "1": {
-                "1": _trackmeta("New First", "1", "1"),
-                "2": _trackmeta("New Second", "2", "1"),
-            }
-        }
-    }
-
-    changes = create_track_changes(tags, metadata)
-
-    assert Change("title", "Old First", "New First") in changes["01²2.flac"]
-    assert Change("title", "Old Second", "New Second") in changes["02.flac"]
-
-
-def test_tag_files_stops_when_one_disc_folder_is_genuinely_ambiguous():
-    # CD1's files have no track tags and tie on file name too: tag_files raises UploadError, stopping the upload.
-    tags = {
-        "CD1/Track.flac": _tagset("Old A", tracknumber=None, discnumber=None),
-        "CD1/track.flac": _tagset("Old B", tracknumber=None, discnumber=None),
-        "CD2/01.flac": _tagset("Old CD2 1", tracknumber="1", discnumber=None),
-    }
-    metadata = {
-        "title": "Some Album",
-        "edition_title": None,
-        "genres": [],
-        "group_year": None,
-        "label": None,
-        "catno": None,
-        "artists": [("Some Artist", "main")],
-        "upc": None,
-        "comment": None,
-        "tracks": {
-            "1": {
-                "1": _trackmeta("New CD1 1", "1", "1"),
-                "2": _trackmeta("New CD1 2", "2", "1"),
-            },
-            "2": {
-                "1": _trackmeta("New CD2 1", "1", "2"),
-            },
-        },
-    }
-
-    # The fork stops the upload: uploading the uncorrected tags would break the tracker's tagging rules.
-    with pytest.raises(UploadError, match="DISCNUMBER"):
-        anyio.run(lambda: tag_files("/unused", tags, metadata, auto_rename=True))
-
-
-def test_create_track_changes_handles_the_one_folder_disc_dot_track_layout():
-    # #479's flat "<disc>.<track> ..." names already carry real disc/track tags: the tag-sorted path.
-    tags = {
-        "2.01 Third.flac": _tagset("Old Third", tracknumber="1", discnumber="2"),
-        "1.01 First.flac": _tagset("Old First", tracknumber="1", discnumber="1"),
-        "1.02 Second.flac": _tagset("Old Second", tracknumber="2", discnumber="1"),
-    }
-    metadata = {
-        "tracks": {
-            "1": {
-                "1": _trackmeta("New First", "1", "1"),
-                "2": _trackmeta("New Second", "2", "1"),
-            },
-            "2": {
-                "1": _trackmeta("New Third", "1", "2"),
-            },
-        }
-    }
-
-    changes = create_track_changes(tags, metadata)
-
-    assert Change("title", "Old First", "New First") in changes["1.01 First.flac"]
-    assert Change("title", "Old Second", "New Second") in changes["1.02 Second.flac"]
-    assert Change("title", "Old Third", "New Third") in changes["2.01 Third.flac"]
-
-
-def test_get_tag_number_defaults_a_digit_like_value_int_cannot_parse():
-    # "²" (superscript two) passes str.isdigit() but int() rejects it; a malformed
-    # TRACKNUMBER like this must read as unparseable rather than raise out of retagging.
-    assert _get_tag_number({"tracknumber": ["²"]}, "tracknumber") == 1
-
-
 def test_a_track_count_mismatch_stops_the_retag():
     # zip would otherwise drop the extra file without a word, retagging the rest one track off.
     tags = {f"0{n}.flac": _tagset(f"Old {n}", tracknumber=str(n), discnumber=None) for n in (1, 2, 3)}
     metadata = {"tracks": {"1": {str(n): _trackmeta(f"New {n}", str(n), "1") for n in (1, 2)}}}
     with pytest.raises(UploadError, match="Track count mismatch"):
         create_track_changes(tags, metadata)
-
-
-def _contents(root):
-    return sorted(text for _, text in _tree(root) if text is not None)
-
-
-def _formatting(**settings):
-    """The formatting config with fixed file templates, plus ``settings``, built as a config file would be."""
-    fields = msgspec.structs.asdict(cfg.upload.formatting)
-    fields.pop("split_multi_disc_into_folders", None)
-    fields.update(
-        file_template="{tracknumber}. {artist} - {title}",
-        one_album_artist_file_template="{tracknumber}. {title}",
-        no_artist_in_filename_if_only_one_album_artist=True,
-    )
-    fields.update(settings)
-    return msgspec.convert(fields, type(cfg.upload.formatting))
-
-
-def _release(root, tracks, others=()):
-    """Write a release's files (each holding its path); `tracks` maps paths to (disc, track), None leaving disc out."""
-    tags = {}
-    discs = {}
-    for name, (disc, track) in tracks.items():
-        tags[name] = SimpleNamespace(
-            artist=["Some Artist"],
-            title=f"Title {disc}-{track}",
-            tracknumber=str(track),
-            discnumber=None if disc is None else str(disc),
-        )
-        discs.setdefault(str(disc or 1), {})[str(track)] = {"artists": [("Some Artist", "main")]}
-    for name in [*tracks, *others]:
-        (root / name).parent.mkdir(parents=True, exist_ok=True)
-        (root / name).write_text(name)
-    return tags, {"tracks": discs}
-
-
-def _single_folder(monkeypatch, **settings):
-    monkeypatch.setattr(cfg.upload, "formatting", _formatting(split_multi_disc_into_folders=False, **settings))
-
-
-def _tree(root):
-    """Every file and folder under ``root``, each file with the path it was written at."""
-    return sorted(
-        (path.relative_to(root).as_posix(), None if path.is_dir() else path.read_text()) for path in root.rglob("*")
-    )
-
-
-def _two_discs(first=2, second=1, folder="Disc {}"):
-    tracks = {f"{folder.format(1)}/a{n:03d}.flac": (1, n) for n in range(1, first + 1)}
-    tracks.update({f"{folder.format(2)}/b{n:03d}.flac": (2, n) for n in range(1, second + 1)})
-    return tracks
-
-
-# Each case: the tracks, the other files, the source, and the names master gives them.
-DEFAULT_LAYOUT_CASES = {
-    "single-disc": (
-        {"a.flac": (1, 1), "b.flac": (1, 2)},
-        ["rip.log"],
-        "CD",
-        ["01. Title 1-1.flac", "02. Title 1-2.flac", "rip.log"],
-    ),
-    "multi-disc-cd": (
-        _two_discs(),
-        ["Disc 1/rip.log", "Disc 1/Scans/front.jpg", "Disc 2/rip.log", "cover.jpg"],
-        "CD",
-        [
-            "CD01",
-            "CD01/01. Title 1-1.flac",
-            "CD01/02. Title 1-2.flac",
-            "CD01/Scans",
-            "CD01/Scans/front.jpg",
-            "CD01/rip.log",
-            "CD02",
-            "CD02/01. Title 2-1.flac",
-            "CD02/rip.log",
-            "cover.jpg",
-        ],
-    ),
-    "multi-disc-vinyl": (
-        _two_discs(),
-        [],
-        "Vinyl",
-        ["LP01", "LP01/01. Title 1-1.flac", "LP01/02. Title 1-2.flac", "LP02", "LP02/01. Title 2-1.flac"],
-    ),
-    "multi-disc-web": (
-        _two_discs(),
-        [],
-        "WEB",
-        ["Part01", "Part01/01. Title 1-1.flac", "Part01/02. Title 1-2.flac", "Part02", "Part02/01. Title 2-1.flac"],
-    ),
-    "single-disc-100-tracks": (
-        {f"{n:03d}.flac": (1, n) for n in range(1, 102)},
-        [],
-        "CD",
-        sorted(f"{n:02d}. Title 1-{n}.flac" for n in range(1, 102)),
-    ),
-    "multi-disc-100-tracks": (
-        _two_discs(first=101, second=2),
-        [],
-        "CD",
-        sorted(
-            ["CD01", "CD02", "CD02/01. Title 2-1.flac", "CD02/02. Title 2-2.flac"]
-            + [f"CD01/{n:02d}. Title 1-{n}.flac" for n in range(1, 102)]
-        ),
-    ),
-}
-
-
-@pytest.mark.parametrize("setting", [{}, {"split_multi_disc_into_folders": True}], ids=["absent", "true"])
-@pytest.mark.parametrize("case", DEFAULT_LAYOUT_CASES)
-def test_rename_files_names_are_unchanged_by_default(tmp_path, monkeypatch, case, setting) -> None:
-    tracks, others, source, expected = DEFAULT_LAYOUT_CASES[case]
-    monkeypatch.setattr(cfg.upload, "formatting", _formatting(**setting))
-    tags, metadata = _release(tmp_path, tracks, others)
-
-    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source=source))
-
-    assert [name for name, _ in _tree(tmp_path)] == expected
-
-
-@pytest.mark.parametrize("case", ["single-disc", "single-disc-100-tracks"])
-def test_rename_files_single_folder_setting_leaves_single_disc_releases_alone(tmp_path, monkeypatch, case) -> None:
-    tracks, others, source, expected = DEFAULT_LAYOUT_CASES[case]
-    _single_folder(monkeypatch)
-    tags, metadata = _release(tmp_path, tracks, others)
-
-    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source=source))
-
-    assert [name for name, _ in _tree(tmp_path)] == expected
-
-
-def test_rename_files_can_keep_a_multi_disc_release_in_one_folder(tmp_path, monkeypatch) -> None:
-    _single_folder(monkeypatch)
-    tags, metadata = _release(tmp_path, _two_discs())
-
-    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
-
-    assert _tree(tmp_path) == [
-        ("1.01. Title 1-1.flac", "Disc 1/a001.flac"),
-        ("1.02. Title 1-2.flac", "Disc 1/a002.flac"),
-        ("2.01. Title 2-1.flac", "Disc 2/b001.flac"),
-    ]
-
-
-def test_rename_files_single_folder_pads_numbers_to_the_largest(tmp_path, monkeypatch) -> None:
-    _single_folder(monkeypatch)
-    tags, metadata = _release(tmp_path, {"a.flac": (1, 1), "b.flac": (1, 100), "c.flac": (10, 1)})
-
-    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
-
-    assert [name for name, _ in _tree(tmp_path)] == [
-        "01.001. Title 1-1.flac",
-        "01.100. Title 1-100.flac",
-        "10.001. Title 10-1.flac",
-    ]
-
-
-def test_rename_files_single_folder_names_each_disc_folders_files_for_its_disc(tmp_path, monkeypatch) -> None:
-    _single_folder(monkeypatch)
-    others = [
-        f"Disc {disc}/{name}"
-        for disc in (1, 2)
-        for name in ("rip.log", "rip.cue", "cover.jpg", "folder.jpg", "Scans/front.jpg", "Scans/back.jpg")
-    ]
-    tags, metadata = _release(tmp_path, _two_discs(), [*others, "cover.jpg"])
-    before = _contents(tmp_path)
-
-    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
-
-    assert _contents(tmp_path) == before
-    assert _tree(tmp_path) == [
-        ("1.01. Title 1-1.flac", "Disc 1/a001.flac"),
-        ("1.02. Title 1-2.flac", "Disc 1/a002.flac"),
-        ("2.01. Title 2-1.flac", "Disc 2/b001.flac"),
-        ("Scans.1", None),
-        ("Scans.1/back.jpg", "Disc 1/Scans/back.jpg"),
-        ("Scans.1/front.jpg", "Disc 1/Scans/front.jpg"),
-        ("Scans.2", None),
-        ("Scans.2/back.jpg", "Disc 2/Scans/back.jpg"),
-        ("Scans.2/front.jpg", "Disc 2/Scans/front.jpg"),
-        ("cover.1.jpg", "Disc 1/cover.jpg"),
-        ("cover.2.jpg", "Disc 2/cover.jpg"),
-        ("cover.jpg", "cover.jpg"),
-        ("folder.1.jpg", "Disc 1/folder.jpg"),
-        ("folder.2.jpg", "Disc 2/folder.jpg"),
-        ("rip.1.cue", "Disc 1/rip.cue"),
-        ("rip.1.log", "Disc 1/rip.log"),
-        ("rip.2.cue", "Disc 2/rip.cue"),
-        ("rip.2.log", "Disc 2/rip.log"),
-    ]
 
 
 def test_rename_files_single_folder_numbers_a_file_whose_new_name_is_taken(tmp_path, monkeypatch) -> None:
@@ -895,121 +1298,6 @@ def test_rename_files_single_folder_numbers_a_file_whose_new_name_is_taken(tmp_p
     assert not (tmp_path / "Disc 2").exists()
 
 
-def test_rename_files_single_folder_keeps_the_names_from_a_folder_of_several_discs(tmp_path, monkeypatch) -> None:
-    # One folder holds both discs' tracks, so there is no one disc to name its other files for: they keep
-    # their names, and one that would replace a file already in the release folder is numbered.
-    _single_folder(monkeypatch)
-    tags, metadata = _release(tmp_path, _two_discs(folder="Audio"), ["Audio/rip.log", "Audio/cover.jpg", "cover.jpg"])
-    before = _contents(tmp_path)
-
-    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
-
-    tree = _tree(tmp_path)
-    assert _contents(tmp_path) == before
-    assert ("rip.log", "Audio/rip.log") in tree
-    assert ("cover.jpg", "cover.jpg") in tree
-    assert ("cover.1.jpg", "Audio/cover.jpg") in tree
-
-
-@pytest.mark.parametrize(
-    ("tracks", "template"),
-    [
-        pytest.param(_two_discs(first=1, second=1), "{title}", id="same-title-on-two-discs"),
-        pytest.param({"CD1/01.flac": (None, 1), "CD2/01.flac": (None, 1)}, None, id="no-disc-numbers"),
-    ],
-)
-def test_rename_files_single_folder_renames_nothing_when_two_tracks_get_one_name(
-    tmp_path, monkeypatch, tracks, template
-) -> None:
-    templates = {"file_template": template, "one_album_artist_file_template": template} if template else {}
-    _single_folder(monkeypatch, **templates)
-    tags, metadata = _release(tmp_path, tracks, ["CD1/rip.log"])
-    metadata["tracks"].setdefault("2", metadata["tracks"]["1"])
-    for tagset in tags.values():
-        tagset.title = "Intro"
-    before = _tree(tmp_path)
-
-    # The fork stops the upload rather than going on unrenamed.
-    with pytest.raises(UploadError, match="overwrite"):
-        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
-
-    assert _tree(tmp_path) == before
-
-
-def test_rename_files_single_folder_renames_nothing_over_an_existing_file(tmp_path, monkeypatch) -> None:
-    _single_folder(monkeypatch)
-    tags, metadata = _release(tmp_path, _two_discs(), ["2.01. Title 2-1.flac"])
-    before = _tree(tmp_path)
-
-    with pytest.raises(UploadError, match="overwrite"):
-        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
-
-    assert _tree(tmp_path) == before
-
-
-def test_rename_files_single_folder_updates_the_spectral_file_names(tmp_path, monkeypatch) -> None:
-    _single_folder(monkeypatch)
-    tags, metadata = _release(tmp_path, _two_discs())
-    spectral_ids = {1: "Disc 1/a001.flac", 2: "Disc 1/a002.flac", 3: "Disc 2/b001.flac"}
-
-    anyio.run(
-        lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=spectral_ids, source="CD")
-    )
-
-    assert spectral_ids == {1: "1.01. Title 1-1.flac", 2: "1.02. Title 1-2.flac", 3: "2.01. Title 2-1.flac"}
-
-
-def test_rename_files_never_replaces_a_file_when_two_folders_go_to_one_disc_folder(tmp_path, monkeypatch) -> None:
-    # Two folders of disc 1 tracks both go to CD01: the second folder's cover.jpg used to replace the first's.
-    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
-    tracks = {"Disc 1/a.flac": (1, 1), "Disc 1 bonus/b.flac": (1, 2), "Disc 2/c.flac": (2, 1)}
-    tags, metadata = _release(tmp_path, tracks, ["Disc 1/cover.jpg", "Disc 1 bonus/cover.jpg"])
-    before = _contents(tmp_path)
-
-    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
-
-    tree = _tree(tmp_path)
-    assert _contents(tmp_path) == before
-    assert ("CD01/cover.jpg", "Disc 1/cover.jpg") in tree
-    assert ("CD01/cover.1.jpg", "Disc 1 bonus/cover.jpg") in tree
-
-
-def test_rename_files_renames_nothing_when_tracks_from_two_folders_get_one_name(tmp_path, monkeypatch) -> None:
-    # A single-disc release whose tracks sit in two folders: both are moved into the release folder, and
-    # the second one given the same name used to replace the first.
-    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
-    tags, metadata = _release(tmp_path, {"CD1/01.flac": (None, 1), "CD2/01.flac": (None, 1)})
-    for tagset in tags.values():
-        tagset.title = "Intro"
-    before = _tree(tmp_path)
-
-    with pytest.raises(UploadError, match="overwrite"):
-        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
-
-    assert _tree(tmp_path) == before
-
-
-def test_rename_files_renames_nothing_over_a_track_already_in_a_disc_folder(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
-    tracks = {"CD01/01. Title 1-1.flac": (1, 1), "Disc 1/dup.flac": (1, 1), "Disc 2/b.flac": (2, 1)}
-    tags, metadata = _release(tmp_path, tracks)
-    before = _tree(tmp_path)
-
-    with pytest.raises(UploadError, match="overwrite"):
-        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
-
-    assert _tree(tmp_path) == before
-
-
-def test_rename_files_moves_a_file_away_before_another_takes_its_name(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cfg.upload, "formatting", _formatting(one_album_artist_file_template="{tracknumber}"))
-    tags, metadata = _release(tmp_path, {"01.flac": (1, 2), "02.flac": (1, 3)})
-
-    anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
-
-    assert _tree(tmp_path) == [("02.flac", "01.flac"), ("03.flac", "02.flac")]
-
-
 def test_rename_files_moves_each_spectral_with_its_own_track_along_a_chain(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cfg.upload, "formatting", _formatting(one_album_artist_file_template="{tracknumber}"))
     tags, metadata = _release(tmp_path, {"01.flac": (1, 2), "02.flac": (1, 3)})
@@ -1020,17 +1308,6 @@ def test_rename_files_moves_each_spectral_with_its_own_track_along_a_chain(tmp_p
     )
 
     assert spectral_ids == {1: "02.flac", 2: "03.flac"}
-
-
-def test_rename_files_renames_nothing_when_two_files_swap_names(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cfg.upload, "formatting", _formatting(one_album_artist_file_template="{tracknumber}"))
-    tags, metadata = _release(tmp_path, {"01.flac": (1, 2), "02.flac": (1, 1)})
-    before = _tree(tmp_path)
-
-    with pytest.raises(UploadError, match="overwrite"):
-        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
-
-    assert _tree(tmp_path) == before
 
 
 def test_rename_files_renames_nothing_when_two_names_differ_only_by_case_where_the_volume_ignores_it(
@@ -1046,57 +1323,6 @@ def test_rename_files_renames_nothing_when_two_names_differ_only_by_case_where_t
         anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert _tree(tmp_path) == before
-
-
-def test_rename_files_stops_when_a_new_name_is_taken_after_the_check(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
-    tags, metadata = _release(tmp_path, {"a.flac": (1, 1), "b.flac": (1, 2)})
-
-    def confirm(*_args, **_kwargs):
-        (tmp_path / "02. Title 1-2.flac").write_text("someone else's")
-        return True
-
-    monkeypatch.setattr(click, "confirm", confirm)
-
-    with pytest.raises(UploadError) as raised:
-        anyio.run(
-            lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=False, spectral_ids=None, source="CD")
-        )
-
-    # The fork puts back the renames made before the stop.
-    assert _tree(tmp_path) == [
-        ("02. Title 1-2.flac", "someone else's"),
-        ("a.flac", "a.flac"),
-        ("b.flac", "b.flac"),
-    ]
-    assert "b.flac" in str(raised.value)
-
-
-def test_rename_files_stops_at_the_first_failed_rename_and_names_the_files_left(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cfg.upload, "formatting", _formatting())
-    tags, metadata = _release(tmp_path, {"a.flac": (1, 1), "b.flac": (1, 2), "c.flac": (1, 3)})
-    link = os.link
-    calls = []
-
-    def failing_link(src, dst):
-        calls.append(src)
-        if len(calls) == 2:
-            raise PermissionError(13, "Permission denied", src)
-        link(src, dst)
-
-    # The fork renames a file by a hard link, and puts back the renames made before the stop.
-    monkeypatch.setattr(os, "link", failing_link)
-
-    with pytest.raises(UploadError) as raised:
-        anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
-
-    assert len(calls) == 3
-    assert [name for name, _ in _tree(tmp_path)] == ["a.flac", "b.flac", "c.flac"]
-    message = str(raised.value)
-    assert "a.flac" in message
-    assert "b.flac" in message
-    assert "c.flac" in message
-    assert "undone" in message
 
 
 def test_rename_files_says_the_files_are_partly_renamed_when_the_undo_stops_too(tmp_path, monkeypatch) -> None:
@@ -1115,78 +1341,6 @@ def test_rename_files_says_the_files_are_partly_renamed_when_the_undo_stops_too(
         anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert [name for name, _ in _tree(tmp_path)] == ["01. Title 1-1.flac", "b.flac"]
-
-
-def test_disc_tags_order_a_flat_folder_when_the_metadata_has_one_disc():
-    files = {
-        "01 Alpha.flac": ("1", "1"),
-        "02 Beta.flac": ("1", "2"),
-        "01 Gamma.flac": ("2", "1"),
-        "02 Delta.flac": ("2", "2"),
-    }
-    tags = {name: _tagset(f"Old {name}", tracknumber=track, discnumber=disc) for name, (disc, track) in files.items()}
-    metadata = {"tracks": {"1": {str(n): _trackmeta(f"New {n}", str(n), "1") for n in range(1, 5)}}}
-
-    changes = create_track_changes(tags, metadata)
-
-    for n, name in enumerate(files, 1):
-        assert Change("title", f"Old {name}", f"New {n}") in changes[name]
-
-
-def test_tracks_numbered_through_one_tagged_disc_fill_the_metadata_discs():
-    tags = {f"0{n}.flac": _tagset(f"Old {n}", tracknumber=str(n), discnumber="1") for n in range(1, 5)}
-
-    changes = create_track_changes(tags, _two_discs_of_two())
-
-    assert Change("title", "Old 3", "New 2-1") in changes["03.flac"]
-    assert Change("title", "Old 4", "New 2-2") in changes["04.flac"]
-
-
-def test_names_without_a_number_are_not_an_order():
-    tags = {name: _tagset(f"Old {name}", tracknumber="1", discnumber=None) for name in ("Zebra.flac", "Apple.flac")}
-    metadata = {"tracks": {"1": {"1": _trackmeta("New 1", "1", "1"), "2": _trackmeta("New 2", "2", "1")}}}
-
-    with pytest.raises(UploadError, match="DISCNUMBER and TRACKNUMBER"):
-        create_track_changes(tags, metadata)
-
-
-def test_delete_empty_folders_removes_an_emptied_chain_and_keeps_the_rest(tmp_path) -> None:
-    (tmp_path / "a" / "b" / "c").mkdir(parents=True)
-    (tmp_path / "d").mkdir()
-    (tmp_path / "d" / "keep.txt").write_text("x")
-
-    delete_empty_folders(str(tmp_path))
-
-    assert not (tmp_path / "a").exists()
-    assert (tmp_path / "d" / "keep.txt").exists()
-    assert tmp_path.exists()
-
-
-def test_delete_empty_folders_keeps_the_album_folder_itself(tmp_path) -> None:
-    (tmp_path / "a").mkdir()
-    delete_empty_folders(str(tmp_path))
-    emptied = tmp_path.is_dir()
-    delete_empty_folders(str(tmp_path))
-
-    assert emptied
-    assert not (tmp_path / "a").exists()
-    assert tmp_path.is_dir()
-
-
-def test_delete_empty_folders_does_not_follow_or_remove_a_symlink(tmp_path) -> None:
-    album = tmp_path / "album"
-    outside = tmp_path / "outside"
-    album.mkdir()
-    (outside / "inner").mkdir(parents=True)
-    try:
-        (album / "link").symlink_to(outside, target_is_directory=True)
-    except OSError:
-        pytest.skip("symlinks need privileges here")
-
-    delete_empty_folders(str(album))
-
-    assert (album / "link").is_symlink()
-    assert (outside / "inner").is_dir()
 
 
 def test_delete_empty_folders_does_not_follow_the_album_folder_given_as_a_symlink(tmp_path) -> None:
@@ -1232,3 +1386,41 @@ def test_rename_files_renames_nothing_onto_a_second_hard_link_to_the_track(tmp_p
         anyio.run(lambda: rename_files(str(tmp_path), tags, metadata, auto_rename=True, spectral_ids=None, source="CD"))
 
     assert [name for name, _ in _tree(tmp_path)] == ["01. Title 1-1.flac", "a.flac"]
+
+
+def test_numbered_names_that_put_a_pinned_file_elsewhere_are_not_an_order():
+    # 1.flac's own tag says track 3: names that start with a number are no order when they move a file off its tag.
+    tags = {
+        "1.flac": _tagset("Old 1", tracknumber="3", discnumber=None),
+        "2.flac": _tagset("Old 2", tracknumber=None, discnumber=None),
+        "3.flac": _tagset("Old 3", tracknumber=None, discnumber=None),
+    }
+    metadata = {"tracks": {"1": {str(n): _trackmeta(f"New {n}", str(n), "1") for n in (1, 2, 3)}}}
+
+    with pytest.raises(AmbiguousTrackOrderError, match="DISCNUMBER and TRACKNUMBER"):
+        create_track_changes(tags, metadata)
+
+
+def test_a_metadata_track_without_an_isrc_is_compared_without_one():
+    # Hand-edited metadata can leave an optional field out altogether.
+    track = _trackmeta("New", "1", "1")
+    del track["isrc"]
+
+    changes = create_track_changes(
+        {"01.flac": _tagset("Old", tracknumber="1", discnumber=None)}, {"tracks": {"1": {"1": track}}}
+    )
+
+    assert Change("title", "Old", "New") in changes["01.flac"]
+
+
+def test_tracks_the_metadata_lists_out_of_order_still_pair_by_their_numbers():
+    # Hand-edited metadata can list a disc's tracks in any order.
+    tags = {
+        "01.flac": _tagset("Old 1", tracknumber="1", discnumber=None),
+        "02.flac": _tagset("Old 2", tracknumber="2", discnumber=None),
+    }
+    metadata = {"tracks": {"1": {"2": _trackmeta("New 2", "2", "1"), "1": _trackmeta("New 1", "1", "1")}}}
+
+    changes = create_track_changes(tags, metadata)
+
+    assert _new_titles(changes) == {"01.flac": "New 1", "02.flac": "New 2"}

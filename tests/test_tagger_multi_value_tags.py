@@ -17,12 +17,14 @@ from salmon import cfg
 from salmon.converter import transcoding
 from salmon.tagger.pre_data import construct_track_artists, split_genres
 from salmon.tagger.retagger import (
+    _is_aac,
+    _written,
     collect_album_data,
     create_track_changes,
     print_changes,
     retag_files,
 )
-from salmon.tagger.tagfile import TagFile, as_stored, keeps_field
+from salmon.tagger.tagfile import TagFile
 
 FRAME_HEADER = bytes([0xFF, 0xFB, 0x90, 0x00])
 FRAME_SIZE = 417
@@ -450,26 +452,26 @@ def test_preview_quotes_an_m4a_genre_list_that_becomes_one_string(tmp_path, caps
     assert _preview_line(out, "> genre") == '"Hip Hop", "Rap" >>> "Hip Hop; Rap"'
 
 
-def test_keeps_field_is_false_only_for_a_field_the_format_lacks(tmp_path):
+def test_only_an_m4a_counts_as_aac_lacking_the_artists_tag(tmp_path):
     flac_path = _flac_album(tmp_path)
     mp3_path = _mp3_album(tmp_path)
     _write_m4a(tmp_path / "01.m4a", trkn=[(1, 0)])
 
     kept = {
-        name: keeps_field(TagFile(str(path)), "artists")
+        name: _is_aac(TagFile(str(path)))
         for name, path in [("flac", flac_path), ("mp3", mp3_path), ("m4a", tmp_path / "01.m4a")]
     }
-    stand_in = keeps_field(SimpleNamespace(tracknumber="1"), "artists")
+    stand_in = _is_aac(SimpleNamespace(tracknumber="1"))
 
-    assert kept == {"flac": True, "mp3": True, "m4a": False}
-    assert stand_in is True
+    assert kept == {"flac": False, "mp3": False, "m4a": True}
+    assert stand_in is False
 
 
-def test_as_stored_gives_text_and_joins_a_list_only_for_an_m4a(tmp_path):
+def test_written_gives_text_and_joins_a_list_only_for_an_m4a(tmp_path):
     flac = TagFile(str(_flac_album(tmp_path)))
     _write_m4a(tmp_path / "01.m4a", trkn=[(1, 0)])
     m4a = TagFile(str(tmp_path / "01.m4a"))
 
-    assert as_stored(flac, ["Hip Hop", 2020]) == ["Hip Hop", "2020"]
-    assert as_stored(m4a, ["Hip Hop", "Rap"]) == "Hip Hop; Rap"
-    assert as_stored(m4a, 2020) == "2020"
+    assert _written(flac, ["Hip Hop", 2020]) == ["Hip Hop", "2020"]
+    assert _written(m4a, ["Hip Hop", "Rap"]) == "Hip Hop; Rap"
+    assert _written(m4a, 2020) == "2020"

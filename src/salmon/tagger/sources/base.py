@@ -93,6 +93,7 @@ class MetadataMixin(ABC):
         media_version: str | None = None,
         lossless: bool | None = None,
         mp3_320: bool | None = None,
+        duration: int | None = None,
     ) -> dict[str, Any]:
         """Return a generated track dictionary containing the required values.
 
@@ -112,6 +113,8 @@ class MetadataMixin(ABC):
             media_version: Media version (Deezer).
             lossless: Whether lossless is available (Deezer).
             mp3_320: Whether MP3 320 is available (Deezer).
+            duration: Track length in seconds, used to match local files to this
+                tracklist when titles are ambiguous.
 
         Returns:
             A dictionary containing track metadata.
@@ -134,6 +137,7 @@ class MetadataMixin(ABC):
             "media_version": media_version,
             "lossless": lossless,
             "mp3_320": mp3_320,
+            "duration": duration,
         }
 
     def determine_rls_type(self, data):
@@ -284,7 +288,13 @@ def ends_with_ep(title):
 
 
 def strip_ep_suffix(title):
-    """The title without the EP marker ending it: a store's always, a bare "EP" only with strip_ep_from_title."""
+    """
+    Return the title without the EP marker that ends it.
+
+    A store's marker ("Title - EP", "Title (EP)") always goes. A bare "EP" ending the
+    title ("Title EP") goes only with strip_ep_from_title, as it is often part of the
+    release's name. An "EP" inside the title ("The EP Sessions") is part of it and stays.
+    """
     stripped = RE_EP_STORE_SUFFIX.sub("", title)
     if stripped == title and cfg.upload.formatting.strip_ep_from_title:
         stripped = RE_EP_TITLE_SUFFIX.sub("", title)
