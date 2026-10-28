@@ -2,7 +2,7 @@ import ipaddress
 import re
 import shlex
 import string
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 # Up to the authority's end: a "@" later in the query or fragment is no userinfo.
@@ -11,9 +11,12 @@ _USERINFO_PASSWORD = re.compile(r"://[^/\s@:]*:([^/\s@']+)@")
 _SECRET_WORDS = r"(?:pass|password|token|secret|key|session|header|cookie|auth)"
 # A quoted value is masked whole, doubled quotes included: rclone quotes values with spaces (a PEM key).
 _SECRET_VALUE = r"""(?:'(?:[^']|'')*'|"(?:[^"]|"")*"|\S+)"""
-_SECRET_FLAG_NAME = re.compile(rf"--?[\w-]*{_SECRET_WORDS}[\w-]*", re.IGNORECASE)
-_SECRET_FLAG = re.compile(rf"(--?[\w-]*{_SECRET_WORDS}[\w-]*(?:=|[ \t]+)){_SECRET_VALUE}", re.IGNORECASE)
-_SECRET_ASSIGNMENT = re.compile(rf"\b([\w-]*{_SECRET_WORDS}[\w-]*)={_SECRET_VALUE}", re.IGNORECASE)
+# A value a known secret already masked whole is left alone, so what follows it (a remote's path) stays.
+_MASKED_VALUE = r"""\[REDACTED\](?=[\s,:'"]|$)"""
+_SECRET_FLAG = re.compile(
+    rf"(--?[\w-]*{_SECRET_WORDS}[\w-]*(?:=|[ \t]+))(?!{_MASKED_VALUE}){_SECRET_VALUE}", re.IGNORECASE
+)
+_SECRET_ASSIGNMENT = re.compile(rf"\b([\w-]*{_SECRET_WORDS}[\w-]*)=(?!{_MASKED_VALUE}){_SECRET_VALUE}", re.IGNORECASE)
 # Flags whose values are harmless to show; every other flag's value in a command is masked, since no
 # list of secret flag names ever covers them all (rclone takes credentials in headers, keys, tokens ...).
 _SHOWN_FLAGS = frozenset(
@@ -62,35 +65,9 @@ _CONNECTION_SECRET = re.compile(
 )
 
 
-# The names a secret goes by, in a JSON field, a URL query, a cookie header or a form input: one list for all three.
-_SECRET_NAMES = "authkey|passkey|torrent_pass|auth|api_?key|authorization|session|keeplogged|imgauth_[hue]"
-# "authkey": "..." in JSON or a Python repr of it, authkey = "..." in a page's script. A value ends at its closing
-# quote, or at its line's end when an excerpt cut it off; a backslash escapes the next character.
-_SENSITIVE_KEYS = re.compile(
-    rf"""(["']?\b(?:{_SECRET_NAMES}|Authorization)["']?\s*[:=]\s*)(["'])(?:(?!\2)[^\\\n]|\\.)*(\2?)""", re.IGNORECASE
-)
-# A value ends at "; ", a cookie's attribute separator; a ";" with no space after stays in it, as in a URL query.
-_SENSITIVE_URL_PARAMS = re.compile(rf"\b({_SECRET_NAMES})=(?:[^&;\"'\s<>]|;(?!\s))+", re.IGNORECASE)
-# The passkey in an announce URL, wherever the text holds one and however short, as in redact_url.
-_ANNOUNCE_PASSKEY = re.compile(r"/[A-Za-z0-9]+(?=/announce)")
-
-# A form field carrying one, <input name="auth" value="...">, its attributes in any order, quoted or not.
-# Quote-aware: a ">" inside a quoted attribute does not end the tag.
-_INPUT_TAG = re.compile(r"""<input\b(?:[^>"']|"[^"]*"|'[^']*')*>""", re.IGNORECASE)
-_SECRET_FIELD_NAME = re.compile(rf"""\bname\s*=\s*(["']?)(?:{_SECRET_NAMES})\1(?=[\s/>])""", re.IGNORECASE)
-_FIELD_VALUE = re.compile(r"""(\bvalue\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s"'>]+)""", re.IGNORECASE)
-
-
-def _mask_secret_field(match: re.Match[str]) -> str:
-    tag = match[0]
-    if not _SECRET_FIELD_NAME.search(tag):
-        return tag
-    return _FIELD_VALUE.sub(r'\1"[REDACTED]"', tag)
-
-
-def _mask_known(text: str, secrets: Iterable[str | None], shortest: int) -> str:
-    """Mask each secret of at least `shortest` characters, longest first so one inside another goes whole."""
-    for secret in sorted(dict.fromkeys(s for s in secrets if s and len(s) >= shortest), key=len, reverse=True):
+def _mask_known(text: str, known: Iterable[str | None]) -> str:
+    """Mask each known secret value, longest first."""
+    for secret in sorted((s for s in known if s), key=len, reverse=True):
         # A short one only as a whole word, so "ab" doesn't eat "about".
         pattern = re.escape(secret) if len(secret) >= 3 else rf"(?<!\w){re.escape(secret)}(?!\w)"
         text = re.sub(pattern, "[REDACTED]", text)
@@ -100,53 +77,11 @@ def _mask_known(text: str, secrets: Iterable[str | None], shortest: int) -> str:
 def redact_secrets(text: str, known: Iterable[str | None] = ()) -> str:
     """Mask known secret values, URL userinfo and password/token flags before text reaches a log."""
     # Known values first: an error can repeat one in a shape no pattern expects.
-    text = _mask_known(text, known, shortest=1)
+    text = _mask_known(text, known)
     text = _SECRET_HEADER.sub(r"\1 [REDACTED]", text)
     text = _URL_USERINFO.sub(r"\1[REDACTED]@", text)
     text = _SECRET_FLAG.sub(r"\1[REDACTED]", text)
     return _SECRET_ASSIGNMENT.sub(r"\1=[REDACTED]", text)
-
-
-def redact_tracker_fields(text: str) -> str:
-    """Redact sensitive values (quoted fields and assignments, URL query params and userinfo, form inputs, passkeys)."""
-    text = _INPUT_TAG.sub(_mask_secret_field, text)
-    text = _SENSITIVE_URL_PARAMS.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
-    text = _ANNOUNCE_PASSKEY.sub("/[REDACTED]", text)
-    text = _URL_USERINFO.sub(r"\1[REDACTED]@", text)
-    # Last: a value with no closing quote runs to the next quote, which can open another pattern's match.
-    return _SENSITIVE_KEYS.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]{m.group(3)}", text)
-
-
-# A response header naming a credential. A cookie keeps its name and attributes, only its value is masked.
-_SECRET_HEADER_NAME = re.compile(r"auth|token|key|session|pass", re.IGNORECASE)
-_COOKIE_VALUE = re.compile(r"^(\s*[^=;\s]+=)[^;]*")
-
-
-def redact_tracker_headers(
-    headers: Iterable[tuple[str, str]], scrub: Callable[[str], str] = redact_tracker_fields
-) -> dict[str, str]:
-    """A tracker's response headers for the log, with credentials and cookie values masked."""
-    shown: dict[str, str] = {}
-    for name, value in headers:
-        if "cookie" in name.lower():
-            value = _COOKIE_VALUE.sub(r"\1[REDACTED]", value)
-        elif _SECRET_HEADER_NAME.search(name):
-            value = "[REDACTED]"
-        value = scrub(value)
-        # A header sent more than once (Set-Cookie) is shown once, its values joined as HTTP folds them.
-        shown[name] = f"{shown[name]}, {value}" if name in shown else value
-    return shown
-
-
-def safe_response_excerpt(text: str, limit: int = 500) -> str:
-    """A redacted, length-capped excerpt of a tracker response for error messages."""
-    redacted = redact_tracker_fields(text)
-    return redacted if len(redacted) <= limit else redacted[:limit] + "… [truncated]"
-
-
-def scrub_secrets(text: str, secrets: Iterable[str | None], shortest: int = 8) -> str:
-    """redact_tracker_fields, plus every secret of at least `shortest` characters."""
-    return _mask_known(redact_tracker_fields(text), secrets, shortest)
 
 
 def _hidden_flag(arg: str) -> bool:
@@ -324,3 +259,66 @@ def redact_command(args: list[str], known: Iterable[str | None] = ()) -> str:
             shown.append(redact_secrets(arg, known))
         hide_next = _takes_hidden_value(arg)
     return shlex.join(shown)
+
+
+# What a Gazelle tracker sends back carries its own secrets: the authkey (auth, authkey), the passkey
+# (passkey, torrent_pass), the session cookie and an api key; and the keeplogged cookie and the image host's
+# cookies (imgauth_h, imgauth_u, imgauth_e).
+_TRACKER_KEYS = r"(?:auth|authkey|passkey|torrent_pass|session|api_?key|authorization|keeplogged|imgauth_[hue])"
+# "authkey": "..." in JSON (or a Python repr of it), authkey = "..." in a page's script. A value ends at its closing
+# quote, or at its line's end when an excerpt cut it off; a backslash escapes the next character.
+_TRACKER_ASSIGNMENT = re.compile(
+    rf"""(["']?\b{_TRACKER_KEYS}["']?\s*[:=]\s*)(["'])(?:(?!\2)[^\\\n]|\\.)*(\2?)""", re.IGNORECASE
+)
+# ?authkey=...&torrent_pass=... in a link or a redirect, &amp;-escaped in a page, or name=value anywhere in text.
+# A value ends at "; ", a cookie's attribute separator; a ";" with no space after stays in it, as in a URL query.
+_TRACKER_QUERY = re.compile(rf"""\b({_TRACKER_KEYS}=)(?:[^&;"'\s<>]|;(?!\s))+""", re.IGNORECASE)
+# The passkey in an announce URL, whatever its length: https://tracker/<passkey>/announce.
+_ANNOUNCE_PASSKEY = re.compile(r"/[A-Za-z0-9]+(?=/announce)")
+# A form field carrying one, <input name="auth" value="...">, its attributes in any order, quoted or not.
+# Quote-aware: a ">" inside a quoted attribute does not end the tag.
+_INPUT_TAG = re.compile(r"""<input\b(?:[^>"']|"[^"]*"|'[^']*')*>""", re.IGNORECASE)
+_SECRET_FIELD_NAME = re.compile(rf"""\bname\s*=\s*(["']?){_TRACKER_KEYS}\1(?=[\s/>])""", re.IGNORECASE)
+_FIELD_VALUE = re.compile(r"""(\bvalue\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s"'>]+)""", re.IGNORECASE)
+# A response header naming a credential. A cookie keeps its name and attributes, only its value is masked.
+_SECRET_HEADER_NAME = re.compile(r"auth|token|key|session|pass", re.IGNORECASE)
+_COOKIE_VALUE = re.compile(r"^(\s*[^=;\s]+=)[^;]*")
+
+
+def _mask_secret_field(match: re.Match[str]) -> str:
+    tag = match[0]
+    if not _SECRET_FIELD_NAME.search(tag):
+        return tag
+    return _FIELD_VALUE.sub(r'\1"[REDACTED]"', tag)
+
+
+def redact_tracker_text(text: str, known: Iterable[str | None] = ()) -> str:
+    """Mask a tracker's secrets in a page, an API answer or a URL before it reaches the terminal."""
+    text = _mask_known(text, known)
+    text = _INPUT_TAG.sub(_mask_secret_field, text)
+    text = _TRACKER_QUERY.sub(r"\1[REDACTED]", text)
+    text = _ANNOUNCE_PASSKEY.sub("/[REDACTED]", text)
+    text = _URL_USERINFO.sub(r"\1[REDACTED]@", text)
+    # Last: a value with no closing quote runs to its line's end, past text another pattern would have masked.
+    return _TRACKER_ASSIGNMENT.sub(lambda m: f"{m[1]}{m[2]}[REDACTED]{m[3]}", text)
+
+
+def redact_tracker_headers(headers: Iterable[tuple[str, str]], known: Iterable[str | None] = ()) -> dict[str, str]:
+    """A tracker's response headers for the log, with credentials and cookie values masked."""
+    known = list(known)
+    shown: dict[str, str] = {}
+    for name, value in headers:
+        if "cookie" in name.lower():
+            value = _COOKIE_VALUE.sub(r"\1[REDACTED]", value)
+        elif _SECRET_HEADER_NAME.search(name):
+            value = "[REDACTED]"
+        value = redact_tracker_text(value, known)
+        # A header sent more than once (Set-Cookie) is shown once, its values joined as HTTP folds them.
+        shown[name] = f"{shown[name]}, {value}" if name in shown else value
+    return shown
+
+
+def safe_response_excerpt(text: str, limit: int = 500) -> str:
+    """A redacted, length-capped excerpt of a tracker response for error messages."""
+    redacted = redact_tracker_text(text)
+    return redacted if len(redacted) <= limit else redacted[:limit] + "… [truncated]"

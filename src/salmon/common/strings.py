@@ -35,14 +35,16 @@ def comparable(text: object) -> str:
     return "".join(char for char in plain if char.isalnum())
 
 
-# Unicode spaces other than U+0020 and the line and paragraph separators become a space; format and control
-# characters (zero-width ones, the soft hyphen, byte order mark, direction marks, tab, newline) go.
 _REPLACED_CATEGORIES = frozenset({"Zs", "Zl", "Zp"})
 _REMOVED_CATEGORIES = frozenset({"Cf", "Cc"})
 
 
 def invisible_chars(name: str) -> list[str]:
-    """The characters of a name that clean_name changes, each once, as "U+00A0 NO-BREAK SPACE"."""
+    """The characters of a name that clean_name changes, each once, as "U+00A0 NO-BREAK SPACE".
+
+    These are the Unicode spaces other than U+0020, the line and paragraph separators, and the format and
+    control characters. A name holding none of them is left alone.
+    """
     found: dict[str, str] = {}
     for char in name:
         category = unicodedata.category(char)
@@ -65,7 +67,13 @@ def has_visible_chars(name: str) -> bool:
 
 
 def clean_name(name: str) -> str:
-    """A file or folder name without invisible or odd Unicode characters; as it was if nothing would be left."""
+    """A file or folder name (one path component) without invisible or odd Unicode characters.
+
+    Unicode spaces other than U+0020 and the line and paragraph separators become a plain space; format and
+    control characters (zero-width characters, the soft hyphen, byte order mark, direction marks, tab, newline)
+    are removed. Runs of spaces collapse to one and the ends are stripped. A name that would end up empty is
+    returned as it was.
+    """
     chars = []
     for char in name:
         category = unicodedata.category(char)
@@ -77,7 +85,11 @@ def clean_name(name: str) -> str:
 
 
 def artist_keys(artists) -> set[str]:
-    """comparable() forms a listing may name the artists by: each main one (all, if none is main), and all together."""
+    """comparable() forms a listing may name a release's artists by: each main artist, and all of them together.
+
+    Args:
+        artists: (name, importance) pairs. Without a main artist, every artist counts.
+    """
     pairs = list(artists or [])
     names = [name for name, importance in pairs if importance == "main"] or [name for name, _ in pairs]
     return ({comparable(name) for name in names} | {comparable("".join(names))}) - {""}
@@ -168,7 +180,8 @@ def fetch_genre(genre: str) -> set[str]:
         raise GenreNotInWhitelist from None
 
 
-# "\u2192" is Qobuz's hierarchy arrow. Never "&": the whitelist stores "Drum & Bass" whole.
+# "\u2192" is Qobuz's hierarchy arrow. "&" separates only after one of these, as in Discogs's
+# "Folk, World, & Country"; never alone, since the whitelist stores "Drum & Bass" whole.
 _GENRE_SEPARATORS = re.compile(r"\s*[/;,\u2192]\s*(?:&\s*)?|\s+\\\s+")
 
 

@@ -30,25 +30,36 @@ class AlbumPath(click.Path):
 
 
 def shares_files(path: str) -> bool:
-    """Whether path is a symlink, or holds a symlink or a file with another hardlink."""
+    """Whether path is a symlink, or holds a symlink or a file with another hardlink.
+
+    A tag write goes into the shared inode, or through the symlink, so rewriting such a folder in place changes the
+    files of another folder too (often a torrent client's, which then fails its recheck). An entry that cannot be read
+    counts as sharing: it could hide a link.
+    """
     if os.path.islink(path):
         return True
     if not os.path.isdir(path):
-        return os.path.isfile(path) and os.stat(path).st_nlink > 1
+        try:
+            return os.path.isfile(path) and os.stat(path).st_nlink > 1
+        except OSError:  # Gone between the two calls.
+            return True
     errors: list[OSError] = []
     for root, folders, files in os.walk(path, onerror=errors.append):
         for name in (*folders, *files):
             try:
                 entry = os.lstat(os.path.join(root, name))
-            except OSError:
-                return True  # Gone or unreadable mid-walk: as for an unreadable folder, assume a link.
+            except OSError:  # Gone or unreadable mid-walk.
+                return True
             if stat.S_ISLNK(entry.st_mode) or (stat.S_ISREG(entry.st_mode) and entry.st_nlink > 1):
                 return True
-    return bool(errors)  # An unreadable folder could hide a link.
+    return bool(errors)
 
 
 def rewrite_refusal(path: str) -> str | None:
-    """Why salmon must not rewrite the files of path in place, or None."""
+    """Why salmon must not rewrite or delete the files of path in place, or None if it may.
+
+    Commands that would (compress, sanitize) refuse with this reason; salmon up and salmon tag work on a copy.
+    """
     if cfg.directory.is_library_path(path):
         return "it is in library_dirs"
     if (library := cfg.directory.library_inside(path)) is not None:
@@ -108,7 +119,7 @@ def create_relative_path(root, path, filename):
 
 @dataclass
 class CompressResult:
-    """The outcome of re-compressing one FLAC file."""
+    """The outcome of re-compressing a single FLAC file."""
 
     filepath: str
     success: bool
@@ -116,8 +127,26 @@ class CompressResult:
 
 
 async def compress(filepath: str) -> CompressResult:
-    """Re-compress a .flac file at the configured level; flac replaces the original only once encode and -V pass."""
-    command = ["flac", f"-{cfg.upload.compression.flac_compression_level}", "-V", "-s", filepath, "--force"]
+    """Re-compress a .flac file with the configured compression level.
+
+    flac writes to a temp file and only replaces the original once the encode,
+    and the verify pass (-V), succeed, so a failure here leaves the original
+    file untouched.
+
+    Args:
+        filepath: Path to the FLAC file to re-compress.
+
+    Returns:
+        Whether the re-encode succeeded, with flac's error message on failure.
+    """
+    command = [
+        "flac",
+        f"-{cfg.upload.compression.flac_compression_level}",
+        "-V",
+        "-s",
+        filepath,
+        "--force",
+    ]
     try:
         result = await anyio.run_process(command, check=False)
     except OSError as e:
@@ -136,9 +165,8 @@ async def process_files(
     """Process files concurrently using anyio with a capacity limiter."""
     results: list[T | None] = [None] * len(files)
     limiter = anyio.CapacityLimiter(cfg.upload.simultaneous_threads)
-    workers = min(len(files), cfg.upload.simultaneous_threads)
 
-    with tqdm(total=len(files), desc=f"{desc} ({workers} workers)", colour="cyan") as pbar:
+    with tqdm(total=len(files), desc=desc, colour="cyan") as pbar:
 
         async def process_with_result(file: str, idx: int) -> None:
             async with limiter:

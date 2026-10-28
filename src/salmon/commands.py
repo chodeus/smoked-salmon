@@ -17,7 +17,7 @@ import salmon.trackers
 import salmon.uploader
 from salmon import cfg, interaction
 from salmon.checks.connection import check_tracker_connection
-from salmon.common import AlbumPath, commandgroup, copy_to_clipboard, get_flac_files
+from salmon.common import AlbumPath, clipboard_copy, commandgroup, get_flac_files
 from salmon.common.files import rewrite_refusal
 from salmon.common.redaction import redact_secrets
 from salmon.config import find_config_path, get_default_config_path, get_user_cfg_path
@@ -58,7 +58,7 @@ async def specs(path: str, no_delete_specs: bool, format_output: bool) -> None:
         output = "\n".join(output_lines)
         click.secho(output)
         if cfg.upload.description.copy_uploaded_url_to_clipboard:
-            copy_to_clipboard(output)
+            clipboard_copy(output)
 
     if no_delete_specs:
         click.secho(f"Spectrals saved to {spath}", fg="green")
@@ -105,7 +105,7 @@ async def descgen(urls: tuple[str, ...]) -> None:
     click.secho("\nDescription:\n", fg="yellow", bold=True)
     click.echo(description)
     if cfg.upload.description.copy_uploaded_url_to_clipboard:
-        copy_to_clipboard(description)
+        clipboard_copy(description)
 
 
 @commandgroup.command()

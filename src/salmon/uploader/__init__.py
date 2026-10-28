@@ -23,7 +23,7 @@ from salmon.checks.provenance import gather_provenance
 from salmon.checks.source import DetectedSource, detect_source
 from salmon.checks.tag_rules import path_limit_for, process_tag_issues, upload_warnings
 from salmon.checks.upconverts import upload_upconvert_test
-from salmon.common import AlbumPath, commandgroup, copy_to_clipboard, decade_tag, tagify
+from salmon.common import AlbumPath, clipboard_copy, commandgroup, decade_tag, tagify
 from salmon.config.image_hosts import cover_refusal
 from salmon.config.validations import CONVERSION_KINDS, canonical_conversions
 from salmon.constants import ENCODINGS, FORMATS, SOURCES, TAG_ENCODINGS
@@ -2102,7 +2102,7 @@ def finish_upload(
 
     # Copy URL to clipboard
     if cfg.upload.description.copy_uploaded_url_to_clipboard:
-        copy_to_clipboard(url)
+        clipboard_copy(url)
 
     # Add to seedbox upload queue
     if cfg.upload.upload_to_seedbox:

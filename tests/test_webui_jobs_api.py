@@ -80,6 +80,12 @@ def clean_manager():
     reset_manager()
 
 
+@pytest.fixture(autouse=True)
+def no_learned_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Forget the authkeys and passkeys other tests' fake trackers gave, short ones among them."""
+    monkeypatch.setattr(tracker_base, "_learned_secrets", set())
+
+
 @pytest.fixture
 def client():
     # localhost passes the Host check; the context manager keeps one portal loop alive for background jobs.

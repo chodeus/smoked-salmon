@@ -12,12 +12,19 @@ from webui_client import reset_manager, web_client  # pyright: ignore[reportMiss
 
 import salmon.trackers
 from salmon import cfg
+from salmon.trackers import base as tracker_base
 from salmon.webui.jobs import FINISHED
 
 
 @pytest.fixture(autouse=True)
 def _clean():
     reset_manager()
+
+
+@pytest.fixture(autouse=True)
+def no_learned_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Forget the authkeys and passkeys other tests' fake trackers gave, short ones among them."""
+    monkeypatch.setattr(tracker_base, "_learned_secrets", set())
 
 
 @pytest.fixture

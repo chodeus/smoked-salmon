@@ -30,7 +30,7 @@ from yarl import URL
 
 from salmon import cfg, dryrun
 from salmon.common import UploadFiles
-from salmon.common.redaction import redact_tracker_headers, safe_response_excerpt, scrub_secrets
+from salmon.common.redaction import redact_tracker_headers, redact_tracker_text, safe_response_excerpt
 from salmon.common.urls import parse_retry_after
 from salmon.constants import RELEASE_TYPES
 from salmon.errors import (
@@ -884,7 +884,7 @@ class BaseGazelleApi:
 
                         if _dumping():
                             _secho(f"[DEBUG] status: {resp.status}", fg="cyan")
-                            headers_shown = redact_tracker_headers(resp.headers.items(), self._redact)
+                            headers_shown = redact_tracker_headers(resp.headers.items(), self._secrets())
                             _secho(
                                 f"[DEBUG] response headers: {msgspec.json.encode(headers_shown).decode()}", fg="cyan"
                             )
@@ -1134,7 +1134,7 @@ class BaseGazelleApi:
 
     def _redact(self, text: str) -> str:
         """Mask this tracker's secrets in text about to be printed or raised."""
-        text = scrub_secrets(text, self._secrets())
+        text = redact_tracker_text(text, self._secrets())
         # Its answers carry image URLs signed for this account, not only the ones image_auth() gives.
         return _SIGNED_IMAGE_QUERY.sub(r"\1[REDACTED]", text) if self.SIGNED_IMAGES else text
 

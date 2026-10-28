@@ -4,7 +4,7 @@ import anyio
 import asyncclick as click
 
 from salmon import cfg, dryrun, interaction
-from salmon.common import AliasedCommands, commandgroup, copy_to_clipboard, is_http_url
+from salmon.common import AliasedCommands, clipboard_copy, commandgroup, is_http_url
 from salmon.config.image_hosts import cover_refusal, display_refusal, spectrals_refusal
 from salmon.errors import ImageUploadFailed
 from salmon.images import catbox, imgbb, imgbox, oeimg, ptscreens, ra, red
@@ -129,7 +129,7 @@ async def upload_images(filepaths: Sequence[str], image_host) -> list[str]:
                 raise ImageUploadFailed(f"{image_host.__name__} returned no usable URL: {str(url)[:200]!r}")
             click.secho(url)
         if cfg.upload.description.copy_uploaded_url_to_clipboard:
-            copy_to_clipboard("\n".join(urls))
+            clipboard_copy("\n".join(urls))
         return urls
     except (ImageUploadFailed, ValueError) as error:
         click.secho(f"Image Upload Failed. {error}", fg="red")
