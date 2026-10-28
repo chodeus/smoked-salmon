@@ -1,4 +1,7 @@
-"""`salmon up` warns about tag markers the audio contradicts and goes on; on test_uploader_dry_run's fakes."""
+"""`salmon up` warns about tag markers the audio contradicts, and goes on as before (#538).
+
+The runs go against the local fake tracker of test_uploader_dry_run and a fake image host, never a real one.
+"""
 
 from pathlib import Path
 
@@ -12,6 +15,7 @@ from test_uploader_dry_run import (  # pyright: ignore[reportMissingImports]
 
 import salmon.checks.provenance
 import salmon.trackers
+import salmon.uploader
 from salmon import cfg
 
 # Covers and spectrals go to the fake image host.
@@ -59,8 +63,29 @@ def test_up_prints_nothing_for_markers_the_audio_agrees_with(monkeypatch, tmp_pa
 
     assert run.result.exit_code == 0, run.result.output
     assert HEADING not in run.result.output
-    assert NOT_CHECKED not in run.result.output
     assert "Successfully uploaded" in run.result.output
+
+
+def test_up_reads_the_markers_before_any_tag_is_rewritten(monkeypatch, tmp_path, torrents) -> None:
+    order: list[str] = []
+    gather, standardize = salmon.uploader.gather_provenance, salmon.uploader.standardize_tags
+
+    def gathering(path: str):
+        order.append("read markers")
+        return gather(path)
+
+    def standardizing(path: str) -> None:
+        order.append("rewrite tags")
+        standardize(path)
+
+    monkeypatch.setattr(salmon.uploader, "gather_provenance", gathering)
+    monkeypatch.setattr(salmon.uploader, "standardize_tags", standardizing)
+
+    run = _run_up(monkeypatch, _album(tmp_path / "Album", comment="24bit"), torrents, input=ANSWERS, yes_all=False)
+
+    assert run.result.exit_code == 0, run.result.output
+    assert order[:2] == ["read markers", "rewrite tags"]
+    assert HEADING in run.result.output
 
 
 def test_up_says_when_the_markers_could_not_be_read_and_uploads(monkeypatch, tmp_path, torrents) -> None:
@@ -76,3 +101,15 @@ def test_up_says_when_the_markers_could_not_be_read_and_uploads(monkeypatch, tmp
     assert NOT_CHECKED in run.result.output
     assert HEADING not in run.result.output
     assert "Successfully uploaded" in run.result.output
+
+
+def test_up_weighs_no_markers_on_a_salmon_conversion(monkeypatch, tmp_path, torrents) -> None:
+    album = _album(tmp_path / "Album", comment="24bit")
+    monkeypatch.setattr(salmon.uploader, "conversion_of", lambda _path: {"source": "Album [24-96]"})
+    monkeypatch.setattr(salmon.uploader, "converted_from_note", lambda *_args: None)
+
+    run = _run_up(monkeypatch, album, torrents, input=ANSWERS, yes_all=False)
+
+    assert run.result.exit_code == 0, run.result.output
+    assert HEADING not in run.result.output
+    assert NOT_CHECKED not in run.result.output

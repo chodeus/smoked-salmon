@@ -82,14 +82,17 @@ from salmon.trackers.base import TagRules
 from salmon.trackers.red import RedApi
 from salmon.uploader import record
 from salmon.uploader.dupe_checker import (
+    can_check_site_log,
     check_existing_group,
     choose_source_flac,
     dupe_check_recent_torrents,
+    fetch_existing_group_candidates_in_background,
     generate_dupe_check_searchstrs,
     held_formats,
     print_recent_upload_results,
     print_torrents,
     recheck_edition,
+    resolve_existing_group,
 )
 from salmon.uploader.preassumptions import (
     confirm_group_upload,
@@ -793,9 +796,13 @@ def _sixteen_bit_refusal(tracker: str, audio_info: dict[str, Any]) -> bool:
     return False
 
 
-def _warn_about_provenance(path: str) -> None:
-    """Print each ripper or store marker in the tags that the audio contradicts; only warns."""
-    provenance = gather_provenance(path)
+def _warn_about_provenance(provenance: dict[str, Any]) -> None:
+    """Print each ripper or store marker in the tags that the audio contradicts.
+
+    `provenance` is `gather_provenance` of the files as they were given: read before they are retagged, which can
+    blank or replace their comments. Only warns: it never stops the upload or changes an answer, and prints
+    nothing when no marker contradicts the audio.
+    """
     if not provenance["files"]:
         click.secho("\nTag markers not checked: the tags could not be read.", fg="yellow")
         return
@@ -856,9 +863,9 @@ async def _upload_staged(
         source = await _prompt_source(detect_source(path))
     audio_info = gather_audio_info(path)
     hybrid = check_hybrid(audio_info)
-    if conversion is None:
-        # Before any tag is rewritten. A conversion carries its source's tags, which describe the source's audio.
-        _warn_about_provenance(path)
+    # Before any tag is rewritten: standardize_tags saves a file whose tags use an alias. Printed further down.
+    # A salmon conversion carries its source's tags, which describe the source's audio, not its own: no news.
+    provenance = gather_provenance(path) if conversion is None else None
     if not scene:
         standardize_tags(path)
     tags = gather_tags(path)
@@ -876,46 +883,66 @@ async def _upload_staged(
         return click.secho(f"\n{refusal}", fg="red", bold=True)
 
     source_flac = None
-    # The release the first tracker's group was picked for, and whether that tracker's search failed.
+    # The release the first tracker's group was picked for, as it was then: None for a group given with -g.
     weighed_against: dict[str, Any] | None = None
+    # Whether the first tracker's dupe search failed, or the release cannot go up there.
     skip_first = False
+
+    dupe_searchstrs: list[str] = []
+    # A release the first tracker's list forbids gets no group search there, so no prompt to pick a group. The
+    # review may change the names: the list is checked again after it.
+    tags_refusal = _do_not_upload_refusal(gazelle_site.site_code, rls_data)
+    # The files never change in the review. With --skip-flac-upload only transcodes go up: no FLAC to refuse.
+    rate_refused = flac_group is None and _sixteen_bit_refusal(gazelle_site.site_code, audio_info)
+    if group_id is None:
+        # Left empty for a listed release: if the review takes it off the list, recheck_dupe then searches.
+        searchstrs = dupe_searchstrs = (
+            []
+            if tags_refusal or rate_refused
+            else generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
+        )
+
     try:
-        if not skip_mqa:
-            all_files = cfg.upload.mqa_check_all_tracks
-            checked = "every FLAC file" if all_files else "first FLAC file only"
-            click.secho(f"Checking for MQA release ({checked})", fg="cyan", bold=True)
-            await mqa_test(path, all_files=all_files)
-            click.secho("No MQA release detected", fg="green")
-
-        if rls_data["encoding"] == "24bit Lossless" and not skip_up:
-            if not await interaction.assume_defaults():
-                if await interaction.confirm(
-                    click.style("\n24bit detected. Do you want to check whether might be upconverted?", fg="magenta"),
-                    default=True,
-                ):
-                    await upload_upconvert_test(path)
-            else:
-                await upload_upconvert_test(path)
-
-        if source == "CD" and not skip_log_check:
-            await _check_logs(path)
-
-        # A release the first tracker's list forbids gets no group search there; the review may change the names.
-        tags_refusal = _do_not_upload_refusal(gazelle_site.site_code, rls_data)
-        # The review keeps each file's depth and rate. With --skip-flac-upload only transcodes go up: no FLAC to refuse.
-        rate_refused = flac_group is None and _sixteen_bit_refusal(gazelle_site.site_code, audio_info)
         if rate_refused and not _another_can_follow(gazelle_site.site_code, flac_group, reachable):
-            # Nothing the review changes could let these files go up.
+            # Nothing the checks or the review change could let these files go up.
             raise click.Abort
-        if group_id is None and (tags_refusal or rate_refused):
-            # Left empty: if the review takes the release off the list, recheck_dupe then searches.
-            searchstrs = []
-        elif group_id is None:
-            searchstrs = generate_dupe_check_searchstrs(rls_data["artists"], rls_data["title"], rls_data["catno"])
-            if len(searchstrs) > 0:
+        # The search for an existing group only reads from the tracker, so it runs in the background during
+        # the MQA, upconvert and log checks below, and what it found is shown once they are done.
+        async with fetch_existing_group_candidates_in_background(
+            gazelle_site, dupe_searchstrs, rls_data["title"]
+        ) as group_fetch:
+            if not skip_mqa:
+                all_files = cfg.upload.mqa_check_all_tracks
+                checked = "every FLAC file" if all_files else "first FLAC file only"
+                click.secho(f"Checking for MQA release ({checked})", fg="cyan", bold=True)
+                await mqa_test(path, all_files=all_files)
+                click.secho("No MQA release detected", fg="green")
+
+            if rls_data["encoding"] == "24bit Lossless" and not skip_up:
+                if not await interaction.assume_defaults():
+                    if await interaction.confirm(
+                        click.style(
+                            "\n24bit detected. Do you want to check whether might be upconverted?", fg="magenta"
+                        ),
+                        default=True,
+                    ):
+                        await upload_upconvert_test(path)
+                else:
+                    await upload_upconvert_test(path)
+
+            if source == "CD" and not skip_log_check:
+                await _check_logs(path)
+
+            if provenance is not None:
+                _warn_about_provenance(provenance)
+
+            if group_fetch is not None:
                 try:
-                    group_id = await check_existing_group(gazelle_site, searchstrs, release=rls_data)
-                    # A copy: picking scraped metadata edits rls_data in place (combine_metadatas' base).
+                    results, recent_uploads = await group_fetch.result()
+                    group_id = await resolve_existing_group(
+                        gazelle_site, dupe_searchstrs, results, recent_uploads, release=rls_data
+                    )
+                    # A copy: picking scraped metadata edits rls_data in place (it is combine_metadatas' base).
                     weighed_against = dict(rls_data)
                 except RequestError as e:
                     # Skipped like a later tracker; a request is this tracker's, so with one the run ends.
@@ -931,85 +958,85 @@ async def _upload_staged(
                     )
                     skip_first = True
 
-        spectral_ids = None
-        lossy_master: bool = False
-        if spectrals_after:
-            # We tell the uploader not to worry about it being lossy until later.
-            pass
-        else:
-            lossy_result, spectral_ids = await check_spectrals(
-                path,
-                audio_info,
-                lossy,
-                spectrals,
-                format=rls_data["format"],
-                hosts=specs_hosts_text(_trackers_for_run(gazelle_site.site_code, flac_group, reachable)),
+            spectral_ids = None
+            lossy_master: bool = False
+            if spectrals_after:
+                # We tell the uploader not to worry about it being lossy until later.
+                pass
+            else:
+                lossy_result, spectral_ids = await check_spectrals(
+                    path,
+                    audio_info,
+                    lossy,
+                    spectrals,
+                    format=rls_data["format"],
+                    hosts=specs_hosts_text(_trackers_for_run(gazelle_site.site_code, flac_group, reachable)),
+                )
+                lossy_master = lossy_result if lossy_result is not None else False
+
+            metadata, new_source_url = await get_metadata(
+                path, tags, rls_data, skip_search=skip_search, skip_search_url=source_url
             )
-            lossy_master = lossy_result if lossy_result is not None else False
+            if new_source_url is not None:
+                source_url = new_source_url
+                click.secho(f"New Source URL: {source_url}", fg="yellow")
+            path, metadata, tags, audio_info = await edit_metadata(
+                path,
+                tags,
+                metadata,
+                source_url,
+                source,
+                rls_data,
+                recompress,
+                auto_rename,
+                spectral_ids,
+                skip_integrity_check,
+                essential_only,
+                skip_initial_review,
+                apply_ai_suggestions,
+                rls_type_hint=suggest_release_type(
+                    folder_type,
+                    metadata.get("title") or rls_data.get("title"),
+                    [info.get("duration") or 0 for info in audio_info.values()],
+                ),
+                rename_into=rename_into,
+                max_path_length=max_path_length,
+                original=kept_source,
+            )
 
-        metadata, new_source_url = await get_metadata(
-            path, tags, rls_data, skip_search=skip_search, skip_search_url=source_url
-        )
-        if new_source_url is not None:
-            source_url = new_source_url
-            click.secho(f"New Source URL: {source_url}", fg="yellow")
-        path, metadata, tags, audio_info = await edit_metadata(
-            path,
-            tags,
-            metadata,
-            source_url,
-            source,
-            rls_data,
-            recompress,
-            auto_rename,
-            spectral_ids,
-            skip_integrity_check,
-            essential_only,
-            skip_initial_review,
-            apply_ai_suggestions,
-            rls_type_hint=suggest_release_type(
-                folder_type,
-                metadata.get("title") or rls_data.get("title"),
-                [info.get("duration") or 0 for info in audio_info.values()],
-            ),
-            rename_into=rename_into,
-            max_path_length=max_path_length,
-            original=kept_source,
-        )
-
-        # Before the first tracker's group, cover and upload; spectrals go once for the run, so with a follower.
-        if rate_refused or _do_not_upload_refusal(gazelle_site.site_code, metadata, said=tags_refusal) is not None:
-            if not _another_can_follow(gazelle_site.site_code, flac_group, reachable):
-                raise click.Abort
-            skip_first = True
-        if not group_id and not skip_first:
-            group_id = await recheck_dupe(gazelle_site, searchstrs, metadata)
-            click.echo()
-        elif group_id and flac_group is None and not skip_first:
-            group_id = await recheck_edition(gazelle_site, group_id, metadata, weighed_against)
-        # From here on the review may have changed the artists, title or catno: search with the reviewed metadata.
-        searchstrs = generate_dupe_check_searchstrs(metadata["artists"], metadata["title"], metadata["catno"])
-        our_title = metadata["title"]
-        track_data = concat_track_data(tags, audio_info)
-        if flac_group is not None:
-            # Matched on the reviewed metadata, so an edited year or edition title moves the pick.
-            source_flac = await choose_source_flac(flac_group, metadata)
-            if source_flac is None:
-                raise click.Abort
-        if not scene:
-            # Before any torrent or transcode is made from the folder, so they all get the same files.
-            check_embedded_pictures(path)
-            if cfg.image.embed_missing_cover:
-                # A missing cover is downloaded from the metadata first, as the per-tracker step used to.
-                cover_path, downloaded = None, False
-                if has_flac_without_picture(path) and not get_cover_from_path(path):
-                    cover_path, downloaded = await download_cover_if_nonexistent(path, metadata["cover"])
-                embed_missing_cover(path, cover_path)
-                if downloaded and remove_downloaded_cover_image and cover_path:
-                    # Not in the torrents; the cover upload downloads it again.
-                    os.remove(cover_path)
-            # The upload rules read each file's tag size, which the steps above can change.
-            track_data = refresh_track_data(path, tags)
+            # Before the first tracker's group, cover and upload; spectrals go once for the run, so with a follower.
+            if rate_refused or _do_not_upload_refusal(gazelle_site.site_code, metadata, said=tags_refusal) is not None:
+                if not _another_can_follow(gazelle_site.site_code, flac_group, reachable):
+                    raise click.Abort
+                skip_first = True
+            if not group_id and not skip_first:
+                group_id = await recheck_dupe(gazelle_site, searchstrs, metadata)
+                click.echo()
+            elif group_id and flac_group is None and not skip_first:
+                group_id = await recheck_edition(gazelle_site, group_id, metadata, weighed_against)
+            # From here on the review may have changed the artists, title or catno: search with the reviewed metadata.
+            searchstrs = generate_dupe_check_searchstrs(metadata["artists"], metadata["title"], metadata["catno"])
+            our_title = metadata["title"]
+            track_data = concat_track_data(tags, audio_info)
+            if flac_group is not None:
+                # Matched on the reviewed metadata, so an edited year or edition title moves the pick.
+                source_flac = await choose_source_flac(flac_group, metadata)
+                if source_flac is None:
+                    raise click.Abort
+            if not scene:
+                # Before any torrent or transcode is made from the folder, so they all get the same files.
+                check_embedded_pictures(path)
+                if cfg.image.embed_missing_cover:
+                    # A missing cover is downloaded from the metadata first, as the per-tracker step used to.
+                    cover_path, downloaded = None, False
+                    if has_flac_without_picture(path) and not get_cover_from_path(path):
+                        cover_path, downloaded = await download_cover_if_nonexistent(path, metadata["cover"])
+                    embed_missing_cover(path, cover_path)
+                    if downloaded and remove_downloaded_cover_image and cover_path:
+                        # Not in the torrents; the cover upload downloads it again.
+                        os.remove(cover_path)
+                # The upload rules read each file's tag size, which the steps above can change.
+                track_data = refresh_track_data(path, tags)
     except NoAnswerError:
         # A web question left unanswered stops the job, which reports it as such.
         raise
@@ -1122,7 +1149,7 @@ async def _upload_staged(
                     # A torrent already seeds from the folder: never offer to delete it.
                     try:
                         group_id = await check_existing_group(
-                            gazelle_site, searchstrs, offer_deletion=False, release=metadata
+                            gazelle_site, searchstrs, offer_deletion=False, our_title=our_title, release=metadata
                         )
                     except RequestError as e:
                         # Like a failed upload: skip this tracker, and offer the next one.
@@ -1421,7 +1448,7 @@ async def recheck_dupe(gazelle_site, searchstrs, metadata):
             bold=True,
             nl=False,
         )
-        return await check_existing_group(gazelle_site, new_searchstrs, release=metadata)
+        return await check_existing_group(gazelle_site, new_searchstrs, our_title=metadata["title"], release=metadata)
     return None
 
 
@@ -1433,8 +1460,10 @@ async def last_min_dupe_check(gazelle_site, searchstrs, our_title=None):
     Args:
         gazelle_site: The tracker API instance.
         searchstrs: Search strings for dupe checking.
-        our_title: Our release's title, so an upload sharing only the artist is not flagged.
+        our_title: Our release's title, passed through to dupe_check_recent_torrents.
     """
+    if not can_check_site_log(gazelle_site):
+        return
     # Should really avoid asking if already shown the same releases from the log.
     click.secho(f"Last Minute Dupe Check on {gazelle_site.site_code}", fg="cyan")
     try:

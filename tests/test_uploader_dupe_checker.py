@@ -71,6 +71,7 @@ def install_log(fake_tracker, uploads):
         return uploads
 
     fake_tracker.get_uploads_from_log = get_uploads_from_log
+    fake_tracker.has_session_cookie = True  # The site log is read only with one.
 
 
 def install_redirect(fake_tracker, mapping):
@@ -383,6 +384,21 @@ async def test_prompt_group_id_number_beyond_results_is_direct_group_id(fake_tra
     install_prompt("7777")
     actual = await _prompt_for_group_id(fake_tracker, [make_result(100)], True)
     assert actual == 7777
+
+
+async def test_the_group_prompt_offers_a_pick_only_when_groups_were_found(fake_tracker, monkeypatch):
+    texts: list[str] = []
+
+    async def prompt(text, *_args, **_kwargs):
+        texts.append(click.unstyle(text))
+        return "n"
+
+    monkeypatch.setattr("salmon.uploader.dupe_checker.click.prompt", prompt)
+    await _prompt_for_group_id(fake_tracker, [], True)
+    await _prompt_for_group_id(fake_tracker, [make_result(100)], True)
+
+    assert "Paste a URL or [N]ew group" in texts[0]
+    assert "Paste a URL, pick from groups found or [N]ew group" in texts[1]
 
 
 async def test_prompt_group_id_zero_with_no_results_reprompts(fake_tracker, install_prompt):
@@ -754,7 +770,7 @@ async def test_a_dupe_of_another_catalogue_number_is_flagged_and_abort_pre_typed
     ]
 
     with pytest.raises(click.Abort):
-        await _confirm_group_id(fake_tracker, 100, [result], {**WEB_FLAC, "catno": "CAT-100"})
+        await _confirm_group_id(fake_tracker, 100, [result], release={**WEB_FLAC, "catno": "CAT-100"})
     out = capsys.readouterr().out
 
     assert (
@@ -770,7 +786,7 @@ async def test_every_held_torrent_of_the_edition_is_named(fake_tracker, install_
     result["torrents"] = [{**torrent, "remasterTitle": "A"}, {**torrent, "remasterTitle": "B"}]
 
     with pytest.raises(click.Abort):
-        await _confirm_group_id(fake_tracker, 100, [result], WEB_FLAC)
+        await _confirm_group_id(fake_tracker, 100, [result], release=WEB_FLAC)
 
     out = capsys.readouterr().out
     risks = [line for line in out.splitlines() if line.startswith("DUPE RISK")]
@@ -793,7 +809,7 @@ async def test_another_year_with_another_catalogue_number_is_no_dupe_risk(fake_t
         }
     ]
 
-    confirmed = await _confirm_group_id(fake_tracker, 100, [result], {**WEB_FLAC, "catno": "CAT-100"})
+    confirmed = await _confirm_group_id(fake_tracker, 100, [result], release={**WEB_FLAC, "catno": "CAT-100"})
     out = capsys.readouterr().out
 
     assert confirmed is True
@@ -890,14 +906,14 @@ async def test_confirm_group_id_pretypes_abort_when_the_edition_already_has_the_
     install_prompt(USE_DEFAULT)
 
     with pytest.raises(click.Abort):
-        await _confirm_group_id(fake_tracker, 100, [make_result(100)], WEB_FLAC)
+        await _confirm_group_id(fake_tracker, 100, [make_result(100)], release=WEB_FLAC)
 
 
 async def test_confirm_group_id_keeps_yes_when_the_format_is_new_to_the_group(fake_tracker, install_prompt):
     install_prompt(USE_DEFAULT)
 
     hi_res = {**WEB_FLAC, "encoding": "24bit Lossless"}
-    confirmed = await _confirm_group_id(fake_tracker, 100, [make_result(100)], hi_res)
+    confirmed = await _confirm_group_id(fake_tracker, 100, [make_result(100)], release=hi_res)
 
     assert confirmed
 
@@ -1074,6 +1090,7 @@ async def test_an_unreadable_site_log_stops_the_dupe_check(fake_tracker, install
         raise RequestFailedError("Server error 503")
 
     fake_tracker.get_uploads_from_log = unreadable
+    fake_tracker.has_session_cookie = True
 
     with pytest.raises(RequestFailedError):
         await check_existing_group(fake_tracker, ["artist album"])
@@ -1087,6 +1104,7 @@ async def test_an_unreadable_site_log_aborts_the_last_minute_check(fake_tracker,
         raise RequestFailedError("Server error 503")
 
     fake_tracker.get_uploads_from_log = unreadable
+    fake_tracker.has_session_cookie = True
 
     with pytest.raises(click.Abort):
         await last_min_dupe_check(fake_tracker, ["artist album"], "Album")

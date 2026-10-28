@@ -1,15 +1,20 @@
 import asyncio
+import html
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any
 from urllib import parse
 
+import anyio
 import asyncclick as click
 
 from salmon import cfg, interaction
 from salmon.common import RE_FEAT, make_searchstrs, normalize_accents, re_strip
 from salmon.common.strings import artist_keys, comparable
 from salmon.errors import AbortAndDeleteFolder, RequestError
+from salmon.trackers.base import hold_request_messages
 from salmon.uploader.upload import generate_catno
 
 if TYPE_CHECKING:
@@ -17,6 +22,28 @@ if TYPE_CHECKING:
 
 
 LOG_DUPE_WORD_OVERLAP_THRESHOLD = 0.5
+
+
+def can_check_site_log(gazelle_site: "BaseGazelleApi") -> bool:
+    """Whether the site log can be read for recent uploads, saying why not when it cannot.
+
+    log.php is a site page, not an API endpoint, so an API key does not open it. Without a
+    session cookie every request to it is bounced to login.php (#432).
+
+    Args:
+        gazelle_site: The tracker API instance.
+
+    Returns:
+        True if a session cookie is configured.
+    """
+    if gazelle_site.has_session_cookie:
+        return True
+    click.secho(
+        f"Skipping the {gazelle_site.site_string} log check for recent uploads: it needs a session cookie "
+        f"(tracker.{gazelle_site.site_code.lower()}.session), and none is set.",
+        fg="yellow",
+    )
+    return False
 
 
 async def dupe_check_recent_torrents(
@@ -27,7 +54,9 @@ async def dupe_check_recent_torrents(
     Args:
         gazelle_site: The tracker API instance.
         searchstrs: Search strings to match against.
-        our_title: Our title, which a logged upload's title must share a word with; None skips that check.
+        our_title: Our release's title, used to require actual title overlap on top of the
+            search string comparison (see _recent_upload_matches). None skips that extra check,
+            for callers that cannot supply a title.
 
     Returns:
         List of matching upload tuples (id, artist, title).
@@ -55,7 +84,19 @@ async def dupe_check_recent_torrents(
 
 
 def _title_words(title: str | None) -> set[str]:
-    """Normalized title words, cleaned as make_searchstrs cleans the album; empty for no title."""
+    """Normalized words of a title, cleaned up the same way make_searchstrs cleans the album.
+
+    Two releases can share every artist word and still be unrelated if their titles have nothing
+    in common: comparing the full search strings alone lets a shared multi-word artist outweigh a
+    completely different one-word title, since SequenceMatcher and the word-overlap ratio both
+    look at artist and title text together. Comparing title words on their own closes that gap.
+
+    Args:
+        title: A release title, our own or a logged upload's.
+
+    Returns:
+        The set of normalized words in the title, empty if there is no title.
+    """
     album = _sanitize_album_for_dupe_check(title)
     album = re.sub(r" ?(- )? (EP|Single)", "", album)
     album = re.sub(r"\(?[Ff]eat(\.|uring)? [^\)]+\)?", "", album)
@@ -72,7 +113,29 @@ def _recent_upload_matches(
     our_title_words: set[str] | None = None,
     candidate_title_words: set[str] | None = None,
 ) -> bool:
-    """True if any search-string pair passes ratio and word overlap, and given titles share a word."""
+    """Return True when a logged upload is genuinely similar enough to be a likely dupe.
+
+    Comparing against only the first search string, and on SequenceMatcher's ratio alone,
+    overweights a shared artist prefix between two otherwise unrelated releases (#509). Every
+    generated search string is checked, and a high ratio is also required to share enough words
+    with the candidate to suggest actual title overlap, not just a shared artist.
+
+    A shared artist can still carry a high ratio and word-overlap fraction on its own when the
+    artist has more words than the title (#518): "A B C song" vs "A B C other" shares 3 of 4
+    words. Requiring the titles themselves to share at least one word, checked separately from the
+    artist, closes that gap while still matching same-title collab releases.
+
+    Args:
+        searchstrs: Search strings generated for our release.
+        possible_comparisons: Search strings generated for the logged upload.
+        tolerance: The configured similarity tolerance (cfg.upload.log_dupe_tolerance).
+        our_title_words: Normalized words of our release's title, or None to skip the title check.
+        candidate_title_words: Normalized words of the logged upload's title.
+
+    Returns:
+        True if any pair of strings is similar enough, shares enough words, and (when title words
+        are given) shares at least one title word.
+    """
     if our_title_words and candidate_title_words and not (our_title_words & candidate_title_words):
         return False
     for searchstr in searchstrs:
@@ -87,7 +150,15 @@ def _recent_upload_matches(
 
 
 def _word_overlap_ratio(left: str, right: str) -> float:
-    """Words shared by two normalized search strings over the larger side's count; 0.0 if either is empty."""
+    """Fraction of words shared between two normalized search strings, relative to the larger side.
+
+    Args:
+        left: A normalized search string.
+        right: Another normalized search string.
+
+    Returns:
+        The overlap ratio, 0.0 if either side has no words.
+    """
     left_words = set(left.split())
     right_words = set(right.split())
     if not left_words or not right_words:
@@ -147,7 +218,6 @@ async def _prompt_for_recent_upload_results(
 
     # Now prompt for user action
     while True:
-        pick = "Type an upload's number from the list above (1 is the first), or p" if recent_uploads else "P"
         prompt_header = (
             "\nThese are similar recent uploads from the site log, not exact group matches.\n"
             "Pick one only if it is actually the same group.\n"
@@ -155,8 +225,8 @@ async def _prompt_for_recent_upload_results(
             else "\nWould you like to upload to an existing group?\n"
         )
         prompt_text = (
-            prompt_header
-            + f"{pick}aste a group URL, or [N]ew group / [a]bort {'/ [d]elete music folder ' if offer_deletion else ''}"
+            prompt_header + f"{'Pick from recent uploads found, p' if recent_uploads else 'P'}aste a URL"
+            f" or [N]ew group / [a]bort {'/ [d]elete music folder ' if offer_deletion else ''}"
         )
 
         group_id = await interaction.prompt(
@@ -169,7 +239,7 @@ async def _prompt_for_recent_upload_results(
             group_id_num = int(group_id)
 
             if group_id_num == 0:
-                if not recent_uploads:
+                if not shown:
                     continue
                 group_id_num = 1  # If the user types 0 give them the first choice.
 
@@ -218,61 +288,180 @@ async def _prompt_for_recent_upload_results(
             return None
 
 
-def suggest_group(results: list[dict] | None, release: dict[str, Any] | None) -> str:
-    """Pre-typed group answer: the one listed result with our artist, title and year, else "N" for a new group."""
-    if not results or not release:
-        return "N"
-    title = comparable(release.get("title"))
-    artists = artist_keys(release.get("artists"))
-    # A group is keyed on the original year: our group year when we have one, our (edition) year otherwise.
-    year = str(release.get("group_year") or release.get("year") or "").strip()
-    if not title or not artists or not year:
-        return "N"
-    matches = [
-        str(number)
-        for number, result in enumerate(results, 1)
-        if result.get("groupId") is not None
-        and comparable(result.get("groupName")) == title
-        and comparable(result.get("artist")) in artists
-        and str(result.get("groupYear") or "").strip() == year
-    ]
-    return matches[0] if len(matches) == 1 else "N"
-
-
-async def check_existing_group(
+async def fetch_existing_group_candidates(
     gazelle_site: "BaseGazelleApi",
     searchstrs: list[str],
-    offer_deletion: bool = True,
-    release: dict | None = None,
-) -> int | None:
-    """Check for existing group and prompt user for selection.
+    our_title: str | None = None,
+) -> tuple[list[dict], list[tuple] | None]:
+    """Search the tracker for an existing group, without printing or prompting anything.
+
+    This is the part of check_existing_group that talks to the tracker, so it can run in the
+    background: see fetch_existing_group_candidates_in_background.
 
     Args:
         gazelle_site: The tracker API instance.
         searchstrs: Search strings for dupe checking.
+        our_title: Our release's title, passed through to dupe_check_recent_torrents.
+
+    Returns:
+        Tuple of (search results, recent uploads from the site log, or None if it was not read).
+    """
+    results = await get_search_results(gazelle_site, searchstrs)
+    recent_uploads = None
+    # The test resolve_existing_group makes, with has_session_cookie for can_check_site_log: the notice
+    # that one prints when the log cannot be read is for resolve_existing_group to show.
+    if not results and cfg.upload.requests.check_recent_uploads and gazelle_site.has_session_cookie:
+        recent_uploads = await dupe_check_recent_torrents(gazelle_site, searchstrs, our_title)
+    return results, recent_uploads
+
+
+async def resolve_existing_group(
+    gazelle_site: "BaseGazelleApi",
+    searchstrs: list[str],
+    results: list[dict],
+    recent_uploads: list[tuple] | None,
+    offer_deletion: bool = True,
+    release: dict[str, Any] | None = None,
+) -> int | None:
+    """Show the candidates fetch_existing_group_candidates found, and prompt the user for a group.
+
+    Args:
+        gazelle_site: The tracker API instance.
+        searchstrs: Search strings for dupe checking.
+        results: Search results from fetch_existing_group_candidates.
+        recent_uploads: Recent uploads from fetch_existing_group_candidates, or None.
         offer_deletion: Whether to offer folder deletion option.
-        release: Release data (artists, title, year) used to pre-type a matching result.
+        release: Our release (artists, title, year, source, format, encoding, edition), for the answers
+            the prompts offer: the one result it matches, and abort when the group already holds it.
 
     Returns:
         Group ID or None for new group.
     """
-    results = await get_search_results(gazelle_site, searchstrs)
-    if not results and cfg.upload.requests.check_recent_uploads:
-        recent_uploads = await dupe_check_recent_torrents(gazelle_site, searchstrs, (release or {}).get("title"))
+    if not results and cfg.upload.requests.check_recent_uploads and can_check_site_log(gazelle_site):
         group_id = await _prompt_for_recent_upload_results(
-            gazelle_site, recent_uploads, " / ".join(searchstrs), offer_deletion
+            gazelle_site, recent_uploads or [], " / ".join(searchstrs), offer_deletion
         )
     else:
         print_search_results(gazelle_site, results, " / ".join(searchstrs))
         group_id = await _prompt_for_group_id(
             gazelle_site, results, offer_deletion, default=suggest_group(results, release)
         )
-    if group_id is not None:
-        confirmation = await _confirm_group_id(gazelle_site, group_id, results, release, offer_deletion)
+    if group_id:
+        confirmation = await _confirm_group_id(gazelle_site, group_id, results, offer_deletion, release)
         if confirmation is True:
             return group_id
         return None
     return group_id
+
+
+async def check_existing_group(
+    gazelle_site: "BaseGazelleApi",
+    searchstrs: list[str],
+    offer_deletion: bool = True,
+    our_title: str | None = None,
+    release: dict[str, Any] | None = None,
+) -> int | None:
+    """Check for existing group and prompt user for selection.
+
+    fetch_existing_group_candidates, then resolve_existing_group.
+
+    Args:
+        gazelle_site: The tracker API instance.
+        searchstrs: Search strings for dupe checking.
+        offer_deletion: Whether to offer folder deletion option.
+        our_title: Our release's title, passed through to fetch_existing_group_candidates.
+        release: Our release, passed through to resolve_existing_group.
+
+    Returns:
+        Group ID or None for new group.
+    """
+    results, recent_uploads = await fetch_existing_group_candidates(gazelle_site, searchstrs, our_title)
+    return await resolve_existing_group(gazelle_site, searchstrs, results, recent_uploads, offer_deletion, release)
+
+
+class GroupCandidatesFetch:
+    """fetch_existing_group_candidates, running in the background: see fetch_existing_group_candidates_in_background."""
+
+    def __init__(self, gazelle_site: "BaseGazelleApi", searchstrs: list[str], our_title: str | None = None) -> None:
+        self._gazelle_site = gazelle_site
+        self._searchstrs = searchstrs
+        self._our_title = our_title
+        self._done = anyio.Event()
+        self._candidates: tuple[list[dict], list[tuple] | None] | None = None
+        self._error: Exception | None = None
+        self._messages: list[tuple[str, dict[str, Any]]] = []
+
+    async def _run(self) -> None:
+        with hold_request_messages() as messages:
+            self._messages = messages
+            try:
+                self._candidates = await fetch_existing_group_candidates(
+                    self._gazelle_site, self._searchstrs, self._our_title
+                )
+            except Exception as e:
+                # Kept for result() to raise: raised here, it would cancel whatever the user is doing.
+                self._error = e
+        self._done.set()
+
+    async def result(self) -> tuple[list[dict], list[tuple] | None]:
+        """Wait for the fetch, print what it held back, then return what it found or raise its error.
+
+        Returns:
+            As fetch_existing_group_candidates.
+        """
+        await self._done.wait()
+        for message, styles in self._messages:
+            click.secho(message, **styles)
+        self._messages = []
+        if self._error is not None:
+            raise self._error
+        assert self._candidates is not None
+        return self._candidates
+
+
+@asynccontextmanager
+async def fetch_existing_group_candidates_in_background(
+    gazelle_site: "BaseGazelleApi",
+    searchstrs: list[str],
+    our_title: str | None = None,
+) -> AsyncIterator[GroupCandidatesFetch | None]:
+    """Run fetch_existing_group_candidates in the background while the block runs.
+
+    The fetch only reads from the tracker, through the site's own client, so it shares the rate
+    limiter and connections of every other request. What its requests print is held back until the
+    block calls result(), so none of it lands in the middle of a prompt the block is showing.
+
+    Leaving the block, whichever way, cancels the fetch if it is still running: it never outlives
+    the block, and an error it had is dropped with it if result() was never called.
+
+    Args:
+        gazelle_site: The tracker API instance.
+        searchstrs: Search strings for dupe checking. If empty, nothing is fetched.
+        our_title: Our release's title, passed through to fetch_existing_group_candidates.
+
+    Yields:
+        The running fetch, or None if there are no search strings.
+    """
+    if not searchstrs:
+        yield None
+        return
+    fetch = GroupCandidatesFetch(gazelle_site, searchstrs, our_title)
+    raised: BaseException | None = None
+    try:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(fetch._run)
+            try:
+                yield fetch
+            finally:
+                tg.cancel_scope.cancel()
+    except BaseExceptionGroup as group:
+        # The fetch keeps its own error for result(), so the group only holds what the block raised.
+        # Raise that as it is, as the block would have without a task group around it.
+        if len(group.exceptions) != 1:
+            raise
+        raised = group.exceptions[0]
+    if raised is not None:
+        raise raised
 
 
 async def get_search_results(gazelle_site: "BaseGazelleApi", searchstrs: list[str]) -> list[dict]:
@@ -365,17 +554,50 @@ def print_search_results(gazelle_site: "BaseGazelleApi", results: list[dict], se
             except (KeyError, TypeError):
                 continue
             url = f"{gazelle_site.base_url}/torrents.php?id={group_id}"
-            click.echo(f" {r_index + 1:02d} >> {group_id} | ", nl=False)  # 1-based; user can't pick 0
+            # User doesn't get to pick a zero index
+            click.echo(f" {r_index + 1:02d} >> {group_id} | ", nl=False)
             click.secho(f"{artist} - {name} ", fg="cyan", nl=False)
             click.secho(f"({year}) [{release_type}] ", fg="yellow", nl=False)
             click.echo(f"[Tags: {tags_text}] | {url}")
+
+
+def suggest_group(results: list[dict], release: dict[str, Any] | None) -> str:
+    """The group prompt's default: the number of the one search result with our artist, title and year.
+
+    No result, or several, leaves the default empty (a new group). Names are compared loosely (case,
+    accents and punctuation aside); the year must be the same on both sides, and present. A group is keyed on the
+    original year, so our group year is compared when we have one, and our (edition) year otherwise.
+
+    Args:
+        results: The tracker's search results, in the order printed.
+        release: Our release, with its artists, title, and group year or year.
+
+    Returns:
+        The result's number as printed (1-based), or "" for none.
+    """
+    if not results or not release:
+        return ""
+    title = comparable(release.get("title"))
+    artists = artist_keys(release.get("artists"))
+    year = str(release.get("group_year") or release.get("year") or "").strip()
+    if not title or not artists or not year:
+        return ""
+    matches = [
+        str(number)
+        for number, result in enumerate(results, 1)
+        if result.get("groupId") is not None
+        and comparable(html.unescape(str(result.get("groupName") or ""))) == title
+        and comparable(html.unescape(str(result.get("artist") or ""))) in artists
+        and str(result.get("groupYear") or "").strip() == year
+    ]
+    return matches[0] if len(matches) == 1 else ""
 
 
 async def _prompt_for_group_id(
     gazelle_site: "BaseGazelleApi",
     results: list[dict],
     offer_deletion: bool,
-    default: str = "N",
+    default: str = "",
 ) -> int | None:
     """Prompt user to choose a group ID.
 
@@ -383,18 +605,17 @@ async def _prompt_for_group_id(
         gazelle_site: The tracker API instance.
         results: Search results to choose from.
         offer_deletion: Whether to offer folder deletion option.
-        default: Pre-typed answer, a result number or "N".
+        default: The answer an empty reply gives: a result's number, or "" for a new group.
 
     Returns:
         Group ID or None for new group.
     """
-    pick = "Type a group's number from the list above (1 is the first), or p" if results else "P"
-    delete = "/ [d]elete music folder " if offer_deletion else ""
     while True:
         group_id = await interaction.prompt(
             click.style(
                 "\nWould you like to upload to an existing group?\n"
-                f"{pick}aste a group URL, or [N]ew group / [a]bort {delete}",
+                f"Paste a URL{', pick from groups found ' if results else ' '}"
+                f"or [N]ew group / [a]bort {'/ [d]elete music folder ' if offer_deletion else ''}",
                 fg="magenta",
             ),
             default=default,
@@ -440,11 +661,26 @@ def _group_as_result(group: dict) -> dict:
 
 
 async def recheck_edition(
-    gazelle_site: "BaseGazelleApi", group_id: int, release: dict, weighed_against: dict | None
+    gazelle_site: "BaseGazelleApi", group_id: int, release: dict[str, Any], weighed_against: dict[str, Any] | None
 ) -> int | None:
-    """Weigh a group picked before the review against the reviewed edition: the group to upload to, None for a new one.
+    """Weigh a group picked or given before the review against the reviewed edition.
 
-    Only a torrent the pick did not already name for weighed_against (the tags' release; None for -g) asks again.
+    The group is fetched once. Only a torrent of the reviewed edition that the pick did not already name for
+    weighed_against asks again, with abort as the default, as the first check does.
+
+    Args:
+        gazelle_site: The tracker API instance.
+        group_id: The group picked before the review, or given with --group-id.
+        release: The reviewed release.
+        weighed_against: The release the group was picked for, as it was then; None for a group given with
+            --group-id, which nothing weighed.
+
+    Returns:
+        The group to upload to, or None for a new group.
+
+    Raises:
+        click.Abort: If the user aborts.
+        AbortAndDeleteFolder: If the user chooses to delete the music folder.
     """
     try:
         group = _group_as_result(await gazelle_site.torrentgroup(group_id))
@@ -460,8 +696,9 @@ async def recheck_edition(
     if all(torrent.get("id") in named for torrent in held_in_group(group, release)):
         return group_id
     click.secho(f"\nThe reviewed edition is already in group {group_id}:", fg="red", bold=True)
-    # The fetched id, an int: -g gives a string, which would not find the group just fetched.
-    return group_id if await _confirm_group_id(gazelle_site, group["groupId"], [group], release) else None
+    # The fetched group's own id: one given with --group-id is text, which would not find it and fetch it again.
+    confirmed = await _confirm_group_id(gazelle_site, group["groupId"], [group], release=release)
+    return group_id if confirmed else None
 
 
 async def print_torrents(
@@ -470,7 +707,17 @@ async def print_torrents(
     rset: dict | None = None,
     highlight_torrent_id: int | None = None,
 ) -> dict:
-    """Print the torrents in a group, highlighting one, and return the group data that was printed."""
+    """Print torrents in a torrent group.
+
+    Args:
+        gazelle_site: The tracker API instance.
+        group_id: The group ID.
+        rset: Optional pre-fetched group data.
+        highlight_torrent_id: Torrent ID to highlight.
+
+    Returns:
+        The group data printed: rset, or what was fetched.
+    """
     # If rset is not provided, fetch it from the API
     if rset is None:
         try:
@@ -487,24 +734,37 @@ async def print_torrents(
     click.secho(f"| {rset['artist']} - {rset['groupName']} ", fg="cyan", nl=False)
     click.secho(f"({rset['groupYear']})", fg="yellow")
     click.secho("Torrents in this group:", fg="yellow", bold=True)
+    # Pull group-level info once (optional fallback only)
+    group_info = rset.get("group", {}) or {}
+
     for t in rset["torrents"]:
         color = "yellow" if highlight_torrent_id and t.get("id") == highlight_torrent_id else None
-        click.secho(f"> {describe_torrent(t, rset)}", fg=color)
+        click.secho(f"> {describe_torrent(t, group_info)}", fg=color)
     return rset
 
 
-def describe_torrent(torrent: dict, rset: dict) -> str:
-    """One line for a group's torrent: edition, label, catalogue number, media, format and encoding."""
-    is_remaster = _is_remaster(torrent)
-    group_label = ((rset.get("group") or {}).get("recordLabel") or "").strip()
-    label = ((torrent.get("remasterRecordLabel") or "").strip() if is_remaster else "") or group_label
-    catno = _edition_catno(torrent, rset)
+def describe_torrent(t: dict, group_info: dict) -> str:
+    """Describe a torrent of a group in one line: edition, media, format and encoding.
+
+    Args:
+        t: The torrent, from a search result or a torrentgroup response.
+        group_info: The group's own info, used for an original release's label and catalogue number.
+
+    Returns:
+        The description, e.g. "2020 / Label / CAT1 / WEB / FLAC / Lossless".
+    """
+    is_remaster = _is_remaster(t)
+
+    group_label = (group_info.get("recordLabel") or "").strip()
+    group_catno = (group_info.get("catalogueNumber") or "").strip()
+    label = ((t.get("remasterRecordLabel") or "").strip() if is_remaster else "") or group_label
+    catno = (t.get("remasterCatalogueNumber") or "").strip() if is_remaster else group_catno
 
     prefix_parts = []
     if is_remaster:
-        if torrent.get("remasterYear"):
-            prefix_parts.append(str(torrent["remasterYear"]))
-        title = (torrent.get("remasterTitle") or "").strip()
+        if t.get("remasterYear"):
+            prefix_parts.append(str(t["remasterYear"]))
+        title = (t.get("remasterTitle") or "").strip()
         if title:
             prefix_parts.append(title)
     else:
@@ -518,7 +778,8 @@ def describe_torrent(torrent: dict, rset: dict) -> str:
     prefix = " / ".join(prefix_parts)
     if prefix:
         prefix += " / "
-    return f"{prefix}{torrent['media']} / {torrent['format']} / {torrent['encoding']}"
+
+    return f"{prefix}{t['media']} / {t['format']} / {t['encoding']}"
 
 
 def _is_remaster(torrent: dict) -> bool:
@@ -533,25 +794,47 @@ def _is_remaster(torrent: dict) -> bool:
     )
 
 
-def _site_edition(torrent: dict, group: dict) -> tuple[str, ...]:
-    """A torrent's edition as year, title, label and catalogue number; an original release has the group's."""
-    if not _is_remaster(torrent):
-        info = group.get("group") or {}
-        return tuple(comparable(info.get(field) or "") for field in ("year", "", "recordLabel", "catalogueNumber"))
-    # comparable(): "CAT-2" and "CAT2" name one release, however each was typed.
-    fields = ("remasterYear", "remasterTitle", "remasterRecordLabel", "remasterCatalogueNumber")
-    return tuple(comparable(torrent.get(field) or "") for field in fields)
-
-
-def _edition_catno(torrent: dict, rset: dict) -> str:
+def _edition_catno(torrent: dict, group: dict) -> str:
     """Catalogue number of the torrent's edition; only an original release falls back to the group's."""
     if _is_remaster(torrent):
         return (torrent.get("remasterCatalogueNumber") or "").strip()
-    return ((rset.get("group") or {}).get("catalogueNumber") or "").strip()
+    return ((group.get("group") or {}).get("catalogueNumber") or "").strip()
+
+
+def _site_edition(torrent: dict, group: dict) -> tuple[str, str, str, str]:
+    """A torrent's edition as the site files it: year, title, label and catalogue number, each comparable().
+
+    An original release has no edition fields of its own and takes the group's year, label and catalogue number.
+    """
+    if _is_remaster(torrent):
+        fields = (
+            torrent.get("remasterYear"),
+            torrent.get("remasterTitle"),
+            torrent.get("remasterRecordLabel"),
+            torrent.get("remasterCatalogueNumber"),
+        )
+    else:
+        info = group.get("group") or {}
+        fields = (info.get("year"), "", info.get("recordLabel"), info.get("catalogueNumber"))
+    # comparable(): "CAT-2" and "CAT2" name one release, however each was typed.
+    year, title, label, catno = (comparable(str(field or "")) for field in fields)
+    return year, title, label, catno
 
 
 def matching_torrents(group: dict, release: dict) -> list[dict]:
-    """The group's torrents with the release's media, format and encoding, and its year and edition title if known."""
+    """Find the group's torrents in the release's edition with its media, format and encoding.
+
+    The edition is the year and edition title. Either missing on either side still matches. The catalogue
+    number is not compared: trackers and uploaders write it in different conventions (the label's number,
+    a UPC, a store id), so the same release often carries a different one on each side.
+
+    Args:
+        group: The group, as the tracker's torrentgroup API returns it.
+        release: The release metadata, with its source, format and encoding.
+
+    Returns:
+        The matching torrents, in the group's order.
+    """
     wanted = (release.get("source"), release.get("format"), release.get("encoding"))
     if not all(wanted):
         return []
@@ -573,14 +856,6 @@ def matching_torrents(group: dict, release: dict) -> list[dict]:
     return matches
 
 
-def held_in_group(rset: dict, release: dict[str, Any] | None) -> list[dict]:
-    """The torrents of a search result or fetched group that already hold our edition, media, format and encoding."""
-    if not release:
-        return []
-    group = rset if "group" in rset else {**rset, "group": {"year": rset.get("groupYear")}}
-    return matching_torrents(group, release)
-
-
 def _catno_note(torrent: dict, group: dict, release: dict) -> str:
     """Say when a matching torrent's catalogue number differs from ours, naming ours, or give ""."""
     ours = generate_catno(release)
@@ -590,14 +865,128 @@ def _catno_note(torrent: dict, group: dict, release: dict) -> str:
     return ""
 
 
+async def choose_source_flac(group: dict, release: dict) -> dict | None:
+    """Choose the FLAC in the release's edition of an existing group that the transcodes are made from.
+
+    With several matching FLACs the user picks one; -yyy stops instead of guessing.
+
+    Args:
+        group: The group, as the tracker's torrentgroup API returns it.
+        release: The reviewed release metadata.
+
+    Returns:
+        The chosen torrent, or None to stop.
+    """
+    group_id = (group.get("group") or {}).get("id")
+    flacs = matching_torrents(group, release)
+    wanted = f"{release.get('source')} FLAC {release.get('encoding')}"
+    if not flacs:
+        click.secho(
+            f"\nGroup {group_id} has no {wanted} in this release's edition (year, edition title) to transcode from.",
+            fg="red",
+            bold=True,
+        )
+        return None
+    if len(flacs) == 1:
+        return flacs[0]
+
+    click.secho(f"\nGroup {group_id} has several {wanted} torrents in this edition:", fg="yellow", bold=True)
+    group_info = group.get("group") or {}
+    for i, t in enumerate(flacs, 1):
+        click.echo(f"{i:02d} >> {describe_torrent(t, group_info)}")
+    if await interaction.assume_defaults():
+        click.secho(
+            "Not picking the FLAC the transcodes are made from with -yyy (upload.yes_all). Run without it to choose.",
+            fg="red",
+            bold=True,
+        )
+        return None
+    while True:
+        choice = await interaction.prompt(
+            click.style(f"\nWhich one are these transcodes made from? [1-{len(flacs)}] or [a]bort", fg="magenta"),
+            default="",
+        )
+        choice = choice.strip().lower()
+        if choice.startswith("a"):
+            return None
+        if choice.isdigit() and 1 <= int(choice) <= len(flacs):
+            return flacs[int(choice) - 1]
+        click.secho(f"Enter a number from 1 to {len(flacs)}, or a to abort.", fg="red")
+
+
+def held_formats(
+    group: dict,
+    release: dict,
+    source_flac: dict,
+    formats: dict[str, tuple[str, str]],
+    *,
+    uploaded: bool = False,
+) -> set[str]:
+    """Find the formats that the release's edition in the group already holds, the source FLAC aside.
+
+    Args:
+        group: The group, as the tracker's torrentgroup API returns it.
+        release: The reviewed release metadata.
+        source_flac: The FLAC the transcodes are made from, which never counts as held.
+        formats: The format and encoding of each candidate, by name.
+        uploaded: Whether this run sent the source FLAC, with the form the transcodes use. The site has then
+            filed it under their edition, catalogue number included, so a format is held only by a torrent in
+            that edition. The group must be fetched after the upload. False (a FLAC already on the site, which
+            may be filed under another edition), or a source FLAC missing from the group, keeps to the year
+            and edition title.
+
+    Returns:
+        The names of the candidates the edition already has.
+    """
+    source_id = str(source_flac.get("id"))
+    placed = None
+    if uploaded:
+        placed = next((t for t in group.get("torrents") or [] if str(t.get("id")) == source_id), None)
+    filed_under = _site_edition(placed, group) if placed is not None else None
+    held = set()
+    for name, (fmt, encoding) in formats.items():
+        in_edition = matching_torrents(group, {**release, "format": fmt, "encoding": encoding})
+        if any(
+            str(t.get("id")) != source_id and (filed_under is None or _site_edition(t, group) == filed_under)
+            for t in in_edition
+        ):
+            held.add(name)
+    return held
+
+
+def held_in_group(rset: dict, release: dict[str, Any] | None) -> list[dict]:
+    """The torrents of a printed group that already hold our release's edition, media, format and encoding.
+
+    rset is a search result or a fetched group: a search result has the group's year as groupYear.
+    """
+    if not release:
+        return []
+    group = rset if "group" in rset else {**rset, "group": {"year": rset.get("groupYear")}}
+    return matching_torrents(group, release)
+
+
 async def _confirm_group_id(
     gazelle_site: "BaseGazelleApi",
     group_id: int,
     results: list[dict],
-    release: dict | None = None,
     offer_deletion: bool = True,
+    release: dict[str, Any] | None = None,
 ) -> bool:
-    """Confirm the upload; abort is pre-typed when this edition already holds the same media, format and encoding."""
+    """Confirm upload to a torrent group.
+
+    When the group's edition already holds our media, format and encoding, that torrent is named and
+    the default answer is abort. It is not refused: a trump is a legitimate upload.
+
+    Args:
+        gazelle_site: The tracker API instance.
+        group_id: The group ID.
+        results: Search results.
+        offer_deletion: Whether to offer folder deletion option.
+        release: Our release, with its source, format, encoding and edition.
+
+    Returns:
+        True if confirmed, False otherwise.
+    """
     rset = None
     for r in results:
         if group_id == r["groupId"]:
@@ -610,7 +999,7 @@ async def _confirm_group_id(
     for torrent in held:
         note = _catno_note(torrent, rset, release or {})
         click.secho(
-            f"\nDUPE RISK: this edition already has {describe_torrent(torrent, rset)}{note}; "
+            f"\nDUPE RISK: this edition already has {describe_torrent(torrent, rset.get('group') or {})}{note}; "
             "the site removes exact duplicates unless this upload trumps it.",
             fg="red",
             bold=True,
@@ -634,67 +1023,3 @@ async def _confirm_group_id(
             return True
         elif resp == "n":
             return False
-
-
-async def choose_source_flac(group: dict, release: dict) -> dict | None:
-    """The FLAC in this release's edition that transcodes of it are made from; None to stop."""
-    group_id = (group.get("group") or {}).get("id")
-    flacs = matching_torrents(group, release)
-    wanted = f"{release.get('source')} / FLAC / {release.get('encoding')}"
-    if not flacs:
-        click.secho(
-            f"\nGroup {group_id} has no {wanted} in this release's edition (year, edition title) to transcode from.",
-            fg="red",
-            bold=True,
-        )
-        return None
-    if len(flacs) == 1:
-        return flacs[0]
-
-    click.secho(f"\nGroup {group_id} has several {wanted} torrents in this edition:", fg="yellow", bold=True)
-    for index, torrent in enumerate(flacs, 1):
-        click.echo(f" {index:02d} >> {describe_torrent(torrent, group)}")
-    if await interaction.assume_defaults():
-        click.secho(
-            "Not picking the FLAC to transcode from with -yyy (upload.yes_all). Run without it to choose.", fg="red"
-        )
-        return None
-    while True:
-        choice = (
-            (
-                await interaction.prompt(
-                    click.style(
-                        f"\nWhich one are these transcodes made from? [1-{len(flacs)}] or [a]bort", fg="magenta"
-                    ),
-                    default="",
-                )
-            )
-            .strip()
-            .lower()
-        )
-        if choice.startswith("a"):
-            return None
-        if choice.isdigit() and 1 <= int(choice) <= len(flacs):
-            return flacs[int(choice) - 1]
-        click.secho(f"Enter a number from 1 to {len(flacs)}, or a to abort.", fg="red")
-
-
-def held_formats(
-    group: dict, release: dict, source_flac: dict, formats: dict[str, tuple[str, str]], *, uploaded: bool = False
-) -> set[str]:
-    """Names in `formats` (name: format, encoding) this release's edition already holds, the source FLAC aside."""
-    # `uploaded`: this run sent the FLAC with the transcodes' own form, so the edition the site filed it under is
-    # theirs, catalogue number included, and only torrents filed with it are held.
-    source_id = str(source_flac.get("id"))
-    torrents = group.get("torrents") or []
-    placed = next((t for t in torrents if str(t.get("id")) == source_id), None) if uploaded else None
-    held = set()
-    for name, (fmt, encoding) in formats.items():
-        in_edition = matching_torrents(group, {**release, "format": fmt, "encoding": encoding})
-        if any(
-            str(t.get("id")) != source_id
-            and (placed is None or _site_edition(t, group) == _site_edition(placed, group))
-            for t in in_edition
-        ):
-            held.add(name)
-    return held

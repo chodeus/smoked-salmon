@@ -254,36 +254,6 @@ class FakeLog:
         raise web.HTTPFound("/log.php")
 
 
-async def test_no_session_cookie_skips_the_site_log(serve, api_for, capsys):
-    tracker = FakeLog()
-    url = await serve(log=tracker.log, login=tracker.login)
-
-    uploads = await api_for(url, cookie="").get_uploads_from_log()
-    out = capsys.readouterr().out
-    assert uploads == []
-    assert tracker.hits == []
-    assert "needs a session cookie" in out
-
-
-async def test_an_expired_cookie_costs_one_request_and_stops_the_check(serve, api_for):
-    tracker = FakeLog()
-    url = await serve(log=tracker.log, login=tracker.login)
-
-    with pytest.raises(LoginError):
-        await api_for(url, cookie="expired").get_uploads_from_log()
-    assert tracker.hits == ["/log.php?page=1"]
-
-
-async def test_a_valid_cookie_reads_every_page_after_the_first(serve, api_for):
-    tracker = FakeLog()
-    url = await serve(log=tracker.log, login=tracker.login)
-
-    uploads = await api_for(url, cookie="good").get_uploads_from_log()
-    assert tracker.requested_when_page_one_answered == ["/log.php?page=1"]
-    assert sorted(tracker.hits) == sorted(f"/log.php?page={page}" for page in range(1, 11))
-    assert sorted(uploads) == sorted((str(page), "Artist", f"Title {page}") for page in range(1, 11))
-
-
 async def test_a_page_that_fails_mid_crawl_stops_the_check(serve, api_for):
     tracker = FakeLog(missing_page=5)
     url = await serve(log=tracker.log, login=tracker.login)

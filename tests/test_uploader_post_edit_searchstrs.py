@@ -1,5 +1,18 @@
-"""Dupe checks after the metadata review search on the reviewed metadata, not the pre-review rls_data."""
+"""After the metadata review, dupe checks must use the reviewed metadata, not the pre-review rls_data.
 
+_upload_staged() builds rls_data from the file tags before the user reviews and edits metadata
+(edit_metadata). If the review changes the artists, title or catno, the dupe checks that run after
+it, the last-minute dupe check, the request search and a second tracker's group search, must use
+search strings and a title built from the edited metadata. On master they keep using the pre-edit
+rls_data (#521), so a renamed release is checked against its old name.
+
+Every step that does not touch this is stubbed out, including the two dupe-check functions whose
+own query is already correct (fetch_existing_group_candidates_in_background, recheck_dupe): what is
+under test is only what _upload_staged hands to last_min_dupe_check, check_requests and
+check_existing_group (for a second tracker), so those three are stubbed to record their arguments.
+"""
+
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
@@ -72,10 +85,13 @@ def _install(monkeypatch: pytest.MonkeyPatch, rls_data: dict, metadata: dict, re
         recorder.check_requests_calls.append((gazelle_site, list(searchstrs)))
         return None
 
-    async def fake_check_existing_group(gazelle_site, searchstrs, offer_deletion=True, release=None):
-        # The fork names our title through the release it pre-types the group answer from.
-        recorder.check_existing_group_calls.append((gazelle_site, list(searchstrs), (release or {}).get("title")))
+    async def fake_check_existing_group(gazelle_site, searchstrs, offer_deletion=True, our_title=None, release=None):
+        recorder.check_existing_group_calls.append((gazelle_site, list(searchstrs), our_title))
         return None
+
+    @asynccontextmanager
+    async def fake_group_candidates_in_background(*_args, **_kwargs):
+        yield None
 
     async def fake_upload_and_report(*_args, **_kwargs):
         return 1, 5, None, None, "url"
@@ -101,15 +117,16 @@ def _install(monkeypatch: pytest.MonkeyPatch, rls_data: dict, metadata: dict, re
         "concat_track_data": _returning({}),
         "resolve_cover_url": _returning_async((True, None)),
         "print_torrents": _returning_async({}),
+        "recheck_edition": _same_group,
         "UploadManager": FakeUploadManager,
         "upload_and_report": fake_upload_and_report,
         "mqa_test": _returning_async(),
         "check_folder_structure": _returning_async(),
+        "fetch_existing_group_candidates_in_background": fake_group_candidates_in_background,
         "recheck_dupe": fake_recheck_dupe,
         "last_min_dupe_check": fake_last_min_dupe_check,
         "check_requests": fake_check_requests,
         "check_existing_group": fake_check_existing_group,
-        "recheck_edition": _same_group,
     }.items():
         monkeypatch.setattr(salmon.uploader, name, fake)
 
@@ -156,7 +173,8 @@ def test_post_review_dupe_checks_use_the_edited_metadata_not_the_pre_review_rls_
     site = FakeSite("FAKE1")
     anyio.run(salmon.uploader.upload, _as_gazelle_api(site), str(album), None, "WEB", None, (), None)
 
-    # recheck_dupe gets the pre-review search strings, to compare with what the edited metadata gives.
+    # recheck_dupe is handed the pre-review search strings, to compare against what the edited
+    # metadata gives: that part is already correct on master and is untouched here.
     assert len(recorder.recheck_dupe_calls) == 1
     _, searchstrs, md = recorder.recheck_dupe_calls[0]
     assert searchstrs == old_searchstrs
@@ -173,11 +191,8 @@ def test_post_review_dupe_checks_use_the_edited_metadata_not_the_pre_review_rls_
     for _, searchstrs in recorder.check_requests_calls:
         assert searchstrs == new_searchstrs
 
-    # The first search, before the review, is on the files' tags; the second tracker's is on the review's.
-    assert len(recorder.check_existing_group_calls) == 2
-    first_site, searchstrs, _title = recorder.check_existing_group_calls[0]
-    assert (first_site.site_code, searchstrs) == ("FAKE1", old_searchstrs)
-    second_site, searchstrs, our_title = recorder.check_existing_group_calls[1]
+    assert len(recorder.check_existing_group_calls) == 1
+    second_site, searchstrs, our_title = recorder.check_existing_group_calls[0]
     assert second_site.site_code == "FAKE2"
     assert searchstrs == new_searchstrs
     assert our_title == "New Title"
@@ -186,7 +201,9 @@ def test_post_review_dupe_checks_use_the_edited_metadata_not_the_pre_review_rls_
 def test_a_caller_supplied_group_id_still_reaches_the_post_review_checks(
     monkeypatch: pytest.MonkeyPatch, album
 ) -> None:
-    """With group_id set, searchstrs stays the caller's None; the post-review checks still build their own."""
+    """When the caller already knows the group (group_id set), the pre-review dupe search never runs
+    (searchstrs stays whatever the caller passed, here None) but the post-review checks must still
+    use search strings built from the edited metadata, not crash on the caller's None."""
     rls_data = {
         "format": "FLAC",
         "encoding": "Lossless",
@@ -211,4 +228,19 @@ def test_a_caller_supplied_group_id_still_reaches_the_post_review_checks(
 
 
 async def _same_group(_site, group_id, *_args):
+    """Stands in for recheck_edition: the group picked or given is kept."""
     return group_id
+
+
+def test_the_recheck_after_the_review_names_the_reviewed_title(monkeypatch: pytest.MonkeyPatch) -> None:
+    titles: list[str | None] = []
+
+    async def fake_check_existing_group(_site, _searchstrs, offer_deletion=True, our_title=None, release=None):
+        titles.append(our_title)
+
+    monkeypatch.setattr(salmon.uploader, "check_existing_group", fake_check_existing_group)
+    metadata = {"artists": [("Artist", "main")], "title": "New Title", "catno": None}
+
+    anyio.run(salmon.uploader.recheck_dupe, _as_gazelle_api(FakeSite("FAKE1")), ["artist old title"], metadata)
+
+    assert titles == ["New Title"]

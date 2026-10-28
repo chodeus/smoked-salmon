@@ -1334,14 +1334,6 @@ class BaseGazelleApi:
         Returns:
             List of (torrent_id, artist, title) tuples.
         """
-        # log.php is a site page: an API key doesn't open it, and without a cookie it bounces to login.
-        if not self.has_session_cookie:
-            click.secho(
-                f"Skipping the recent-uploads check: the {self.site_string} site log needs a session cookie "
-                f"(tracker.{self.site_code.lower()}.session), and none is set.",
-                fg="yellow",
-            )
-            return []
         # Page 1 goes alone first: if the log cannot be read, that costs one request,
         # not one per page (#432).
         pages = [await self.fetch_log(1)]

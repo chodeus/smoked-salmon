@@ -1226,7 +1226,9 @@ async def _upload(
             group_id if await _confirm_group_id(target, group_id, [], offer_deletion=False, release=edition) else None
         )
     else:
-        group_id = await check_existing_group(target, _searchstrs(data), offer_deletion=False, release=edition)
+        group_id = await check_existing_group(
+            target, _searchstrs(data), offer_deletion=False, our_title=data["title"], release=edition
+        )
     existing_group = group_id is not None
 
     await _rehost_images(data, release.rehost, source, target)
