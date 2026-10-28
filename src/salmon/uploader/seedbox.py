@@ -1,7 +1,7 @@
 import collections
 import os
 import posixpath
-import subprocess
+import subprocess  # nosec B404  # only subprocess.PIPE: anyio runs rclone from an argument list
 import sys
 import unicodedata
 
