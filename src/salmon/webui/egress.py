@@ -9,15 +9,13 @@ from urllib.parse import unquote, urlparse
 import msgspec
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from salmon.common.redaction import scrub_secrets
+from salmon.common.redaction import redact_tracker_text
 from salmon.config.compat import placeholder
 from salmon.trackers.base import learned_secrets, session_cookie_forms
 from salmon.uploader.seedbox import seedbox_secrets
 
 # A setting whose name ends so holds a credential, wherever it sits in the config.
 _SECRET_SETTING = re.compile(r"(?:^|_)(?:key|token|secret|password|session|keeplogged|userhash)$")
-# Shorter values are not masked: a three-letter secret would cut every word holding it.
-_SHORTEST = 4
 
 
 def _url_password(value: str) -> list[str]:
@@ -69,13 +67,13 @@ def known_secrets() -> list[str]:
 
 def masked_text(text: str) -> str:
     """`text` with every known_secrets() value masked, for what the server writes outside /api."""
-    return scrub_secrets(text, known_secrets(), _SHORTEST)
+    return redact_tracker_text(text, known_secrets())
 
 
 def mask(value: Any, secrets: list[str]) -> Any:
     """`value` with every string in it masked: a string, or the dicts and lists a JSON body or an event holds."""
     if isinstance(value, str):
-        return scrub_secrets(value, secrets, _SHORTEST)
+        return redact_tracker_text(value, secrets)
     if isinstance(value, dict):
         return {mask(key, secrets): mask(item, secrets) for key, item in value.items()}
     if isinstance(value, list):
@@ -88,7 +86,7 @@ def _mask_json(text: str, secrets: list[str]) -> str:
     try:
         value = json.loads(text)
     except ValueError:
-        return scrub_secrets(text, secrets, _SHORTEST)
+        return redact_tracker_text(text, secrets)
     return json.dumps(mask(value, secrets), ensure_ascii=False, separators=(",", ":"))
 
 

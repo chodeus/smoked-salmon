@@ -59,12 +59,12 @@ __all__ = [
     "clean_name",
     "decade_tag",
     "has_visible_chars",
-    "invisible_chars",
-    "show_invisible",
     "fetch_genre",
+    "invisible_chars",
     "less_uppers",
     "make_searchstrs",
     "normalize_accents",
+    "show_invisible",
     "split_genre",
     "strip_template_keys",
     "tagify",
@@ -75,7 +75,7 @@ __all__ = [
     "ScrapeError",
     "commandgroup",
     "prompt_async",
-    "copy_to_clipboard",
+    "clipboard_copy",
     "flush_stdin",
     "str_to_int_if_int",
     "handle_scrape_errors",
@@ -156,8 +156,12 @@ class Prompt:
 prompt_async = Prompt()
 
 
-def copy_to_clipboard(text: str) -> None:
-    """Copy text to the clipboard, or say why not: a headless server has none, and nothing may fail over it."""
+def clipboard_copy(text: str) -> None:
+    """Copy text to the clipboard, or say why it could not.
+
+    A machine with no clipboard (a server, the Docker image) makes pyperclip raise: nothing may fail over that,
+    least of all after an upload.
+    """
     try:
         pyperclip.copy(text)
     except Exception as err:
@@ -225,7 +229,19 @@ async def handle_scrape_errors(task: Awaitable[ReturnType], mute: bool = False) 
     except Exception as e:
         # Catch any unexpected errors too
         if not mute:
-            click.secho(f"Unexpected scrape error: {e}\n{''.join(traceback.format_exception(e))}", fg="red", bold=True)
+            # Imported here: salmon.webui imports this module.
+            from salmon.webui import egress, output
+
+            if output.in_job():
+                # A salmon web job's log takes the message only: a chained error may repeat a request's URL.
+                click.secho(f"Unexpected scrape error: {e}", fg="red", bold=True)
+                print("salmon web: unexpected scrape error in a job:", file=output.real_stderr())
+                # Masked, as jobs._write_traceback masks a job's own traceback.
+                output.real_stderr().write(egress.masked_text("".join(traceback.format_exception(e))))
+            else:
+                click.secho(
+                    f"Unexpected scrape error: {e}\n{''.join(traceback.format_exception(e))}", fg="red", bold=True
+                )
     return None
 
 

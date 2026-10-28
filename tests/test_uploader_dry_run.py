@@ -27,7 +27,7 @@ import salmon.trackers
 import salmon.uploader
 import salmon.uploader.spectrals
 from salmon import cfg, dryrun
-from salmon.common.redaction import redact_tracker_fields
+from salmon.common.redaction import redact_tracker_text
 from salmon.config.validations import Seedbox
 from salmon.errors import DryRunRefused
 from salmon.images.base import BaseImageUploader
@@ -144,14 +144,6 @@ class FakeTracker:
 
     def not_gets(self) -> list[Sent]:
         return [sent for sent in self.sent if sent.method != "GET"]
-
-
-def _scrubbed(text: str, secrets: list[str]) -> str:
-    """What BaseGazelleApi._redact shows: tracker fields masked, then each known secret of 8+ chars, longest first."""
-    text = redact_tracker_fields(text)
-    for secret in sorted((s for s in secrets if s and len(s) >= 8), key=len, reverse=True):
-        text = text.replace(secret, "[REDACTED]")
-    return text
 
 
 def _client(cls: type[BaseGazelleApi], tracker: FakeTracker, torrents: Path) -> Any:
@@ -534,7 +526,7 @@ def test_a_dry_run_prints_the_forms_the_real_run_sends(monkeypatch, tmp_path, di
         for torrent_id in range(FIRST_TORRENT_ID, FIRST_TORRENT_ID + 6):
             value = value.replace(f"torrentid={torrent_id}", f"torrentid={NEW_TORRENT}")
         value = value.replace(real.tracker.url, dry.tracker.url)
-        return _scrubbed(value, [AUTHKEY, PASSKEY, *API_KEYS.values()])
+        return redact_tracker_text(value, [AUTHKEY, PASSKEY, *API_KEYS.values()])
 
     real_uploads = [sent for sent in real.tracker.sent if sent.query.get("action") == "upload"]
     printed = _printed_uploads(dry.result.output)

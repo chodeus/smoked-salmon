@@ -144,6 +144,28 @@ def test_the_web_token_is_masked_with_the_other_secrets(monkeypatch):
     assert shown == "[REDACTED] [REDACTED]"
 
 
+def test_a_short_secret_is_masked_in_json_text_and_tracebacks(monkeypatch):
+    short = "q7z"
+    monkeypatch.setattr(egress, "_configured_secrets", lambda: (short,))
+    monkeypatch.setattr(tracker_base, "_learned_secrets", set())
+
+    async def body(_request) -> JSONResponse:
+        return JSONResponse({"note": f"login {short} refused"})
+
+    async def text(_request) -> PlainTextResponse:
+        return PlainTextResponse(f"login {short} refused")
+
+    routes = [Route("/api/body", body), Route("/api/text", text)]
+    app = Starlette(routes=routes, middleware=[Middleware(EgressMiddleware)])
+    with TestClient(app) as client:
+        shown_body = client.get("/api/body").json()
+        shown_text = client.get("/api/text").text
+
+    assert shown_body == {"note": "login [REDACTED] refused"}
+    assert shown_text == "login [REDACTED] refused"
+    assert egress.masked_text(f"login {short} refused") == "login [REDACTED] refused"
+
+
 def _png() -> bytes:
     buffer = io.BytesIO()
     Image.new("L", (2, 2), 7).save(buffer, "PNG")
