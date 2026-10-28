@@ -295,7 +295,8 @@ def test_the_metadata_prompt_says_how_several_answers_combine(monkeypatch) -> No
 def test_an_unstarred_store_url_says_why_it_is_not_the_source(capsys) -> None:
     metadata_mod._explain_default("https://www.qobuz.com/album/x/0887396827479", {})
 
-    assert "(not starred: not a WEB release)" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "(not starred: not a WEB release)" in out
 
 
 def test_a_store_url_that_fails_to_scrape_is_reported_and_left_out(monkeypatch, capsys) -> None:
@@ -313,8 +314,9 @@ def test_a_store_url_that_fails_to_scrape_is_reported_and_left_out(monkeypatch, 
 
     metadata, _source_url = anyio.run(metadata_mod._select_choice, {}, make_release_data())
 
+    out = capsys.readouterr().out
     assert metadata["title"] == "Example Release"
-    assert "Scrape error: no such album" in capsys.readouterr().out
+    assert "Scrape error: no such album" in out
 
 
 def test_salmon_tag_pretypes_the_release_type_its_library_folder_names(monkeypatch, tmp_path) -> None:
@@ -348,3 +350,11 @@ def test_salmon_tag_pretypes_the_release_type_its_library_folder_names(monkeypat
         anyio.run(tagger.run_tag, tagger.TagOptions(path=str(album), source="WEB"))
 
     assert hints == ["EP"]
+
+
+def test_a_tracked_bandcamp_link_is_the_same_album_as_its_plain_one() -> None:
+    plain = metadata_mod._album_identity("https://artist.bandcamp.com/album/some-album")
+
+    assert plain is not None
+    assert metadata_mod._album_identity("https://artist.bandcamp.com/album/some-album?from=fanpub_fnb") == plain
+    assert metadata_mod._album_identity("https://artist.bandcamp.com/album/some-album#buyFullDiscography") == plain

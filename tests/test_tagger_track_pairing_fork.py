@@ -4,10 +4,12 @@ import asyncio
 from copy import deepcopy
 
 import anyio
+import pytest
 from test_tagger_discogs import make_soup
 from test_tagger_track_pairing import _numbered_for_another_edition, _track
 
 from salmon import interaction
+from salmon.errors import TrackCombineError
 from salmon.tagger import retagger
 from salmon.tagger.combine import combine_tracks
 from salmon.tagger.retagger import tag_files
@@ -54,3 +56,15 @@ def test_discogs_tracks_carry_their_duration_in_seconds():
     tracks = asyncio.run(DiscogsScraper().parse_tracks(soup))
 
     assert tracks["1"]["1"]["duration"] == 245
+
+
+def test_a_scraped_track_without_a_local_one_merges_nothing():
+    # combine_metadatas goes on past the error: what was merged before it would stay.
+    base = {"1": {"1": _track("Work", "1")}}
+    meta = {"1": {"1": _track("Work (Original Mix)", "1"), "2": _track("Django (Original Mix)", "2")}}
+    untouched = deepcopy(base)
+
+    with pytest.raises(TrackCombineError, match="Disc 1 track 2 does not exist"):
+        combine_tracks(base, deepcopy(meta), True)
+
+    assert base == untouched

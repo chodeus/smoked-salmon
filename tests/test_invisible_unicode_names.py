@@ -489,4 +489,5 @@ def test_check_of_clean_names_says_so(tmp_path, capsys) -> None:
 
     anyio.run(lambda: _check_invisible_characters(str(root), False))
 
-    assert "No names hold invisible Unicode characters." in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "No names hold invisible Unicode characters." in out

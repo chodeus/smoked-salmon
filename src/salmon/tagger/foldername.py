@@ -160,10 +160,11 @@ def _ignoring_top_level(top: str, name: str):
 
 
 def _move_specs_folder(src: str, dst: str) -> None:
-    """Move salmon's spectrals folder to `dst`, replacing salmon's own stale one there. Works across volumes.
+    """Move salmon's spectrals folder to `dst`, replacing salmon's own stale one or an empty folder there. Works across
+    volumes.
 
     Raises:
-        UploadError: Something salmon did not make is at `dst`.
+        UploadError: Anything else is at `dst`.
     """
     # Imported here: the uploader package imports this module.
     from salmon.uploader.spectrals import carry_specs_claim, make_way_for_spectrals

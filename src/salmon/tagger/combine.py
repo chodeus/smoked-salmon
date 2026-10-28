@@ -223,7 +223,7 @@ def _refuse_renumbering_that_loses_a_track(btracks, mtracks, ordered, update_tra
     taken = {(btrack["disc#"], btrack["track#"]) for btrack in btracks if id(btrack) not in paired}
     for mtrack, btrack in zip(mtracks, ordered, strict=True):
         if btrack is None:
-            continue  # The merge raises for a scraped track without a local one.
+            continue  # combine_tracks raises for a scraped track without a local one.
         new_num = mtrack["track#"] if (update_track_numbers and mtrack["track#"]) else btrack["track#"]
         slot = (btrack["disc#"], new_num)
         if slot in taken:
@@ -264,6 +264,13 @@ def combine_tracks(base, meta, update_track_numbers):
     ordered_btracks, pair_reasons = _pair_base_tracks(btracks_flat, mtracks_flat)
     _refuse_renumbering_that_loses_a_track(btracks_flat, mtracks_flat, ordered_btracks, update_track_numbers)
     _print_pairing(mtracks_flat, ordered_btracks, pair_reasons)
+    # Before the merge: combine_metadatas goes on past a TrackCombineError with whatever was merged.
+    scraped_keys = [
+        (disc, num) for disc, tracks in _sorted_naturally(meta.items()) for num, _ in _sorted_naturally(tracks.items())
+    ]
+    for (disc, num), btrack in zip(scraped_keys, ordered_btracks, strict=True):
+        if btrack is None:
+            raise TrackCombineError(f"Disc {disc} track {num} does not exist.")
 
     # If the source already provides remixer credits, skip title-based inference
     # to avoid adding spurious artists from mix names like "Attitude Dub Mix".
@@ -276,12 +283,10 @@ def combine_tracks(base, meta, update_track_numbers):
     renumbered = []
 
     # One entry per scraped track, in the order this loop visits them.
-    paired_btracks = iter(ordered_btracks)
-    for disc, tracks in _sorted_naturally(meta.items()):
-        for num, track in _sorted_naturally(tracks.items()):
+    paired_btracks = iter([btrack for btrack in ordered_btracks if btrack is not None])
+    for _disc, tracks in _sorted_naturally(meta.items()):
+        for _num, track in _sorted_naturally(tracks.items()):
             btrack = next(paired_btracks)
-            if btrack is None:
-                raise TrackCombineError(f"Disc {disc} track {num} does not exist.")
 
             if (
                 # Use unidecode comparison when there are accents in the title

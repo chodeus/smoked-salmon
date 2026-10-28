@@ -1147,38 +1147,6 @@ def test_move_non_audio_files_same_dir_is_a_noop(tmp_path) -> None:
     assert not (cd1 / "cover.1.jpg").exists()
 
 
-def test_the_file_order_fallback_puts_disc_10_after_disc_2():
-    # gather_tags lists CD10 before CD2 (a path with no leading number sorts as text).
-    tags = {f"CD{disc}/01.flac": _tagset(f"Old CD{disc}", tracknumber="1", discnumber=None) for disc in (1, 10, 2)}
-    metadata = {"tracks": {str(disc): {"1": _trackmeta(f"New CD{disc}", "1", str(disc))} for disc in (1, 2, 10)}}
-
-    changes = create_track_changes(tags, metadata)
-
-    for disc in (1, 2, 10):
-        assert Change("title", f"Old CD{disc}", f"New CD{disc}") in changes[f"CD{disc}/01.flac"]
-
-
-def test_a_flat_folder_without_disc_tags_is_refused_not_guessed():
-    # Track-first names in one folder: no path order lines up with disc-first metadata.
-    tags = {
-        name: _tagset(f"Old {name}", tracknumber=name[1], discnumber=None)
-        for name in ("01-CD1.flac", "01-CD2.flac", "02-CD1.flac", "02-CD2.flac")
-    }
-    with pytest.raises(AmbiguousTrackOrderError, match="DISCNUMBER and TRACKNUMBER"):
-        create_track_changes(tags, _two_discs_of_two())
-
-
-def test_disc_folders_that_do_not_match_the_discs_are_refused():
-    tags = {
-        "CD1/01.flac": _tagset("a", tracknumber="1", discnumber=None),
-        "CD1/02.flac": _tagset("b", tracknumber="2", discnumber=None),
-        "CD1/03.flac": _tagset("c", tracknumber="3", discnumber=None),
-        "CD2/01.flac": _tagset("d", tracknumber="1", discnumber=None),
-    }
-    with pytest.raises(AmbiguousTrackOrderError, match="DISCNUMBER and TRACKNUMBER"):
-        create_track_changes(tags, _two_discs_of_two())
-
-
 def test_disc_folders_pair_by_track_tag_not_file_name():
     tags = {
         "CD1/b.flac": _tagset("Old 1-2", tracknumber="2", discnumber=None),

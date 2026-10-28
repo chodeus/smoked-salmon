@@ -263,7 +263,7 @@ async def _alias_artists(metadata):
                     metadata["tracks"][dnum][tnum]["artists"].pop(i)
 
 
-# Where the track count stops meaning a single, then an EP. Past 30 minutes, any release is an album.
+# Where the track count stops meaning a single, then an EP. From 30 minutes, any release is an album.
 _SINGLE_MAX_TRACKS = 3
 _EP_MAX_TRACKS = 6
 _ALBUM_MIN_SECONDS = 30 * 60
@@ -286,7 +286,7 @@ def suggest_release_type(folder_hint: str | None, title: str | None, durations: 
     """The release type the files' track count and length imply, as the release type prompt's default.
 
     The type the album's library folder names (release_type_from_folder) comes first. Else 1 to 3 tracks
-    are a single, 4 to 6 an EP, more an album; past 30 minutes in all, an album, and a single with a track
+    are a single, 4 to 6 an EP, more an album; 30 minutes or more in all, an album, and a single with a track
     past 10 minutes, an EP. A title that names another type ("... EP", "(Single)")
     contradicts it: then there is no default.
 
