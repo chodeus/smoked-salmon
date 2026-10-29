@@ -1,6 +1,8 @@
+import asyncio
 import html
 import os
 import shutil
+from collections.abc import Sequence
 from typing import Any
 from urllib import parse
 
@@ -16,16 +18,19 @@ import salmon.tagger
 import salmon.trackers
 import salmon.uploader
 from salmon import cfg, interaction
-from salmon.common import AlbumPath, clipboard_copy, commandgroup, get_flac_files
-from salmon.common.files import rewrite_refusal
+from salmon.common import clipboard_copy, commandgroup, get_audio_files, str_to_int_if_int
+from salmon.common.files import AlbumPath, rewrite_refusal
 from salmon.common.redaction import redact_secrets
 from salmon.config import find_config_path, get_default_config_path, get_user_cfg_path
+from salmon.constants import OPTIONAL_TOOLS, REQUIRED_TOOLS
 from salmon.errors import UploadError
 from salmon.sources.tidal import credentials_configured as tidal_credentials_configured
 from salmon.tagger.audio_info import gather_audio_info, recompress_path
-from salmon.tagger.sources import METASOURCES
+from salmon.tagger.combine import combine_metadatas
+from salmon.tagger.metadata import clean_metadata, remove_various_artists
+from salmon.tagger.retagger import create_artist_str
+from salmon.tagger.sources import METASOURCES, run_metadata
 from salmon.trackers.connection import check_trackers
-from salmon.uploader.description import build_tracklist_description
 from salmon.uploader.seedbox import seedbox_secrets
 from salmon.uploader.spectrals import (
     check_spectrals,
@@ -34,6 +39,27 @@ from salmon.uploader.spectrals import (
     post_upload_spectral_check,
 )
 from salmon.uploader.torrent_client import TorrentClientGenerator
+from salmon.uploader.upload import generate_source_links
+
+# One scrape per URL in build_description; keep a caller from opening an unbounded number at once.
+MAX_CONCURRENT_SCRAPES = 4
+
+
+def format_spectral_urls(filenames: list[str], spectral_urls: dict[int, list[str]], bbcode: bool) -> str:
+    """What ``salmon specs`` prints for uploaded spectrals: a line per track.
+
+    Args:
+        filenames: The album's audio files, in track order; a spectral ID counts from 1 into them.
+        spectral_urls: Each spectral ID's image URLs.
+        bbcode: Whether to give each track as a hidden BBCode block (``specs -f``) instead of ``name: urls``.
+    """
+    lines: list[str] = []
+    for spec_id, urls in spectral_urls.items():
+        if bbcode:
+            lines.append(f"[hide={filenames[spec_id - 1]}][img={'][img='.join(urls)}][/hide]")
+        else:
+            lines.append(f"{filenames[spec_id - 1]}: {' '.join(urls)}")
+    return "\n".join(lines)
 
 
 @commandgroup.command()
@@ -47,15 +73,8 @@ async def specs(path: str, no_delete_specs: bool, format_output: bool) -> None:
     spath = get_spectrals_path(path)
     spectral_urls = await handle_spectrals_upload_and_deletion(spath, sids, delete_spectrals=not no_delete_specs)
 
-    filenames = list(audio_info.keys())
     if spectral_urls:
-        output_lines: list[str] = []
-        for spec_id, urls in spectral_urls.items():
-            if format_output:
-                output_lines.append(f"[hide={filenames[spec_id - 1]}][img={'][img='.join(urls)}][/hide]")
-            else:
-                output_lines.append(f"{filenames[spec_id - 1]}: {' '.join(urls)}")
-        output = "\n".join(output_lines)
+        output = format_spectral_urls(list(audio_info.keys()), spectral_urls, format_output)
         click.secho(output)
         if cfg.upload.description.copy_uploaded_url_to_clipboard:
             clipboard_copy(output)
@@ -72,6 +91,62 @@ def _url_host(url: str) -> str:
         return "not a URL"
 
 
+def descgen_refusals(urls: Sequence[str], folders: bool = True) -> list[str]:
+    """Why ``salmon descgen`` will not take these arguments: one message per URL that no source's scraper takes.
+
+    Args:
+        urls: The arguments.
+        folders: Whether to tell an argument that is a folder on this machine from one that is not. The web
+            interface does not: it would say what exists outside the folders it may show.
+    """
+    unsupported = [
+        (position, url)
+        for position, url in enumerate(urls, 1)
+        if not any(source.Scraper.regex.match(url) for source in METASOURCES.values())
+    ]
+    sources = ", ".join(METASOURCES)
+    # An unsupported URL is never echoed: a tracker link holds a passkey in its path or an authkey in its query.
+    return [
+        f"{url} is a folder; descgen takes release URLs from {sources}. `salmon up` writes the description itself."
+        if folders and os.path.isdir(url)
+        else f"Argument {position} ({_url_host(url)}) is not a release URL descgen supports. "
+        f"It takes URLs from {sources}."
+        for position, url in unsupported
+    ]
+
+
+async def build_description(urls: Sequence[str]) -> str:
+    """What ``salmon descgen`` makes, and so does the web interface: the BBCode description of the releases at these
+    URLs, their metadata combined. Fetches each URL once; the URLs are ones ``descgen_refusals`` accepts."""
+    limit = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
+
+    async def scrape(url: str):
+        async with limit:
+            return await run_metadata(url, return_source_name=True)
+
+    metadatas = await asyncio.gather(*(scrape(url) for url in urls))
+    metadata = clean_metadata(combine_metadatas(*((s, m) for m, s in metadatas)))
+    remove_various_artists(metadata["tracks"])
+
+    description = "[b][size=4]Tracklist[/size][/b]\n\n"
+    multi_disc = len(metadata["tracks"]) > 1
+    for dnum, disc in metadata["tracks"].items():
+        for tnum, track in disc.items():
+            if multi_disc:
+                description += (
+                    f"[b]{str_to_int_if_int(str(dnum), zpad=True)}-{str_to_int_if_int(str(tnum), zpad=True)}.[/b] "
+                )
+            else:
+                description += f"[b]{str_to_int_if_int(str(tnum), zpad=True)}.[/b] "
+
+            description += f"{create_artist_str(track['artists'])} - {track['title']}\n"
+    if metadata["comment"]:
+        description += f"\n{metadata['comment']}\n"
+    if metadata["urls"]:
+        description += "\n[b]More info:[/b] " + generate_source_links(metadata["urls"])
+    return description
+
+
 @commandgroup.command()
 @click.argument("urls", type=click.STRING, nargs=-1)
 async def descgen(urls: tuple[str, ...]) -> None:
@@ -81,27 +156,12 @@ async def descgen(urls: tuple[str, ...]) -> None:
         return
 
     # Checked before any scrape starts, so a bad argument sends no request and ends without a traceback.
-    supported = [any(source.Scraper.regex.match(url) for source in METASOURCES.values()) for url in urls]
-    if not all(supported):
-        sources = ", ".join(METASOURCES)
-        for position, (url, ok) in enumerate(zip(urls, supported, strict=True), 1):
-            if ok:
-                continue
-            if os.path.isdir(url):
-                click.secho(
-                    f"{url} is a folder; descgen takes release URLs from {sources}. `salmon up` writes the "
-                    "description itself.",
-                    fg="red",
-                )
-            else:
-                click.secho(
-                    f"Argument {position} ({_url_host(url)}) is not a release URL descgen supports. It takes URLs "
-                    f"from {sources}.",
-                    fg="red",
-                )
+    if refusals := descgen_refusals(urls):
+        for refusal in refusals:
+            click.secho(refusal, fg="red")
         raise click.exceptions.Exit(1)
 
-    description = await build_tracklist_description(urls)
+    description = await build_description(urls)
     click.secho("\nDescription:\n", fg="yellow", bold=True)
     click.echo(description)
     if cfg.upload.description.copy_uploaded_url_to_clipboard:
@@ -112,18 +172,40 @@ async def descgen(urls: tuple[str, ...]) -> None:
 @click.argument("path", type=AlbumPath(exists=True, file_okay=False))
 async def compress(path: str) -> None:
     """Recompress a directory of FLACs to the configured level; exits 1 if any file fails."""
-    if (reason := rewrite_refusal(path)) is not None:
-        click.secho(f"Not recompressing {path}: {reason}.", fg="red")
+    if (refusal := compress_refusal(path)) is not None:
+        click.secho(refusal, fg="red")
         raise click.Abort
-    flac_files = get_flac_files(path)
-    if not flac_files:
-        click.secho("No flacs found to recompress. Skipping...", fg="red")
-        return
     try:
-        await recompress_path(path, files=flac_files)
+        await recompress_flacs(path)
     except UploadError as e:
         click.secho(str(e), fg="red")
         raise click.exceptions.Exit(1) from e
+
+
+def compress_refusal(path: str) -> str | None:
+    """Why ``salmon compress`` will not recompress this folder, which it does in place; None if it will."""
+    if (refusal := rewrite_refusal(path)) is not None:
+        return f"Not recompressing {path}: {refusal}."
+    return None
+
+
+async def recompress_flacs(path: str) -> int:
+    """What ``salmon compress`` runs, and so does the web interface: the folder's FLACs recompressed in place.
+
+    Returns:
+        How many FLACs were recompressed (none, and a message, if the folder has none).
+
+    Raises:
+        UploadError: The folder is one ``compress_refusal`` refuses, or a file failed to recompress.
+    """
+    if (refusal := compress_refusal(path)) is not None:
+        raise UploadError(refusal)
+    flac_files = [f for f in get_audio_files(path) if f.lower().endswith(".flac")]
+    if not flac_files:
+        click.secho("No flacs found to recompress. Skipping...", fg="red")
+        return 0
+    await recompress_path(path, files=flac_files)
+    return len(flac_files)
 
 
 @commandgroup.command()
@@ -407,10 +489,8 @@ async def health() -> None:
 
     click.echo()
 
-    req_deps = ["curl", "flac", "git", "lame", "mp3val", "sox"]
-    opt_deps = ["puddletag", "feh", "rclone"]
     click.secho("Required Dependencies:", fg="cyan")
-    _iter_which(req_deps)
+    _iter_which(REQUIRED_TOOLS)
 
     click.secho("\nOptional Dependencies:", fg="cyan")
-    _iter_which(opt_deps)
+    _iter_which(OPTIONAL_TOOLS)

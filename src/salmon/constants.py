@@ -420,5 +420,9 @@ ESSENTIAL_EXTENSIONS = {
     ".png",
 }
 
+# The command line tools salmon shells out to: `salmon health` and the web dashboard both report these.
+REQUIRED_TOOLS = ["curl", "flac", "lame", "mp3val", "sox"]
+OPTIONAL_TOOLS = ["puddletag", "feh", "rclone"]
+
 # Embedded pictures plus padding above this is a trump reason on RED (tag size of 1025 KiB and up).
 TAG_TRUMP_SIZE = 1024 * 1024

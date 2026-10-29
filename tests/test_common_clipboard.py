@@ -9,7 +9,9 @@ import anyio
 import pyperclip
 import pytest
 
+import salmon.commands
 from salmon import cfg, images
+from salmon.commands import descgen
 from salmon.common import clipboard_copy
 from salmon.images.base import BaseImageUploader
 
@@ -44,6 +46,28 @@ def test_uploaded_images_are_still_given(tmp_path, capsys: pytest.CaptureFixture
     assert urls == ["https://images.test/front.png"]
     out = capsys.readouterr().out
     assert "https://images.test/front.png\n" in out
+    assert f"Could not copy to the clipboard: {NO_CLIPBOARD}" in out
+
+
+def test_descgen_still_prints_the_description(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    metadata = {
+        "tracks": {"1": {"1": {"artists": [("Artist", "main")], "title": "First"}}},
+        "comment": None,
+        "urls": [],
+    }
+
+    async def run_metadata(url, return_source_name=False):
+        return metadata, "Qobuz"
+
+    monkeypatch.setattr(salmon.commands, "run_metadata", run_metadata)
+    monkeypatch.setattr(salmon.commands, "combine_metadatas", lambda *_: metadata)
+    monkeypatch.setattr(salmon.commands, "clean_metadata", lambda found: found)
+    assert descgen.callback is not None
+
+    anyio.run(descgen.callback, ("https://www.qobuz.com/album/x",))
+
+    out = capsys.readouterr().out
+    assert "[b][size=4]Tracklist[/size][/b]" in out
     assert f"Could not copy to the clipboard: {NO_CLIPBOARD}" in out
 
 

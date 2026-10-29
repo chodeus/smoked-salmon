@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Request
 import salmon.trackers
 from salmon import cfg
 from salmon.config import find_config_path
+from salmon.constants import OPTIONAL_TOOLS, REQUIRED_TOOLS
 from salmon.trackers.connection import ConnectionResult, check_connection
 
 router = APIRouter(tags=["system"])
@@ -30,10 +31,6 @@ def debug_threads(request: Request) -> dict:
     return {
         str(names.get(ident, ident)): traceback.format_stack(frame) for ident, frame in sys._current_frames().items()
     }
-
-
-REQUIRED_BINARIES = ["sox", "flac", "lame", "mp3val", "curl"]
-OPTIONAL_BINARIES = ["rclone", "feh", "puddletag"]
 
 
 def _dir_info(path: str | None) -> dict:
@@ -66,8 +63,8 @@ def health() -> dict:
         "version": pkg_version,
         "config_path": str(find_config_path()),
         "binaries": {
-            "required": {name: shutil.which(name) for name in REQUIRED_BINARIES},
-            "optional": {name: shutil.which(name) for name in OPTIONAL_BINARIES},
+            "required": {name: shutil.which(name) for name in REQUIRED_TOOLS},
+            "optional": {name: shutil.which(name) for name in OPTIONAL_TOOLS},
         },
         "trackers": tracker_list,
         "default_trackers": cfg.tracker.default_trackers,

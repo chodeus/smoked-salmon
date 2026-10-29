@@ -134,7 +134,7 @@ def test_the_metadata_route_fetches_with_the_public_address_guard_on(monkeypatch
 
 
 def test_the_descgen_route_fetches_with_the_public_address_guard_on(monkeypatch) -> None:
-    seen = _guard_seen(monkeypatch, tools, "build_tracklist_description", "a description")
+    seen = _guard_seen(monkeypatch, tools, "build_description", "a description")
 
     with web_client() as c:
         status = c.post("/api/descgen", json={"urls": ["https://8.8.8.8/album/x"]}).status_code

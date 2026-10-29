@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 import salmon.trackers
 from salmon import cfg, ssrf
+from salmon.commands import build_description
 from salmon.config.image_hosts import display_refusal
 from salmon.constants import SOURCES as SOURCE_CODES
 from salmon.constants import TAG_ENCODINGS
@@ -23,7 +24,6 @@ from salmon.cross_upload import is_torrent_reference
 from salmon.images import HOSTS, upload_images
 from salmon.images.files import NotAnImage, check_image
 from salmon.tagger import tag as tag_command
-from salmon.uploader.description import build_tracklist_description
 from salmon.webui.jobs import Job, JobCapacityError, manager
 from salmon.webui.validation import (
     assert_public_url,
@@ -102,7 +102,7 @@ async def descgen(req: DescgenRequest) -> dict:
         await assert_public_url(url)
     try:
         with ssrf.public_only():
-            description = await build_tracklist_description(req.urls)
+            description = await build_description(req.urls)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not build a description: {e}") from e
     return {"description": description}
