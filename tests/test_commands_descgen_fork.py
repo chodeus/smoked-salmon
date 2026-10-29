@@ -5,7 +5,7 @@ import asyncio
 import anyio
 
 import salmon.commands
-from salmon.commands import MAX_CONCURRENT_SCRAPES, build_description
+from salmon.commands import build_description
 
 METADATA = {"tracks": {"1": {"1": {"artists": [("Artist", "main")], "title": "First"}}}, "comment": None, "urls": []}
 
@@ -29,4 +29,4 @@ def test_build_description_scrapes_a_few_urls_at_once(monkeypatch) -> None:
     description = anyio.run(build_description, [f"https://www.qobuz.com/album/x{n}" for n in range(10)])
 
     assert "First" in description
-    assert most == MAX_CONCURRENT_SCRAPES
+    assert most == 4

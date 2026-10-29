@@ -46,7 +46,7 @@ MAX_CONCURRENT_SCRAPES = 4
 
 
 def format_spectral_urls(filenames: list[str], spectral_urls: dict[int, list[str]], bbcode: bool) -> str:
-    """What ``salmon specs`` prints for uploaded spectrals, and so does the web interface: a line per track.
+    """What ``salmon specs`` prints for uploaded spectrals: a line per track.
 
     Args:
         filenames: The album's audio files, in track order; a spectral ID counts from 1 into them.
