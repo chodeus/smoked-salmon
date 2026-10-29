@@ -1113,6 +1113,10 @@ async def _upload_staged(
 
         seedbox_uploader = UploadManager()
         uploaded: list[str] = []  # The URL of each torrent uploaded, for an abort to list
+        # Trackers whose upload failed or was skipped: the folder is needed to retry them. A first tracker refused
+        # before the loop is one of them.
+        failed_trackers: list[str] = [gazelle_site.site_string] if skip_first else []
+        finished = False  # The loop ended by itself: no abort, no exception
         flac_url = f"{gazelle_site.base_url}/torrents.php?torrentid={source_flac['id']}" if source_flac else None
 
         try:
@@ -1143,6 +1147,7 @@ async def _upload_staged(
                     if _do_not_upload_refusal(tracker, metadata) is not None or (
                         flac_group is None and _sixteen_bit_refusal(tracker, audio_info)
                     ):
+                        failed_trackers.append(gazelle_site.site_string)
                         remaining_gazelle_sites.remove(tracker)
                         tracker = None
                         continue
@@ -1157,6 +1162,7 @@ async def _upload_staged(
                     except RequestError as e:
                         # Like a failed upload: skip this tracker, and offer the next one.
                         click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
+                        failed_trackers.append(gazelle_site.site_string)
                         remaining_gazelle_sites.remove(tracker)
                         tracker = None
                         if not remaining_gazelle_sites or not go_on:
@@ -1176,6 +1182,7 @@ async def _upload_staged(
                 if not proceed:
                     # Like a failed upload: skip this tracker, and offer the next one.
                     click.secho(f"\nSkipping upload to {gazelle_site.site_string}.", fg="red", bold=True)
+                    failed_trackers.append(gazelle_site.site_string)
                     tracker = None
                     if not remaining_gazelle_sites or not go_on:
                         break
@@ -1296,6 +1303,7 @@ async def _upload_staged(
                             )
                 except RequestError as e:
                     click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
+                    failed_trackers.append(gazelle_site.site_string)
                     if isinstance(e, UnknownOutcomeError):
                         record.note_unknown_outcome(e)
 
@@ -1303,6 +1311,7 @@ async def _upload_staged(
                 if flac_url or not remaining_gazelle_sites or not go_on:
                     click.secho("\nDone uploading this release.", fg="green")
                     break
+            finished = True
 
         except click.Abort as e:
             if not uploaded or dryrun.active():
@@ -1315,6 +1324,16 @@ async def _upload_staged(
                 raise
         finally:
             await seedbox_uploader.execute_upload()
+            # Only a run that ended by itself with every upload done: a failed tracker needs the folder to retry,
+            # and an abort or an error leaves the user deciding what is next.
+            if failed_trackers:
+                seedbox_uploader.remove_local_copies(
+                    f"the upload to {', '.join(failed_trackers)} failed or was skipped"
+                )
+            elif not finished:
+                seedbox_uploader.remove_local_copies("the run stopped before it finished")
+            else:
+                seedbox_uploader.remove_local_copies()
     finally:
         await spectral_uploads.close()
 

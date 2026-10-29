@@ -1,624 +1,470 @@
-"""After the first upload: spectrals checked once, no offer to delete the uploaded folder, a clean abort."""
+"""What the tracker loop does once the first torrent is up: the --spectrals-after check runs once, right after
+it, however many trackers follow (#567), and nothing offers to delete the folder that torrent seeds from (#568).
 
-import contextlib
+The runs here go against the local fake tracker of test_uploader_dry_run and a fake image host, never a real one.
+"""
+
 import errno
 import os
+import re
 from pathlib import Path
 from typing import Any
 
-import anyio
-import asyncclick as click
+import pyperclip
 import pytest
+from aiohttp import web
+from test_uploader_dry_run import (  # pyright: ignore[reportMissingImports]
+    API_KEYS,
+    FIRST_TORRENT_ID,
+    RENAMED,
+    FakeTracker,
+    _album,
+    _loose_rate_limit,  # noqa: F401 (a fixture: see pytestmark)
+    _lossy_with_spectrals,
+    _run_up,
+    image_uploads,  # noqa: F401 (a fixture: see pytestmark)
+)
 from torf import Torrent, WriteError
 
 import salmon.trackers
 import salmon.uploader
-from salmon import interaction
-from salmon.errors import AbortAndDeleteFolder, RequestError, UnknownOutcomeError
-from salmon.uploader import dupe_checker, spectrals
+from salmon import cfg, interaction
+from salmon.errors import RequestError, UnknownOutcomeError
+from salmon.trackers.base import BaseGazelleApi
+from salmon.trackers.ops import OpsApi
+from salmon.trackers.red import RedApi
+from salmon.uploader import spectrals as spectrals_module
+from salmon.uploader.seedbox import UploadManager
+
+# Covers and spectrals go to the fake image host. The fork's process-wide rate limit would make each run wait.
+pytestmark = pytest.mark.usefixtures("image_uploads", "_loose_rate_limit")
+
+DELETE = "[d]elete music folder"
+ANOTHER_TRACKER = "Would you like to upload to another tracker?"
 
 
-class FakeSite:
-    base_url = "https://tracker.test"
+class ThirdApi(OpsApi):
+    """A third tracker, DIC by its site code, that uploads the way OPS does, so the fake tracker takes its uploads."""
 
-    def __init__(self, code: str = "RED") -> None:
-        self.site_code = code
-        self.site_string = code
-        self.reports: list[tuple[int, str, str]] = []
-        self.edit_error: Exception | None = None
-        self.report_error: Exception | None = None
-
-    async def append_to_torrent_description(self, torrent_id: int, text: str) -> None:
-        if self.edit_error is not None:
-            raise self.edit_error
-
-    async def report_lossy_master(self, torrent_id: int, comment: str, source: str) -> bool:
-        if self.report_error is not None:
-            raise self.report_error
-        self.reports.append((torrent_id, comment, source))
-        return True
+    def __init__(self) -> None:
+        super().__init__()
+        self.site_code = "DIC"
+        self.site_string = "DIC"
 
 
-@contextlib.contextmanager
-def _staged_as_is(path: str, scratch: bool):
-    yield path, None
-
-
-def _sync(result: Any = None):
-    def fake(*_args, **_kwargs) -> Any:
-        return result
-
-    return fake
-
-
-def _answers(monkeypatch, *answers: str) -> list[str]:
-    """Answer click.prompt with answers in turn. Returns the prompts asked."""
-    asked: list[str] = []
-
-    async def fake_prompt(text: str, *_args, **_kwargs) -> str:
-        asked.append(click.unstyle(text))
-        return answers[len(asked) - 1]
-
-    monkeypatch.setattr(click, "prompt", fake_prompt)
-    return asked
+THREE_TRACKERS: dict[str, type[BaseGazelleApi]] = {"RED": RedApi, "OPS": OpsApi, "DIC": ThirdApi}
 
 
 @pytest.fixture
-def flow(monkeypatch):
-    """Stub upload()'s seams. Returns (calls, executed, set_fake); calls holds (name, site code, kwargs)."""
-    calls: list[tuple[str, str | None, dict]] = []
-    executed: list[bool] = []
-    overrides: dict[str, Any] = {}
-
-    def recording(name: str, result: Any = None):
-        async def fake(*args, **kwargs) -> Any:
-            site = args[0] if args else None
-            calls.append((name, getattr(site, "site_code", None), kwargs))
-            if name in overrides:
-                return await overrides[name](*args, **kwargs)
-            return result
-
-        return fake
-
-    uploads = iter(range(1, 100))
-
-    async def upload_and_report(site, *_args, **_kwargs):
-        torrent_id = next(uploads)
-        calls.append(("upload_and_report", site.site_code, {}))
-        return torrent_id, 5, "/t.torrent", b"", f"{site.base_url}/torrents.php?torrentid={torrent_id}"
-
-    class FakeUploadManager:
-        async def execute_upload(self) -> None:
-            executed.append(True)
-
-    rls_data = {
-        "artists": [("Artist", "main")],
-        "title": "Album",
-        "catno": "",
-        "source": "WEB",
-        "format": "FLAC",
-        "encoding": "Lossless",
-        "year": 2020,
-    }
-    metadata = {"artists": [("Artist", "main")], "title": "Album", "label": "Label", "catno": None, "cover": None}
-
-    @contextlib.asynccontextmanager
-    async def group_search(site, searchstrs, our_title):
-        class Fetch:
-            async def result(self):
-                fetch = recording("fetch_existing_group_candidates", ([], None))
-                return await fetch(site, searchstrs, our_title=our_title)
-
-        yield Fetch() if searchstrs else None
-
-    for name, fake in {
-        "release_type_from_folder": _sync(None),
-        "conversion_of": _sync(None),
-        "staged_source": _staged_as_is,
-        "gather_audio_info": _sync({}),
-        "check_hybrid": _sync(False),
-        "standardize_tags": _sync(),
-        "gather_tags": _sync({}),
-        "construct_rls_data": lambda *_a, **_k: _done(rls_data),
-        "mqa_test": recording("mqa_test"),
-        "get_metadata": recording("get_metadata", (metadata, None)),
-        "edit_metadata": recording("edit_metadata", ("/release", metadata, {}, {})),
-        "concat_track_data": _sync({"01.flac": {}}),
-        "resolve_cover_url": recording("resolve_cover_url", (True, None)),
-        "check_embedded_pictures": _sync(),
-        "upload_warnings": _sync([]),
-        "check_requests": recording("check_requests"),
-        "check_existing_group": recording("check_existing_group", 5),
-        "fetch_existing_group_candidates_in_background": group_search,
-        "resolve_existing_group": recording("resolve_existing_group", 5),
-        "recheck_edition": recording("recheck_edition", 5),
-        "upload_and_report": upload_and_report,
-        "print_torrents": recording("print_torrents", {}),
-        "post_upload_spectral_check": recording("post_upload_spectral_check", (False, None, None, None)),
-        "get_downconversion_options": _sync([]),
-        "UploadManager": FakeUploadManager,
-    }.items():
-        monkeypatch.setattr(salmon.uploader, name, fake)
-    monkeypatch.setattr(salmon.trackers, "get_class", lambda code: lambda: FakeSite(code))
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", False)
-    monkeypatch.setattr(salmon.uploader.cfg.upload.requests, "last_minute_dupe_check", False)
-    monkeypatch.setattr(salmon.uploader.cfg.image, "embed_missing_cover", False)
-
-    def set_fake(name: str, fake) -> None:
-        overrides[name] = fake
-
-    return calls, executed, set_fake
+def dirs(monkeypatch, tmp_path) -> tuple[Path, Path]:
+    """A download_directory and a dot_torrents_dir, configured."""
+    downloads, torrents = tmp_path / "downloads", tmp_path / "torrents"
+    downloads.mkdir()
+    torrents.mkdir()
+    monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
+    monkeypatch.setattr(cfg.directory, "tmp_dir", None)
+    monkeypatch.setattr(cfg.directory, "library_dirs", [])
+    return downloads, torrents
 
 
-def _upload(trackers: list[str] | None) -> None:
-    anyio.run(
-        lambda: salmon.uploader.upload(
-            FakeSite("RED"),  # type: ignore[arg-type]
-            "/release",
-            5,
-            "WEB",
-            None,
-            (),
-            None,
-            spectrals_after=True,
-            trackers=trackers,
-        )
+@pytest.fixture(autouse=True)
+def third_tracker_key(monkeypatch) -> None:
+    monkeypatch.setitem(API_KEYS, "DIC", "dic-api-key")
+
+
+def _trackers(monkeypatch, *codes: str) -> None:
+    monkeypatch.setattr(salmon.trackers, "tracker_list", list(codes))
+
+
+def _checks(monkeypatch) -> list[tuple[str, int]]:
+    """Record the (tracker, torrent ID) of each post-upload spectral check, which runs as it does in salmon."""
+    checks: list[tuple[str, int]] = []
+    real = spectrals_module.post_upload_spectral_check
+
+    async def recording(gazelle_site, path, torrent_id, *args, **kwargs) -> Any:
+        checks.append((gazelle_site.site_code, torrent_id))
+        return await real(gazelle_site, path, torrent_id, *args, **kwargs)
+
+    monkeypatch.setattr(salmon.uploader, "post_upload_spectral_check", recording)
+    # The check's spectrals, as test_uploader_dry_run makes them: a lossy master, track 1's spectrals.
+    monkeypatch.setattr(spectrals_module, "check_spectrals", _lossy_with_spectrals)
+    return checks
+
+
+def _description_edits(monkeypatch) -> list[tuple[str, int, str]]:
+    """Record the (tracker, torrent ID, text) of each description edit, instead of sending it."""
+    edits: list[tuple[str, int, str]] = []
+
+    async def append(self, torrent_id: int, text: str) -> None:
+        edits.append((self.site_code, torrent_id, text))
+
+    monkeypatch.setattr(BaseGazelleApi, "append_to_torrent_description", append)
+    return edits
+
+
+def _seedbox_runs(monkeypatch) -> list[bool]:
+    runs: list[bool] = []
+
+    async def execute_upload(_self) -> None:
+        runs.append(True)
+
+    monkeypatch.setattr(UploadManager, "execute_upload", execute_upload)
+    return runs
+
+
+def _uploads(run) -> list[dict[str, Any]]:
+    return [dict(sent.fields) for sent in run.tracker.sent if sent.query.get("action") == "upload"]
+
+
+def _reports(run) -> list[str]:
+    return [dict(sent.fields)["extra"] for sent in run.tracker.sent if sent.path == "/reportsv2.php"]
+
+
+def _left_behind(downloads: Path) -> list[Path]:
+    return list((downloads / RENAMED).rglob("*.png"))
+
+
+# The --spectrals-after check (#567)
+
+
+def test_with_one_tracker_the_check_runs_once_and_edits_that_torrents_description(monkeypatch, tmp_path, dirs) -> None:
+    downloads, torrents = dirs
+    _trackers(monkeypatch, "RED")
+    checks, edits = _checks(monkeypatch), _description_edits(monkeypatch)
+
+    # A new group on RED, then no comment for the lossy master report. No other tracker to offer.
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, args=("-a",), input="\n\n")
+
+    assert run.result.exit_code == 0, run.result.output
+    assert checks == [("RED", FIRST_TORRENT_ID)]
+    assert len(edits) == 1
+    site, torrent_id, text = edits[0]
+    assert (site, torrent_id) == ("RED", FIRST_TORRENT_ID)
+    # Track 1's full and zoomed spectrals, as the fake image host names them.
+    spectral_urls = re.findall(r"https://images\.test/\d+\.png", text)
+    assert len(spectral_urls) == 2
+    # The FLAC went up before the check; its transcodes, after it, are reported as lossy masters too.
+    reports = _reports(run)
+    assert len(_uploads(run)) == 3 and len(reports) == 3
+    assert all(all(url in report for url in spectral_urls) for report in reports)
+    assert ANOTHER_TRACKER not in run.result.output
+    assert _left_behind(downloads) == []
+
+
+def test_without_multi_tracker_upload_the_check_runs_once(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED", "OPS", "DIC")
+    checks, edits = _checks(monkeypatch), _description_edits(monkeypatch)
+
+    run = _run_up(
+        monkeypatch,
+        _album(tmp_path / "Album"),
+        torrents,
+        args=("-a",),
+        input="\n\n",
+        classes=THREE_TRACKERS,
+        multi_tracker_upload=False,
     )
 
+    assert run.result.exit_code == 0, run.result.output
+    assert checks == [("RED", FIRST_TORRENT_ID)]
+    assert [(site, torrent_id) for site, torrent_id, _text in edits] == [("RED", FIRST_TORRENT_ID)]
+    assert ANOTHER_TRACKER not in run.result.output
 
-def test_spectrals_after_runs_once_the_only_upload_is_up(flow, monkeypatch) -> None:
-    calls, executed, _ = flow
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
-    _upload(None)
-    names = [name for name, _site, _kw in calls]
-    assert names.count("post_upload_spectral_check") == 1
-    assert names.index("upload_and_report") < names.index("post_upload_spectral_check")
-    assert executed == [True]
 
-
-def test_an_upload_with_no_torrent_id_skips_the_spectral_check(flow, monkeypatch, capsys) -> None:
-    calls, executed, _ = flow
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
-
-    async def request_fill(site, *_args, **_kwargs):
-        return 0, 5, "/t.torrent", b"", f"{site.base_url}/requests.php?action=view&id=7"
-
-    monkeypatch.setattr(salmon.uploader, "upload_and_report", request_fill)
-    _upload(None)
-    names = [name for name, _site, _kw in calls]
-    out = capsys.readouterr().out
-    assert "post_upload_spectral_check" not in names
-    assert "salmon checkspecs" in out
-    assert executed == [True]
-
-
-def test_the_release_type_hint_reads_the_chosen_title_not_the_tags(flow, monkeypatch) -> None:
-    calls, _executed, set_fake = flow
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
-    monkeypatch.setattr(
-        salmon.uploader, "gather_audio_info", lambda *_args, **_kwargs: {str(n): {"duration": 200} for n in range(7)}
-    )
-    chosen = {"artists": [("Artist", "main")], "title": "Album EP", "label": "Label", "cover": None}
-
-    async def get_metadata(*_args, **_kwargs):
-        return chosen, None
-
-    set_fake("get_metadata", get_metadata)
-    _upload(None)
-    hints = [kwargs["rls_type_hint"] for name, _site, kwargs in calls if name == "edit_metadata"]
-
-    assert hints == [None]
-
-
-def test_a_failed_group_fetch_after_the_upload_still_runs_the_spectral_check(flow, monkeypatch) -> None:
-    calls, executed, set_fake = flow
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
-
-    async def fetch_fails(*_args, **_kwargs):
-        raise click.Abort
-
-    set_fake("print_torrents", fetch_fails)
-    _upload(None)
-    names = [name for name, _site, _kw in calls]
-    assert names.count("post_upload_spectral_check") == 1
-    assert names.index("post_upload_spectral_check") < names.index("print_torrents")
-    assert executed == [True]
-
-
-def test_the_next_tracker_never_offers_to_delete_the_uploaded_folder(flow, monkeypatch) -> None:
-    calls, _executed, _ = flow
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", True)
-    _upload(["RED", "OPS"])
-    names = [(name, site) for name, site, _kw in calls]
-    assert names.count(("post_upload_spectral_check", "RED")) == 1
-    assert names.index(("post_upload_spectral_check", "RED")) < names.index(("upload_and_report", "OPS"))
-    ops_search = [kw for name, site, kw in calls if name == "check_existing_group" and site == "OPS"]
-    assert ops_search == [{"offer_deletion": False, "our_title": "Album", "release": ops_search[0]["release"]}]
-
-
-def test_an_abort_after_an_upload_lists_it_and_still_seeds(flow, monkeypatch, capsys) -> None:
-    calls, executed, set_fake = flow
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", True)
-
-    async def abort(*_args, **_kwargs):
-        raise click.Abort
-
-    set_fake("check_existing_group", abort)
-    _upload(["RED", "OPS"])
-    out = capsys.readouterr().out
-    assert "Already uploaded:" in out
-    assert "https://tracker.test/torrents.php?torrentid=1" in out
-    assert executed == [True]
-    assert [site for name, site, _kw in calls if name == "upload_and_report"] == ["RED"]
-
-
-def test_an_abort_before_any_upload_still_aborts(flow, monkeypatch) -> None:
-    _calls, executed, set_fake = flow
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
-
-    async def abort(*_args, **_kwargs):
-        raise click.Abort
-
-    set_fake("resolve_cover_url", abort)
-    with pytest.raises(click.Abort):
-        _upload(None)
-    assert executed == [True]
-
-
-def _no_torrents(monkeypatch) -> None:
-    async def print_torrents(_site, group_id, rset=None, **_kwargs):
-        return {"groupId": group_id, "torrents": []}
-
-    monkeypatch.setattr(dupe_checker, "print_torrents", print_torrents)
-
-
-def test_the_group_confirmation_hides_delete_once_a_torrent_is_up(monkeypatch) -> None:
-    _no_torrents(monkeypatch)
-    asked = _answers(monkeypatch, "d", "y")
-    confirmed = anyio.run(lambda: dupe_checker._confirm_group_id(FakeSite(), 5, [], offer_deletion=False))  # type: ignore[arg-type]
-    assert confirmed is True
-    assert len(asked) == 2
-    assert all("[d]elete" not in text for text in asked)
-
-
-def test_the_group_confirmation_still_offers_delete_before_any_upload(monkeypatch) -> None:
-    _no_torrents(monkeypatch)
-    asked = _answers(monkeypatch, "d")
-    with pytest.raises(AbortAndDeleteFolder):
-        anyio.run(lambda: dupe_checker._confirm_group_id(FakeSite(), 5, []))  # type: ignore[arg-type]
-    assert "[d]elete music folder" in asked[0]
-
-
-def test_the_lossy_master_prompt_hides_delete_when_asked(monkeypatch) -> None:
-    asked = _answers(monkeypatch, "d", "n")
-    answer = anyio.run(lambda: spectrals.prompt_lossy_master(True, offer_deletion=False))
-    assert answer is False
-    assert all("[d]elete" not in text for text in asked)
-
-
-def test_the_post_upload_check_never_offers_to_delete(monkeypatch) -> None:
-    seen: dict[str, Any] = {}
-
-    async def check_spectrals(*_args, **kwargs):
-        seen.update(kwargs)
-        return False, None
-
-    monkeypatch.setattr(spectrals, "check_spectrals", check_spectrals)
-    anyio.run(lambda: spectrals.post_upload_spectral_check(FakeSite(), "/release", 1, None, {}, "WEB", None))  # type: ignore[arg-type]
-    assert seen["offer_deletion"] is False
-
-
-def _lossy_post_upload_check(monkeypatch, site: FakeSite) -> None:
-    async def check_spectrals(*_args, **_kwargs):
-        return True, {1: "01.flac"}
-
-    monkeypatch.setattr(spectrals, "check_spectrals", check_spectrals)
-    monkeypatch.setattr(spectrals, "generate_lossy_approval_comment", lambda *_a, **_k: _done("lossy note"))
-    monkeypatch.setattr(spectrals, "upload_spectrals", lambda *_a: _done({1: ["full", "zoom"]}))
-    anyio.run(lambda: spectrals.post_upload_spectral_check(site, "/release", 7, None, {}, "WEB", None))  # type: ignore[arg-type]
-
-
-async def _done(value: Any) -> Any:
-    return value
-
-
-@pytest.mark.parametrize(
-    ("error", "wording"),
-    [
-        (RequestError("edit refused"), "was not updated on RED (edit refused). Paste this in by hand"),
-        (UnknownOutcomeError("answer lost"), "Could not tell whether RED took the description edit"),
-    ],
-)
-def test_a_failed_description_edit_keeps_the_bbcode_and_the_report(monkeypatch, capsys, error, wording) -> None:
-    site = FakeSite()
-    site.edit_error = error
-    _lossy_post_upload_check(monkeypatch, site)
-    out = capsys.readouterr().out
-    assert wording in out
-    assert "[hide=Spectrals]" in out
-    assert [report[0] for report in site.reports] == [7]
-
-
-def test_a_refused_lossy_master_report_is_printed_to_file_by_hand(monkeypatch, capsys) -> None:
-    site = FakeSite()
-    site.report_error = RequestError("already reported")
-    _lossy_post_upload_check(monkeypatch, site)
-    out = capsys.readouterr().out
-    assert "did not take the lossy master report" in out
-    assert "lossy note" in out
-
-
-def _nothing_picked(monkeypatch, tmp_path) -> str:
-    async def check_spectrals(*_args, **_kwargs):
-        return False, None
-
-    monkeypatch.setattr(spectrals, "check_spectrals", check_spectrals)
-    monkeypatch.setattr(spectrals.cfg.directory, "tmp_dir", None)
-    album = tmp_path / "Album"
-    album.mkdir()
-    return str(album)
-
-
-def test_spectrals_nobody_picked_are_removed_before_a_later_torrent(monkeypatch, tmp_path) -> None:
-    album = _nothing_picked(monkeypatch, tmp_path)
-    made = spectrals.create_specs_folder(album)
-    anyio.run(lambda: spectrals.post_upload_spectral_check(FakeSite(), album, 1, None, {}, "WEB", None))  # type: ignore[arg-type]
-    assert not os.path.exists(made)
-
-
-def test_a_spectrals_folder_salmon_did_not_make_is_kept_when_nothing_is_picked(monkeypatch, tmp_path) -> None:
-    album = _nothing_picked(monkeypatch, tmp_path)
-    theirs = os.path.join(album, "Spectrals")
-    os.mkdir(theirs)
-    anyio.run(lambda: spectrals.post_upload_spectral_check(FakeSite(), album, 1, None, {}, "WEB", None))  # type: ignore[arg-type]
-    assert os.path.isdir(theirs)
-
-
-def test_every_trackers_conversions_are_checked_against_the_runs_path_limit(flow, monkeypatch) -> None:
-    _calls, _executed, _set_fake = flow
-    task = {"name": "MP3 320", "action": "transcode", "encoding": "320"}
-    limits: list[int | None] = []
-
-    async def choose(*_args):
-        return [task]
-
-    async def execute(*_args, max_path_length=None, **_kwargs):
-        limits.append(max_path_length)
-
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
-    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args, **_kwargs: [task])
-    monkeypatch.setattr(salmon.uploader, "prompt_downconversion_choice", choose)
-    monkeypatch.setattr(salmon.uploader, "execute_downconversion_tasks", execute)
-    _upload(["RED", "OPS"])
-
-    assert limits == [180, 180]
-
-
-def test_an_albums_own_spectrals_folder_survives_the_real_check(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(spectrals.cfg.directory, "tmp_dir", None)
-    monkeypatch.setattr(spectrals.cfg.directory, "download_directory", str(tmp_path))
-    album = tmp_path / "Album"
-    (album / "Spectrals").mkdir(parents=True)
-    (album / "Spectrals" / "mine.png").write_bytes(b"mine")
-    made: list[str] = []
-
-    async def generate(_path, spectrals_path, _audio_info):
-        made.append(spectrals_path)
-        return {}
-
-    monkeypatch.setattr(spectrals, "generate_spectrals_all", generate)
-    monkeypatch.setattr(spectrals, "print_frequency_analysis", lambda *_a: _done(False))
-    monkeypatch.setattr(interaction, "show_spectrals", lambda *_a: _done(None))
-    monkeypatch.setattr(spectrals, "prompt_lossy_master", lambda *_a, **_k: _done(False))
-    monkeypatch.setattr(spectrals, "prompt_spectrals", lambda *_a, **_k: _done({}))
-    anyio.run(lambda: spectrals.post_upload_spectral_check(FakeSite(), str(album), 1, None, {}, "WEB", None))  # type: ignore[arg-type]
-
-    assert (album / "Spectrals" / "mine.png").read_bytes() == b"mine"
-    assert os.path.dirname(made[0]) == str(tmp_path)
-    assert not os.path.exists(made[0])
-
-
-def test_an_upload_without_spectrals_leaves_the_albums_own_spectrals_folder(monkeypatch, tmp_path) -> None:
-    album = _nothing_picked(monkeypatch, tmp_path)
-    own = os.path.join(album, "Spectrals")
-    os.mkdir(own)
-
-    anyio.run(lambda: spectrals.handle_spectrals_upload_and_deletion(spectrals.get_spectrals_path(album), None))
-
-    assert os.path.isdir(own)
-
-
-def test_an_upload_with_no_group_id_offers_no_conversions(flow, monkeypatch, capsys) -> None:
-    calls, executed, _ = flow
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
-    offered: list[bool] = []
-
-    async def request_fill(site, *_args, **_kwargs):
-        return 7, 0, "/t.torrent", b"", f"{site.base_url}/torrents.php?torrentid=7"
-
-    async def choose(*_args):
-        offered.append(True)
-        return []
-
-    monkeypatch.setattr(salmon.uploader, "upload_and_report", request_fill)
-    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args, **_kwargs: [{"name": "MP3 320"}])
-    monkeypatch.setattr(salmon.uploader, "prompt_downconversion_choice", choose)
-    _upload(None)
-
-    assert offered == []
-    assert "print_torrents" not in [name for name, _site, _kw in calls]
-    out = capsys.readouterr().out
-    assert "No group id came back" in out
-    assert executed == [True]
-
-
-def _upload_unpicked(trackers: list[str] | None, request_id: int | None = None) -> None:
-    """An upload with no group given: the first tracker is searched before the review."""
-    anyio.run(
-        lambda: salmon.uploader.upload(
-            FakeSite("RED"),  # type: ignore[arg-type]
-            "/release",
-            None,
-            "WEB",
-            None,
-            (),
-            None,
-            request_id=request_id,
-            spectrals_after=True,
-            trackers=trackers,
-        )
-    )
-
-
-def _red_search_fails(set_fake) -> None:
-    async def search(*_args, **_kwargs):
-        raise RequestError("RED is down")
-
-    set_fake("fetch_existing_group_candidates", search)
-
-
-def test_a_first_tracker_whose_search_fails_is_skipped_for_the_next(flow, capsys) -> None:
-    calls, executed, set_fake = flow
-    _red_search_fails(set_fake)
-
-    _upload_unpicked(["RED", "OPS"])
-
-    searches = [(name, site) for name, site, _kw in calls if name.endswith(("_group_candidates", "existing_group"))]
-    assert searches == [("fetch_existing_group_candidates", "RED"), ("check_existing_group", "OPS")]
-    assert [site for name, site, _kw in calls if name == "upload_and_report"] == ["OPS"]
-    out = capsys.readouterr().out
-    assert "Could not search RED for dupes (RED is down): skipping it." in out
-    assert executed == [True]
-
-
-@pytest.mark.parametrize(
-    ("trackers", "request_id"), [(None, None), (["RED", "OPS"], 7)], ids=["none-to-follow", "request"]
-)
-def test_a_first_tracker_whose_search_fails_ends_the_run_when_none_can_follow(
-    flow, monkeypatch, capsys, trackers, request_id
+def test_declining_another_tracker_runs_the_check_once_before_the_first_trackers_transcodes(
+    monkeypatch, tmp_path, dirs
 ) -> None:
-    calls, _executed, set_fake = flow
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
-    _red_search_fails(set_fake)
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED", "OPS", "DIC")
+    checks, edits = _checks(monkeypatch), _description_edits(monkeypatch)
 
-    _upload_unpicked(trackers, request_id)
-
-    assert "upload_and_report" not in [name for name, _site, _kw in calls]
-    out = capsys.readouterr().out
-    assert "Could not search RED for dupes: RED is down" in out
-    assert "Aborting upload" in out
-
-
-@pytest.mark.parametrize("given", [True, False], ids=["given", "picked"])
-def test_the_first_trackers_group_is_weighed_against_the_reviewed_edition(flow, monkeypatch, given: bool) -> None:
-    _calls, _executed, set_fake = flow
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
-    seen: list[tuple] = []
-
-    async def recheck(_site, group_id, release, weighed_against):
-        seen.append((group_id, release["title"], weighed_against))
-        return group_id
-
-    async def edit_metadata(*_args, **_kwargs):
-        reviewed = {"artists": [("Artist", "main")], "title": "Album (Reviewed)", "label": "Label", "catno": None}
-        return "/release", {**reviewed, "cover": None}, {}, {}
-
-    set_fake("recheck_edition", recheck)
-    set_fake("edit_metadata", edit_metadata)
-    if given:
-        _upload(None)
-    else:
-        _upload_unpicked(None)
-
-    assert [(group_id, title) for group_id, title, _weighed in seen] == [(5, "Album (Reviewed)")]
-    assert (seen[0][2] is None) is given
-
-
-def test_a_pick_is_weighed_as_the_tags_had_it_though_the_scrape_edits_them(flow, monkeypatch) -> None:
-    _calls, _executed, set_fake = flow
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
-    weighed_years: list[int] = []
-
-    async def get_metadata(_path, _tags, rls_data, **_kwargs):
-        # As combine_metadatas does with its base: the chosen scrape lands in the tags' release itself.
-        rls_data["year"] = 2005
-        return rls_data, None
-
-    async def recheck(_site, group_id, _release, weighed_against):
-        weighed_years.append(weighed_against["year"])
-        return group_id
-
-    set_fake("get_metadata", get_metadata)
-    set_fake("recheck_edition", recheck)
-    _upload_unpicked(None)
-
-    assert weighed_years == [2020]
-
-
-def test_conversions_the_edition_already_holds_are_left_out_after_the_flac(flow, monkeypatch) -> None:
-    _calls, _executed, set_fake = flow
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", True)
-    reviewed = {
-        "artists": [("Artist", "main")],
-        "title": "Album",
-        "label": "Label",
-        "catno": None,
-        "cover": None,
-        "source": "WEB",
-        "format": "FLAC",
-        "encoding": "Lossless",
-        "year": 2020,
-    }
-    group = {"group": {"year": 2020}, "torrents": [{"id": 9, "media": "WEB", "format": "MP3", "encoding": "V0 (VBR)"}]}
-    offered: list[set[str]] = []
-
-    async def edit_metadata(*_args, **_kwargs):
-        return "/release", reviewed, {}, {}
-
-    async def printed(*_args, **_kwargs):
-        return group
-
-    async def choose(_rls_data, _track_data, held, _conversions=None):
-        offered.append(held)
-        return []
-
-    options = [
-        {"name": "MP3 V0", "action": "transcode", "encoding": "V0"},
-        {"name": "MP3 320", "action": "transcode", "encoding": "320"},
-    ]
-    set_fake("edit_metadata", edit_metadata)
-    set_fake("print_torrents", printed)
-    monkeypatch.setattr(salmon.uploader, "get_downconversion_options", lambda *_args, **_kwargs: options)
-    monkeypatch.setattr(salmon.uploader, "prompt_downconversion_choice", choose)
-    _upload(None)
-
-    assert offered == [{"MP3 V0"}]
-
-
-def test_a_listed_first_tracker_is_not_weighed_or_searched(flow, monkeypatch) -> None:
-    calls, _executed, _set_fake = flow
-    monkeypatch.setattr(
-        salmon.uploader, "do_not_upload_reason", lambda tracker, _release: "listed" if tracker == "RED" else None
+    run = _run_up(
+        monkeypatch, _album(tmp_path / "Album"), torrents, args=("-a",), input="\n\nn\n", classes=THREE_TRACKERS
     )
 
-    _upload(["RED", "OPS"])
+    assert run.result.exit_code == 0, run.result.output
+    assert checks == [("RED", FIRST_TORRENT_ID)]
+    assert len(edits) == 1
+    output = run.result.output
+    assert output.index("comment for the lossy approval report") < output.index("Selected formats for downconversion")
+    assert output.count(ANOTHER_TRACKER) == 1
+    assert len(_uploads(run)) == len(_reports(run)) == 3
 
-    names_and_sites = [(name, site) for name, site, _kw in calls]
-    assert ("recheck_edition", "RED") not in names_and_sites
-    assert [site for name, site in names_and_sites if name == "upload_and_report"] == ["OPS"]
+
+def test_when_the_first_upload_fails_the_next_trackers_upload_gets_the_check(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED", "OPS")
+    checks, edits = _checks(monkeypatch), _description_edits(monkeypatch)
+    upload_and_report = salmon.uploader.upload_and_report
+
+    async def red_fails(gazelle_site, *args, **kwargs) -> Any:
+        if gazelle_site.site_code == "RED":
+            raise RequestError("RED is down")
+        return await upload_and_report(gazelle_site, *args, **kwargs)
+
+    # A new group on RED, whose upload fails; OPS, a new group there, then no lossy master comment.
+    run = _run_up(
+        monkeypatch,
+        _album(tmp_path / "Album"),
+        torrents,
+        args=("-a",),
+        input="\nOPS\n\n\n",
+        upload_and_report=red_fails,
+    )
+
+    assert run.result.exit_code == 0, run.result.output
+    assert "Upload to RED failed: RED is down" in run.result.output
+    assert checks == [("OPS", FIRST_TORRENT_ID)]
+    assert [(site, torrent_id) for site, torrent_id, _text in edits] == [("OPS", FIRST_TORRENT_ID)]
 
 
-def test_the_first_trackers_search_gets_our_title_and_its_prompt_our_release(flow, monkeypatch) -> None:
-    calls, _executed, _set_fake = flow
-    monkeypatch.setattr(salmon.uploader.cfg.upload, "multi_tracker_upload", False)
+def test_a_refused_lossy_master_report_is_not_a_failed_upload(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED", "OPS")
+    checks, edits = _checks(monkeypatch), _description_edits(monkeypatch)
+    refused: list[int] = []
 
-    _upload_unpicked(None)
+    async def report_lossy_master(_self, torrent_id: int, _comment: str, _source: str) -> bool:
+        refused.append(torrent_id)
+        raise RequestError("Failed to report the torrent for lossy master, code 500.")
 
-    first = {name: kw for name, _site, kw in calls if name.endswith("_group_candidates") or name.startswith("resolve")}
-    assert first["fetch_existing_group_candidates"] == {"our_title": "Album"}
-    assert first["resolve_existing_group"]["release"]["title"] == "Album"
+    for cls in (BaseGazelleApi, OpsApi):
+        monkeypatch.setattr(cls, "report_lossy_master", report_lossy_master)
+
+    # RED: a new group, no lossy master comment. OPS: a new group.
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, args=("-a",), input="\n\nOPS\n\n")
+
+    assert run.result.exit_code == 0, run.result.output
+    output = run.result.output
+    assert "Upload to RED failed" not in output and "Upload to OPS failed" not in output
+    # The check's report, then the transcodes' on RED; then OPS's three, which carry the check's result too.
+    assert checks == [("RED", FIRST_TORRENT_ID)]
+    assert len(edits) == 1
+    assert refused == list(range(FIRST_TORRENT_ID, FIRST_TORRENT_ID + 6)), output
+    assert len(_uploads(run)) == 6
+    # Each refused report is printed, to be filed by hand, with the spectral links.
+    assert output.count("did not take the lossy master report") == 6
+    assert output.count("[hide=Spectrals]") >= 6
+
+
+# Never offering to delete the uploaded folder (#568)
+
+
+def test_the_next_trackers_group_prompts_do_not_offer_to_delete_the_folder(monkeypatch, tmp_path, dirs) -> None:
+    downloads, torrents = dirs
+    _trackers(monkeypatch, "RED", "OPS")
+
+    # RED: a new group. OPS: "d" is no answer, group 55, "d" is no answer at its confirmation either, then yes.
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, input="\nOPS\nd\n55\nd\ny\n")
+
+    assert run.result.exit_code == 0, run.result.output
+    output = run.result.output
+    ops_part = output[output.index(ANOTHER_TRACKER) :]
+    # Offered before the first upload, as before; never after it.
+    assert DELETE in output[: output.index(ANOTHER_TRACKER)]
+    assert DELETE not in ops_part
+    assert ops_part.count("Would you like to upload to an existing group?") == 2
+    assert ops_part.count("Are you sure you would you like to upload this torrent to this group?") == 2
+    assert [upload.get("groupid") for upload in _uploads(run)][3:] == ["55", "55", "55"]
+    assert (downloads / RENAMED).is_dir()
+
+
+def test_aborting_at_the_next_trackers_group_prompt_ends_the_run_and_still_seeds(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED", "OPS")
+    seedbox_runs = _seedbox_runs(monkeypatch)
+
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, input="\nOPS\na\n")
+
+    assert run.result.exit_code == 0, run.result.output
+    assert run.result.exception is None
+    output = run.result.output
+    assert "Aborting: nothing more is uploaded. Already uploaded:" in output
+    # The FLAC and its two transcodes, all on RED.
+    assert output.count("/torrents.php?torrentid=", output.index("Aborting: nothing more")) == 3
+    assert len(_uploads(run)) == 3
+    assert seedbox_runs == [True]
+    assert len(run.queued) == 6
+
+
+def test_the_check_after_the_upload_does_not_offer_to_delete_the_folder_and_abort_ends_the_run(
+    monkeypatch, tmp_path, dirs
+) -> None:
+    downloads, torrents = dirs
+    _trackers(monkeypatch, "RED", "OPS")
+    seedbox_runs = _seedbox_runs(monkeypatch)
+    checks: list[str] = []
+    real = spectrals_module.post_upload_spectral_check
+
+    async def recording(gazelle_site, *args, **kwargs) -> Any:
+        checks.append(gazelle_site.site_code)
+        return await real(gazelle_site, *args, **kwargs)
+
+    async def generate_spectrals_all(path: str, spectrals_path: str, _audio_info: Any) -> dict[int, str]:
+        for name in ("01 Full.png", "01 Zoom.png"):
+            (Path(spectrals_path) / name).write_bytes(b"png")
+        return {1: "01. one.flac"}
+
+    async def no_viewer(*_args: Any) -> None:
+        pass
+
+    monkeypatch.setattr(salmon.uploader, "post_upload_spectral_check", recording)
+    # The real check and its lossy master prompt, on spectrals made up without sox.
+    monkeypatch.setattr(spectrals_module, "generate_spectrals_all", generate_spectrals_all)
+    monkeypatch.setattr(interaction, "show_spectrals", no_viewer)
+
+    # RED: a new group. The lossy master prompt: "d" is no answer, then abort.
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, args=("-a",), input="\nd\na\n")
+
+    assert run.result.exit_code == 0, run.result.output
+    assert run.result.exception is None
+    output = run.result.output
+    assert checks == ["RED"]
+    lossy_prompt = output[output.index("Checking lossy master") :]
+    assert lossy_prompt.count("Is this release lossy mastered?") == 2
+    assert DELETE not in lossy_prompt
+    assert "Aborting: nothing more is uploaded. Already uploaded:" in output
+    assert f"/torrents.php?torrentid={FIRST_TORRENT_ID}" in output[output.index("Aborting: nothing more") :]
+    # Neither the transcodes nor another tracker.
+    assert len(_uploads(run)) == 1
+    assert ANOTHER_TRACKER not in output
+    assert seedbox_runs == [True]
+    assert len(run.queued) == 2
+    assert (downloads / RENAMED).is_dir()
+    assert _left_behind(downloads) == []
+
+
+def test_the_check_after_the_upload_leaves_the_albums_own_spectrals_folder(monkeypatch, tmp_path, dirs) -> None:
+    # The torrent seeds from the renamed copy: the check used to empty its Spectrals folder, then delete it.
+    downloads, torrents = dirs
+    _trackers(monkeypatch, "RED")
+    checks, edits = _checks(monkeypatch), _description_edits(monkeypatch)
+    album = _album(tmp_path / "Album")
+    (album / "Spectrals").mkdir()
+    (album / "Spectrals" / "notes.txt").write_bytes(b"mine")
+
+    run = _run_up(monkeypatch, album, torrents, args=("-a",), input="\n\n")
+
+    assert run.result.exit_code == 0, run.result.output
+    assert checks == [("RED", FIRST_TORRENT_ID)]
+    assert len(edits) == 1
+    assert (album / "Spectrals" / "notes.txt").read_bytes() == b"mine"
+    assert (downloads / RENAMED / "Spectrals" / "notes.txt").read_bytes() == b"mine"
+    assert _left_behind(downloads) == []
+    assert list(downloads.glob("spectrals_*")) == []
+
+
+# Once the tracker has the torrent: what fails after it does not report it failed, and it is seeded
+
+
+class NoGroupIdTracker(FakeTracker):
+    """Answers an upload with group 0, as an API answer may."""
+
+    async def _handle(self, request: web.Request) -> web.StreamResponse:
+        response = await super()._handle(request)
+        if request.path == "/ajax.php" and request.query.get("action") == "upload":
+            # The torrent id the fake tracker just gave it.
+            torrent_id = self._next_torrent_id - 1
+            return web.json_response({"status": "success", "response": {"torrentid": torrent_id, "groupid": 0}})
+        return response
+
+
+def test_an_upload_whose_group_id_does_not_come_back_offers_no_conversions(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED")
+    seedbox_runs = _seedbox_runs(monkeypatch)
+    offered: list[bool] = []
+    choose = salmon.uploader.prompt_downconversion_choice
+
+    async def recording(*args: Any, **kwargs: Any) -> Any:
+        offered.append(True)
+        return await choose(*args, **kwargs)
+
+    # A new group on RED.
+    run = _run_up(
+        monkeypatch,
+        _album(tmp_path / "Album"),
+        torrents,
+        input="\n\n",
+        tracker=NoGroupIdTracker(),
+        prompt_downconversion_choice=recording,
+    )
+
+    assert run.result.exit_code == 0, run.result.output
+    url = f"{run.tracker.url}/torrents.php?torrentid={FIRST_TORRENT_ID}"
+    assert f"No group id came back for {url}: no conversions are offered for it." in run.result.output
+    # Each conversion would have started a group of its own: none is offered, nor sent.
+    assert offered == []
+    assert len(_uploads(run)) == 1
+    # Nor is group 0's page asked for.
+    assert not [sent for sent in run.tracker.sent if sent.query.get("action") == "torrentgroup"]
+    assert seedbox_runs == [True]
+    assert len(run.queued) == 2
+
+
+def test_a_machine_with_no_clipboard_still_reports_and_seeds_each_upload(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED")
+    seedbox_runs = _seedbox_runs(monkeypatch)
+    monkeypatch.setattr(cfg.upload.description, "copy_uploaded_url_to_clipboard", True)
+
+    def no_clipboard(_text: str) -> None:
+        raise pyperclip.PyperclipException("Pyperclip could not find a copy/paste mechanism for your system.")
+
+    monkeypatch.setattr(pyperclip, "copy", no_clipboard)
+
+    # A new group on RED.
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, input="\n\n")
+
+    assert run.result.exit_code == 0, run.result.output
+    output = run.result.output
+    # The FLAC and its two transcodes, each reported and queued for the seedbox.
+    assert len(_uploads(run)) == 3
+    assert output.count("Successfully uploaded") == 3
+    assert output.count("Could not copy to the clipboard: Pyperclip could not find") == 3
+    assert seedbox_runs == [True]
+    assert len(run.queued) == 6
+
+
+def test_a_torrent_the_disk_cannot_take_the_url_into_still_seeds_as_uploaded(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED")
+    seedbox_runs = _seedbox_runs(monkeypatch)
+    write = Torrent.write
+    failed: list[str] = []
+
+    def full_disk(self: Torrent, filepath: str, validate: bool = True, overwrite: bool = False) -> None:
+        if not self.comment:
+            # The .torrent the upload is made from.
+            return write(self, filepath, validate=validate, overwrite=overwrite)
+        # With its URL, once uploaded: part of it, then the disk is full.
+        failed.append(os.path.basename(filepath))
+        Path(filepath).write_bytes(self.dump()[:100])
+        raise WriteError(errno.ENOSPC, filepath)
+
+    monkeypatch.setattr(Torrent, "write", full_disk)
+
+    # A new group on RED.
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, input="\n\n")
+
+    assert run.result.exit_code == 0, run.result.output
+    output = run.result.output
+    assert len(failed) == 3
+    assert len(_uploads(run)) == 3
+    assert output.count("Successfully uploaded") == 3
+    assert output.count("it seeds without it.") == 3
+    # Each .torrent is the one uploaded, whole, with nothing left beside it.
+    dot_torrents = sorted(torrents.iterdir())
+    assert [path.suffix for path in dot_torrents] == [".torrent"] * 3
+    sent = sorted(Torrent.read_stream(dict(upload)["file_input"][1]).infohash for upload in _sent_files(run))
+    assert sorted(Torrent.read(path).infohash for path in dot_torrents) == sent
+    assert seedbox_runs == [True]
+    assert len(run.queued) == 6
+
+
+def _sent_files(run) -> list[list[tuple[str, Any]]]:
+    return [sent.fields for sent in run.tracker.sent if sent.query.get("action") == "upload"]
 
 
 def _uploaded_torrent(tmp_path: Path) -> tuple[Torrent, Path]:
@@ -677,3 +523,132 @@ def test_the_rewritten_torrent_keeps_the_mode_of_the_one_it_replaces(tmp_path) -
 
     assert Torrent.read(torrent_path).comment == torrent.comment
     assert torrent_path.stat().st_mode & 0o777 == 0o640
+
+
+# remove_local_after_copy runs only after a run that ended by itself with every upload done (#754)
+
+
+def _removals(monkeypatch) -> list[str | None]:
+    """Record each call of remove_local_copies with its keep_because, instead of removing anything."""
+    calls: list[str | None] = []
+    monkeypatch.setattr(
+        UploadManager, "remove_local_copies", lambda _self, keep_because=None: calls.append(keep_because)
+    )
+    return calls
+
+
+def test_a_clean_run_asks_for_the_local_copies_to_be_removed(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED")
+    removals = _removals(monkeypatch)
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, input="\n\n")
+    assert run.result.exit_code == 0, run.result.output
+    assert removals == [None]
+
+
+@pytest.mark.parametrize("error", [RequestError("RED is down"), UnknownOutcomeError("RED hung up")])
+def test_a_failed_tracker_upload_keeps_the_local_copies(monkeypatch, tmp_path, dirs, error) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED", "OPS")
+    removals = _removals(monkeypatch)
+    _checks(monkeypatch)
+    _description_edits(monkeypatch)
+    upload_and_report = salmon.uploader.upload_and_report
+
+    async def ops_fails(gazelle_site, *args, **kwargs) -> Any:
+        if gazelle_site.site_code == "OPS":
+            raise error
+        return await upload_and_report(gazelle_site, *args, **kwargs)
+
+    run = _run_up(
+        monkeypatch,
+        _album(tmp_path / "Album"),
+        torrents,
+        args=("-a",),
+        input="\nOPS\n\n\n",
+        upload_and_report=ops_fails,
+    )
+    assert run.result.exit_code == 0, run.result.output
+    assert removals == ["the upload to OPS failed or was skipped"]
+
+
+def test_an_abort_after_an_upload_keeps_the_local_copies_and_still_seeds(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED", "OPS")
+    removals = _removals(monkeypatch)
+    seedbox_runs = _seedbox_runs(monkeypatch)
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, input="\nOPS\na\n")
+    assert run.result.exit_code == 0, run.result.output
+    assert "Aborting: nothing more is uploaded." in run.result.output
+    assert seedbox_runs == [True]
+    assert removals == ["the run stopped before it finished"]
+
+
+def test_an_unexpected_error_keeps_the_local_copies_and_propagates(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED")
+    removals = _removals(monkeypatch)
+    seedbox_runs = _seedbox_runs(monkeypatch)
+
+    async def breaks(gazelle_site, *args, **kwargs) -> Any:
+        raise RuntimeError("disk on fire")
+
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, input="\n\n", upload_and_report=breaks)
+    assert isinstance(run.result.exception, RuntimeError)
+    assert seedbox_runs == [True]
+    assert removals == ["the run stopped before it finished"]
+
+
+def test_a_skipped_tracker_keeps_the_local_copies(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED", "OPS")
+    removals = _removals(monkeypatch)
+    _checks(monkeypatch)
+    _description_edits(monkeypatch)
+    resolve_cover_url = salmon.uploader.resolve_cover_url
+
+    async def ops_has_no_cover(gazelle_site, *args, **kwargs) -> Any:
+        if gazelle_site.site_code == "OPS":
+            return False, None
+        return await resolve_cover_url(gazelle_site, *args, **kwargs)
+
+    monkeypatch.setattr(salmon.uploader, "resolve_cover_url", ops_has_no_cover)
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, args=("-a",), input="\nOPS\n\n\n")
+    assert run.result.exit_code == 0, run.result.output
+    assert "Skipping upload to OPS." in run.result.output
+    assert removals == ["the upload to OPS failed or was skipped"]
+
+
+def test_a_tracker_refused_before_its_upload_keeps_the_local_copies(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED", "OPS")
+    removals = _removals(monkeypatch)
+    _checks(monkeypatch)
+    _description_edits(monkeypatch)
+    refusal = salmon.uploader._do_not_upload_refusal
+
+    def ops_refused(tracker: str, release: dict[str, Any], said: str | None = None) -> str | None:
+        return "refused" if tracker == "OPS" else refusal(tracker, release, said)
+
+    monkeypatch.setattr(salmon.uploader, "_do_not_upload_refusal", ops_refused)
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, args=("-a",), input="\nOPS\n\n\n")
+    assert run.result.exit_code == 0, run.result.output
+    assert removals == ["the upload to OPS failed or was skipped"]
+
+
+def test_a_first_tracker_refused_before_the_loop_keeps_the_local_copies(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED", "OPS")
+    removals = _removals(monkeypatch)
+    _checks(monkeypatch)
+    _description_edits(monkeypatch)
+    refusal = salmon.uploader._do_not_upload_refusal
+
+    def red_refused(tracker: str, release: dict[str, Any], said: str | None = None) -> str | None:
+        return "refused" if tracker == "RED" else refusal(tracker, release, said)
+
+    monkeypatch.setattr(salmon.uploader, "_do_not_upload_refusal", red_refused)
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, args=("-a",), input="OPS\n\n\n")
+    assert run.result.exit_code == 0, run.result.output
+    assert len(_uploads(run)) > 0, run.result.output
+    assert removals == ["the upload to RED failed or was skipped"]
