@@ -18,11 +18,14 @@ import aiohttp
 import anyio
 import pytest
 from aiohttp import web
+from fake_proxy import FakeProxy
 from tenacity import wait_none
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import salmon.run
 import salmon.trackers
+from salmon import cfg
+from salmon.config.validations import ProxyCfg, ProxyServicesCfg
 from salmon.errors import RequestError, TLSCertificateError, UnknownOutcomeError
 from salmon.trackers.account import SlidingWindowLimiter
 from salmon.trackers.base import BaseGazelleApi, RetryableError
@@ -222,6 +225,31 @@ def test_expired_certificate_connects_once(certificates: Certificates) -> None:
     err, accepted = anyio.run(_certificate_failure, certificates.expired, "GET", True)
     assert accepted == 1
     assert str(err) == "TLS certificate verification failed for 127.0.0.1: certificate has expired"
+
+
+async def _certificate_failure_through_a_proxy(certificate: Certificate) -> tuple[TLSCertificateError, int, int]:
+    server = await Server().serve_tls(certificate)
+    proxy = FakeProxy("socks5")
+    proxy_url = await proxy.start()
+    api = FakeApi(server.url)
+    try:
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            # Only RED's requests go through it; any other service would hit a port nothing listens on.
+            others = dict.fromkeys(ProxyServicesCfg.__struct_fields__, "socks5://127.0.0.1:9")
+            monkeypatch.setattr(cfg, "proxy", ProxyCfg(services=ProxyServicesCfg(**{**others, "red": proxy_url})))
+            with pytest.raises(TLSCertificateError) as caught:
+                await _request(api)
+        return caught.value, proxy.connections, server.accepted
+    finally:
+        await api.close()
+        await proxy.stop()
+        await server.close()
+
+
+def test_certificate_failure_through_a_proxy_connects_once(certificates: Certificates) -> None:
+    err, through_proxy, accepted = anyio.run(_certificate_failure_through_a_proxy, certificates.self_signed)
+    assert (through_proxy, accepted) == (1, 1)
+    assert str(err) == "TLS certificate verification failed for 127.0.0.1: self-signed certificate"
 
 
 class _CertificateFailureOnSecondConnection(aiohttp.TCPConnector):

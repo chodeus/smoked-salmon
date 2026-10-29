@@ -12,9 +12,10 @@ import anyio
 import pytest
 from aiohttp import web
 from asyncclick.testing import CliRunner, Result
+from test_ssrf import LOOPBACK, FakeStore  # pyright: ignore[reportMissingImports]
 
 import salmon.tagger
-from salmon.sources import base as sources_base
+from salmon import ssrf
 from salmon.tagger.sources import discogs, run_metadata
 
 RELEASE_URL = "https://www.discogs.com/release/2520452-Various-Dance-Anthems"
@@ -40,37 +41,36 @@ RELEASE = {
 }
 
 
-def in_fake_discogs(
-    monkeypatch: pytest.MonkeyPatch, run: Callable[[], Coroutine[Any, Any, Any]]
-) -> tuple[Any, list[str]]:
-    """Run `run` against a fake Discogs API on loopback; returns its result and the paths asked."""
-    requests: list[str] = []
+class FakeDiscogs(FakeStore):
+    """The Discogs API: release 2520452, whatever is asked."""
 
-    async def answer(request: web.Request) -> web.Response:
-        requests.append(request.path)
+    async def _answer(self, request: web.Request) -> web.StreamResponse:
+        self.requests.append(request.path)
         return web.json_response(RELEASE)
 
-    async def main() -> Any:
-        app = web.Application()
-        app.router.add_route("*", "/{tail:.*}", answer)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        await web.TCPSite(runner, "127.0.0.1", 0).start()
-        try:
-            # The scrapers refuse a non-public address, and the fake answers on loopback.
-            monkeypatch.setattr(sources_base, "is_public_ip", lambda _ip: True)
-            monkeypatch.setattr(discogs.Scraper, "url", f"http://127.0.0.1:{runner.addresses[0][1]}")
-            return await run()
-        finally:
-            await runner.cleanup()
 
-    return anyio.run(main), requests
+def pointed_at(monkeypatch: pytest.MonkeyPatch, store: FakeStore) -> None:
+    monkeypatch.setattr(ssrf, "ALLOWED", LOOPBACK)
+    monkeypatch.setattr(discogs.Scraper, "url", store.url(""))
+
+
+def in_fake_discogs(
+    monkeypatch: pytest.MonkeyPatch, run: Callable[[], Coroutine[Any, Any, Any]]
+) -> tuple[Any, FakeDiscogs]:
+    store = FakeDiscogs()
+
+    async def main() -> Any:
+        async with store.serving():
+            pointed_at(monkeypatch, store)
+            return await run()
+
+    return anyio.run(main), store
 
 
 def test_a_scrape_shown_on_its_own_holds_no_artist_variations(monkeypatch: pytest.MonkeyPatch) -> None:
-    metadata, requests = in_fake_discogs(monkeypatch, lambda: run_metadata(RELEASE_URL))
+    metadata, store = in_fake_discogs(monkeypatch, lambda: run_metadata(RELEASE_URL))
 
-    assert requests == ["/releases/2520452"]
+    assert store.requests == ["/releases/2520452"]
     track = metadata["tracks"]["3"]["3"]
     assert track["artists"] == [("K-Ci & JoJo", "main"), ("Club Asylum", "remixer")]
     assert "artist_variations" not in track

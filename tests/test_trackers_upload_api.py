@@ -44,7 +44,7 @@ class DummyGazelleApi(BaseGazelleApi):
     """Minimal concrete subclass so tests do not depend on tracker config."""
 
     def __init__(self):
-        self.site_code = "DMY"
+        self.site_code = "RED"
         self.base_url = "https://dummy.example"
         self.tracker_url = "https://announce.dummy.example"
         self.site_string = "Dummy"

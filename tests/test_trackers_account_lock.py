@@ -15,7 +15,7 @@ from salmon.trackers.base import BaseGazelleApi
 
 
 class FakeApi(BaseGazelleApi):
-    site_code = "LOCKTEST"
+    site_code = "RED"
     site_string = "Fake"
     tracker_url = "https://announce.fake.example"
     cookie = "fake-cookie"

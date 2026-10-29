@@ -424,3 +424,51 @@ def test_remixed_is_not_appended_to_a_title_that_ends_in_a_version():
 )
 def test_remixer_is_still_appended_unless_the_title_names_its_version(title, expected):
     assert remix_title(title) == expected
+
+
+@pytest.mark.parametrize("group_year", [None, "2018"])
+def test_dateless_source_preserves_tag_years(group_year):
+    base = make_metadata("Release")
+    base.update(year="2020", group_year=group_year)
+    source = make_metadata("Release")
+    source.update(year=None, group_year=None, date=None)
+
+    combined = combine_metadatas(("MusicBrainz", source), base=base)
+
+    assert combined["year"] == "2020"
+    assert combined["group_year"] == (group_year or "2020")
+
+
+def test_dated_source_can_still_supply_release_year():
+    base = make_metadata("Release")
+    base.update(year="2020", group_year=None)
+    source = make_metadata("Release")
+    source.update(year="2021", group_year="2019", date="2021-02-03")
+
+    combined = combine_metadatas(("MusicBrainz", source), base=base)
+
+    assert combined["year"] == "2021"
+    assert combined["group_year"] == "2019"
+    assert combined["date"] == "2021-02-03"
+
+
+def test_a_dateless_source_with_years_of_its_own_leaves_the_years_alone():
+    base = make_metadata("Release")
+    base.update(year="2020", group_year="2018")
+    source = make_metadata("Release")
+    source.update(year="2019", group_year=None, date=None)
+
+    combined = combine_metadatas(("MusicBrainz", source), base=base)
+
+    assert (combined["year"], combined["group_year"], combined["date"]) == ("2020", "2018", None)
+
+
+def test_a_dated_source_without_years_keeps_the_years_it_lacks():
+    base = make_metadata("Release")
+    base.update(year="2020", group_year="2018")
+    source = make_metadata("Release")
+    source.update(year=None, group_year=None, date="2021-02-03")
+
+    combined = combine_metadatas(("MusicBrainz", source), base=base)
+
+    assert (combined["year"], combined["group_year"], combined["date"]) == ("2020", "2018", "2021-02-03")

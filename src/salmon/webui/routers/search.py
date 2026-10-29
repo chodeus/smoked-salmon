@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from salmon import ssrf
 from salmon.errors import ScrapeError
 from salmon.search import SEARCHSOURCES, run_metasearch
 from salmon.tagger.sources import run_metadata
@@ -15,7 +16,8 @@ router = APIRouter(tags=["search"])
 @router.get("/search")
 async def search(q: str, limit: int = 10, track_count: int | None = None) -> dict:
     """Search all configured metadata providers for a release."""
-    results = await run_metasearch([q], limit=limit, track_count=track_count, filter=False)
+    with ssrf.public_only():
+        results = await run_metasearch([q], limit=limit, track_count=track_count, filter=False)
     sources: dict[str, Any] = {}
     for name in SEARCHSOURCES:
         result = results.get(name)
@@ -45,7 +47,8 @@ async def metadata(url: str) -> dict:
     """Scrape full release metadata from a supported source URL."""
     await assert_public_url(url)
     try:
-        meta = await run_metadata(url)
+        with ssrf.public_only():
+            meta = await run_metadata(url)
     except ScrapeError as e:
         raise HTTPException(status_code=422, detail=f"Scrape failed: {e}") from e
     if meta is None:

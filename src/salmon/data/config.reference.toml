@@ -332,6 +332,63 @@
 # background = false
 
 # ===============================
+# PROXY SETTINGS
+# ===============================
+# Send requests through a proxy, for every service below or only for some. Without a [proxy]
+# section, or with an empty one, salmon connects directly.
+#
+# Format: scheme://[user:password@]host:port, where scheme is http, socks4, socks4a, socks5 or
+# socks5h. Percent-encode special characters in the user and password (@ is %40, / is %2F).
+# The proxy resolves the names of the sites, so they are not looked up locally: socks4 works
+# as socks4a, and socks5 as socks5h. An http proxy carries HTTPS through CONNECT; a proxy
+# reached over TLS itself (https://) is not supported.
+#
+# [proxy] url applies to every service below without a setting of its own. A service's own
+# setting overrides it, and an empty one ("") connects that service directly.
+#
+# To proxy everything:
+#   [proxy]
+#   url = "socks5://user:password@host:port"
+#
+# To proxy everything but one service:
+#   [proxy]
+#   url = "socks5://host:1080"
+#   [proxy.services]
+#   bandcamp = ""
+#
+# To proxy one service only:
+#   [proxy.services]
+#   qobuz = "http://host:port"
+#
+# The RED image host uploads through the RED tracker client, so it uses the red setting.
+# Not proxied: the imgbox image host, MusicBrainz, cover image downloads, the AI review,
+# torrent clients and seedboxes, and the check for a new salmon version.
+
+[proxy]
+# url = "socks5://user:password@host:port"
+
+[proxy.services]
+# One key per service, set as in the examples above. Unset, a service uses [proxy] url.
+# Trackers: red, ops, dic
+# Metadata sources: qobuz, tidal, bandcamp, deezer, beatport, discogs, apple_music
+# Image hosts: catbox, imgbb, oeimg, ptscreens, ra
+# red = "socks5://host:1080"
+# ops = "socks5://host:1080"
+# dic = "socks5://host:1080"
+# qobuz = "socks5://host:1080"
+# tidal = "socks5://host:1080"
+# bandcamp = "socks5://host:1080"
+# deezer = "socks5://host:1080"
+# beatport = "socks5://host:1080"
+# discogs = "socks5://host:1080"
+# apple_music = "socks5://host:1080"
+# catbox = "socks5://host:1080"
+# imgbb = "socks5://host:1080"
+# oeimg = "socks5://host:1080"
+# ptscreens = "socks5://host:1080"
+# ra = "socks5://host:1080"
+
+# ===============================
 # WEB INTERFACE SETTINGS
 # ===============================
 # salmon web: salmon in the browser. Every setting is optional.

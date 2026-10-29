@@ -13,6 +13,7 @@ _PLACEHOLDER_USER_AUTH_TOKEN = "user_auth_token"
 
 
 class QobuzBase(BaseScraper):
+    proxy_service = "qobuz"
     url = "https://www.qobuz.com/api.json/0.2"
     site_url = "https://www.qobuz.com"
     regex = re.compile(

@@ -8,7 +8,8 @@ import pytest
 from fastapi import HTTPException
 from webui_client import web_client  # pyright: ignore[reportMissingImports]
 
-from salmon import cfg
+from salmon import cfg, ssrf
+from salmon.webui.routers import search, tools
 from salmon.webui.validation import assert_public_url, validate_album_dir
 
 
@@ -89,3 +90,54 @@ async def test_a_backslash_in_the_authority_is_refused_before_dns(monkeypatch) -
     with pytest.raises(HTTPException) as excinfo:
         await assert_public_url("http://127.0.0.1\\@evil.com/")
     assert excinfo.value.detail == "Only http(s) URLs are supported."
+
+
+def _guard_seen(monkeypatch, module, name, result) -> list[bool]:
+    """Stand in for the fetch `module` makes, recording whether the public-address guard was on for it."""
+    seen: list[bool] = []
+
+    async def fetch(*_args, **_kwargs):
+        seen.append(ssrf.active())
+        return result
+
+    monkeypatch.setattr(module, name, fetch)
+    return seen
+
+
+def test_the_search_route_fetches_with_the_public_address_guard_on(monkeypatch) -> None:
+    after: list[bool] = []
+
+    class Results:
+        # The route reads the results in the request's own task, after the guard's block.
+        def get(self, _name):
+            after.append(ssrf.active())
+
+    seen = _guard_seen(monkeypatch, search, "run_metasearch", Results())
+
+    with web_client() as c:
+        status = c.get("/api/search", params={"q": "artist album"}).status_code
+
+    assert status == 200
+    assert seen == [True]
+    assert after
+    assert not any(after)
+
+
+def test_the_metadata_route_fetches_with_the_public_address_guard_on(monkeypatch) -> None:
+    seen = _guard_seen(monkeypatch, search, "run_metadata", {"title": "Album"})
+
+    with web_client() as c:
+        status = c.get("/api/metadata", params={"url": "https://8.8.8.8/album/x"}).status_code
+
+    assert status == 200
+    assert seen == [True]
+
+
+def test_the_descgen_route_fetches_with_the_public_address_guard_on(monkeypatch) -> None:
+    seen = _guard_seen(monkeypatch, tools, "build_tracklist_description", "a description")
+
+    with web_client() as c:
+        status = c.post("/api/descgen", json={"urls": ["https://8.8.8.8/album/x"]}).status_code
+
+    assert status == 200
+    assert seen == [True]

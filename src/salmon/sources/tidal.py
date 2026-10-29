@@ -10,6 +10,7 @@ import msgspec
 from salmon import cfg
 from salmon.common.urls import parse_retry_after
 from salmon.errors import ScrapeError
+from salmon.proxy import session_kwargs
 from salmon.sources.base import BaseScraper
 
 # Tidal V2 mediaTags, best quality first.
@@ -54,6 +55,7 @@ class _UnauthorizedError(ScrapeError):
 
 
 class TidalBase(BaseScraper):
+    proxy_service = "tidal"
     url = "https://openapi.tidal.com/v2"
     token_url = "https://auth.tidal.com/v1/oauth2/token"
     site_url = "https://listen.tidal.com"
@@ -79,7 +81,7 @@ class TidalBase(BaseScraper):
             timeout = aiohttp.ClientTimeout(total=10)
             try:
                 async with (
-                    aiohttp.ClientSession(timeout=timeout) as session,
+                    aiohttp.ClientSession(timeout=timeout, **session_kwargs(cls.proxy_service)) as session,
                     session.post(
                         cls.token_url,
                         data={

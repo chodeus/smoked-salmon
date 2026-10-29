@@ -28,7 +28,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from torf import TorfError, Torrent
 from yarl import URL
 
-from salmon import cfg, dryrun
+from salmon import cfg, dryrun, proxy
 from salmon.common import UploadFiles
 from salmon.common.redaction import redact_tracker_headers, redact_tracker_text, safe_response_excerpt
 from salmon.common.urls import parse_retry_after
@@ -574,11 +574,12 @@ class BaseGazelleApi:
             yield
 
     def _new_session(self, connections: int) -> aiohttp.ClientSession:
-        """Make an HTTP session with a pool of at most `connections` connections."""
+        """Make an HTTP session with a pool of at most `connections` connections, through the tracker's proxy if any."""
         # DummyCookieJar keeps nothing between requests, so an api-key request
         # still goes out without a session cookie.
         return aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=connections), cookie_jar=aiohttp.DummyCookieJar()
+            connector=proxy.connector(self.site_code.lower(), fixed_hosts=True, limit=connections),
+            cookie_jar=aiohttp.DummyCookieJar(),
         )
 
     def _http_session(self) -> aiohttp.ClientSession:

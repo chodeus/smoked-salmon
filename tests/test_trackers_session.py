@@ -21,7 +21,7 @@ from salmon.webui.jobs import JobManager
 
 
 class FakeApi(BaseGazelleApi):
-    site_code = "FAKE"
+    site_code = "RED"
     site_string = "Fake"
     tracker_url = "https://announce.fake.example"
     cookie = "fake-cookie"

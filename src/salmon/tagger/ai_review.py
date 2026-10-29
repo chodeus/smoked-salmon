@@ -1,21 +1,23 @@
 import asyncio
+import contextlib
 import inspect
 import json
 import re
 import time
+from collections import OrderedDict
 from copy import deepcopy
-from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
+import aiohttp
 import asyncclick as click
 import msgspec
-import requests
 from bs4 import BeautifulSoup
 
 from salmon import cfg, interaction
 from salmon.constants import ARTIST_IMPORTANCES
 from salmon.errors import InvalidMetadataError
+from salmon.proxy import session_kwargs
 from salmon.tagger.sources.base import standardize_genres
 
 # openai takes about 0.3 s to import, so it is imported where a review runs, not when salmon starts.
@@ -541,23 +543,48 @@ def _page_explicitly_names_label(page_text: str, label: str) -> bool:
     return any(re.search(pattern, normalized_text) for pattern in patterns)
 
 
-@lru_cache(maxsize=64)
-def _fetch_release_page_text(url: str) -> str:
-    response = requests.get(
-        url,
-        headers={"User-Agent": cfg.upload.user_agent},
-        timeout=15,
-    )
-    response.raise_for_status()
-    html = response.text
-    soup = BeautifulSoup(html, "lxml")
-    return f"{soup.get_text(' ', strip=True)} {html}"
+# The text of the cited pages fetched so far, by URL: at most PAGE_TEXT_CACHE_SIZE, the oldest dropped first.
+# Read and changed one call at a time: each salmon web job runs on a thread of its own.
+_page_texts: OrderedDict[str, str] = OrderedDict()
+PAGE_TEXT_CACHE_SIZE = 64
+# A release page is far smaller: a bigger answer is not searched for a label, nor kept.
+MAX_PAGE_BYTES = 5 * 1024 * 1024
 
 
-def _url_explicitly_names_label(url: str, label: str) -> bool:
+async def _fetch_release_page_text(url: str) -> str:
+    if (cached := _page_texts.get(url)) is not None:
+        return cached
+    timeout = aiohttp.ClientTimeout(total=15)
+    # The AI chose this URL: salmon web's guard applies (salmon.ssrf).
+    async with (
+        aiohttp.ClientSession(timeout=timeout, **session_kwargs(None)) as session,
+        session.get(url, headers={"User-Agent": cfg.upload.user_agent}) as response,
+    ):
+        response.raise_for_status()
+        data = bytearray()
+        async for chunk in response.content.iter_chunked(64 * 1024):
+            data += chunk
+            if len(data) > MAX_PAGE_BYTES:
+                raise ValueError(f"the page is over {MAX_PAGE_BYTES // 1024 // 1024} MiB")
+        charset = response.charset or "utf-8"
     try:
-        page_text = _fetch_release_page_text(url)
-    except (requests.RequestException, ValueError):
+        html = data.decode(charset, errors="replace")
+    except LookupError:  # A charset Python does not know.
+        html = data.decode("utf-8", errors="replace")
+    soup = BeautifulSoup(html, "lxml")
+    text = f"{soup.get_text(' ', strip=True)} {html}"
+    if len(_page_texts) >= PAGE_TEXT_CACHE_SIZE:
+        # Another job may have emptied it since.
+        with contextlib.suppress(KeyError):
+            _page_texts.popitem(last=False)
+    _page_texts[url] = text
+    return text
+
+
+async def _url_explicitly_names_label(url: str, label: str) -> bool:
+    try:
+        page_text = await _fetch_release_page_text(url)
+    except (aiohttp.ClientError, TimeoutError, ValueError):
         return False
     return _page_explicitly_names_label(page_text, label)
 
@@ -623,7 +650,7 @@ def _guard_ai_url_change(
     return "Ignored AI URL additions that were not opened during review: " + ", ".join(dropped_additions) + "."
 
 
-def _guard_ai_label_change(
+async def _guard_ai_label_change(
     metadata: dict[str, Any],
     review: dict[str, Any],
     source_url: str | None,
@@ -661,9 +688,10 @@ def _guard_ai_label_change(
             "supported the label field."
         )
 
-    if any(_url_explicitly_names_label(url, proposed_label) for url in opened_label_urls):
-        review_metadata["label"] = proposed_label
-        return None
+    for url in opened_label_urls:
+        if await _url_explicitly_names_label(url, proposed_label):
+            review_metadata["label"] = proposed_label
+            return None
 
     return (
         f'Ignored AI label change to "{proposed_label}" because none of the opened cited pages '
@@ -671,7 +699,7 @@ def _guard_ai_label_change(
     )
 
 
-def _apply_ai_review_guardrails(
+async def _apply_ai_review_guardrails(
     metadata: dict[str, Any],
     review: dict[str, Any],
     source_url: str | None,
@@ -692,7 +720,7 @@ def _apply_ai_review_guardrails(
     if url_warning:
         warnings.append(url_warning)
 
-    label_warning = _guard_ai_label_change(metadata, sanitized_review, source_url, opened_page_urls)
+    label_warning = await _guard_ai_label_change(metadata, sanitized_review, source_url, opened_page_urls)
     if label_warning:
         warnings.append(label_warning)
 
@@ -1115,7 +1143,7 @@ async def _apply_ai_review(
     validator,
 ) -> dict[str, Any] | None:
     try:
-        sanitized_review, _warnings = _apply_ai_review_guardrails(metadata, review, source_url)
+        sanitized_review, _warnings = await _apply_ai_review_guardrails(metadata, review, source_url)
         updated_metadata = apply_ai_metadata_result(metadata, sanitized_review, source_url)
         validator(updated_metadata)
     except Exception as exc:
@@ -1199,7 +1227,7 @@ async def review_metadata_with_ai(
             click.secho(f"AI metadata review failed: {exc}", fg="red")
             return current_metadata
 
-        review, guardrail_warnings = _apply_ai_review_guardrails(current_metadata, review, source_url)
+        review, guardrail_warnings = await _apply_ai_review_guardrails(current_metadata, review, source_url)
         diff_lines = build_ai_review_diff(current_metadata, review, source_url)
         summary = review.get("summary")
         if isinstance(summary, str) and summary.strip():

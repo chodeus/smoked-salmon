@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 import salmon.trackers
-from salmon import cfg
+from salmon import cfg, ssrf
 from salmon.config.image_hosts import display_refusal
 from salmon.constants import SOURCES as SOURCE_CODES
 from salmon.constants import TAG_ENCODINGS
@@ -101,7 +101,8 @@ async def descgen(req: DescgenRequest) -> dict:
     for url in req.urls:
         await assert_public_url(url)
     try:
-        description = await build_tracklist_description(req.urls)
+        with ssrf.public_only():
+            description = await build_tracklist_description(req.urls)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not build a description: {e}") from e
     return {"description": description}

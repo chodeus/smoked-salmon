@@ -15,11 +15,10 @@ from PIL import Image
 
 from salmon import cfg
 from salmon.common import get_audio_files
+from salmon.images.files import MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS
+from salmon.proxy import session_kwargs
+from salmon.ssrf import NonPublicAddressError
 
-# A cover is a few MiB: this stops a wrong URL from filling memory.
-_MAX_COVER_BYTES = 25 * 1024 * 1024
-# 8000x8000: far past any store's artwork, well short of Pillow's decompression-bomb limit.
-_MAX_COVER_PIXELS = 64_000_000
 _COVER_FILE = re.compile(r"^(cover|folder)\.(jpe?g|png)$", re.IGNORECASE)
 # RED allows at most 1 MiB of embedded pictures plus padding per file.
 MAX_PICTURES_AND_PADDING = humanfriendly.parse_size("1MiB")
@@ -162,7 +161,7 @@ def _is_valid_cover(cover_path: str | IO[bytes]) -> bool:
         with Image.open(cover_path) as image:
             mime = image.get_format_mimetype()
             # Read from the header: a small file can claim pixels that would take gigabytes to load.
-            if image.width * image.height > _MAX_COVER_PIXELS:
+            if image.width * image.height > MAX_IMAGE_PIXELS:
                 return False
             # Every pixel: a download cut off with no Content-Length still has a valid header.
             image.load()
@@ -191,7 +190,8 @@ async def _download_cover(path: str, cover_url: str) -> str | None:
     data = bytearray()
     try:
         async with (
-            aiohttp.ClientSession(timeout=timeout) as session,
+            # No proxy service, but salmon web's guard (salmon.ssrf): the URL comes from a store's page.
+            aiohttp.ClientSession(timeout=timeout, **session_kwargs(None)) as session,
             session.get(cover_url, headers=headers) as response,
         ):
             if response.status >= 400:
@@ -200,12 +200,15 @@ async def _download_cover(path: str, cover_url: str) -> str | None:
 
             async for chunk in response.content.iter_chunked(64 * 1024):
                 data += chunk
-                if len(data) > _MAX_COVER_BYTES:
-                    click.secho(f"\nFailed to download cover image (ERROR over {_MAX_COVER_BYTES} bytes)", fg="red")
+                if len(data) > MAX_IMAGE_BYTES:
+                    limit = MAX_IMAGE_BYTES // 1024 // 1024
+                    click.secho(f"\nFailed to download cover image (ERROR over {limit} MiB)", fg="red")
                     return None
     except (aiohttp.ClientError, TimeoutError) as e:
-        # By type: an aiohttp error can repeat the URL, and a cover URL can be signed.
-        click.secho(f"\nFailed to download cover image (ERROR {type(e).__name__})", fg="red")
+        # By type: an aiohttp error can repeat the URL, and a cover URL can be signed. salmon web's own refusal
+        # names only the host.
+        reason = str(e) if isinstance(e, NonPublicAddressError) else type(e).__name__
+        click.secho(f"\nFailed to download cover image (ERROR {reason})", fg="red")
         return None
 
     if not _is_valid_cover(io.BytesIO(data)):

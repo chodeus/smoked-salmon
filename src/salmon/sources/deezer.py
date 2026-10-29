@@ -8,6 +8,7 @@ import msgspec
 
 from salmon.constants import UAGENTS
 from salmon.errors import ScrapeError
+from salmon.proxy import session_kwargs
 from salmon.sources.base import BaseScraper
 
 HEADERS = {
@@ -44,6 +45,7 @@ async def album_upc(url: str) -> str | None:
 class DeezerBase(BaseScraper):
     """Base scraper for Deezer metadata."""
 
+    proxy_service = "deezer"
     url = "https://api.deezer.com"
     site_url = "https://www.deezer.com"
     regex = re.compile(
@@ -71,7 +73,7 @@ class DeezerBase(BaseScraper):
         timeout = aiohttp.ClientTimeout(total=10)
         try:
             async with (
-                aiohttp.ClientSession(timeout=timeout) as session,
+                aiohttp.ClientSession(timeout=timeout, **session_kwargs(self.proxy_service)) as session,
                 session.get(
                     "https://www.deezer.com/ajax/gw-light.php",
                     params=params,
@@ -155,7 +157,7 @@ class DeezerBase(BaseScraper):
         timeout = aiohttp.ClientTimeout(total=10)
         try:
             async with (
-                aiohttp.ClientSession(timeout=timeout) as session,
+                aiohttp.ClientSession(timeout=timeout, **session_kwargs(self.proxy_service)) as session,
                 session.get(self.site_url + url, params=(params or {}), headers=HEADERS) as response,
             ):
                 if response.status != 200:

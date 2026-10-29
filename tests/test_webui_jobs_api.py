@@ -28,7 +28,7 @@ from starlette.websockets import WebSocketDisconnect
 from test_trackers_account import FakeTracker, _clients, _post  # pyright: ignore[reportMissingImports]
 from webui_client import reset_manager, web_client  # pyright: ignore[reportMissingImports]
 
-from salmon import cfg, interaction
+from salmon import cfg, interaction, ssrf
 from salmon.checks.integrity import IntegrityResult
 from salmon.common.progress import report_progress
 from salmon.errors import UnknownOutcomeError
@@ -249,6 +249,17 @@ async def test_job_success_sets_done_result_and_finished_at():
     assert job.error is None
     assert job.finished_at is not None
     assert job.to_dict()["params"] == {"p": 1}
+
+
+async def test_a_job_runs_with_the_public_address_guard_on():
+    m = JobManager()
+
+    async def factory(job):
+        return {"guarded": ssrf.active()}
+
+    job = await finished(m.create_threaded("demo", "Demo", factory))
+    assert job.result == {"guarded": True}
+    assert not ssrf.active()
 
 
 async def test_factory_value_error_sets_error_status_and_message():

@@ -24,7 +24,7 @@ class _FailingSession:
 
 
 def _get_json(monkeypatch, error: Exception):
-    monkeypatch.setattr(base, "_public_only_session", lambda _timeout: _FailingSession(error))
+    monkeypatch.setattr(base.aiohttp, "ClientSession", lambda *_args, **_kwargs: _FailingSession(error))
     scraper = base.BaseScraper()
     scraper.url = "https://api.example.test"
     return anyio.run(scraper.get_json, "/release/1")
@@ -32,11 +32,11 @@ def _get_json(monkeypatch, error: Exception):
 
 def _dns_error() -> ClientConnectorDNSError:
     key = ConnectionKey("api.example.test", 443, True, True, None, None, None)
-    return ClientConnectorDNSError(key, OSError(1, "refusing to connect to a non-public address"))
+    return ClientConnectorDNSError(key, OSError(1, "Name or service not known"))
 
 
-def test_a_blocked_address_becomes_a_scrape_error(monkeypatch) -> None:
-    # The public-only connector raises this; get_json's contract says ScrapeError.
+def test_a_connection_error_becomes_a_scrape_error(monkeypatch) -> None:
+    # A DNS/connection failure raises this; get_json's contract says ScrapeError.
     with pytest.raises(ScrapeError):
         _get_json(monkeypatch, _dns_error())
 

@@ -7,8 +7,8 @@ import socket
 
 from fastapi import HTTPException
 
-from salmon import cfg
-from salmon.common import http_url_hostname, is_public_ip
+from salmon import cfg, ssrf
+from salmon.common import http_url_hostname
 from salmon.common.files import rewrite_refusal
 
 
@@ -129,5 +129,5 @@ async def assert_public_url(url: str) -> None:
         except socket.gaierror as e:
             raise HTTPException(status_code=422, detail=f"Could not resolve host: {host}") from e
         addrs = [ipaddress.ip_address(info[4][0]) for info in infos]
-    if not all(is_public_ip(str(addr)) for addr in addrs):
+    if not all(ssrf.is_public(str(addr)) for addr in addrs):
         raise HTTPException(status_code=422, detail="Refusing to fetch a non-public address.")

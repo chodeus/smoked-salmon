@@ -18,7 +18,7 @@ from starlette.testclient import TestClient
 from webui_client import web_client  # pyright: ignore[reportMissingImports]
 
 from salmon import cfg
-from salmon.config.validations import Seedbox
+from salmon.config.validations import ProxyCfg, ProxyServicesCfg, Seedbox
 from salmon.trackers import base as tracker_base
 from salmon.webui import egress
 from salmon.webui.egress import EgressMiddleware, config_secrets
@@ -63,6 +63,15 @@ def test_the_configs_credentials_are_collected_but_not_its_placeholders(secrets_
 
     assert set(secrets_set) - {PASSKEY} <= set(found)
     assert "user_auth_token" not in found
+
+
+def test_a_proxy_urls_password_is_collected(monkeypatch):
+    services = ProxyServicesCfg(qobuz="http://user:test-qobuz-proxy-pass@127.0.0.1:3128")
+    monkeypatch.setattr(cfg, "proxy", ProxyCfg(url="socks5://user:test-proxy-pass@127.0.0.1:1080", services=services))
+
+    found = config_secrets(cfg)
+
+    assert {"test-proxy-pass", "test-qobuz-proxy-pass"} <= set(found)
 
 
 def _wait(client, job_id: str) -> dict:
