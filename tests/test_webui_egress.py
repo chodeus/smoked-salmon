@@ -207,7 +207,7 @@ def album() -> str:
 def test_the_image_upload_sends_a_host_nothing_but_whole_images(album, monkeypatch, name, content):
     sent: list[list[str]] = []
 
-    async def upload_images(paths, _host) -> list[str]:
+    async def upload_images(paths, _host, copy_to_clipboard=True) -> list[str]:
         sent.append(paths)
         return ["https://images.example/x.png" for _ in paths]
 
@@ -226,6 +226,25 @@ def test_the_image_upload_sends_a_host_nothing_but_whole_images(album, monkeypat
     assert f"Not uploading {refused}" in refusal.json()["detail"]
     assert accepted.status_code == 200
     assert sent == [[image]]
+
+
+def test_salmon_web_copies_no_image_urls_to_its_servers_clipboard(album, monkeypatch):
+    copies: list[bool] = []
+
+    async def upload_images(paths, _host, copy_to_clipboard=True) -> list[str]:
+        copies.append(copy_to_clipboard)
+        return ["https://images.example/x.png" for _ in paths]
+
+    monkeypatch.setattr(tools, "upload_images", upload_images)
+    image = os.path.join(album, "real.png")
+    with open(image, "wb") as handle:
+        handle.write(_png())
+
+    with web_client() as client:
+        status = client.post("/api/images/upload", json={"paths": [image], "host": "catbox"}).status_code
+
+    assert status == 200
+    assert copies == [False]
 
 
 async def test_an_accounts_authkey_and_passkey_are_remembered_for_salmon_web(monkeypatch):

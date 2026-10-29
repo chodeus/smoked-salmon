@@ -6,10 +6,10 @@ Every request goes to a local fake tracker on 127.0.0.1.
 import anyio
 import pytest
 from aiohttp import web
+from aiolimiter import AsyncLimiter
 
 from salmon.errors import RequestFailedError
 from salmon.trackers import base
-from salmon.trackers.account import SlidingWindowLimiter
 from salmon.trackers.base import BaseGazelleApi
 
 IMAGE = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x80\xfe" * 64
@@ -23,13 +23,8 @@ class FakeApi(BaseGazelleApi):
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url
         super().__init__()
+        self._rate_limiter = AsyncLimiter(100, 1)
         self._authenticated = True
-
-
-@pytest.fixture(autouse=True)
-def _loose_rate_limit(monkeypatch) -> None:
-    """A budget of its own per test: the shared one would hold each test to 5 requests in 10 s."""
-    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))
 
 
 async def _serve(handler) -> tuple[web.AppRunner, str]:

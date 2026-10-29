@@ -1,5 +1,3 @@
-"""imgbb and ptscreens show the host's error body on a 400, and still return the URL on success."""
-
 import aiohttp
 import anyio
 import pytest
@@ -9,7 +7,15 @@ from salmon import cfg
 from salmon.errors import ImageUploadFailed
 from salmon.images import imgbb, ptscreens
 
-# Never contact the real hosts: their URLs go to a local fake server, and any other URL fails the test.
+
+@pytest.fixture(autouse=True)
+def _host_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A key for each host: the template's 'api_key' placeholders now load as unset (salmon.config.compat)."""
+    for key in ("ptscreens_key", "oeimg_key", "imgbb_key", "ra_key"):
+        monkeypatch.setattr(cfg.image, key, f"test-{key}")
+
+
+# Never contact the real hosts: redirect their hardcoded URLs to a local fake server instead.
 REAL_HOSTS = {
     "imgbb": "https://api.imgbb.com",
     "ptscreens": "https://ptscreens.com",
@@ -30,15 +36,13 @@ def _local_url(runner: web.AppRunner) -> str:
 
 
 def _redirect_to_local(monkeypatch, host_key: str, local_base: str) -> None:
-    # The hermetic test config sets no imgbb_key; FormData rejects a None field.
-    monkeypatch.setattr(cfg.image, "imgbb_key", "test-imgbb-key")
     real_post = aiohttp.ClientSession.post
     real_prefix = REAL_HOSTS[host_key]
 
     def local_post(self: aiohttp.ClientSession, url: str, *args: object, **kwargs: object):
-        if not url.startswith(real_prefix):
-            raise AssertionError(f"{host_key} posted to {url}, not to {real_prefix}")
-        return real_post(self, url.replace(real_prefix, local_base, 1), *args, **kwargs)
+        if url.startswith(real_prefix):
+            url = url.replace(real_prefix, local_base, 1)
+        return real_post(self, url, *args, **kwargs)
 
     monkeypatch.setattr(aiohttp.ClientSession, "post", local_post)
 

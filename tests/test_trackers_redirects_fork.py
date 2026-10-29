@@ -1,0 +1,389 @@
+"""What this fork's tracker client adds to upstream's redirect tests, against real local servers."""
+
+import asyncio
+import time
+import traceback
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from typing import Any, cast
+
+import aiohttp
+import pytest
+from aiohttp import web
+from tenacity import stop_after_attempt
+
+import salmon.cross_upload as cross_upload
+from salmon import cfg
+from salmon.errors import ImageUploadFailed, RequestError, RequestFailedError, UnknownOutcomeError
+from salmon.images import red as red_image_host
+from salmon.trackers.account import SlidingWindowLimiter
+from salmon.trackers.base import BaseGazelleApi, RetryableError, _same_origin
+
+
+class CountingLimiter(SlidingWindowLimiter):
+    """A limiter loose enough not to slow the tests, which counts the slots taken."""
+
+    def __init__(self) -> None:
+        super().__init__(100, 1)
+        self.slots = 0
+
+    async def __aenter__(self) -> None:
+        self.slots += 1
+        await super().__aenter__()
+
+
+class FakeApi(BaseGazelleApi):
+    site_code = "RED"
+    site_string = "RED"
+    tracker_url = "https://announce.fake.example"
+
+    def __init__(self, base_url: str, cookie: str = "a-cookie") -> None:
+        self.base_url = base_url
+        self.cookie = cookie
+        super().__init__()
+        self._authenticated = True
+
+
+@pytest.fixture(autouse=True)
+def _counting_limiter(monkeypatch):
+    monkeypatch.setattr(cfg.tracker, "debug_connection", False)
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", CountingLimiter())
+
+
+@pytest.fixture
+async def serve():
+    runners: list[web.AppRunner] = []
+
+    async def _serve(**handlers) -> str:
+        app = web.Application()
+        for path, handler in handlers.items():
+            app.router.add_route("*", f"/{path}.php", handler)
+        runner = web.AppRunner(app, access_log=None)
+        await runner.setup()
+        await web.TCPSite(runner, "127.0.0.1", 0).start()
+        runners.append(runner)
+        return f"http://127.0.0.1:{runner.addresses[0][1]}"
+
+    yield _serve
+    for runner in runners:
+        await runner.cleanup()
+
+
+@pytest.fixture
+async def api_for():
+    made: list[FakeApi] = []
+
+    def _make(base_url: str, cookie: str = "a-cookie") -> FakeApi:
+        made.append(FakeApi(base_url, cookie))
+        return made[-1]
+
+    yield _make
+    for api in made:
+        await api.close()
+
+
+async def _stream_image(
+    request: web.Request, chunks: int, size: int, pause: float, head: bytes = b""
+) -> web.StreamResponse:
+    resp = web.StreamResponse(headers={"Content-Type": "image/jpeg"})
+    await resp.prepare(request)
+    await resp.write(head)
+    for _ in range(chunks):
+        await resp.write(b"x" * size)
+        await asyncio.sleep(pause)
+    await resp.write_eof()
+    return resp
+
+
+async def test_a_source_image_to_rehost_is_read_to_the_end(serve, api_for):
+    jpeg = b"\xff\xd8\xff\xe0"
+
+    async def image(request: web.Request) -> web.StreamResponse:
+        return await _stream_image(request, chunks=3, size=65536, pause=0.05, head=jpeg)
+
+    url = await serve(image=image)
+    content, suffix = await cross_upload._fetch_source_image(f"{url}/image.php", api_for(url), {})
+    assert (len(content), suffix) == (len(jpeg) + 3 * 65536, ".jpg")
+
+
+async def test_clients_of_one_tracker_share_one_budget(api_for):
+    first, second = api_for("http://127.0.0.1:1"), api_for("http://127.0.0.1:1")
+    assert first._account().limiter is second._account().limiter
+
+
+class FakeLog:
+    """A tracker whose log.php needs the session cookie "good", else bounces to login.php."""
+
+    def __init__(self, missing_page: int | None = None) -> None:
+        self.hits: list[str] = []
+        self.requested_when_page_one_answered: list[str] = []
+        self.missing_page = missing_page
+
+    async def log(self, request: web.Request) -> web.Response:
+        self.hits.append(request.path_qs)
+        if request.cookies.get("session") != "good":
+            raise web.HTTPFound("/login.php")
+        page = int(request.query["page"])
+        if page == self.missing_page:
+            raise web.HTTPNotFound()
+        if page == 1:
+            # Slow enough for pages requested alongside page 1 to arrive before it is answered.
+            await asyncio.sleep(0.2)
+            self.requested_when_page_one_answered = list(self.hits)
+        return web.Response(
+            text=f'<span class="log_upload"><a href="torrents.php?torrentid={page}">{page}</a>'
+            f" (Artist - Title {page}) (x)</span>",
+            content_type="text/html",
+        )
+
+    async def login(self, request: web.Request) -> web.Response:
+        self.hits.append(request.path)
+        raise web.HTTPFound("/log.php")
+
+
+async def test_a_page_that_fails_mid_crawl_stops_the_check(serve, api_for):
+    tracker = FakeLog(missing_page=5)
+    url = await serve(log=tracker.log, login=tracker.login)
+
+    with pytest.raises(RequestFailedError):
+        await api_for(url, cookie="good").get_uploads_from_log()
+
+
+_SECRETS = ("SYNTH-API-KEY", "SYNTH-SESSION-COOKIE", "SYNTH-AUTHKEY")
+
+
+def _red_image_host_against(monkeypatch, url: str, api_key: str, authenticated: bool = True) -> None:
+    def make_site() -> FakeApi:
+        site = FakeApi(url, cookie="SYNTH-SESSION-COOKIE")
+        site.api_key = api_key
+        site.authkey = "SYNTH-AUTHKEY"
+        site._authenticated = authenticated
+        return site
+
+    monkeypatch.setattr(red_image_host, "RedApi", make_site)
+    monkeypatch.setattr(
+        red_image_host, "cfg", SimpleNamespace(tracker=SimpleNamespace(red=SimpleNamespace(session="x")))
+    )
+
+
+async def test_the_red_image_host_sends_only_the_api_key_when_one_is_set(serve, monkeypatch, tmp_path):
+    seen: list[dict] = []
+
+    async def ajax(request: web.Request) -> web.Response:
+        form = await request.post()
+        seen.append({"query": dict(request.query), "headers": dict(request.headers), "form": set(form)})
+        return web.json_response({"status": "success", "response": {"url": "https://redacted.sh/i/x.png"}})
+
+    url = await serve(ajax=ajax)
+    # A fresh client: an index call for the authkey would show up as a second request.
+    _red_image_host_against(monkeypatch, url, "SYNTH-API-KEY", authenticated=False)
+    image = tmp_path / "cover.png"
+    image.write_bytes(b"png-data")
+
+    uploaded_url, _ = await red_image_host.ImageUploader().upload_file(str(image))
+    assert uploaded_url == "https://redacted.sh/i/x.png"
+    [request] = seen
+    assert request["query"] == {"action": "upload_image"}
+    assert request["headers"]["Authorization"] == "SYNTH-API-KEY"
+    assert "Cookie" not in request["headers"]
+    assert request["form"] == {"file"}
+
+
+@pytest.mark.parametrize("api_key", ["SYNTH-API-KEY", ""], ids=["api key", "session cookie"])
+async def test_the_red_image_host_never_repeats_a_credential(serve, monkeypatch, tmp_path, capsys, api_key):
+    # RED's answer is untrusted: here it echoes back every credential it was sent.
+    async def ajax(request: web.Request) -> web.Response:
+        form = await request.post()
+        echo = f"{request.headers.get('Authorization')} {request.headers.get('Cookie')} {form.get('auth')}"
+        return web.json_response({"status": "failure", "error": f"rejected: {echo}"}, status=400)
+
+    url = await serve(ajax=ajax)
+    _red_image_host_against(monkeypatch, url, api_key)
+    monkeypatch.setattr(cfg.tracker, "debug_connection", True)
+    image = tmp_path / "cover.png"
+    image.write_bytes(b"png-data")
+
+    with pytest.raises(ImageUploadFailed) as excinfo:
+        await red_image_host.ImageUploader().upload_file(str(image))
+    # The whole traceback, chained causes included, as a crash report would print it.
+    shown = "".join(traceback.format_exception(excinfo.value)) + "".join(capsys.readouterr())
+    assert "rejected" in shown
+    assert [secret for secret in _SECRETS if secret in shown] == []
+
+
+async def test_an_api_failure_never_repeats_the_session_cookie(serve, api_for):
+    async def ajax(request: web.Request) -> web.Response:
+        return web.json_response({"status": "failure", "error": f"bad session {request.headers.get('Cookie')}"})
+
+    url = await serve(ajax=ajax)
+    with pytest.raises(RequestFailedError) as excinfo:
+        await api_for(url, cookie="SYNTH-SESSION-COOKIE").api_call("index")
+    assert "bad session" in str(excinfo.value)
+    assert "SYNTH-SESSION-COOKIE" not in str(excinfo.value)
+
+
+def test_one_tracker_budget_holds_across_concurrent_requests():
+    # salmon web sends every job's requests on its one request loop, against one account.
+    limiter = SlidingWindowLimiter(5, 0.3)
+    started: list[float] = []
+
+    async def job() -> None:
+        for _ in range(3):
+            async with limiter:
+                started.append(time.monotonic())
+
+    async def two_jobs() -> None:
+        await asyncio.gather(job(), job())
+
+    asyncio.run(two_jobs())
+    started.sort()
+    # 5 per 0.3 s: the sixth request, from either job, waits for the window.
+    assert len(started) == 6
+    assert started[5] - started[0] >= 0.25
+
+
+@pytest.mark.parametrize(
+    ("url", "same"),
+    [
+        ("https://Redacted.SH/i/x.jpg", True),
+        ("https://redacted.sh:443/i/x.jpg", True),
+        ("http://redacted.sh/i/x.jpg", False),
+        ("https://redacted.sh:8443/i/x.jpg", False),
+        ("https://evil.example/i/x.jpg", False),
+        ("not a url", False),
+    ],
+)
+def test_same_origin_ignores_host_case_and_the_default_port(url, same):
+    assert _same_origin(url, "https://redacted.sh") is same
+
+
+async def test_a_source_image_on_another_site_is_refused():
+    site = FakeApi("https://redacted.sh")
+    try:
+        with pytest.raises(cross_upload.CrossUploadRefused, match="is not on RED's own site"):
+            await cross_upload._fetch_source_image("https://evil.example/i/x.jpg", site, {})
+    finally:
+        await site.close()
+
+
+async def test_a_failed_source_image_fetch_never_carries_the_signed_url(monkeypatch, capsys):
+    site = FakeApi("https://redacted.sh")
+    signed = "https://redacted.sh/i/x.jpg?sig=test-sig-0001"
+
+    async def cut_off(*_args: Any, **_kwargs: Any) -> None:
+        raise RetryableError(f"Response payload is not completed for {signed}")
+
+    monkeypatch.setattr(site, "_request", cut_off)
+    try:
+        with pytest.raises(cross_upload.CrossUploadRefused) as caught:
+            await cross_upload._fetch_source_image(signed, site, {})
+    finally:
+        await site.close()
+
+    # The web UI prints the whole traceback of a failed job, causes included.
+    assert "test-sig-0001" not in "".join(traceback.format_exception(caught.value))
+    printed = capsys.readouterr().out
+    assert "test-sig-0001" not in printed
+
+
+@pytest.mark.parametrize(
+    ("status", "error", "sends", "waits"), [(500, UnknownOutcomeError, 1, [2]), (429, RetryableError, 2, [2, 2])]
+)
+async def test_only_a_429_lets_a_post_naming_the_rate_limit_be_sent_again(
+    serve, api_for, monkeypatch, status, error, sends, waits
+):
+    posts: list[int] = []
+    pauses: list[float] = []
+    monkeypatch.setattr(SlidingWindowLimiter, "pause", lambda _self, seconds: pauses.append(seconds))
+
+    async def upload(request: web.Request) -> web.Response:
+        posts.append(status)
+        return web.Response(text="Upstream rate limit check failed", status=status, headers={"Retry-After": "0"})
+
+    url = await serve(upload=upload)
+    twice = cast("Any", BaseGazelleApi._send).retry_with(stop=stop_after_attempt(2))
+
+    with pytest.raises(error, match="Rate limit exceeded"):
+        await twice(api_for(url), "POST", f"{url}/upload.php", None, {"a": "b"}, 10, False, None, (), [])
+    assert len(posts) == sends
+    # The limiter waits before a resend, or before the next request when not resent; never less than its spacing.
+    assert pauses == waits
+
+
+def test_a_paused_budget_holds_every_request_until_the_pause_ends():
+    limiter = SlidingWindowLimiter(100, 1)
+
+    async def run() -> float:
+        limiter.pause(0.3)
+        start = time.monotonic()
+        async with limiter:
+            return time.monotonic() - start
+
+    assert asyncio.run(run()) >= 0.25
+
+
+async def test_a_429_pauses_the_tracker_for_every_client(serve, api_for, monkeypatch):
+    # The tracker account's own limiter, which the 429 pauses.
+    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", None)
+    hits: list[float] = []
+
+    async def ajax(request: web.Request) -> web.Response:
+        hits.append(time.monotonic())
+        if len(hits) == 1:
+            return web.json_response({"error": "rate limit"}, status=429, headers={"Retry-After": "1"})
+        return web.json_response({"status": "success", "response": {}})
+
+    url = await serve(ajax=ajax)
+    first, second = api_for(url), api_for(url)
+    once = cast("Any", BaseGazelleApi._send).retry_with(stop=stop_after_attempt(1))
+    rate_limited = asyncio.create_task(
+        once(first, "GET", f"{url}/ajax.php", {"action": "a"}, None, 10, False, None, (), [])
+    )
+    while not hits:
+        await asyncio.sleep(0.01)
+    # Sent while the first client is still handling its 429.
+    await second.api_call("b")
+    with pytest.raises(RequestError):
+        await rate_limited
+    # The other client waited out the pause the first one was told about.
+    assert hits[1] - hits[0] >= 0.9
+
+
+async def test_an_expected_error_status_is_returned_not_raised(serve, api_for):
+    async def ajax(_request: web.Request) -> web.Response:
+        return web.json_response({"status": "failure", "error": "bad image"}, status=400)
+
+    url = await serve(ajax=ajax)
+    api = api_for(url)
+    try:
+        resp = await api._request(
+            "GET", f"{url}/ajax.php", params={"action": "x"}, needs_authkey=False, expected_error_statuses=(400,)
+        )
+        assert resp.status == 400
+        assert "bad image" in resp.text
+        with pytest.raises(RequestFailedError, match="bad image"):
+            await api._request("GET", f"{url}/ajax.php", params={"action": "x"}, needs_authkey=False)
+    finally:
+        await api.close()
+
+
+async def test_a_network_error_never_chains_the_raw_aiohttp_error(api_for, monkeypatch):
+    # The raw error can repeat the client's own credentials; only the scrubbed message may reach a traceback.
+    cookie = "SYNTH-SESSION-0099"
+
+    class Raising:
+        def request(self, method: str, url: str, **_kwargs: Any) -> Any:
+            raise aiohttp.ClientConnectionError(f"connection lost, sent with session={cookie}")
+
+    @asynccontextmanager
+    async def session_for(self, idempotent: bool) -> AsyncIterator[Any]:
+        yield Raising()
+
+    monkeypatch.setattr(BaseGazelleApi, "_session_for", session_for)
+    api = api_for("http://127.0.0.1:9", cookie=cookie)
+
+    with pytest.raises(RequestError) as caught:
+        await api._request("POST", "http://127.0.0.1:9/upload.php", data={"a": "b"}, needs_authkey=False)
+
+    assert cookie not in "".join(traceback.format_exception(caught.value))

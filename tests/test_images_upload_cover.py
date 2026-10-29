@@ -1,4 +1,4 @@
-"""upload_cover: a host that returns without raising must still fail if it hands back no usable URL."""
+"""upload_cover: a host that returns without raising must still fail if it hands back no URL."""
 
 from types import SimpleNamespace
 
@@ -21,16 +21,14 @@ def _stub_host(monkeypatch, url: str | None) -> None:
 
 
 def test_no_path_reports_failure_without_touching_any_host() -> None:
-    result = anyio.run(upload_cover, None, "catbox")
-    assert result is None
+    assert anyio.run(upload_cover, None, "catbox") is None
 
 
 def test_a_real_url_is_returned(monkeypatch, tmp_path) -> None:
     _stub_host(monkeypatch, "https://files.catbox.moe/abc.jpg")
     image = tmp_path / "cover.jpg"
     image.write_bytes(b"data")
-    result = anyio.run(upload_cover, str(image), "catbox")
-    assert result == "https://files.catbox.moe/abc.jpg"
+    assert anyio.run(upload_cover, str(image), "catbox") == "https://files.catbox.moe/abc.jpg"
 
 
 # None is reachable: imgbox returns submission["image_url"], which pyimgbox documents as "URL to image or None".

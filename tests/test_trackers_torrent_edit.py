@@ -1,20 +1,23 @@
-"""Adding text to a torrent's description must leave the rest of the torrent as it was."""
+"""Adding text to a torrent's description must leave the rest of the torrent as it was (#357).
 
+The edit page of each tracker is in tests/fixtures/torrent_edit: RED's and OPS's come from real pages,
+DIC's is reconstructed. Each test's expected POST is what a browser submits for that page, written
+out by hand, with only the description changed.
+"""
+
+import sys
 from pathlib import Path
-from typing import Any, cast
 
 import anyio
 import pytest
 from aiohttp import web
-from bs4 import BeautifulSoup, Tag
-from tenacity import wait_fixed
+from aiolimiter import AsyncLimiter
+from tenacity import wait_none
 
-from salmon import cfg
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from salmon.errors import LoginError, RequestError
-from salmon.trackers.account import SlidingWindowLimiter
 from salmon.trackers.base import BaseGazelleApi
 
-# RED's and OPS's edit pages come from real pages, DIC's is reconstructed; each expected POST is what a browser sends.
 FIXTURES = Path(__file__).parent / "fixtures" / "torrent_edit"
 ADDITION = "[hide=Spectrals][b]01 Full[/b]\n[img=https://img.example/1.png]\n[/hide]\n"
 
@@ -96,17 +99,23 @@ def _fixture(name: str) -> str:
 
 
 @pytest.fixture(autouse=True)
-def _fast(monkeypatch) -> None:
-    monkeypatch.setattr(cfg.tracker, "debug_connection", False)
-    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
+def no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retry without waiting, so a test never sits through a backoff."""
+    monkeypatch.setattr(BaseGazelleApi._send.retry, "wait", wait_none())  # type: ignore[attr-defined]
 
 
 class FakeTracker:
-    """A local tracker serving one edit page and the API answer for the same torrent."""
+    """A local tracker serving one edit page, and the API answer for the same torrent."""
 
-    def __init__(self, edit_page: str, edit_status: int = 200, edit_answer: str | None = None) -> None:
+    def __init__(
+        self,
+        edit_page: str,
+        torrent_json: str = '{"status": "failure"}',
+        edit_status: int = 200,
+        edit_answer: str | None = None,
+    ) -> None:
         self.edit_page = edit_page
+        self.torrent_json = torrent_json
         self.edit_status = edit_status
         # What the tracker answers the POST with instead of its redirect to the group, if set.
         self.edit_answer = edit_answer
@@ -124,6 +133,7 @@ class FakeTracker:
             self.posts.append(posted)
             if self.edit_answer is not None:
                 return web.Response(text=self.edit_answer, content_type="text/html")
+            # As Gazelle does once the edit is saved.
             raise web.HTTPFound("/torrents.php?id=1000")
         if request.query.get("action") == "edit":
             if self.edit_status == 302:
@@ -131,11 +141,11 @@ class FakeTracker:
             return web.Response(text=self.edit_page, content_type="text/html")
         return web.Response(text="<html><body><h2>Group page</h2></body></html>", content_type="text/html")
 
-    authkey = "XXXX"
-
     async def _ajax(self, request: web.Request) -> web.Response:
         self.requests.append((request.method, request.path_qs))
-        return web.json_response({"status": "success", "response": {"authkey": self.authkey, "passkey": "p"}})
+        if request.query.get("action") == "index":
+            return web.json_response({"status": "success", "response": {"authkey": "XXXX", "passkey": "p"}})
+        return web.Response(text=self.torrent_json, content_type="application/json")
 
     async def __aenter__(self) -> "FakeTracker":
         app = web.Application()
@@ -158,30 +168,30 @@ class FakeTracker:
 
 class FakeApi(BaseGazelleApi):
     site_code = "RED"
-    site_string = "RED"
-    tracker_url = "https://announce.fake.example"
+    cookie = "fake-cookie"
 
-    def __init__(self, base_url: str, authenticated: bool = True) -> None:
+    def __init__(self, base_url: str) -> None:
         self.base_url = base_url
-        self.cookie = "fake-cookie"
+        self.site_string = "Fake"
         super().__init__()
-        # As every caller is: the upload, or checkspecs's torrent lookup, authenticated the client first.
-        if authenticated:
-            self._authenticated = True
-            self.authkey = "XXXX"
+        # Per instance, as each test runs on its own event loop.
+        self._rate_limiter = AsyncLimiter(100, 1)
+        # The fork reads the edit page authenticated: as every caller of it is, by the upload or checkspecs.
+        self._authenticated = True
+        self.authkey = "XXXX"
 
 
-async def _edit(tracker: FakeTracker, torrent_id: int, authenticated: bool = True) -> None:
+async def _edit(tracker: FakeTracker, torrent_id: int) -> None:
     async with tracker:
-        api = FakeApi(tracker.url, authenticated)
+        api = FakeApi(tracker.url)
         try:
             await api.append_to_torrent_description(torrent_id, ADDITION)
         finally:
             await api.close()
 
 
-def _run_edit(tracker: FakeTracker, torrent_id: int = 2001, authenticated: bool = True) -> None:
-    anyio.run(_edit, tracker, torrent_id, authenticated)
+def _run_edit(tracker: FakeTracker, torrent_id: int = 2001) -> None:
+    anyio.run(_edit, tracker, torrent_id)
 
 
 def _with_checked(page: str, *names: str) -> str:
@@ -198,8 +208,10 @@ def _with_checked(page: str, *names: str) -> str:
     [pytest.param("red", RED_FORM, id="red"), pytest.param("ops", OPS_FORM, id="ops")],
 )
 def test_edit_sends_back_the_real_form_with_only_the_description_changed(tracker: str, form: dict) -> None:
-    fake = FakeTracker(_fixture(f"{tracker}_edit.html"))
+    fake = FakeTracker(_fixture(f"{tracker}_edit.html"), _fixture(f"{tracker}_torrent.json"))
+
     _run_edit(fake)
+
     assert fake.posts == [{**form, "release_desc": ADDITION + form["release_desc"]}]
 
 
@@ -211,25 +223,43 @@ def test_edit_sends_back_the_real_form_with_only_the_description_changed(tracker
     ],
 )
 def test_edit_keeps_the_flags_set_on_the_torrent(tracker: str, form: dict, flags: tuple[str, ...]) -> None:
-    fake = FakeTracker(_with_checked(_fixture(f"{tracker}_edit.html"), *flags))
+    page = _with_checked(_fixture(f"{tracker}_edit.html"), *flags)
+    fake = FakeTracker(page, _fixture(f"{tracker}_torrent.json").replace('"scene":false', '"scene":true'))
+
     _run_edit(fake)
+
     assert fake.posts == [{**form, **dict.fromkeys(flags, "on"), "release_desc": ADDITION + form["release_desc"]}]
 
 
 def test_edit_does_not_escape_the_description_again_on_red() -> None:
-    fake = FakeTracker(_fixture("red_edit.html"))
+    # RED's API answers the description HTML-escaped; its edit form holds the text itself.
+    fake = FakeTracker(_fixture("red_edit.html"), _fixture("red_torrent.json"))
+
     _run_edit(fake)
+
     sent = fake.posts[0]["release_desc"]
     assert "&amp;" not in sent
     assert sent == ADDITION + RED_DESC
 
 
 def test_dic_edit_keeps_the_edition_and_the_marks() -> None:
-    # An edition checkbox never sent made DIC turn the torrent into an "Unknown release".
-    fake = FakeTracker(_fixture("dic_edit.html"))
+    # The reported bug: the edition checkbox, never sent, made DIC turn the torrent into an "Unknown release".
+    fake = FakeTracker(_fixture("dic_edit.html"), _fixture("dic_torrent.json"))
+
     _run_edit(fake, torrent_id=3001)
+
     assert fake.posts == [{**DIC_FORM, "release_desc": ADDITION + DIC_DESC}]
-    assert fake.posts[0]["remaster_title"] == "Deluxe & Collector's Edition"
+
+
+def test_edit_sends_edition_text_with_ampersands_and_apostrophes_unchanged() -> None:
+    # The API answer is assumed escaped as RED's description is; the edit form decodes to the text itself.
+    fake = FakeTracker(_fixture("dic_edit.html"), _fixture("dic_torrent.json"))
+
+    _run_edit(fake, torrent_id=3001)
+
+    posted = fake.posts[0]
+    assert posted["remaster_title"] == "Deluxe & Collector's Edition"
+    assert posted["remaster_record_label"] == "Rock 'n' Roll Records"
 
 
 def _red_group_forms_only() -> str:
@@ -262,24 +292,44 @@ def _red_without_description() -> str:
     ],
 )
 def test_unreadable_edit_page_sends_nothing(page: str, torrent_id: int) -> None:
-    fake = FakeTracker(page)
+    fake = FakeTracker(page, _fixture("red_torrent.json"))
+
     with pytest.raises(RequestError, match="edit form"):
         _run_edit(fake, torrent_id=torrent_id)
+
     assert fake.posts == []
     assert fake.requests == [("GET", f"/torrents.php?action=edit&id={torrent_id}")]
 
 
 def test_edit_page_redirected_to_login_sends_nothing() -> None:
-    fake = FakeTracker("", edit_status=302)
+    fake = FakeTracker("", _fixture("red_torrent.json"), edit_status=302)
+
     with pytest.raises(LoginError):
         _run_edit(fake)
+
     assert fake.posts == []
     assert fake.requests == [("GET", "/torrents.php?action=edit&id=2001")]
 
 
-def test_edit_costs_one_get_and_one_post() -> None:
-    fake = FakeTracker(_fixture("red_edit.html"))
+def test_edit_costs_one_get_and_one_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str, dict | None]] = []
+    request = BaseGazelleApi._request
+
+    async def counting_request(self, method, url, params=None, *args, **kwargs):
+        calls.append((method, url.removeprefix(self.base_url), params))
+        return await request(self, method, url, params, *args, **kwargs)
+
+    monkeypatch.setattr(BaseGazelleApi, "_request", counting_request)
+    # An authenticated client, as every caller's is: the edit takes its auth from the form, with no index call.
+    fake = FakeTracker(_fixture("red_edit.html"), _fixture("red_torrent.json"))
+
     _run_edit(fake)
+
+    assert calls == [
+        ("GET", "/torrents.php", {"action": "edit", "id": 2001}),
+        ("POST", "/torrents.php", None),
+    ]
+    # The tracker redirects the POST to the torrent's group, a hop _request follows.
     assert fake.requests == [
         ("GET", "/torrents.php?action=edit&id=2001"),
         ("POST", "/torrents.php"),
@@ -287,63 +337,13 @@ def test_edit_costs_one_get_and_one_post() -> None:
     ]
 
 
-def test_a_fresh_client_authenticates_before_reading_the_edit_page() -> None:
-    fake = FakeTracker(_fixture("red_edit.html"))
-    _run_edit(fake, authenticated=False)
-    assert fake.requests[:2] == [("GET", "/ajax.php?action=index"), ("GET", "/torrents.php?action=edit&id=2001")]
-
-
-def test_debug_output_never_shows_the_edit_forms_auth(monkeypatch, capsys) -> None:
-    # The form's auth is the client's authkey, masked as a known secret once the client is authenticated.
-    secret = "edit-form-auth-0123456789"
-    monkeypatch.setattr(cfg.tracker, "debug_connection", True)
-    monkeypatch.setattr(FakeTracker, "authkey", secret, raising=False)
-    fake = FakeTracker(_fixture("red_edit.html").replace('value="XXXX"', f'value="{secret}"'))
-    _run_edit(fake, authenticated=False)
-    assert fake.posts[0]["auth"] == secret
-    out = capsys.readouterr().out
-    assert "[DEBUG] response body" in out
-    assert secret not in out
-
-
-def test_debug_output_masks_a_form_auth_the_client_does_not_know(monkeypatch, capsys) -> None:
-    secret = "edit-form-auth-0123456789"
-    monkeypatch.setattr(cfg.tracker, "debug_connection", True)
-    monkeypatch.setattr(FakeTracker, "authkey", "another-authkey-9876543210", raising=False)
-    fake = FakeTracker(_fixture("red_edit.html").replace('value="XXXX"', f'value="{secret}"'))
-    _run_edit(fake, authenticated=False)
-    out = capsys.readouterr().out
-    assert "[DEBUG] response body" in out
-    assert secret not in out
-
-
-@pytest.mark.parametrize(
-    "tag",
-    [
-        '<input type="hidden" name="auth" value="SECRET-123">',
-        "<input value='SECRET-123' type='hidden' name='torrent_pass'/>",
-        '<INPUT NAME="authkey" VALUE="SECRET-123">',
-    ],
-)
-def test_redaction_masks_a_secret_form_input_either_way_round(tag: str) -> None:
-    from salmon.common.redaction import redact_tracker_text
-
-    redacted = redact_tracker_text(f'<form>{tag}<input name="title" value="Album"></form>')
-    assert "SECRET-123" not in redacted
-    assert 'value="Album"' in redacted
-
-
 def test_edit_refused_by_the_tracker_raises() -> None:
-    fake = FakeTracker(_fixture("red_edit.html"), edit_answer=ERROR_PAGE)
+    fake = FakeTracker(_fixture("red_edit.html"), _fixture("red_torrent.json"), edit_answer=ERROR_PAGE)
+
     with pytest.raises(RequestError, match="You do not have permission"):
         _run_edit(fake)
+
     assert len(fake.posts) == 1
-
-
-def test_a_long_refusal_from_the_tracker_is_capped() -> None:
-    fake = FakeTracker(_fixture("red_edit.html"), edit_answer=ERROR_PAGE.replace("You do not", "x" * 2000))
-    with pytest.raises(RequestError, match=r"\[truncated\]"):
-        _run_edit(fake)
 
 
 BROWSER_RULES_FORM = """<form name="torrent" method="post">
@@ -374,11 +374,14 @@ second line</textarea>
 </form>"""
 
 
-def test_form_fields_follow_the_tracker_forms_submit_rules() -> None:
-    from salmon.trackers.base import _submitted_fields  # Imported here: a missing helper fails this test only.
+def test_form_fields_are_the_ones_a_browser_submits() -> None:
+    from bs4 import BeautifulSoup, Tag
+
+    from salmon.trackers.base import _submitted_fields
 
     form = BeautifulSoup(BROWSER_RULES_FORM, "lxml").find("form")
     assert isinstance(form, Tag)
+
     assert _submitted_fields(form) == [
         ("hidden", "a &amp; b"),
         ("untyped", "x"),

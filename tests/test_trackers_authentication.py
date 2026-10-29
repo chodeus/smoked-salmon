@@ -1,4 +1,9 @@
-"""A client's requests share one authentication attempt, against a local fake tracker."""
+"""A client authenticates once, however many of its requests are waiting for it (#468).
+
+A fresh client's first request fetches the authkey with ajax.php?action=index. Requests that went out together
+each used to send their own index. They now share one attempt: when it fails, it fails for all of them with one
+error, instead of each of them trying again. Tests talk only to a local fake tracker.
+"""
 
 import asyncio
 import gc
@@ -8,10 +13,10 @@ from collections.abc import Awaitable, Callable
 import anyio
 import pytest
 from aiohttp import web
+from aiolimiter import AsyncLimiter
 from tenacity import wait_none
 
 from salmon.errors import LoginError
-from salmon.trackers.account import SlidingWindowLimiter
 from salmon.trackers.base import BaseGazelleApi, RetryableError
 
 
@@ -23,7 +28,8 @@ class FakeApi(BaseGazelleApi):
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url
         super().__init__()
-        # The client is left fresh, not authenticated.
+        # Per instance, as each test runs on its own event loop. The client is left fresh, not authenticated.
+        self._rate_limiter = AsyncLimiter(100, 1)
 
 
 class FakeTracker:
@@ -151,8 +157,7 @@ def test_a_rejected_key_fails_every_waiting_request_with_one_error(capsys: pytes
         assert tracker.requests == ["index"]
 
     _run(body)
-    printed = capsys.readouterr().out
-    assert printed.count("Authentication to RED failed") == 1
+    assert capsys.readouterr().out.count("Authentication to RED failed") == 1
 
 
 def test_a_request_after_a_failed_attempt_tries_again() -> None:
@@ -210,9 +215,3 @@ def test_cancelling_every_waiting_request_cancels_the_attempt() -> None:
         assert tracker.cut_off == 1
 
     _run(body)
-
-
-@pytest.fixture(autouse=True)
-def _loose_rate_limit(monkeypatch) -> None:
-    """A budget of its own per test: the shared one would hold each test to 5 requests in 10 s."""
-    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))

@@ -1295,7 +1295,7 @@ def test_spectrals_generate_happy_path(client, album_dir, spectral_stubs):
 def test_only_the_spectrograms_are_sent_to_the_image_host(client, album_dir, spectral_stubs, monkeypatch):
     uploaded: list[str] = []
 
-    async def fake_upload_images(files, host):
+    async def fake_upload_images(files, host, copy_to_clipboard=True):
         uploaded.extend(files)
         return ["https://host/x.png" for _ in files]
 
@@ -1307,6 +1307,23 @@ def test_only_the_spectrograms_are_sent_to_the_image_host(client, album_dir, spe
     join_job(client, upload.json()["id"])
 
     assert [os.path.basename(f) for f in uploaded] == ["01-intro.png", "02-mittelteil.png"]
+
+
+def test_salmon_web_copies_no_spectral_urls_to_its_servers_clipboard(client, album_dir, spectral_stubs, monkeypatch):
+    copies: list[bool] = []
+
+    async def fake_upload_images(files, host, copy_to_clipboard=True):
+        copies.append(copy_to_clipboard)
+        return ["https://host/x.png" for _ in files]
+
+    monkeypatch.setattr("salmon.webui.routers.spectrals.upload_images", fake_upload_images)
+    job_id = client.post("/api/spectrals/generate", json={"path": str(album_dir)}).json()["id"]
+    join_job(client, job_id)
+
+    upload = client.post("/api/spectrals/upload", json={"job_id": job_id, "host": "catbox"})
+    join_job(client, upload.json()["id"])
+
+    assert copies == [False]
 
 
 def test_a_frequency_plot_is_still_served_even_though_it_is_not_uploaded(client, album_dir, spectral_stubs):
@@ -1399,7 +1416,7 @@ def test_spectrals_upload_unknown_host_returns_422(client, album_dir, spectral_s
 def test_spectrals_upload_happy_path_with_explicit_host(client, album_dir, spectral_stubs, monkeypatch):
     uploaded = []
 
-    async def fake_upload_images(filepaths, image_host):
+    async def fake_upload_images(filepaths, image_host, copy_to_clipboard=True):
         uploaded.extend(filepaths)
         return [f"https://img.example/{i}" for i, _ in enumerate(filepaths)]
 
@@ -1426,7 +1443,7 @@ def test_spectrals_upload_happy_path_with_explicit_host(client, album_dir, spect
 def test_a_spectral_that_is_not_an_image_is_not_uploaded(client, album_dir, spectral_stubs, monkeypatch):
     uploaded = []
 
-    async def fake_upload_images(filepaths, image_host):
+    async def fake_upload_images(filepaths, image_host, copy_to_clipboard=True):
         uploaded.extend(filepaths)
         return ["https://img.example/0" for _ in filepaths]
 
@@ -1444,7 +1461,7 @@ def test_a_spectral_that_is_not_an_image_is_not_uploaded(client, album_dir, spec
 
 
 def test_spectrals_upload_falls_back_to_configured_host(client, album_dir, spectral_stubs, monkeypatch):
-    async def fake_upload_images(filepaths, image_host):
+    async def fake_upload_images(filepaths, image_host, copy_to_clipboard=True):
         return ["https://img.example/a"]
 
     monkeypatch.setattr("salmon.webui.routers.spectrals.upload_images", fake_upload_images)

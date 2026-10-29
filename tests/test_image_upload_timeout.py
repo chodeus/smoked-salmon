@@ -1,4 +1,10 @@
-"""A timed-out image upload (aiohttp's plain TimeoutError) must not crash the upload, on any host."""
+"""A timed-out image upload must not crash the upload (follow-up to #428).
+
+aiohttp raises a plain TimeoutError, not aiohttp.ClientError, when UPLOAD_TIMEOUT's total runs
+out. Every image host module except imgbox.py (which already catches everything) and red.py
+(which goes through RedApi._request, already turning timeouts into RequestError) needs to catch
+it too. Nothing here contacts a real image host: all requests are redirected to a local fake one.
+"""
 
 import asyncio
 from pathlib import Path
@@ -12,12 +18,21 @@ from aiohttp import web
 
 import salmon.images as images
 import salmon.images.base as images_base
+from salmon import cfg
 from salmon.errors import ImageUploadFailed
 from salmon.images import catbox, imgbb, oeimg, ptscreens, ra
 
+
+@pytest.fixture(autouse=True)
+def _host_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A key for each host: the template's 'api_key' placeholders now load as unset (salmon.config.compat)."""
+    for key in ("ptscreens_key", "oeimg_key", "imgbb_key", "ra_key"):
+        monkeypatch.setattr(cfg.image, key, f"test-{key}")
+
+
 REAL_HOSTS = ("https://catbox.moe", "https://ptscreens.com")
 
-# The host modules that must catch a timed-out upload, and the host each one talks to.
+# The five modules the brief asks to fix, and the host each one talks to.
 TIMEOUT_MODULES = {
     "catbox": (catbox, "https://catbox.moe"),
     "imgbb": (imgbb, "https://api.imgbb.com"),
@@ -27,13 +42,6 @@ TIMEOUT_MODULES = {
 }
 
 TINY_TIMEOUT = aiohttp.ClientTimeout(total=0.1, sock_connect=0.1)
-
-
-@pytest.fixture(autouse=True)
-def _imgbb_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The config refuses imgbb and ra without a key; the test config has none.
-    monkeypatch.setattr(imgbb.cfg.image, "imgbb_key", "key")
-    monkeypatch.setattr(imgbb.cfg.image, "ra_key", "key")
 
 
 class FakeHost:
@@ -148,7 +156,11 @@ def test_a_client_error_becomes_a_network_error_message(
 def test_a_connect_timeout_gives_the_connection_wording(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
 ) -> None:
-    """A connect timeout (sock_connect, 30 s) is not reported as the overall upload timeout (300 s)."""
+    """A connect timeout must not be reported as the (much longer) overall upload timeout.
+
+    aiohttp.ConnectionTimeoutError is both an aiohttp.ClientError and a TimeoutError, and fires
+    at UPLOAD_TIMEOUT's sock_connect (30s), well before its total (300s) ever could.
+    """
     module, _real_host = TIMEOUT_MODULES[name]
     path = tmp_path / "image.png"
     path.write_bytes(b"png")
@@ -221,7 +233,5 @@ def test_upload_cover_returns_none_and_prints_on_timeout(
             await host.stop()
 
     result = anyio.run(run)
-    out = capsys.readouterr().out
-
     assert result is None
-    assert "failed" in out
+    assert "failed" in capsys.readouterr().out

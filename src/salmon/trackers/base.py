@@ -153,7 +153,8 @@ def session_cookie_forms(cookie: str | None) -> list[str]:
     return list(dict.fromkeys([cookie, cookie.strip(), unquote(cookie.strip()), _normalize_session_cookie(cookie)]))
 
 
-# The authkeys, passkeys and image host keys trackers have sent this process, for salmon web to mask in all it sends.
+# The authkeys, passkeys and image host keys trackers have sent this process: salmon web masks them in all
+# it sends out.
 _learned_secrets: set[str] = set()
 _learned_secrets_lock = threading.Lock()
 
@@ -227,7 +228,8 @@ def _compose_form_data(files: UploadFiles, data: dict[str, Any]) -> FormData:
     return form
 
 
-# Inputs a browser does not submit as text: a file input sends a file, a button only its own name when clicked.
+# Inputs a browser does not submit as text: a file input sends a file, and a button only
+# its own name, when it is the one clicked.
 _UNSUBMITTED_INPUT_TYPES = frozenset({"file", "submit", "button", "reset", "image"})
 
 
@@ -292,7 +294,6 @@ def _torrent_edit_fields(page: str, torrent_id: int) -> list[tuple[str, str]]:
             with a description and an auth field (a login or an error page, say).
     """
     soup = BeautifulSoup(page, "lxml")
-    # The page also holds forms that move the torrent to another group; only one posts action=takeedit.
     forms = [
         form
         for form in soup.find_all("form", attrs={"name": "torrent"})
@@ -332,23 +333,12 @@ def _same_origin(url: str, other: str) -> bool:
     return (first.scheme, first.host, first.port) == (second.scheme, second.host, second.port)
 
 
-# An upload that fills a request takes two hops; one spare.
+# Gazelle's own redirects take up to two hops: torrents.php?torrentid= to its group and
+# an upload POST to the group it created take one, and an upload that fills a request
+# takes two (upload.php to requests.php?action=takefill to requests.php?action=view).
+# The third is a margin: running out after a POST leaves its outcome unknown, so an
+# upload that went through is only found by looking it up.
 _MAX_REDIRECTS = 3
-# The most a binary answer (an image on the tracker's own host) may hold. Reading stops there.
-_MAX_BINARY_BODY = 25 * 1024 * 1024
-_BINARY_READ_CHUNK = 64 * 1024
-# The most of a tracker's answer an error message shows, in characters.
-_MAX_EXCERPT = 500
-# Image host credentials are got again this many seconds before they expire: more than a release's images take.
-_IMAGE_AUTH_MARGIN = 60
-_IMAGE_AUTH_ACTION = "imgauth"
-# A signed image URL's query values, however encoded: its expiry and user id are numbers, masked only here.
-_SIGNED_IMAGE_QUERY = re.compile(r"((?:[?&]|&amp;)(?:h|e|u)=)[^&#\s\"'<>\[\]]*")
-# The site log pages a recent-uploads check reads; cross-upload's request budget counts them.
-SITE_LOG_PAGES = 10
-# Seconds before the first and the last lookup of an upload whose answer was lost: the tracker may still be on it.
-_LOST_UPLOAD_FIRST_WAIT = 10
-_LOST_UPLOAD_SECOND_WAIT = 30
 _REDIRECT_STATUSES = frozenset(
     {
         HTTPStatus.MOVED_PERMANENTLY,
@@ -358,15 +348,14 @@ _REDIRECT_STATUSES = frozenset(
         HTTPStatus.PERMANENT_REDIRECT,
     }
 )
-# A rate limit without a usable Retry-After waits this long, and none waits less than the limiter's spacing.
-_RATE_LIMIT_WAIT = 20
-_MIN_RATE_LIMIT_WAIT = 2
-# One request's rate-limit waits add up to this at most; a tracker asking for more fails it with RateLimitedError.
-_MAX_RATE_LIMIT_WAITS = 60
-# No 5xx Retry-After is waited past this.
-_MAX_SERVER_WAIT = 120.0
-# The request never left, so re-sending it is safe whatever it does.
+
+
+# A connection that was never made carried nothing to the tracker.
 _NOT_SENT_ERRORS = (aiohttp.ClientConnectorError, aiohttp.ConnectionTimeoutError)
+
+
+# The server errors an idempotent request is sent again on: the tracker, or a gateway in front
+# of it, may answer the next attempt.
 _TRANSIENT_5XX = frozenset(
     {
         HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -376,6 +365,27 @@ _TRANSIENT_5XX = frozenset(
     }
 )
 
+# How long to wait, in seconds, before sending again a request the tracker rate limited (a 429, or
+# an error naming its rate limit): what its Retry-After asks for, rounded up to whole seconds, or
+# the default when it names no valid wait. Never less than 2 s, the average spacing of 5 requests in
+# 10 s, so a Retry-After of 0 does not send the retries in a burst. The waits of one
+# request add up to the maximum at most, however many times it is retried: a tracker asking for
+# more is not waited for, and the request fails with RateLimitedError instead.
+_RATE_LIMIT_WAIT = 20
+_MIN_RATE_LIMIT_WAIT = 2
+_MAX_RATE_LIMIT_WAITS = 60
+# No 5xx Retry-After is waited past this.
+_MAX_SERVER_WAIT = 120.0
+
+# How long to wait, in seconds, before looking up an upload whose answer was lost, and before
+# looking it up a second and last time if the tracker does not have it yet. When the upload timed
+# out (30 s without an answer), the tracker is likely still handling it, and the torrent only
+# shows up once it is done. The first wait lets an upload that was nearly done land, and costs
+# little when the answer was lost after the tracker was done. The second covers a slow tracker,
+# up to about 70 s after the upload was sent. The user waits 40 s at most, on top of the timeout
+# they already sat through.
+_LOST_UPLOAD_FIRST_WAIT = 10
+_LOST_UPLOAD_SECOND_WAIT = 30
 
 # A request body goes out in slices this big, each within the request's timeout. Once more than
 # 64 KiB wait to go out, aiohttp holds the next slice until the connection takes most of them, so
@@ -386,6 +396,23 @@ _SEND_SLICE = 64 * 1024
 # where the platform has it: Python's socket module does not always export it.
 _UNSENT_LIMIT = 128 * 1024
 _TCP_NOTSENT_LOWAT = {"linux": 25, "darwin": 0x201}.get(sys.platform)
+
+# The most a binary answer (an image on the tracker's own host) may hold. Reading stops there.
+_MAX_BINARY_BODY = 25 * 1024 * 1024
+_BINARY_READ_CHUNK = 64 * 1024
+
+# The most of a tracker's answer an error message shows, in characters.
+_MAX_EXCERPT = 500
+
+# How long before they expire an image host's credentials are got again, in seconds: longer than fetching a
+# release's images takes.
+_IMAGE_AUTH_MARGIN = 60
+# The ajax.php action giving them.
+_IMAGE_AUTH_ACTION = "imgauth"
+# A signed image URL's query values, however encoded: its expiry and user id are numbers, masked only here.
+_SIGNED_IMAGE_QUERY = re.compile(r"((?:[?&]|&amp;)(?:h|e|u)=)[^&#\s\"'<>\[\]]*")
+# The site log pages a recent-uploads check reads; cross-upload's request budget counts them.
+SITE_LOG_PAGES = 10
 
 
 def _keep_little_unsent(writer: AbstractStreamWriter) -> None:
@@ -453,7 +480,7 @@ async def _stall_bound_body(data: Any, stall_secs: int) -> _StallBoundBody:
 
 
 class RetryableError(RequestError):
-    """Exception for retryable network errors."""
+    """A failed request that may be sent again. Raised as is once the retries run out."""
 
     pass
 
@@ -517,9 +544,8 @@ class BaseGazelleApi:
     site_code: str
     site_string: str
     api_key: str = ""  # Optional, only for API key upload
-    # Whether its own image host serves an image only on a URL signed with what ajax.php?action=imgauth gives
-    # (image_auth). False when its images need no more than its pages.
-    SIGNED_IMAGES: bool = False
+    api_key_prefix: str = ""  # OPS wants "token <key>"; RED wants the bare key
+    keeplogged: str | None = None
 
     # Artist roles (from ARTIST_IMPORTANCES) that this tracker's upload form does not offer.
     # Uploads drop artists with these roles rather than send an unrecognised importance value.
@@ -528,8 +554,10 @@ class BaseGazelleApi:
     # The rate limiter requests go through: None for the tracker account's, shared by every client of the
     # tracker. Tests replace it with one that does not make them wait.
     _rate_limiter: AbstractAsyncContextManager[Any] | None = None
-    api_key_prefix: str = ""  # OPS wants "token <key>"; RED wants the bare key
-    keeplogged: str | None = None
+
+    # Whether this tracker's own image host serves an image only on a URL signed with the credentials its
+    # ajax.php?action=imgauth gives (image_auth). False when its images need no more than its pages.
+    SIGNED_IMAGES: bool = False
 
     def __init__(self) -> None:
         """Initialize the API client. Subclasses should call this after setting cookie/base_url."""
@@ -545,6 +573,7 @@ class BaseGazelleApi:
         self.authkey: str | None = None
         self.passkey: str | None = None
         self._authenticated = False
+        # The authentication in progress, shared by the requests waiting for it, and how many they are.
         self._authentication: asyncio.Task[None] | None = None
         self._authentication_waiters = 0
         # The tracker account's pool while this client uses it, and that account.
@@ -552,6 +581,19 @@ class BaseGazelleApi:
         self._account_used: TrackerAccount | None = None
         # The image host's credentials image_auth() got, as query parameters, until they expire.
         self._image_auth: dict[str, str] = {}
+
+    def _get_cookies(self) -> dict[str, str]:
+        """Get cookies dict for requests."""
+        return _build_tracker_cookies(self.cookie, self.keeplogged)
+
+    def _new_session(self, connections: int) -> aiohttp.ClientSession:
+        """Make an HTTP session with a pool of at most `connections` connections, through the tracker's proxy if any."""
+        # DummyCookieJar keeps nothing between requests, so an api-key request
+        # still goes out without a session cookie.
+        return aiohttp.ClientSession(
+            connector=proxy.connector(self.site_code.lower(), fixed_hosts=True, limit=connections),
+            cookie_jar=aiohttp.DummyCookieJar(),
+        )
 
     def _account(self) -> TrackerAccount:
         """This tracker's account on the running event loop: its rate limit, pool and lock."""
@@ -572,15 +614,6 @@ class BaseGazelleApi:
             if not idempotent:
                 accounts.commit()
             yield
-
-    def _new_session(self, connections: int) -> aiohttp.ClientSession:
-        """Make an HTTP session with a pool of at most `connections` connections, through the tracker's proxy if any."""
-        # DummyCookieJar keeps nothing between requests, so an api-key request
-        # still goes out without a session cookie.
-        return aiohttp.ClientSession(
-            connector=proxy.connector(self.site_code.lower(), fixed_hosts=True, limit=connections),
-            cookie_jar=aiohttp.DummyCookieJar(),
-        )
 
     def _http_session(self) -> aiohttp.ClientSession:
         """Get the kept-alive pool of this tracker account, shared by all its clients."""
@@ -652,9 +685,59 @@ class BaseGazelleApi:
             async with account.non_idempotent_lock, self._new_session(connections=1) as session:
                 yield session
 
-    def _get_cookies(self) -> dict[str, str]:
-        """Get cookies dict for requests."""
-        return _build_tracker_cookies(self.cookie, self.keeplogged)
+    @property
+    def has_session_cookie(self) -> bool:
+        """Whether a session cookie is configured. Site pages outside the API need one."""
+        return bool(self.cookie.strip())
+
+    def _secrets(self) -> list[str | None]:
+        """This tracker's secrets, as what it sends back may repeat them.
+
+        The session cookie as configured, decoded and as sent, the api key, the authkey and
+        passkey once authenticated, and the image host's key once got.
+        """
+        return [
+            *session_cookie_forms(self.cookie),
+            # The keeplogged cookie goes out beside the session.
+            *session_cookie_forms(self.keeplogged),
+            self.api_key,
+            self.authkey,
+            self.passkey,
+            self._image_auth.get("h"),
+        ]
+
+    def _signs(self, params: dict[str, Any] | None) -> bool:
+        """Whether a request's query carries this client's image host credentials."""
+        return bool(params and self._image_auth and params.get("h") == self._image_auth["h"])
+
+    def _redact(self, text: str) -> str:
+        """Mask this tracker's secrets in text about to be printed or raised."""
+        text = redact_tracker_text(text, self._secrets())
+        # Its answers carry image URLs signed for this account, not only the ones image_auth() gives.
+        return _SIGNED_IMAGE_QUERY.sub(r"\1[REDACTED]", text) if self.SIGNED_IMAGES else text
+
+    def _excerpt(self, text: str) -> str:
+        """Redact text, then cut it to _MAX_EXCERPT characters: a tracker's answer may be a whole page."""
+        shown = self._redact(text)
+        return shown if len(shown) <= _MAX_EXCERPT else shown[:_MAX_EXCERPT] + " [...]"
+
+    async def _read_capped(self, resp: aiohttp.ClientResponse) -> bytes:
+        """Read an answer's body as bytes, as it comes, and stop once it holds more than _MAX_BINARY_BODY.
+
+        Raises:
+            RequestFailedError: If the body is larger: the tracker would send the same answer again.
+        """
+        too_large = RequestFailedError(
+            f"{self.site_string} sent more than {_MAX_BINARY_BODY // (1024 * 1024)} MiB: not reading the rest"
+        )
+        if resp.content_length is not None and resp.content_length > _MAX_BINARY_BODY:
+            raise too_large
+        body = bytearray()
+        async for chunk in resp.content.iter_chunked(_BINARY_READ_CHUNK):
+            body += chunk
+            if len(body) > _MAX_BINARY_BODY:
+                raise too_large
+        return bytes(body)
 
     @property
     def announce(self) -> str:
@@ -680,6 +763,53 @@ class BaseGazelleApi:
         with _learned_secrets_lock:
             _learned_secrets.update(key for key in (self.authkey, self.passkey) if key)
         self._authenticated = True
+
+    async def image_auth(self) -> dict[str, str]:
+        """The credentials this tracker's own image host takes, as the query parameters of an image URL.
+
+        One ajax.php?action=imgauth call, with the API key when one is set: no session cookie needed. Kept until a
+        minute before they expire, so a run fetching images for several releases calls it once; not sent again but
+        as _send retries a GET. No request when SIGNED_IMAGES is False.
+
+        Returns:
+            h (the key), e (its expiry) and u (the user id): {} when the image host needs none.
+
+        Raises:
+            RequestError: If the call fails, or its answer does not give them all.
+        """
+        if not self.SIGNED_IMAGES:
+            return {}
+        if self._image_auth and int(self._image_auth["e"]) - _IMAGE_AUTH_MARGIN > time.time():
+            return self._image_auth
+        answer = await self._request(
+            "GET",
+            f"{self.base_url}/ajax.php",
+            params={"action": _IMAGE_AUTH_ACTION},
+            timeout_secs=10,
+            prefer_api_key=True,
+            needs_authkey=False,
+        )
+        try:
+            decoded = msgspec.json.decode(answer.text)
+            if decoded.get("status") != "success":
+                raise RequestFailedError(f"{self.site_string} refused its image host's credentials")
+            given = decoded["response"]
+            auth = {"h": str(given["h"]), "e": str(int(given["e"])), "u": str(int(given["u"]))}
+        except (msgspec.DecodeError, KeyError, TypeError, ValueError, AttributeError):
+            # Not chained: a parse error can quote the answer.
+            raise RequestFailedError(
+                f"{self.site_string} gave no usable credentials for its image host: it may have changed how it "
+                "serves its images"
+            ) from None
+        if len(auth["h"]) < 8:
+            # Masked by value wherever salmon prints: a shorter one would cut itself out of ordinary text.
+            raise RequestFailedError(f"{self.site_string} gave no usable key for its image host")
+        # The key is the credential, masked by value wherever salmon prints; the expiry and user id are masked
+        # only in a URL's query (_redact), as masking numbers by value would cut them out of every other number.
+        self._image_auth = auth
+        with _learned_secrets_lock:
+            _learned_secrets.add(auth["h"])
+        return auth
 
     async def ensure_authenticated(self) -> None:
         """Ensure we are authenticated before making requests.
@@ -798,10 +928,20 @@ class BaseGazelleApi:
             method, url, params, data, timeout_secs, prefer_api_key, idempotent, expected_error_statuses, [], binary
         )
 
+    # The retry policy. A failed request is sent again only when that cannot do more on the
+    # tracker than sending it once: the request is idempotent, or the tracker cannot have
+    # acted on it (no connection was made, or it answered 429). A state-changing request
+    # that fails once it may have reached the tracker (a timeout, a dropped connection, a
+    # 5xx, or a failure on a redirect after it) raises UnknownOutcomeError instead, as
+    # sending it again could upload or report twice (#446). A TLS certificate that does not
+    # verify is never sent again: it would fail the same way (#581). Other failed TLS
+    # handshakes are, as any connection that was not made: aiohttp raises the same error
+    # for one that cannot work and for the alert a TLS terminator sends under load.
     @retry(
         retry=retry_if_exception_type(RetryableError),
         stop=stop_after_attempt(5),
-        # Jitter keeps a batch that failed together from retrying in one salvo.
+        # Backing off beats hammering at a fixed 1s, and the random term keeps a
+        # batch that fails together from retrying in one synchronized salvo.
         wait=wait_exponential(multiplier=1, min=1, max=30) + wait_random(0, 2),
         # Before the wait: a salmon web job cancelled during it, or the attempt before, sends nothing again.
         before_sleep=lambda _state: accounts.begin_attempt(),
@@ -1046,107 +1186,6 @@ class BaseGazelleApi:
             # The body read's own timeout raises a TimeoutError with no message.
             reason = safe_response_excerpt(self._redact(str(err))) or f"no full answer within {timeout_secs} s"
             raise failure(f"Network error: {reason}", not_acted_on=isinstance(err, _NOT_SENT_ERRORS)) from None
-
-    @property
-    def has_session_cookie(self) -> bool:
-        """Whether a session cookie is configured. Site pages outside the API need one."""
-        return bool(self.cookie.strip())
-
-    def _secrets(self) -> list[str | None]:
-        """This tracker's secrets, as what it sends back may repeat them.
-
-        The session cookie as configured, decoded and as sent, the api key, the authkey and
-        passkey once authenticated, and the image host's key once got.
-        """
-        return [
-            *session_cookie_forms(self.cookie),
-            # The keeplogged cookie goes out beside the session.
-            *session_cookie_forms(self.keeplogged),
-            self.api_key,
-            self.authkey,
-            self.passkey,
-            self._image_auth.get("h"),
-        ]
-
-    def _signs(self, params: dict[str, Any] | None) -> bool:
-        """Whether a request's query carries this client's image host credentials."""
-        return bool(params and self._image_auth and params.get("h") == self._image_auth["h"])
-
-    async def image_auth(self) -> dict[str, str]:
-        """The credentials this tracker's own image host takes, as the query parameters of an image URL.
-
-        One ajax.php?action=imgauth call, with the API key when one is set: no session cookie needed. Kept until a
-        minute before they expire, so a run fetching images for several releases calls it once; not sent again but
-        as _send retries a GET. No request when SIGNED_IMAGES is False.
-
-        Returns:
-            h (the key), e (its expiry) and u (the user id): {} when the image host needs none.
-
-        Raises:
-            RequestError: If the call fails, or its answer does not give them all.
-        """
-        if not self.SIGNED_IMAGES:
-            return {}
-        if self._image_auth and int(self._image_auth["e"]) - _IMAGE_AUTH_MARGIN > time.time():
-            return self._image_auth
-        answer = await self._request(
-            "GET",
-            f"{self.base_url}/ajax.php",
-            params={"action": _IMAGE_AUTH_ACTION},
-            timeout_secs=10,
-            prefer_api_key=True,
-            needs_authkey=False,
-        )
-        try:
-            decoded = msgspec.json.decode(answer.text)
-            if decoded.get("status") != "success":
-                raise RequestFailedError(f"{self.site_string} refused its image host's credentials")
-            given = decoded["response"]
-            auth = {"h": str(given["h"]), "e": str(int(given["e"])), "u": str(int(given["u"]))}
-        except (msgspec.DecodeError, KeyError, TypeError, ValueError, AttributeError):
-            # Not chained: a parse error can quote the answer.
-            raise RequestFailedError(
-                f"{self.site_string} gave no usable credentials for its image host: it may have changed how it "
-                "serves its images"
-            ) from None
-        if len(auth["h"]) < 8:
-            # Masked by value wherever salmon prints: a shorter one would cut itself out of ordinary text.
-            raise RequestFailedError(f"{self.site_string} gave no usable key for its image host")
-        # The key is the credential, masked by value wherever salmon prints; the expiry and user id are masked
-        # only in a URL's query (_redact), as masking numbers by value would cut them out of every other number.
-        self._image_auth = auth
-        with _learned_secrets_lock:
-            _learned_secrets.add(auth["h"])
-        return auth
-
-    async def _read_capped(self, resp: aiohttp.ClientResponse) -> bytes:
-        """Read an answer's body as bytes, as it comes, and stop once it holds more than _MAX_BINARY_BODY.
-
-        Raises:
-            RequestFailedError: If the body is larger: the tracker would send the same answer again.
-        """
-        too_large = RequestFailedError(
-            f"{self.site_string} sent more than {_MAX_BINARY_BODY // (1024 * 1024)} MiB: not reading the rest"
-        )
-        if resp.content_length is not None and resp.content_length > _MAX_BINARY_BODY:
-            raise too_large
-        body = bytearray()
-        async for chunk in resp.content.iter_chunked(_BINARY_READ_CHUNK):
-            body += chunk
-            if len(body) > _MAX_BINARY_BODY:
-                raise too_large
-        return bytes(body)
-
-    def _redact(self, text: str) -> str:
-        """Mask this tracker's secrets in text about to be printed or raised."""
-        text = redact_tracker_text(text, self._secrets())
-        # Its answers carry image URLs signed for this account, not only the ones image_auth() gives.
-        return _SIGNED_IMAGE_QUERY.sub(r"\1[REDACTED]", text) if self.SIGNED_IMAGES else text
-
-    def _excerpt(self, text: str) -> str:
-        """Redact text, then cut it to _MAX_EXCERPT characters: a tracker's answer may be a whole page."""
-        shown = self._redact(text)
-        return shown if len(shown) <= _MAX_EXCERPT else shown[:_MAX_EXCERPT] + " [...]"
 
     async def api_call(self, action: str, params: dict[str, Any] | None = None) -> dict:
         """Make a request to the site API with rate limiting.
@@ -1417,21 +1456,6 @@ class BaseGazelleApi:
         except TypeError as err:
             raise RequestError(f"API upload failed, response: {self._excerpt(str(resp))}") from err
 
-    def upload_form_fields(self, metadata: dict[str, Any], track_data: dict[str, Any]) -> dict[str, str]:
-        """Give the upload form fields only this tracker has, for one torrent.
-
-        Args:
-            metadata: Release metadata of the torrent being uploaded.
-            track_data: Track information of the files in that torrent.
-
-        Returns:
-            Field names and values to add to the upload form data; none by default.
-
-        Raises:
-            UploadRefusedError: If the tracker's form has no value that describes the torrent.
-        """
-        return {}
-
     async def site_page_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Upload torrent via upload.php.
 
@@ -1530,6 +1554,76 @@ class BaseGazelleApi:
                 return self._excerpt(p_tag.text)
         return self._excerpt(resp_text)
 
+    def _dry_run_upload(self, url: str, data: dict, files: UploadFiles, prefer_api_key: bool) -> tuple[int, int]:
+        """Print the upload a dry run does not send, part by part as it would go out, and the torrent it holds.
+
+        Every value is redacted as the debug output is: the form holds the authkey.
+
+        Args:
+            url: The URL the upload would be sent to.
+            data: Upload form data, complete.
+            files: UploadFiles the upload would send.
+            prefer_api_key: Whether the upload would authenticate with the API key, as _request takes it.
+
+        Returns:
+            The IDs the upload stands in for: NEW_TORRENT_ID, and the group it goes into, or NEW_GROUP_ID
+            for a new one.
+        """
+        auth = "the API key" if prefer_api_key and self.api_key else "the session cookie"
+        dryrun.say(f"not uploading to {self.site_string}. It would send POST {self._redact(url)} with {auth}:")
+        for name, value, filename in _form_parts(files, data):
+            shown = f"{filename} ({format_size(len(value), binary=True)})" if filename else self._redact(str(value))
+            first, *more = shown.split("\n")
+            click.echo(f"  {name}: {first}")
+            for line in more:
+                click.echo(f"      {line}")
+        torrent = Torrent.read_stream(files.torrent_data)
+        click.echo(
+            f"  The torrent: {torrent.name}, {len(torrent.files)} file(s), {format_size(torrent.size, binary=True)}, "
+            f"piece size {format_size(torrent.piece_size, binary=True)}, source {torrent.source}"
+        )
+        for file in torrent.files:
+            # The first part of a path in a torrent of several files is the torrent's name.
+            click.echo(f"    {'/'.join(file.parts[1:]) or file}  ({format_size(file.size, binary=True)})")
+        group_id = data.get("groupid")
+        return dryrun.NEW_TORRENT_ID, group_id if group_id else dryrun.NEW_GROUP_ID
+
+    def upload_form_fields(self, metadata: dict[str, Any], track_data: dict[str, Any]) -> dict[str, str]:
+        """Give the upload form fields only this tracker has, for one torrent.
+
+        Args:
+            metadata: Release metadata of the torrent being uploaded.
+            track_data: Track information of the files in that torrent.
+
+        Returns:
+            Field names and values to add to the upload form data; none by default.
+
+        Raises:
+            UploadRefusedError: If the tracker's form has no value that describes the torrent.
+        """
+        return {}
+
+    def skip_upload_marks(self) -> None:
+        """Ask for none of the marks this tracker's upload form has for the uploader's own work, and send none.
+
+        For a re-post, such as a cross-upload. A tracker whose form has no such marks has nothing to skip.
+        """
+
+    async def upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
+        """Upload torrent via API or upload.php.
+
+        Args:
+            data: Upload form data.
+            files: UploadFiles containing files to upload.
+
+        Returns:
+            Tuple of (torrent_id, group_id).
+        """
+        if self.api_key:
+            return await self.api_key_upload(data, files)
+
+        return await self.site_page_upload(data, files)
+
     async def _find_lost_upload(self, files: UploadFiles, err: UnknownOutcomeError) -> tuple[int, int]:
         """Look up an upload whose answer was lost, by the torrent's infohash.
 
@@ -1587,61 +1681,6 @@ class BaseGazelleApi:
             raise
         click.secho(f"Found the upload on {self.site_string}: torrent {torrent_id}.", fg="green")
         return torrent_id, group_id
-
-    async def upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
-        """Upload torrent via API or upload.php.
-
-        Args:
-            data: Upload form data.
-            files: UploadFiles containing files to upload.
-
-        Returns:
-            Tuple of (torrent_id, group_id).
-        """
-        if self.api_key:
-            return await self.api_key_upload(data, files)
-
-        return await self.site_page_upload(data, files)
-
-    def _dry_run_upload(self, url: str, data: dict, files: UploadFiles, prefer_api_key: bool) -> tuple[int, int]:
-        """Print the upload a dry run does not send, part by part as it would go out, and the torrent it holds.
-
-        Every value is redacted as the debug output is: the form holds the authkey.
-
-        Args:
-            url: The URL the upload would be sent to.
-            data: Upload form data, complete.
-            files: UploadFiles the upload would send.
-            prefer_api_key: Whether the upload would authenticate with the API key, as _request takes it.
-
-        Returns:
-            The IDs the upload stands in for: NEW_TORRENT_ID, and the group it goes into, or NEW_GROUP_ID
-            for a new one.
-        """
-        auth = "the API key" if prefer_api_key and self.api_key else "the session cookie"
-        dryrun.say(f"not uploading to {self.site_string}. It would send POST {self._redact(url)} with {auth}:")
-        for name, value, filename in _form_parts(files, data):
-            shown = f"{filename} ({format_size(len(value), binary=True)})" if filename else self._redact(str(value))
-            first, *more = shown.split("\n")
-            click.echo(f"  {name}: {first}")
-            for line in more:
-                click.echo(f"      {line}")
-        torrent = Torrent.read_stream(files.torrent_data)
-        click.echo(
-            f"  The torrent: {torrent.name}, {len(torrent.files)} file(s), {format_size(torrent.size, binary=True)}, "
-            f"piece size {format_size(torrent.piece_size, binary=True)}, source {torrent.source}"
-        )
-        for file in torrent.files:
-            # The first part of a path in a torrent of several files is the torrent's name.
-            click.echo(f"    {'/'.join(file.parts[1:]) or file}  ({format_size(file.size, binary=True)})")
-        group_id = data.get("groupid")
-        return dryrun.NEW_TORRENT_ID, group_id if group_id else dryrun.NEW_GROUP_ID
-
-    def skip_upload_marks(self) -> None:
-        """Ask for none of the marks this tracker's upload form has for the uploader's own work, and send none.
-
-        For a re-post, such as a cross-upload. A tracker whose form has no such marks has nothing to skip.
-        """
 
     async def report_lossy_master(self, torrent_id: int, comment: str, source: str) -> bool:
         """Report torrent for lossy master/web approval.

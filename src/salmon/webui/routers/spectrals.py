@@ -150,7 +150,7 @@ async def upload(req: UploadRequest) -> dict:
                 check_image(path)
             except NotAnImage as e:
                 raise NotAnImage(f"Not uploading {os.path.basename(path)}: {e}") from None
-        urls = await upload_images(files, host)
+        urls = await upload_images(files, host, copy_to_clipboard=False)
         return {"host": host_name, "urls": urls}
 
     title = f"Upload spectrals: {os.path.basename(source_job.result['album_path'])}"

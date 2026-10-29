@@ -14,6 +14,7 @@ from pathlib import Path
 import anyio
 import pytest
 from aiohttp import web
+from aiolimiter import AsyncLimiter
 from tenacity import wait_none
 from torf import Torrent
 
@@ -21,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from salmon.common import UploadFiles
 from salmon.errors import RequestError, UnknownOutcomeError
 from salmon.trackers import base
-from salmon.trackers.account import SlidingWindowLimiter
 from salmon.trackers.base import BaseGazelleApi
 
 AUTHKEY = "authkey-0123456789abcdef"
@@ -42,7 +42,7 @@ class FakeApi(BaseGazelleApi):
         self.api_key = api_key
         super().__init__()
         # Per instance, as each test runs on its own event loop.
-        self._rate_limiter = SlidingWindowLimiter(100, 1)
+        self._rate_limiter = AsyncLimiter(100, 1)
         self._authenticated = True
         self.authkey = AUTHKEY
         self.passkey = PASSKEY

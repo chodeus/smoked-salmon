@@ -5,10 +5,10 @@ from pathlib import Path
 import anyio
 import pytest
 from aiohttp import web
+from aiolimiter import AsyncLimiter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from salmon.errors import LoginError
-from salmon.trackers.account import SlidingWindowLimiter
 from salmon.trackers.base import BaseGazelleApi
 from salmon.uploader import dupe_checker, last_min_dupe_check
 
@@ -23,7 +23,7 @@ class FakeApi(BaseGazelleApi):
         self.api_key = api_key
         super().__init__()
         # Per instance, as each test runs on its own event loop.
-        self._rate_limiter = SlidingWindowLimiter(100, 1)
+        self._rate_limiter = AsyncLimiter(100, 1)
         self._authenticated = True
 
 

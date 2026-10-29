@@ -7,6 +7,8 @@ from salmon.common import UploadFiles
 from salmon.errors import UploadRefusedError
 from salmon.trackers.base import BaseGazelleApi, TagRules
 
+# The options of the sample rate field on DIC's upload form, which the form has and requires
+# for 24bit Lossless only. An explicit table, so a rate the form does not list has no value.
 SAMPLE_RATES = {
     44100: "44.1kHz",
     48000: "48kHz",
@@ -63,6 +65,38 @@ class DICApi(BaseGazelleApi):
             warn_api_key_ignored()
 
         super().__init__()
+
+    def upload_form_fields(self, metadata: dict[str, Any], track_data: dict[str, Any]) -> dict[str, str]:
+        """Give the sample rate DIC requires for a 24bit Lossless torrent.
+
+        Args:
+            metadata: Release metadata of the torrent being uploaded.
+            track_data: Track information of the files in that torrent.
+
+        Returns:
+            The sample_rate field for a 24bit Lossless torrent, nothing for any other.
+
+        Raises:
+            UploadRefusedError: If the files have mixed sample rates, or one the form does not list.
+        """
+        if metadata["encoding"] != "24bit Lossless":
+            return {}
+
+        rates = sorted({track["sample rate"] for track in track_data.values()})
+        if len(rates) != 1:
+            found = ", ".join(_khz(rate) for rate in rates) or "none"
+            raise UploadRefusedError(
+                f"{self.site_string} takes one sample rate per torrent, and the files of this one have "
+                f"{found}: not uploading it there."
+            )
+        rate = rates[0]
+        if rate not in SAMPLE_RATES:
+            offered = ", ".join(_khz(rate) for rate in SAMPLE_RATES)
+            raise UploadRefusedError(
+                f"The files of this torrent are {_khz(rate)}, and {self.site_string}'s upload form has no "
+                f"sample rate option for it (only {offered}): not uploading it there."
+            )
+        return {"sample_rate": SAMPLE_RATES[rate]}
 
     def skip_upload_marks(self) -> None:
         """Send none of the Self-purchased, Self-rip and Exclusive marks, and do not ask for them."""
@@ -125,24 +159,3 @@ class DICApi(BaseGazelleApi):
         enriched_data = {**data, **self.specific_params}
 
         return await super().upload(enriched_data, files)
-
-    def upload_form_fields(self, metadata: dict[str, Any], track_data: dict[str, Any]) -> dict[str, str]:
-        """DIC's sample_rate field for a 24bit Lossless torrent; UploadRefusedError for mixed or unlisted rates."""
-        if metadata["encoding"] != "24bit Lossless":
-            return {}
-
-        rates = sorted({track["sample rate"] for track in track_data.values()})
-        if len(rates) != 1:
-            found = ", ".join(_khz(rate) for rate in rates) or "none"
-            raise UploadRefusedError(
-                f"{self.site_string} takes one sample rate per torrent, and the files of this one have "
-                f"{found}: not uploading it there."
-            )
-        rate = rates[0]
-        if rate not in SAMPLE_RATES:
-            offered = ", ".join(_khz(rate) for rate in SAMPLE_RATES)
-            raise UploadRefusedError(
-                f"The files of this torrent are {_khz(rate)}, and {self.site_string}'s upload form has no "
-                f"sample rate option for it (only {offered}): not uploading it there."
-            )
-        return {"sample_rate": SAMPLE_RATES[rate]}

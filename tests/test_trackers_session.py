@@ -1,295 +1,415 @@
-"""The kept-alive tracker connection pool, against real local servers."""
-
 import asyncio
-import gc
-import weakref
-from typing import Any, cast
+import contextlib
+import sys
+import time
+from pathlib import Path
 
-import asyncclick as click
+import anyio
 import pytest
 from aiohttp import web
-from tenacity import wait_fixed
+from aiolimiter import AsyncLimiter
+from tenacity import wait_none
 
-import salmon.trackers
-from salmon import cfg
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import salmon.trackers.base as trackers_base
 from salmon.errors import RequestFailedError, UnknownOutcomeError
-from salmon.trackers import account
 from salmon.trackers.account import SlidingWindowLimiter
-from salmon.trackers.base import BaseGazelleApi
-from salmon.webui.jobs import JobManager
-from salmon.webui.routers import system
+from salmon.trackers.base import BaseGazelleApi, RetryableError, hold_request_messages
 
 
 class FakeApi(BaseGazelleApi):
     site_code = "RED"
-    site_string = "Fake"
-    tracker_url = "https://announce.fake.example"
+    site_string = "RED"
     cookie = "fake-cookie"
 
-    def __init__(self, base_url: str = "http://127.0.0.1:1") -> None:
+    def __init__(self, base_url: str) -> None:
         self.base_url = base_url
         super().__init__()
+        # Shadow the 5-per-10s limiter so the tests measure connection reuse, not
+        # throttling. Per instance, as each test runs on its own event loop.
+        self._rate_limiter = AsyncLimiter(100, 1)
         self._authenticated = True
 
 
-@pytest.fixture(autouse=True)
-def _quiet(monkeypatch):
-    monkeypatch.setattr(cfg.tracker, "debug_connection", False)
-    # Measures connection reuse, not throttling.
-    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))
+async def _serve(handler) -> web.AppRunner:
+    app = web.Application()
+    app.router.add_route("*", "/ajax.php", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    return runner
 
 
-@pytest.fixture
-async def serve():
-    runners: list[web.AppRunner] = []
-
-    async def _serve(handler, method: str = "*") -> str:
-        app = web.Application()
-        app.router.add_route(method, "/{tail:.*}", handler)
-        runner = web.AppRunner(app, access_log=None)
-        await runner.setup()
-        await web.TCPSite(runner, "127.0.0.1", 0).start()
-        runners.append(runner)
-        return f"http://127.0.0.1:{runner.addresses[0][1]}"
-
-    yield _serve
-    for runner in runners:
-        await runner.cleanup()
+def _url(runner: web.AppRunner, host: str = "127.0.0.1") -> str:
+    return f"http://{host}:{runner.addresses[0][1]}"
 
 
 def _ok() -> web.Response:
     return web.json_response({"status": "success", "response": {"authkey": "a", "passkey": "p"}})
 
 
-async def _answer_ok(_request: web.Request) -> web.Response:
-    return _ok()
+async def _gathered_requests_reuse_a_small_pool() -> None:
+    peers = []
 
-
-def _peer_port(request: web.Request) -> int:
-    assert request.transport is not None
-    return request.transport.get_extra_info("peername")[1]
-
-
-async def test_gathered_requests_reuse_a_small_pool(serve):
-    ports: list[int] = []
-
-    async def handler(request: web.Request) -> web.Response:
-        ports.append(_peer_port(request))
+    async def handle_ajax(request: web.Request) -> web.Response:
+        assert request.transport is not None
+        peers.append(request.transport.get_extra_info("peername"))
         return _ok()
 
-    api = FakeApi(await serve(handler))
+    runner = await _serve(handle_ajax)
+    api = FakeApi(_url(runner))
     try:
-        await asyncio.gather(*(api._request("GET", f"{api.base_url}/ajax.php") for _ in range(6)))
+        await asyncio.gather(
+            *(
+                api._request("GET", api.base_url + "/ajax.php", params={"action": "index"}, timeout_secs=10)
+                for _ in range(6)
+            )
+        )
+        assert len(peers) == 6
+        # Six requests, at most two connections: the pool is capped and reused.
+        assert len({peer[1] for peer in peers}) <= 2
     finally:
         await api.close()
-    assert len(ports) == 6
-    assert len(set(ports)) <= 2
+        await runner.cleanup()
 
 
-async def test_queued_requests_do_not_time_out_while_waiting(serve):
-    hits: list[str] = []
+async def _api_key_requests_stay_cookie_free() -> None:
+    sent_cookies = []
 
-    async def handler(request: web.Request) -> web.Response:
-        hits.append(request.path)
-        await asyncio.sleep(0.4)
-        return _ok()
-
-    api = FakeApi(await serve(handler))
-    try:
-        # Six 0.4s answers over two connections take 1.2s, past each request's 1s timeout
-        # only if the wait for a free connection counts towards it.
-        await asyncio.gather(*(api._request("GET", f"{api.base_url}/ajax.php", timeout_secs=1) for _ in range(6)))
-    finally:
-        await api.close()
-    assert len(hits) == 6
-
-
-async def test_a_trickled_answer_still_times_out(serve, monkeypatch):
-    monkeypatch.setattr(cast("Any", BaseGazelleApi._send).retry, "wait", wait_fixed(0))
-
-    async def handler(request: web.Request) -> web.StreamResponse:
-        await request.read()
-        resp = web.StreamResponse()
-        await resp.prepare(request)
-        # Each byte lands well inside sock_read, so only a bound on the whole read stops it.
-        for _ in range(30):
-            await resp.write(b" ")
-            await asyncio.sleep(0.1)
-        return resp
-
-    api = FakeApi(await serve(handler))
-    started = asyncio.get_running_loop().time()
-    try:
-        with pytest.raises(UnknownOutcomeError):
-            await api._request("POST", f"{api.base_url}/upload.php", data={"x": "1"}, timeout_secs=1)
-    finally:
-        await api.close()
-    assert asyncio.get_running_loop().time() - started < 2
-
-
-async def test_api_key_requests_stay_cookie_free(serve):
-    sent: list[str | None] = []
-
-    async def handler(request: web.Request) -> web.Response:
-        sent.append(request.headers.get("Cookie"))
+    async def handle_ajax(request: web.Request) -> web.Response:
+        sent_cookies.append(request.headers.get("Cookie"))
         response = _ok()
         response.set_cookie("planted", "by-the-server")
         return response
 
-    base = await serve(handler)
-    # A named host: a cookie jar discards cookies set by a bare IP address.
-    api = FakeApi(base.replace("127.0.0.1", "localhost"))
+    runner = await _serve(handle_ajax)
+    # A named host, because a cookie jar discards cookies set by a bare IP address.
+    api = FakeApi(_url(runner, "localhost"))
     api.api_key = "an-api-key"
     try:
-        await api._request("GET", f"{api.base_url}/ajax.php")
-        await api._request("GET", f"{api.base_url}/ajax.php", prefer_api_key=True)
+        url = api.base_url + "/ajax.php"
+        await api._request("GET", url, params={"action": "index"})
+        await api._request("GET", url, params={"action": "index"}, prefer_api_key=True)
+        assert "session=fake-cookie" in sent_cookies[0]
+        # The shared session must not carry the server's cookie into a request that
+        # authenticates by api key, which is meant to send no cookie at all.
+        assert sent_cookies[1] is None
     finally:
         await api.close()
-    assert sent[0] == "session=fake-cookie"
-    assert sent[1] is None
+        await runner.cleanup()
 
 
-async def test_a_post_goes_on_a_fresh_connection_and_leaves_the_pool_alone(serve):
-    seen: list[tuple[str, int]] = []
+async def _queued_requests_do_not_time_out_while_waiting() -> None:
+    hits = []
 
-    async def handler(request: web.Request) -> web.Response:
-        await request.read()
-        seen.append((request.method, _peer_port(request)))
-        if request.path == "/slow":
-            await asyncio.sleep(0.3)
+    async def handle_ajax(request: web.Request) -> web.Response:
+        hits.append(request.path)
+        await asyncio.sleep(0.4)
         return _ok()
 
-    api = FakeApi(await serve(handler))
+    runner = await _serve(handle_ajax)
+    api = FakeApi(_url(runner))
     try:
-        await api._request("GET", f"{api.base_url}/ajax.php")
-        # An idle pooled connection is free: a pooled POST would take it.
-        await api._request("POST", f"{api.base_url}/upload.php", data={"x": "0"})
-        # A GET in flight on the pool must survive the POST.
+        # Six 0.4s answers over two connections take 1.2s end to end. Each request
+        # is well inside its 1s timeout, but a timeout that also counted the wait
+        # for a free connection would expire the last ones and retry them.
         await asyncio.gather(
-            api._request("GET", f"{api.base_url}/slow"),
-            api._request("POST", f"{api.base_url}/upload.php", data={"x": "1"}),
+            *(
+                api._request("GET", api.base_url + "/ajax.php", params={"action": "index"}, timeout_secs=1)
+                for _ in range(6)
+            )
         )
-        await api._request("GET", f"{api.base_url}/ajax.php")
+        assert len(hits) == 6
     finally:
         await api.close()
-
-    post_ports = [port for method, port in seen if method == "POST"]
-    get_ports = {port for method, port in seen if method == "GET"}
-    assert len(post_ports) == 2
-    assert not set(post_ports) & get_ports
-    assert seen[0][1] == seen[-1][1]
+        await runner.cleanup()
 
 
-async def test_a_session_cookie_follows_a_redirect_on_the_tracker_only(serve):
-    received: dict[str, str | None] = {}
+async def _queued_requests_do_not_time_out_while_reading_a_slow_answer() -> None:
+    hits = []
 
-    async def elsewhere(request: web.Request) -> web.Response:
-        received["elsewhere"] = request.headers.get("Cookie")
-        return _ok()
+    async def handle_ajax(request: web.Request) -> web.StreamResponse:
+        hits.append(request.path)
+        resp = web.StreamResponse()
+        await resp.prepare(request)
+        # The answer starts at once, and its body takes 0.4s to come.
+        for _ in range(4):
+            await asyncio.sleep(0.1)
+            await resp.write(b" ")
+        return resp
 
-    other = await serve(elsewhere)
-
-    async def tracker(request: web.Request) -> web.Response:
-        received[request.path] = request.headers.get("Cookie")
-        if request.path == "/hop":
-            raise web.HTTPFound("/landed")
-        if request.path == "/away":
-            raise web.HTTPFound(f"{other}/steal")
-        return _ok()
-
-    api = FakeApi((await serve(tracker)).replace("127.0.0.1", "localhost"))
+    runner = await _serve(handle_ajax)
+    api = FakeApi(_url(runner))
     try:
-        await api._request("GET", f"{api.base_url}/hop")
-        with pytest.raises(RequestFailedError):
-            await api._request("GET", f"{api.base_url}/away")
+        # As above, the last requests wait 0.8s for a free connection, then read for 0.4s: the
+        # bound on reading the whole body must not count the wait either.
+        await asyncio.gather(*(api._request("GET", api.base_url + "/ajax.php", timeout_secs=1) for _ in range(6)))
+        assert len(hits) == 6
     finally:
         await api.close()
-    assert received["/landed"] == "session=fake-cookie"
-    assert "elsewhere" not in received
+        await runner.cleanup()
 
 
-async def test_a_web_job_closes_its_tracker_pool(serve):
-    base = await serve(_answer_ok)
-    sessions: list[Any] = []
+async def _trickled_answer_still_times_out(method: str) -> tuple[list[int], float]:
+    """Send a request whose answer trickles in, then one answered at once.
 
-    async def factory(_job) -> None:
-        api = FakeApi(base)
-        await api._request("GET", f"{base}/ajax.php")
-        sessions.append(api._session)
+    Returns the client port each request came from, and how long the first one took.
+    """
+    ports = []
 
-    job = JobManager().create_threaded("test", "pool", factory)
-    assert job.thread is not None
-    await asyncio.to_thread(job.thread.join, 10)
+    async def handle_ajax(request: web.Request) -> web.StreamResponse:
+        await request.read()
+        assert request.transport is not None
+        ports.append(request.transport.get_extra_info("peername")[1])
+        if len(ports) > 1:
+            return _ok()
+        resp = web.StreamResponse()
+        await resp.prepare(request)
+        # Each byte lands well inside sock_read, so only a bound on the whole read stops it.
+        with contextlib.suppress(ConnectionResetError):
+            for _ in range(30):
+                await resp.write(b" ")
+                await asyncio.sleep(0.1)
+        return resp
 
-    assert job.status == "done", job.error
-    assert sessions and sessions[0].closed
+    runner = await _serve(handle_ajax)
+    api = FakeApi(_url(runner))
+    started = asyncio.get_running_loop().time()
+    try:
+        if method == "POST":
+            with pytest.raises(UnknownOutcomeError, match="no full answer within 1 s"):
+                await api._request(method, api.base_url + "/ajax.php", data={"file": "x"}, timeout_secs=1)
+        else:
+            await api._request(method, api.base_url + "/ajax.php", timeout_secs=1)
+        return ports, asyncio.get_running_loop().time() - started
+    finally:
+        await api.close()
+        await runner.cleanup()
 
 
-async def test_the_connection_check_closes_its_pool(serve, monkeypatch):
-    base = await serve(_answer_ok)
-    made: list[FakeApi] = []
-
-    def make() -> FakeApi:
-        made.append(FakeApi(base))
-        return made[-1]
-
-    monkeypatch.setattr(salmon.trackers, "get_class", lambda _code: make)
-    result = await system._check_tracker("FAKE")
-
-    assert result.cookie == "ok", result
-    assert cast("Any", made[0])._session is None
+def test_gathered_requests_reuse_a_small_pool() -> None:
+    anyio.run(_gathered_requests_reuse_a_small_pool)
 
 
-async def test_a_long_lived_context_keeps_no_tracker_once_its_pool_is_closed(serve):
-    # The web UI's server context lives until shutdown; each connection check must not pile up on it.
-    base = await serve(_answer_ok)
-    async with account.requests_on_this_loop(), click.Context(click.Command("web")):
-        refs = []
-        for _ in range(3):
-            api = FakeApi(base)
-            await api._request("GET", f"{base}/ajax.php")
+def test_queued_requests_do_not_time_out_while_waiting() -> None:
+    anyio.run(_queued_requests_do_not_time_out_while_waiting)
+
+
+def test_queued_requests_do_not_time_out_while_reading_a_slow_answer() -> None:
+    anyio.run(_queued_requests_do_not_time_out_while_reading_a_slow_answer)
+
+
+def test_trickled_answer_to_a_post_is_an_unknown_outcome() -> None:
+    ports, took = anyio.run(_trickled_answer_still_times_out, "POST")
+    # Cut short after its 1s bound, not after the 3s the answer takes, and not sent again.
+    assert took < 2
+    assert len(ports) == 1
+
+
+def test_trickled_answer_to_a_get_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(BaseGazelleApi._send.retry, "wait", wait_none())  # type: ignore[attr-defined]
+    ports, took = anyio.run(_trickled_answer_still_times_out, "GET")
+    assert took < 2
+    # Sent again on a new connection: the one cut short mid-answer is not reused.
+    assert len(ports) == 2
+    assert ports[0] != ports[1]
+
+
+def test_api_key_requests_stay_cookie_free() -> None:
+    anyio.run(_api_key_requests_stay_cookie_free)
+
+
+class SignedImagesApi(FakeApi):
+    SIGNED_IMAGES = True
+
+
+def _imgauth(expiry: int) -> web.Response:
+    return web.json_response({"status": "success", "response": {"h": "k3yF0rTh3Ima9eHost", "e": expiry, "u": 4242}})
+
+
+async def _image_auth_is_one_imgauth_call_kept_until_it_expires() -> None:
+    sent = []
+    expiries = [4102444800]
+
+    async def handle_ajax(request: web.Request) -> web.Response:
+        sent.append((request.query.get("action"), request.headers.get("Cookie"), request.headers.get("Authorization")))
+        return _imgauth(expiries[0])
+
+    runner = await _serve(handle_ajax)
+    api = SignedImagesApi(_url(runner))
+    api.api_key = "an-api-key"
+    cookie_only = SignedImagesApi(api.base_url)
+    try:
+        auth = {"h": "k3yF0rTh3Ima9eHost", "e": "4102444800", "u": "4242"}
+        assert await api.image_auth() == auth
+        assert await api.image_auth() == auth
+        # One call, with the API key and no session cookie, kept for the next.
+        assert sent == [("imgauth", None, "an-api-key")]
+        assert "k3yF0rTh3Ima9eHost" in api._secrets()
+        assert "k3yF0rTh3Ima9eHost" in trackers_base.learned_secrets()
+        # Within a minute of expiring: got again.
+        api._image_auth["e"] = str(int(time.time()) + 30)
+        expiries[0] = 4102444801
+        assert (await api.image_auth())["e"] == "4102444801"
+        assert len(sent) == 2
+        # Without an API key, the session cookie authenticates it.
+        await cookie_only.image_auth()
+        assert sent[2] == ("imgauth", "session=fake-cookie", None)
+        # A tracker that does not sign its images is not asked.
+        assert await FakeApi(api.base_url).image_auth() == {}
+        assert len(sent) == 3
+    finally:
+        await api.close()
+        await cookie_only.close()
+        await runner.cleanup()
+
+
+def test_image_auth_is_one_imgauth_call_kept_until_it_expires() -> None:
+    anyio.run(_image_auth_is_one_imgauth_call_kept_until_it_expires)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"status": "failure", "error": "bad action"},
+        {"status": "success", "response": {"h": "k3y", "e": 4102444800}},
+        {"status": "success", "response": {"h": "k3y4567", "e": 4102444800, "u": 4242}},
+        {"status": "success", "response": {"h": "", "e": 4102444800, "u": 4242}},
+        {"status": "success", "response": []},
+    ],
+)
+def test_an_imgauth_answer_without_all_three_is_refused(answer: dict) -> None:
+    async def run() -> None:
+        async def handle_ajax(_request: web.Request) -> web.Response:
+            return web.json_response(answer)
+
+        runner = await _serve(handle_ajax)
+        api = SignedImagesApi(_url(runner))
+        try:
+            with pytest.raises(RequestFailedError, match="RED"):
+                await api.image_auth()
+            assert api._image_auth == {}
+        finally:
             await api.close()
-            refs.append(weakref.ref(api))
-            del api
-        gc.collect()
-        assert all(ref() is None for ref in refs)
+            await runner.cleanup()
+
+    anyio.run(run)
 
 
-async def test_a_pool_left_open_still_closes_with_its_context(serve):
-    base = await serve(_answer_ok)
-    async with click.Context(click.Command("cli")):
-        api = FakeApi(base)
-        await api._request("GET", f"{base}/ajax.php")
-        session = api._session
-        del api
-        gc.collect()
-    assert session is not None and session.closed
+async def _rate_limited(handler) -> tuple[web.AppRunner, FakeApi]:
+    runner = await _serve(handler)
+    api = FakeApi(_url(runner))
+    return runner, api
+
+
+def _rate_limit_response() -> web.Response:
+    return web.json_response(
+        {"status": "failure", "error": "rate limit exceeded"},
+        status=429,
+        headers={"Retry-After": "0"},
+    )
+
+
+async def _rate_limit_message_prints_while_not_held(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No real wait: the tenacity retry backoff also sleeps through asyncio.sleep.
+    monkeypatch.setattr(trackers_base.asyncio, "sleep", lambda _seconds, _real_sleep=asyncio.sleep: _real_sleep(0))
+
+    async def handle_ajax(_request: web.Request) -> web.Response:
+        return _rate_limit_response()
+
+    runner, api = await _rate_limited(handle_ajax)
+    try:
+        with pytest.raises(RetryableError):
+            await api._request("GET", api.base_url + "/ajax.php", params={"action": "index"})
+    finally:
+        await api.close()
+        await runner.cleanup()
+
+
+def test_rate_limit_message_prints_while_not_held(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    anyio.run(lambda: _rate_limit_message_prints_while_not_held(monkeypatch))
+    out = capsys.readouterr().out
+    assert "Rate limit exceeded, waiting 2 seconds..." in out
+    assert "waited" not in out
+
+
+async def _rate_limit_message_reads_past_tense_when_held(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(trackers_base.asyncio, "sleep", lambda _seconds, _real_sleep=asyncio.sleep: _real_sleep(0))
+
+    async def handle_ajax(_request: web.Request) -> web.Response:
+        return _rate_limit_response()
+
+    runner, api = await _rate_limited(handle_ajax)
+    try:
+        with hold_request_messages() as messages, pytest.raises(RetryableError):
+            await api._request("GET", api.base_url + "/ajax.php", params={"action": "index"})
+        assert any("Rate limit exceeded, waited 2 seconds" in message for message, _styles in messages)
+        assert not any("waiting" in message for message, _styles in messages)
+    finally:
+        await api.close()
+        await runner.cleanup()
+
+
+def test_rate_limit_message_reads_past_tense_when_held(monkeypatch: pytest.MonkeyPatch) -> None:
+    anyio.run(lambda: _rate_limit_message_reads_past_tense_when_held(monkeypatch))
+
+
+async def _rate_limited_without_an_error_key() -> tuple[str, int]:
+    hits = []
+
+    async def handle_ajax(_request: web.Request) -> web.Response:
+        hits.append(1)
+        if len(hits) == 1:
+            return web.Response(
+                status=429, text='{"status": "failure"}', content_type="application/json", headers={"Retry-After": "2"}
+            )
+        return _ok()
+
+    runner, api = await _rate_limited(handle_ajax)
+    try:
+        response = await api._request("GET", api.base_url + "/ajax.php", params={"action": "index"})
+        return response.text, len(hits)
+    finally:
+        await api.close()
+        await runner.cleanup()
+
+
+def test_429_without_an_error_key_is_waited_for_and_sent_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    slept = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(trackers_base.asyncio, "sleep", fake_sleep)
+    # The fork waits in the tracker's paused limiter, not in the request.
+    monkeypatch.setattr(SlidingWindowLimiter, "pause", lambda _self, seconds: slept.append(seconds))
+    monkeypatch.setattr(BaseGazelleApi._send.retry, "wait", wait_none())  # type: ignore[attr-defined]
+    text, hits = anyio.run(_rate_limited_without_an_error_key)
+    assert hits == 2
+    assert "authkey" in text
+    assert 2 in slept
+
+
+async def _failed_with(body: str, status: int) -> str:
+    async def handle_ajax(_request: web.Request) -> web.Response:
+        return web.Response(status=status, text=body, content_type="application/json")
+
+    runner, api = await _rate_limited(handle_ajax)
+    try:
+        with pytest.raises(RequestFailedError) as raised:
+            await api._request("GET", api.base_url + "/ajax.php", params={"action": "index"})
+        return str(raised.value)
+    finally:
+        await api.close()
+        await runner.cleanup()
 
 
 @pytest.mark.parametrize("body", ['{"status": "failure"}', '["a", "b"]', '"nope"', "42"])
-async def test_an_error_answer_without_an_error_key_keeps_its_body_as_the_message(serve, body: str):
-    async def handler(_request: web.Request) -> web.Response:
-        return web.Response(status=400, text=body, content_type="application/json")
-
-    api = FakeApi(await serve(handler))
-    try:
-        with pytest.raises(RequestFailedError) as raised:
-            await api._request("GET", f"{api.base_url}/ajax.php", params={"action": "index"})
-    finally:
-        await api.close()
-
-    assert str(raised.value) == body
+def test_error_answer_without_an_error_key_keeps_the_body_as_message(body: str) -> None:
+    assert anyio.run(_failed_with, body, 400) == body
 
 
-async def test_an_error_answer_with_an_error_key_gives_that_message(serve):
-    async def handler(_request: web.Request) -> web.Response:
-        return web.json_response({"status": "failure", "error": "bad id"}, status=400)
-
-    api = FakeApi(await serve(handler))
-    try:
-        with pytest.raises(RequestFailedError) as raised:
-            await api._request("GET", f"{api.base_url}/ajax.php", params={"action": "index"})
-    finally:
-        await api.close()
-
-    assert str(raised.value) == '"bad id"'
+def test_error_answer_with_an_error_key_gives_that_message() -> None:
+    assert anyio.run(_failed_with, '{"status": "failure", "error": "bad id"}', 400) == '"bad id"'

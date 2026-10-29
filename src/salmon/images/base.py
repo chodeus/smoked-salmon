@@ -12,12 +12,27 @@ mimetypes.init()
 
 _UploadFile = Callable[[Any, str], Awaitable[tuple[str, str | None]]]
 
-# 5 min total per aiohttp request, including any pool wait; 30 s to connect. Batch items queue before aiohttp.
+# aiohttp's default: 5 minutes for a whole upload, 30 s to connect. It counts the wait for a
+# free pooled connection too, so a batch queues its uploads before they reach aiohttp, not in
+# the pool. A total is kept because the read timeout only starts once the body is sent: without
+# it, an upload the host stops reading would hang forever.
 UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=300, sock_connect=30)
 
 
 def describe_upload_timeout(e: TimeoutError) -> str:
-    """Word a timed-out upload's error with the timeout it actually hit: connecting, or the whole upload."""
+    """Word a timed-out upload's error message.
+
+    aiohttp.ServerTimeoutError (raised for a connection that never gets accepted, and its
+    subclasses) is a connection-level timeout, told apart from the plain TimeoutError raised
+    once the overall upload timeout expires: each is worded with the number it actually hit, so
+    neither prints a duration the failure did not wait out.
+
+    Args:
+        e: The timeout that was caught.
+
+    Returns:
+        The message to raise ImageUploadFailed with.
+    """
     if isinstance(e, aiohttp.ServerTimeoutError):
         return f"Connection to the host timed out after {UPLOAD_TIMEOUT.sock_connect}s"
     return f"Upload timed out after {UPLOAD_TIMEOUT.total}s"
@@ -35,7 +50,12 @@ def _refused_in_dry_run(upload_file: _UploadFile) -> _UploadFile:
 
 
 class BaseImageUploader:
-    """Base class for image uploaders: subclasses implement the async upload_file, which refuses in a dry run."""
+    """Base class for image uploaders.
+
+    Subclasses should implement the async upload_file method, and send their requests
+    through the session from `_http_session()`. Each one's upload_file refuses to run during
+    a dry run, whatever it sends its requests through.
+    """
 
     # The host's key in [proxy.services], whose proxy `_http_session()` goes through. None for a
     # host that sends nothing through it.
@@ -43,10 +63,11 @@ class BaseImageUploader:
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        # Every upload goes through upload_file, whatever it sends its requests through.
+        # Every upload goes through upload_file, some not through _http_session (imgbox's library, RED's client).
         upload_file = cls.__dict__.get("upload_file")
         if upload_file is not None:
-            # setattr: an assignment is checked against upload_file's own signature, which the wrapper keeps.
+            # setattr: an assignment is checked against upload_file's own signature, which the wrapper keeps
+            # but its type does not spell out.
             setattr(cls, "upload_file", _refused_in_dry_run(upload_file))  # noqa: B010
 
     def __init__(self) -> None:
@@ -59,7 +80,10 @@ class BaseImageUploader:
 
     @asynccontextmanager
     async def connections(self, limit: int) -> AsyncIterator[None]:
-        """Send the uploads made inside this block over one pool of at most `limit` reused connections."""
+        """Send the uploads made inside this block over one pool of at most `limit` connections.
+
+        The connections are reused from one upload to the next instead of opened for each image.
+        """
         async with aiohttp.ClientSession(
             connector=proxy.connector(self.proxy_service, fixed_hosts=True, limit=limit), timeout=UPLOAD_TIMEOUT
         ) as session:
@@ -71,7 +95,7 @@ class BaseImageUploader:
 
     @asynccontextmanager
     async def _http_session(self) -> AsyncIterator[aiohttp.ClientSession]:
-        """The session to upload through: the pool of `connections()`, else one for this upload."""
+        """Get the session to upload through: the pool of `connections()`, else one for this upload."""
         if self._session is not None:
             yield self._session
         else:

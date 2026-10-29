@@ -18,6 +18,7 @@ import aiohttp
 import anyio
 import pytest
 from aiohttp import web
+from aiolimiter import AsyncLimiter
 from fake_proxy import FakeProxy
 from tenacity import wait_none
 
@@ -25,10 +26,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import salmon.run
 import salmon.trackers
 from salmon import cfg
+from salmon.commands import checkconf
 from salmon.config.validations import ProxyCfg, ProxyServicesCfg
 from salmon.errors import RequestError, TLSCertificateError, UnknownOutcomeError
-from salmon.trackers.account import SlidingWindowLimiter
 from salmon.trackers.base import BaseGazelleApi, RetryableError
+from salmon.uploader.dupe_checker import fetch_existing_group_candidates_in_background
 
 pytestmark = pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl is not installed")
 
@@ -140,7 +142,7 @@ class FakeApi(BaseGazelleApi):
         self._trust = trust
         self._connector = connector
         # Per instance, as each test runs on its own event loop.
-        self._rate_limiter = SlidingWindowLimiter(100, 1)
+        self._rate_limiter = AsyncLimiter(100, 1)
         self._authenticated = True
 
     def _new_session(self, connections: int) -> aiohttp.ClientSession:
@@ -252,6 +254,29 @@ def test_certificate_failure_through_a_proxy_connects_once(certificates: Certifi
     assert str(err) == "TLS certificate verification failed for 127.0.0.1: self-signed certificate"
 
 
+async def _dupe_check_on_a_fresh_client(certificate: Certificate) -> int:
+    server = await Server().serve_tls(certificate)
+    api = FakeApi(server.url)
+    # As at the start of an upload: the gathered searches wait on one authentication.
+    api._authenticated = False
+    try:
+        # Raised as it is, not in an exception group: salmon's main catches it.
+        with pytest.raises(TLSCertificateError):
+            async with fetch_existing_group_candidates_in_background(
+                api, ["artist album", "artist album 2024", "artist album deluxe"], "album"
+            ) as fetch:
+                assert fetch is not None
+                await fetch.result()
+        return server.accepted
+    finally:
+        await api.close()
+        await server.close()
+
+
+def test_dupe_check_at_the_start_of_an_upload_connects_once(certificates: Certificates) -> None:
+    assert anyio.run(_dupe_check_on_a_fresh_client, certificates.self_signed) == 1
+
+
 class _CertificateFailureOnSecondConnection(aiohttp.TCPConnector):
     """Fails the second connection on its certificate, as aiohttp would."""
 
@@ -353,7 +378,53 @@ def test_handshake_failing_on_an_internal_error_alert_is_still_retried() -> None
     assert anyio.run(_tls_alert, 80) == 5
 
 
-def test_main_explains_a_certificate_failure_a_command_ends_on(
+async def _checkconf(certificate: Certificate, monkeypatch: pytest.MonkeyPatch) -> int:
+    server = await Server().serve_tls(certificate)
+    made: list[FakeApi] = []
+
+    def tracker_class(_tracker: str):
+        def make() -> FakeApi:
+            made.append(FakeApi(server.url, api_key="an-api-key"))
+            return made[-1]
+
+        return make
+
+    monkeypatch.setattr(salmon.trackers, "get_class", tracker_class)
+    try:
+        assert checkconf.callback is not None
+        await checkconf.callback(tracker="RED", metadata=False, seedbox=False, reset=False)
+        return server.accepted
+    finally:
+        for api in made:
+            await api.close()
+        await server.close()
+
+
+def test_checkconf_reports_a_certificate_failure_not_an_authentication_failure(
+    certificates: Certificates, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    stale_bundle = tmp_path / "old-ca-bundle.pem"
+    monkeypatch.setenv("SSL_CERT_FILE", str(stale_bundle))
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+
+    accepted = anyio.run(_checkconf, certificates.self_signed, monkeypatch)
+
+    out = capsys.readouterr().out
+    assert "✖ TLS certificate verification failed for 127.0.0.1: self-signed certificate" in out
+    assert "your session cookie and API key are not the cause" in out
+    assert f"SSL_CERT_FILE: {stale_bundle}" in out
+    assert "SSL_CERT_DIR: not set" in out
+    assert f"CA file: none, nothing at {stale_bundle}" in out
+    assert "CA directory: " in out
+    assert "system clock" in out
+    assert "✖ Error testing RED (TLS certificate)" in out
+    assert "authentication failed" not in out.lower()
+    assert "cookie check failed" not in out.lower()
+    # The API key check would go to the same host: it is not sent.
+    assert accepted == 1
+
+
+def test_main_points_at_checkconf_when_a_command_ends_on_a_certificate_failure(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     def command(**_kwargs: object) -> None:
@@ -367,4 +438,4 @@ def test_main_explains_a_certificate_failure_a_command_ends_on(
 
     out = capsys.readouterr().out
     assert "There was an error: TLS certificate verification failed for tracker.example: certificate has expired" in out
-    assert "Your session cookie and API key are not the cause" in out
+    assert "salmon checkconf -t OPS" in out
