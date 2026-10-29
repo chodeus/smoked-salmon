@@ -103,8 +103,9 @@ def test_in_a_web_job_what_rclone_writes_to_its_stdout_reaches_the_jobs_log_mask
     logged: list[tuple[str, bool]] = []
 
     with output.capturing(), output.to(lambda text, err: logged.append((text, err))):
-        assert _upload_with_fake_rclone(Seedbox(url="sbox", extra_args=["--sftp-pass", "UNIQUESECRET"])) is True
+        uploaded = _upload_with_fake_rclone(Seedbox(url="sbox", extra_args=["--sftp-pass", "UNIQUESECRET"]))
 
+    assert uploaded is True
     log = "".join(text for text, err in logged if not err)
     assert "NOTICE: copied with [REDACTED]" in log
     out, err = capfd.readouterr()
