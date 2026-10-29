@@ -5,6 +5,7 @@ from typing import Any
 
 import anyio
 import asyncclick as click
+import msgspec
 import pytest
 from asyncclick.testing import CliRunner
 from test_checks_do_not_upload import write_lists  # pyright: ignore[reportMissingImports]
@@ -29,8 +30,9 @@ from test_cross_upload import (  # pyright: ignore[reportMissingImports]
 
 import salmon.cross_upload as cross_upload_module
 import salmon.trackers
-from salmon import interaction
+from salmon import cfg, interaction
 from salmon.cross_upload import _folder_torrents
+from salmon.uploader.seedbox import UploadManager
 
 TARGET_FLAC_ID = 700500
 
@@ -356,3 +358,23 @@ def test_a_path_is_held_to_the_targets_own_limit(monkeypatch, dirs, length: int,
 
     assert ("1 path(s) are longer than OPS's 255 characters" in run.output) is refused
     assert len(run.target.posts()) == (0 if refused else 1)
+
+
+def test_a_cross_upload_never_removes_the_local_copy(monkeypatch, dirs) -> None:  # noqa: F811
+    album = _album(dirs.downloads / FOLDER)
+    removals: list[str | None] = []
+    monkeypatch.setattr(
+        UploadManager, "remove_local_copies", lambda _self, keep_because=None: removals.append(keep_because)
+    )
+
+    def prepare(source: FakeTracker, target: FakeTracker) -> None:
+        _source_has(album)(source, target)
+        # A seedbox set to remove after salmon up: cross-upload reads the files from download_directory.
+        cfg.seedbox[0] = msgspec.structs.replace(cfg.seedbox[0], remove_local_after_copy=True)
+
+    run = _cross_upload(monkeypatch, dirs, [str(TORRENT_ID), "-yyy"], input="\n", prepare=prepare)
+
+    assert run.result.exit_code == 0, run.output
+    assert run.seeded == [("/seed", FOLDER)]
+    assert removals == []
+    assert album.is_dir()
