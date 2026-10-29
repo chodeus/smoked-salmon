@@ -486,7 +486,7 @@ def test_skip_flac_upload_takes_the_first_default_tracker(monkeypatch, tmp_path,
         monkeypatch, _album(tmp_path / "Album"), torrents, trackers=(), args=("-g", "55", "--skip-flac-upload")
     )
 
-    assert "--skip-flac-upload uploads to the one tracker" not in run.result.output
+    assert "--skip-flac-upload uploads to one tracker" not in run.result.output
     assert run.result.exit_code == 0, run.result.output
     assert sites == ["RED"]
     assert "Next tracker" not in run.result.output
@@ -506,7 +506,7 @@ def test_skip_flac_upload_takes_one_named_tracker(monkeypatch, tmp_path, dirs) -
     )
 
     assert run.result.exit_code == 2
-    assert "--skip-flac-upload uploads to the one tracker" in run.result.output
+    assert "--skip-flac-upload uploads to one tracker" in run.result.output
     assert run.tracker.sent == []
 
 

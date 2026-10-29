@@ -2,7 +2,7 @@
 
 import pytest
 
-from salmon.checks.tag_rules import collect_upload_warnings, is_uncompressed
+from salmon.checks.tag_rules import is_uncompressed
 from salmon.common.strings import plain_spaces
 from salmon.tagger import foldername
 from salmon.tagger.audio_info import has_id3_tag
@@ -68,27 +68,6 @@ def test_an_incomplete_record_is_never_called_uncompressed() -> None:
     assert is_uncompressed(_flac(**{"bit rate": None})) is False
     assert is_uncompressed(_flac(**{"bit rate": raw, "channels": None})) is False
     assert is_uncompressed(_flac(**{"bit rate": raw, "precision": None})) is False
-
-
-def test_rules_flag_an_id3_tag_only_inside_a_flac() -> None:
-    tracks = {"01. Song.flac": _flac(id3=True), "02. Song.mp3": {"id3": True, "sample rate": 44100}}
-
-    warnings = collect_upload_warnings("RED", FOLDER, tracks)
-
-    assert warnings == ["ID3 tag inside a FLAC (2.2.10.8, a trump reason), left in place: 01. Song.flac"]
-
-
-def test_rules_flag_an_uncompressed_flac() -> None:
-    warnings = collect_upload_warnings("RED", FOLDER, {"01. Song.flac": _flac(**{"bit rate": 44100 * 16 * 2})})
-
-    assert warnings == ["Uncompressed FLAC (2.2.10.10, not allowed); recompress it (salmon up -c): 01. Song.flac"]
-
-
-def test_rules_cite_the_path_rule_number() -> None:
-    warnings = collect_upload_warnings("RED", "A" * 170, {"01. Song.flac": _flac()})
-
-    assert len(warnings) == 1
-    assert "(2.3.12, a trump reason)" in warnings[0]
 
 
 def test_plain_spaces_normalises_unicode_space_variants() -> None:

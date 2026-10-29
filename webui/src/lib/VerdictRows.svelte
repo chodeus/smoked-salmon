@@ -1,46 +1,24 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
-  import { CHIP, MARK, type Row } from './verdicts'
+  import { CHIP, type Row } from './verdicts'
 
-  let {
-    rows,
-    acked = [],
-    onToggleAck,
-    rowDetail,
-  }: {
-    rows: Row[]
-    acked?: string[]
-    onToggleAck?: (id: string) => void
-    /** Optional extra content under a row; renders nothing for rows it does not cover. */
-    rowDetail?: Snippet<[Row]>
-  } = $props()
+  // rowDetail: more under a row, such as a dupe row's matches; it renders nothing for the rows it does not cover.
+  let { rows, rowDetail }: { rows: Row[]; rowDetail?: Snippet<[Row]> } = $props()
 </script>
 
+<!-- Ported from the fork's VerdictRows (chodeus, 9bfdddc3), without the acknowledgements the upload page needs. -->
 <ul class="rows">
-  {#each rows as r (r.id)}
-    <li class="verdict-{r.verdict}">
-      <span class="mark chip {CHIP[r.verdict]}">{MARK[r.verdict]}</span>
-      <span class="label">{r.label}</span>
-      <span class="detail">{r.detail}</span>
-      {#if r.verdict === 'warn' && onToggleAck}
-        <label class="ack">
-          <input type="checkbox" checked={acked.includes(r.id)} onchange={() => onToggleAck(r.id)} />
-          Acknowledge
-        </label>
+  {#each rows as row, index (index)}
+    <li class="verdict-{row.verdict.toLowerCase()}">
+      <span class="chip {CHIP[row.verdict]}">{row.verdict}</span>
+      <span class="label">{row.check}</span>
+      <span class="detail">{row.detail}</span>
+      {#if row.notes.length}
+        <ul class="notes">
+          {#each row.notes as note, n (n)}<li>{note}</li>{/each}
+        </ul>
       {/if}
-      {#if r.notes?.length}
-        <details class="row-detail notes">
-          <summary>{r.notes.length} line{r.notes.length === 1 ? '' : 's'}</summary>
-          <ul>
-            {#each r.notes as note}
-              <li class="mono">{note}</li>
-            {/each}
-          </ul>
-        </details>
-      {/if}
-      {#if rowDetail}
-        <div class="row-detail">{@render rowDetail(r)}</div>
-      {/if}
+      {#if rowDetail}<div class="row-detail">{@render rowDetail(row)}</div>{/if}
     </li>
   {/each}
 </ul>
@@ -54,63 +32,49 @@
     flex-direction: column;
     gap: 0.35rem;
   }
-  .rows li {
+  .rows > li {
     display: grid;
-    grid-template-columns: auto 8.5rem 1fr auto;
+    grid-template-columns: 4.2rem 11rem 1fr;
     align-items: baseline;
     gap: 0.5rem;
     font-size: 0.85rem;
   }
-  .mark {
+  .chip {
     justify-self: start;
-    min-width: 1.4rem;
-    text-align: center;
   }
   .label {
     font-weight: 600;
   }
   .detail {
     color: var(--text-dim);
-    /* A detail that arrives with newlines must not collapse into one run-on line. */
     white-space: pre-line;
+    overflow-wrap: anywhere;
   }
-  .verdict-skip .label,
-  .verdict-skip .detail {
-    opacity: 0.55;
+  .verdict-info .label,
+  .verdict-info .detail {
+    opacity: 0.6;
+  }
+  .notes {
+    grid-column: 3;
+    margin: 0;
+    padding-left: 1rem;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
   }
   .row-detail {
     grid-column: 1 / -1;
   }
-  .notes summary {
-    cursor: pointer;
-    color: var(--text-dim);
-  }
-  .notes ul {
-    margin: 0.25rem 0 0;
-    padding-left: 1.25rem;
-    display: block;
-  }
-  .notes li {
-    display: list-item;
-  }
-  /* A snippet that covers no row renders nothing; don't leave a grid gap behind. */
   .row-detail:empty {
     display: none;
   }
-  .ack {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    white-space: nowrap;
-    color: var(--text-dim);
-  }
   @media (max-width: 640px) {
-    .rows li {
+    .rows > li {
       grid-template-columns: auto 1fr;
     }
     .detail,
-    .ack {
-      grid-column: 2;
+    .notes {
+      grid-column: 1 / -1;
     }
   }
 </style>

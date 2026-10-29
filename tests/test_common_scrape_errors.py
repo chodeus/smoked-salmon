@@ -51,7 +51,7 @@ def test_handle_scrape_errors_keeps_traceback_for_unexpected_failures(monkeypatc
 
 def test_in_a_web_job_an_unexpected_failure_keeps_its_traceback_out_of_the_log(monkeypatch, capsys) -> None:
     secret = "scrape-token-0123456789"
-    monkeypatch.setattr(egress, "_configured_secrets", lambda: (secret,))
+    monkeypatch.setattr(egress, "config_secrets", lambda _cfg: [secret])
     monkeypatch.setattr(tracker_base, "_learned_secrets", set())
     logged: list[str] = []
 

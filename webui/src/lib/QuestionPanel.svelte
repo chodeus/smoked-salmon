@@ -47,7 +47,7 @@
   const spectrals = $derived(
     job.question?.kind === 'spectrals'
       ? (job.question.files ?? []).map((file) => {
-          const name = job.question?.tracks?.[file.split(' ')[0]]
+          const name = job.question?.tracks?.[file.slice(0, 2)]
           return { url: spectralUrl(file), label: name ? `${file}: ${name}` : file }
         })
       : [],
@@ -164,7 +164,7 @@
         <input type="text" class="grow mono" bind:value={text} placeholder="Answer" />
         <button class="btn" disabled={sending}>Send</button>
       </form>
-      {#if typeof q.default === 'string' && q.default}
+      {#if typeof q.default === 'string'}
         <p class="muted hint">Empty for the default: <span class="mono">{q.default}</span></p>
       {/if}
     {/if}

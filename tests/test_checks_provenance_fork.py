@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 from mutagen.id3 import COMM, TSSE
 
-from salmon.checks import preflight as pf
 from salmon.checks import provenance as pv
 
 
@@ -46,31 +45,6 @@ def test_urls_are_picked_out_of_marker_text():
     assert pv._URL_RE.findall("ripped from hd24bit.com by hand") == ["hd24bit.com"]
     assert pv._URL_RE.findall("https://example.org/x") == ["https://example.org/x"]
     assert pv._URL_RE.findall("EAC FLAC -8") == []
-
-
-def test_verdict_warns_only_when_the_audio_contradicts_a_claim():
-    contradicted = {"files": [{}], "vendors": [], "markers": [], "urls": [], "contradictions": ["01.flac: bad"]}
-    assert pf._provenance_verdict(contradicted, {})[0] == pf.WARN
-
-
-def test_ordinary_markers_report_without_demanding_an_acknowledgement():
-    # An 'EAC' comment is normal; warning on it would make the ack checkbox meaningless.
-    ordinary = {
-        "files": [{}],
-        "vendors": ["reference libFLAC 1.3.2"],
-        "markers": ["comment: EAC FLAC -8"],
-        "urls": [],
-        "contradictions": [],
-    }
-    verdict, detail = pf._provenance_verdict(ordinary, {})
-    assert verdict == pf.OK
-    assert "libFLAC 1.3.2" in detail
-    assert "EAC" in detail
-
-
-def test_unreadable_tags_are_skipped_not_failed():
-    empty = {"files": [], "vendors": [], "markers": [], "urls": [], "contradictions": []}
-    assert pf._provenance_verdict(empty, {})[0] == pf.SKIP
 
 
 def test_a_domain_with_a_path_is_consumed_whole():

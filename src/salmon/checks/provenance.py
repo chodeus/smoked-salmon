@@ -7,7 +7,6 @@ Rippers, stores and resellers stamp their own markers into the tags: 'EAC FLAC -
 on a 16bit file, a CD ripper on a 96 kHz file) is worth a look before uploading. This only warns.
 """
 
-import os
 import re
 from typing import Any
 
@@ -120,18 +119,3 @@ def gather_provenance(path: str) -> dict[str, Any]:
         "urls": sorted(urls),
         "contradictions": _contradictions(files),
     }
-
-
-def describe(provenance: dict) -> str:
-    """One line naming what was found, for a report or a verdict row."""
-    parts = []
-    if provenance["vendors"]:
-        parts.append("encoded by " + ", ".join(provenance["vendors"]))
-    if provenance["markers"]:
-        parts.append("markers: " + "; ".join(provenance["markers"][:3]))
-    return ". ".join(parts) if parts else "No encoder or source markers in the tags."
-
-
-def album_provenance(path: str) -> dict:
-    """gather_provenance for a directory, keyed for the checks payload."""
-    return gather_provenance(os.fspath(path))

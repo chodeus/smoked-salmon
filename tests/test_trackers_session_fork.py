@@ -15,8 +15,7 @@ from salmon.errors import RequestFailedError
 from salmon.trackers import account
 from salmon.trackers.account import SlidingWindowLimiter
 from salmon.trackers.base import BaseGazelleApi
-from salmon.webui.jobs import JobManager
-from salmon.webui.routers import system
+from salmon.webui import kinds
 
 
 class FakeApi(BaseGazelleApi):
@@ -128,23 +127,6 @@ async def test_a_session_cookie_follows_a_redirect_on_the_tracker_only(serve):
     assert "elsewhere" not in received
 
 
-async def test_a_web_job_closes_its_tracker_pool(serve):
-    base = await serve(_answer_ok)
-    sessions: list[Any] = []
-
-    async def factory(_job) -> None:
-        api = FakeApi(base)
-        await api._request("GET", f"{base}/ajax.php")
-        sessions.append(api._session)
-
-    job = JobManager().create_threaded("test", "pool", factory)
-    assert job.thread is not None
-    await asyncio.to_thread(job.thread.join, 10)
-
-    assert job.status == "done", job.error
-    assert sessions and sessions[0].closed
-
-
 async def test_the_connection_check_closes_its_pool(serve, monkeypatch):
     base = await serve(_answer_ok)
     made: list[FakeApi] = []
@@ -154,9 +136,9 @@ async def test_the_connection_check_closes_its_pool(serve, monkeypatch):
         return made[-1]
 
     monkeypatch.setattr(salmon.trackers, "get_class", lambda _code: make)
-    result = await system._check_tracker("FAKE")
+    result = await kinds.connection_check(kinds.ConnectionCheckParams(trackers=["FAKE"]))
 
-    assert result.cookie == "ok", result
+    assert result["trackers"][0]["cookie"] == "ok", result
     assert cast("Any", made[0])._session is None
 
 

@@ -4,7 +4,6 @@ import pytest
 
 from salmon import cfg
 from salmon.config.validations import Directory
-from salmon.webui.validation import allowed_roots, is_within_roots
 
 
 def test_is_library_path_matches_contents_and_root(tmp_path, monkeypatch) -> None:
@@ -57,15 +56,6 @@ def test_no_library_dirs_means_nothing_is_protected(monkeypatch) -> None:
     assert not cfg.directory.is_library_path("/anywhere")
 
 
-def test_library_dirs_become_browsable_roots(tmp_path, monkeypatch) -> None:
-    lib = tmp_path / "music"
-    (lib / "Artist").mkdir(parents=True)
-    monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
-
-    assert str(lib.resolve()) in allowed_roots()
-    assert is_within_roots(str((lib / "Artist").resolve()))
-
-
 def test_invalid_library_dir_fails_at_config_load(tmp_path) -> None:
     with pytest.raises(ValueError, match="library_dirs"):
         Directory(
@@ -73,32 +63,6 @@ def test_invalid_library_dir_fails_at_config_load(tmp_path) -> None:
             download_directory=str(tmp_path),
             library_dirs=[str(tmp_path / "does-not-exist")],
         )
-
-
-def test_writable_validator_rejects_library_but_allows_staging(tmp_path, monkeypatch) -> None:
-    # Transcode/downconvert write a sibling folder and spectrals write into the
-    # album, so neither may target a read-only library source.
-    from fastapi import HTTPException
-
-    from salmon.webui.validation import validate_album_dir, validate_writable_album_dir
-
-    lib = tmp_path / "music"
-    album = lib / "Artist" / "Album"
-    album.mkdir(parents=True)
-    staging = tmp_path / "staging"
-    (staging / "Working").mkdir(parents=True)
-
-    monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
-    monkeypatch.setattr(cfg.directory, "download_directory", str(staging))
-
-    # readable/uploadable either way
-    assert validate_album_dir(str(album))
-    # but not writable
-    with pytest.raises(HTTPException) as exc:
-        validate_writable_album_dir(str(album))
-    assert exc.value.status_code == 403
-    # staging stays writable
-    assert validate_writable_album_dir(str(staging / "Working"))
 
 
 def test_filesystem_root_as_library_dir_still_contains_descendants(monkeypatch) -> None:
@@ -109,11 +73,11 @@ def test_filesystem_root_as_library_dir_still_contains_descendants(monkeypatch) 
     assert cfg.directory.is_library_path("/")
 
 
-def test_is_within_roots_handles_filesystem_root(monkeypatch) -> None:
-    from salmon.webui.validation import is_within_roots
+def test_the_web_confinement_handles_filesystem_root() -> None:
+    from salmon.webui.paths import _inside
 
-    assert is_within_roots("/data/album", ["/"])
-    assert not is_within_roots("/data/music-old", ["/data/music"])
+    assert _inside("/data/album", "/")
+    assert not _inside("/data/music-old", "/data/music")
 
 
 def test_library_source_is_staged_as_a_real_copy_in_a_run_directory(tmp_path, monkeypatch) -> None:
@@ -202,41 +166,6 @@ def test_library_dir_beside_the_writable_dirs_is_accepted(tmp_path) -> None:
         library_dirs=[str(lib)],
     )
     assert directory.library_dirs == [str(lib)]
-
-
-async def test_tag_endpoint_takes_a_library_album_but_not_a_folder_holding_one(tmp_path, monkeypatch) -> None:
-    """`salmon tag` works on a copy of a library album; a folder holding a library is never one album."""
-    import fastapi
-    import pytest as _pytest
-
-    from salmon.webui.routers import tools
-
-    downloads = tmp_path / "downloads"
-    holder = downloads / "media"
-    lib = holder / "music"
-    album = lib / "Artist" / "Album"
-    album.mkdir(parents=True)
-    # A library inside download_directory fails config validation; set here only to reach the holding case.
-    monkeypatch.setattr(cfg.directory, "download_directory", str(downloads))
-    monkeypatch.setattr(cfg.directory, "library_dirs", [str(lib)])
-
-    called: list[str] = []
-    monkeypatch.setattr(tools, "_TAG", lambda **_kw: called.append("tag"))
-
-    def queue(*_a, **_kw):
-        called.append("queue")
-        return {"id": "job"}
-
-    monkeypatch.setattr(tools, "_queue", queue)
-
-    await tools.tag(tools.TagRequest(path=str(album), source="CD"))
-    assert called == ["queue"]
-
-    with _pytest.raises(fastapi.HTTPException) as exc:
-        await tools.tag(tools.TagRequest(path=str(holder), source="CD"))
-    assert exc.value.status_code == 403
-    assert "holds a library" in exc.value.detail
-    assert called == ["queue"], "a folder holding a library is never queued"
 
 
 def test_a_trackers_own_dottorrents_dir_inside_a_library_is_refused(tmp_path) -> None:

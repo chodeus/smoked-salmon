@@ -1,241 +1,259 @@
 <script lang="ts">
-  import { apiGet, apiPost } from '../lib/api'
-  import FolderPicker from '../lib/FolderPicker.svelte'
+  import { apiPost } from '../lib/api'
+  import { copyText } from '../lib/clipboard'
+  import ImagePicker from '../lib/ImagePicker.svelte'
+  import JobActivity from '../lib/JobActivity.svelte'
   import JobStatus from '../lib/JobStatus.svelte'
-  import { jobStore, type Job } from '../lib/jobs.svelte'
+  import { FINISHED, jobStore, type Job } from '../lib/jobs.svelte'
+  import { loadToolsOptions, type DescgenResult, type ImageUploadResult, type ToolsOptions } from '../lib/tools'
 
-  let options = $state<{
-    trackers: string[]
-    sources: string[]
-    encodings: string[]
-    image_hosts: string[]
-    transcodes: string[]
-  } | null>(null)
-
+  let options = $state<ToolsOptions | null>(null)
   let optionsError = $state('')
-  let jobIds = $state<string[]>([])
-  const jobs = $derived(jobIds.map((id) => jobStore.get(id)).filter(Boolean) as Job[])
 
-  // descgen
+  // Description generator
   let descUrls = $state('')
-  let description = $state('')
-  let descBusy = $state(false)
+  let descJobId = $state<string | null>(null)
   let descError = $state('')
+  let descStarting = $state(false)
 
-  // images
-  let imagePaths = $state('')
+  // Image upload
+  let picked = $state<string[]>([])
   let imageHost = $state('')
-  let imageUrls = $state<string[]>([])
+  let imageTracker = $state('')
+  let imageJobId = $state<string | null>(null)
   let imageError = $state('')
+  let imageStarting = $state(false)
 
-  // tag
-  let tagPath = $state('')
-  let tagPathIsLibrary = $state(false)
-  let tagSource = $state('')
-  let tagEncoding = $state('')
-  let tagOverwrite = $state(false)
-  let tagAutoRename = $state(true)
-  let tagError = $state('')
-
-  // cross-upload
-  let xPath = $state('')
-  let xSource = $state('')
-  let xTarget = $state('')
-  let xDownconvert = $state(false)
-  let xAllFormats = $state(false)
-  let xGroupId = $state('')
-  let xTranscodes = $state<string[]>([])
-  let xDryRun = $state(false)
-  let xError = $state('')
+  // What the last copy button did, shown beside it.
+  let copied = $state('')
 
   $effect(() => {
-    apiGet<typeof options>('/tools/options')
-      .then((o) => {
-        options = o
-        if (o && !imageHost && o.image_hosts.length) imageHost = o.image_hosts[0]
-        if (o && !xSource && o.trackers.length) xSource = o.trackers[0]
-        if (o && !xTarget && o.trackers.length > 1) xTarget = o.trackers[1]
+    loadToolsOptions()
+      .then((found) => {
+        options = found
       })
       .catch((e) => {
-        optionsError = `Could not load options: ${e}`
+        optionsError = `Could not load the options: ${e}`
       })
   })
 
-  function track(job: Job) {
-    jobStore.add(job)
-    jobIds = [job.id, ...jobIds]
+  const descJob = $derived(descJobId ? jobStore.get(descJobId) : undefined)
+  const imageJob = $derived(imageJobId ? jobStore.get(imageJobId) : undefined)
+  const urls = $derived(descUrls.split(/\s+/).filter(Boolean))
+
+  // The host the images go to, and the trackers whose pages show it: the rule is the server's, this only warns.
+  const tracker = $derived(options?.trackers.find((t) => t.code === imageTracker))
+  const effectiveHost = $derived(imageHost || tracker?.image_host || options?.image_host || '')
+  const onlyFor = $derived(options?.image_hosts.find((h) => h.name === effectiveHost)?.only_for ?? [])
+  const hostProblem = $derived(
+    onlyFor.length === 0
+      ? ''
+      : !imageTracker
+        ? `${effectiveHost}'s images only display on ${onlyFor.join('/')}: name the tracker they are for.`
+        : !onlyFor.includes(imageTracker)
+          ? `${effectiveHost}'s images only display on ${onlyFor.join('/')}, not on ${imageTracker}.`
+          : '',
+  )
+
+  async function start(kind: string, params: Record<string, unknown>): Promise<Job> {
+    const job = await apiPost<Job>('/jobs', { kind, params })
+    void jobStore.show(job.id)
+    return job
   }
 
-  function lines(value: string): string[] {
-    return value
-      .split(/[\s,]+/)
-      .map((v) => v.trim())
-      .filter(Boolean)
-  }
-
-  async function generateDescription() {
+  async function generate() {
     descError = ''
-    description = ''
-    descBusy = true
+    descStarting = true
     try {
-      const res = await apiPost<{ description: string }>('/descgen', { urls: lines(descUrls) })
-      description = res.description
+      descJobId = (await start('descgen', { urls })).id
     } catch (e) {
       descError = String(e)
     } finally {
-      descBusy = false
+      descStarting = false
     }
   }
 
-  async function uploadImages() {
+  async function upload() {
     imageError = ''
-    imageUrls = []
+    imageStarting = true
     try {
-      const res = await apiPost<{ urls: string[] }>('/images/upload', {
-        paths: lines(imagePaths),
-        host: imageHost || null,
-      })
-      imageUrls = res.urls
+      imageJobId = (
+        await start('images', { paths: picked, host: imageHost || null, tracker: imageTracker || null })
+      ).id
     } catch (e) {
       imageError = String(e)
+    } finally {
+      imageStarting = false
     }
   }
 
-  async function startTag() {
-    tagError = ''
-    try {
-      track(
-        await apiPost<Job>('/tag', {
-          path: tagPath,
-          source: tagSource,
-          encoding: tagEncoding || null,
-          overwrite: tagOverwrite,
-          auto_rename: tagAutoRename,
-        }),
-      )
-    } catch (e) {
-      tagError = String(e)
-    }
-  }
-
-  async function startCrossUpload() {
-    xError = ''
-    const groupId = xGroupId.trim()
-    if (groupId && !/^\d+$/.test(groupId)) {
-      xError = 'Target group ID must be a number.'
-      return
-    }
-    try {
-      track(
-        await apiPost<Job>('/cross-upload', {
-          path: xPath,
-          source: xSource,
-          target: xTarget,
-          downconvert: xDownconvert,
-          all_formats: xAllFormats,
-          target_group_id: groupId ? Number(groupId) : null,
-          transcodes: xTranscodes,
-          dry_run: xDryRun,
-        }),
-      )
-    } catch (e) {
-      xError = String(e)
-    }
+  async function copy(label: string, text: string) {
+    copied = (await copyText(text)) ? `${label} copied` : `Could not copy ${label}: select it and copy by hand`
   }
 </script>
 
+<!-- Ported from the fork's Tools page (chodeus 0b29d2d5, 9bfdddc3, 1f8e47d8, 18fc08d9), trimmed to the description
+     generator and the image upload, each a job of its own. The copy buttons fill this browser's clipboard. -->
 <h1>Tools</h1>
-<p class="lead">Build a tracklist description, upload images, retag a folder, or copy an existing upload to another tracker.</p>
+<p class="lead">
+  Build a tracklist description from store URLs, as <span class="mono">salmon descgen</span> does, and upload images,
+  as <span class="mono">salmon images up</span> does.
+</p>
 
-{#if optionsError}
-  <div class="card"><p class="muted">{optionsError}</p></div>
-{/if}
+{#if optionsError}<div class="card"><p class="error">{optionsError}</p></div>{/if}
 
 <div class="card">
   <h2>Description generator</h2>
-  <p class="muted">Build a tracklist description from one or more metadata URLs.</p>
-  <input type="text" class="mono" bind:value={descUrls} placeholder="https://… https://…" />
-  <div class="row" style="margin-top: 0.6rem">
-    <button class="btn" onclick={generateDescription} disabled={!descUrls.trim() || descBusy}>
-      {descBusy ? 'Generating …' : 'Generate'}
-    </button>
+  <p class="muted">
+    Release URLs from the metadata sources (one per line, at most {options?.max_descgen_urls ?? 10}). Each is
+    fetched once from the store.
+  </p>
+  <textarea class="mono" rows="4" bind:value={descUrls} placeholder="https://…"></textarea>
+  <div class="row actions">
+    <button class="btn" onclick={generate} disabled={!urls.length || descStarting}>Generate</button>
   </div>
-  {#if descError}<p class="muted">{descError}</p>{/if}
-  {#if description}<pre class="log mono">{description}</pre>{/if}
+  {#if descError}<p class="error">{descError}</p>{/if}
+
+  {#if descJob}
+    <JobStatus job={descJob} />
+    {#if descJob.status === 'done'}
+      <pre class="result mono">{(descJob.result as DescgenResult).description}</pre>
+      <div class="row">
+        <button
+          class="btn small"
+          onclick={() => copy('Description', (descJob.result as DescgenResult).description)}
+        >
+          Copy description
+        </button>
+        <span class="muted">{copied}</span>
+      </div>
+    {:else if !FINISHED.includes(descJob.status)}
+      <JobActivity job={descJob} logTail={10} />
+    {/if}
+  {/if}
 </div>
 
 <div class="card">
   <h2>Image upload</h2>
-  <p class="muted">Upload image files to a host. Paths must sit inside salmon's configured directories.</p>
-  <input type="text" class="mono" bind:value={imagePaths} placeholder="/data/…/cover.jpg" />
-  <div class="row" style="margin-top: 0.6rem">
-    <select bind:value={imageHost} style="width: auto">
-      {#each options?.image_hosts ?? [] as h}<option value={h}>{h}</option>{/each}
-    </select>
-    <button class="btn" onclick={uploadImages} disabled={!imagePaths.trim()}>Upload</button>
+  <p class="muted">
+    Pick images in the folders salmon may read. Only JPEG, PNG, GIF and WebP files are sent (judged by what is in
+    them, not by their names), at most {options?.max_images ?? 20} at a time, never one from a folder of
+    <span class="mono">.torrent</span> files.
+  </p>
+  <ImagePicker bind:selected={picked} max={options?.max_images ?? 20} />
+  <div class="row options">
+    <label>
+      Host
+      <select bind:value={imageHost}>
+        <option value="">
+          Default{tracker ? ` for ${tracker.code}` : ''} ({tracker?.image_host ?? options?.image_host ?? '…'})
+        </option>
+        {#each options?.image_hosts ?? [] as host (host.name)}
+          <option value={host.name}>{host.name}{host.only_for.length ? ` (${host.only_for.join('/')} only)` : ''}</option>
+        {/each}
+      </select>
+    </label>
+    <label>
+      For tracker
+      <select bind:value={imageTracker}>
+        <option value="">None</option>
+        {#each options?.trackers ?? [] as t (t.code)}<option value={t.code}>{t.code}</option>{/each}
+      </select>
+    </label>
   </div>
-  {#if imageError}<p class="muted">{imageError}</p>{/if}
-  {#each imageUrls as url}<p class="mono muted">{url}</p>{/each}
-</div>
-
-<div class="card">
-  <h2>Tag an album</h2>
-  <p class="muted">Retag and rename without uploading. Prompts appear here as questions.</p>
-  <FolderPicker bind:value={tagPath} writable bind:readOnlySource={tagPathIsLibrary} />
-  <div class="row" style="margin-top: 0.6rem; flex-wrap: wrap">
-    <select bind:value={tagSource} style="width: auto">
-      <option value="">— source —</option>
-      {#each options?.sources ?? [] as s}<option value={s}>{s}</option>{/each}
-    </select>
-    <select bind:value={tagEncoding} style="width: auto">
-      <option value="">— encoding —</option>
-      {#each options?.encodings ?? [] as e}<option value={e}>{e}</option>{/each}
-    </select>
-    <label class="check"><input type="checkbox" bind:checked={tagAutoRename} /> Auto-Rename</label>
-    <label class="check"><input type="checkbox" bind:checked={tagOverwrite} /> Overwrite metadata</label>
-    <button class="btn" onclick={startTag} disabled={!tagPath || !tagSource || tagPathIsLibrary}>Tag</button>
-  </div>
-  {#if tagError}<p class="muted">{tagError}</p>{/if}
-</div>
-
-<div class="card">
-  <h2>Cross-upload</h2>
-  <p class="muted">Copy an existing upload from one tracker to another.</p>
-  <FolderPicker bind:value={xPath} />
-  <div class="row" style="margin-top: 0.6rem; flex-wrap: wrap">
-    <select bind:value={xSource} style="width: auto">
-      {#each options?.trackers ?? [] as t}<option value={t}>{t}</option>{/each}
-    </select>
-    <span class="muted">→</span>
-    <select bind:value={xTarget} style="width: auto">
-      {#each options?.trackers ?? [] as t}<option value={t}>{t}</option>{/each}
-    </select>
-    <input type="text" bind:value={xGroupId} placeholder="target group ID (optional)" style="width: auto" />
-    <label class="check"><input type="checkbox" bind:checked={xDownconvert} /> Lossless downconversions</label>
-    <label class="check"><input type="checkbox" bind:checked={xAllFormats} /> All formats</label>
-    {#each options?.transcodes ?? [] as t}
-      <label class="check">
-        <input
-          type="checkbox"
-          checked={xTranscodes.includes(t)}
-          onchange={(e) =>
-            (xTranscodes = e.currentTarget.checked
-              ? [...xTranscodes, t]
-              : xTranscodes.filter((v) => v !== t))}
-        /> MP3 {t}
-      </label>
-    {/each}
-    <label class="check"><input type="checkbox" bind:checked={xDryRun} /> Dry run</label>
-    <button class="btn" onclick={startCrossUpload} disabled={!xPath || !xSource || !xTarget}>
-      Cross-upload
+  {#if hostProblem}<p class="error">{hostProblem}</p>{/if}
+  <div class="row actions">
+    <button class="btn" onclick={upload} disabled={!picked.length || imageStarting || hostProblem !== ''}>
+      Upload {picked.length || ''} image{picked.length === 1 ? '' : 's'}
     </button>
   </div>
-  {#if xError}<p class="muted">{xError}</p>{/if}
+  {#if imageError}<p class="error">{imageError}</p>{/if}
+
+  {#if imageJob}
+    <JobStatus job={imageJob} />
+    {#if imageJob.status === 'done'}
+      {@const result = imageJob.result as ImageUploadResult}
+      <p class="muted">Uploaded to {result.host}.</p>
+      <ul class="urls">
+        {#each result.images as image (image.url + image.file)}
+          <li>
+            <span class="mono grow">{image.url}</span>
+            <button class="btn small secondary" onclick={() => copy(image.file, image.url)}>Copy</button>
+          </li>
+        {/each}
+      </ul>
+      <div class="row">
+        <button
+          class="btn small"
+          onclick={() => copy('The URLs', result.images.map((image) => image.url).join('\n'))}
+        >
+          Copy all
+        </button>
+        <span class="muted">{copied}</span>
+      </div>
+    {:else if !FINISHED.includes(imageJob.status)}
+      <JobActivity job={imageJob} logTail={10} />
+    {/if}
+  {/if}
 </div>
 
-{#each jobs as job (job.id)}
-  <div class="card">
-    <h2>{job.title}</h2>
-    <JobStatus {job} />
-  </div>
-{/each}
+<style>
+  textarea {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.5rem 0.7rem;
+    font-size: 0.9rem;
+    resize: vertical;
+  }
+  textarea:focus {
+    outline: none;
+    border-color: var(--accent-dim);
+  }
+  .actions {
+    margin-top: 0.7rem;
+  }
+  .options {
+    margin-top: 0.7rem;
+    flex-wrap: wrap;
+    align-items: flex-end;
+  }
+  .options label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+  }
+  .error {
+    color: var(--err);
+    margin: 0.5rem 0 0;
+  }
+  .result {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.7rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 420px;
+    overflow-y: auto;
+    margin: 0.8rem 0;
+  }
+  .urls {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 0.6rem;
+  }
+  .urls li {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.15rem 0;
+  }
+  .urls .mono {
+    overflow-wrap: anywhere;
+  }
+</style>

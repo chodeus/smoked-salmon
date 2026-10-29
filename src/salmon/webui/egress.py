@@ -1,145 +1,87 @@
-"""The one filter every /api response body and websocket message passes on its way to the browser."""
+"""The one filter everything salmon web sends out goes through (ADR 0004, section 3).
 
-import json
-import re
-from functools import cache
+Log lines, questions, results, errors: every event is filtered where it is made, before it is kept or sent, with
+``redact_tracker_text`` and every secret the config holds, plus each tracker account's authkey and passkey once
+salmon knows them. What a tracker sends back may repeat them (an upload page's download links carry the passkey),
+and so may an error that quotes it. The idea is chodeus's (ad4f8034), applied here once for everything that leaves.
+"""
+
+from collections.abc import Iterable
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-import msgspec
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
-
 from salmon.common.redaction import redact_tracker_text
 from salmon.config.compat import placeholder
+from salmon.config.validations import Cfg
 from salmon.trackers.base import learned_secrets, session_cookie_forms
 from salmon.uploader.seedbox import seedbox_secrets
 
-# A setting whose name ends so holds a credential, wherever it sits in the config.
-_SECRET_SETTING = re.compile(r"(?:^|_)(?:key|token|secret|password|session|keeplogged|userhash)$")
 
-
-def _url_password(value: str) -> list[str]:
+def _url_password(url: str | None) -> list[str]:
+    if not url:
+        return []
     try:
-        password = urlparse(value).password
+        password = urlparse(url).password
     except ValueError:
         return []
     return [password, unquote(password)] if password else []
 
 
-def config_secrets(config: Any) -> list[str]:
-    """Every credential the config holds: settings named as one, URL passwords and seedbox secrets, not placeholders."""
-    found: list[str] = []
+def _own(value: str | None, *path: str) -> str | None:
+    """`value`, unless it is the old template's placeholder for this same setting: that is no secret, and masking it
+    would hide the word wherever it appears (`api_key`, `password`). Another setting's placeholder stays one."""
+    return None if value is not None and value == placeholder(".".join(path)) else value
 
-    def walk(node: Any, path: tuple[str, ...] | None) -> None:
-        if isinstance(node, list):
-            for item in node:
-                walk(item, None)
-        if not isinstance(node, dict):
-            return
-        for name, value in node.items():
-            setting = None if path is None else (*path, name)
-            if not isinstance(value, str):
-                walk(value, setting)
-            # The old template's placeholder for this same setting is no secret.
-            elif setting is None or value != placeholder(".".join(setting)):
-                if _SECRET_SETTING.search(name):
-                    found.extend(session_cookie_forms(value))
-                found.extend(_url_password(value))
 
-    walk(msgspec.to_builtins(config), ())
+def config_secrets(config: Cfg) -> list[str]:
+    """Every secret the config holds: tracker sessions and API keys, image host keys, seedbox and torrent client
+    passwords, metadata source credentials, proxy passwords and the web token. The old template's placeholders for a
+    setting are left out."""
+    found: list[str | None] = []
+    trackers = {"red": config.tracker.red, "ops": config.tracker.ops, "dic": config.tracker.dic}
+    for name, tracker in trackers.items():
+        if tracker is not None:
+            if _own(tracker.session, "tracker", name, "session"):
+                found += session_cookie_forms(tracker.session)
+            found.append(_own(tracker.api_key, "tracker", name, "api_key"))
+    image = config.image
+    found += [
+        _own(getattr(image, key), "image", key)
+        for key in ("ptscreens_key", "oeimg_key", "catbox_userhash", "imgbb_key", "ra_key")
+    ]
     for seedbox in config.seedbox:
-        found.extend(seedbox_secrets(seedbox))
+        found += seedbox_secrets(seedbox)
+    metadata = config.metadata
+    found += [
+        _own(metadata.discogs_token, "metadata", "discogs_token"),
+        _own(metadata.qobuz.user_auth_token, "metadata", "qobuz", "user_auth_token"),
+        _own(metadata.tidal.client_secret, "metadata", "tidal", "client_secret"),
+        _own(metadata.beatport.password, "metadata", "beatport", "password"),
+        _own(config.upload.ai_review.api_key, "upload", "ai_review", "api_key"),
+        _own(config.web.token, "web", "token"),
+    ]
+    services = config.proxy.services
+    for url in [config.proxy.url, *(getattr(services, name) for name in services.__struct_fields__)]:
+        found += _url_password(url)
     return list(dict.fromkeys(secret for secret in found if secret))
 
 
-@cache
-def _configured_secrets() -> tuple[str, ...]:
-    # The config is read once per process: nothing reloads it.
-    from salmon import cfg
+class Redactor:
+    """Masks every known secret in what salmon web sends out."""
 
-    return tuple(config_secrets(cfg))
+    def __init__(self, secrets: Iterable[str | None] = ()) -> None:
+        self._secrets = [secret for secret in secrets if secret]
 
+    def text(self, text: str) -> str:
+        # The authkeys and passkeys are looked up each time: an account may authenticate at any point.
+        return redact_tracker_text(text, [*self._secrets, *learned_secrets()])
 
-def known_secrets() -> list[str]:
-    """The config's secrets (a web token set there among them) and those the trackers have learned so far."""
-    return [*_configured_secrets(), *learned_secrets()]
-
-
-def masked_text(text: str) -> str:
-    """`text` with every known_secrets() value masked, for what the server writes outside /api."""
-    return redact_tracker_text(text, known_secrets())
-
-
-def mask(value: Any, secrets: list[str]) -> Any:
-    """`value` with every string in it masked: a string, or the dicts and lists a JSON body or an event holds."""
-    if isinstance(value, str):
-        return redact_tracker_text(value, secrets)
-    if isinstance(value, dict):
-        return {mask(key, secrets): mask(item, secrets) for key, item in value.items()}
-    if isinstance(value, list):
-        return [mask(item, secrets) for item in value]
-    return value
-
-
-def _mask_json(text: str, secrets: list[str]) -> str:
-    # Masked as decoded values, never as raw text: a secret of digits would otherwise cut a number out of the JSON.
-    try:
-        value = json.loads(text)
-    except ValueError:
-        return redact_tracker_text(text, secrets)
-    return json.dumps(mask(value, secrets), ensure_ascii=False, separators=(",", ":"))
-
-
-def _media_type(start: Message) -> str:
-    content_type = dict(start.get("headers", [])).get(b"content-type", b"")
-    return content_type.split(b";", 1)[0].strip().lower().decode("latin-1")
-
-
-class EgressMiddleware:
-    """Mask every known secret in each /api JSON or text body and websocket message before it leaves the server."""
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] not in ("http", "websocket") or not scope.get("path", "").startswith("/api/"):
-            await self.app(scope, receive, send)
-            return
-
-        def secrets() -> list[str]:
-            # Looked up each time: a job's tracker may authenticate at any point.
-            token = getattr(getattr(scope.get("app"), "state", None), "auth_token", None)
-            return [*known_secrets(), *([token] if token else [])]
-
-        if scope["type"] == "websocket":
-
-            async def send_masked(message: Message) -> None:
-                if message["type"] == "websocket.send" and message.get("text") is not None:
-                    message = {**message, "text": _mask_json(message["text"], secrets())}
-                await send(message)
-
-            await self.app(scope, receive, send_masked)
-            return
-
-        start: Message | None = None
-        chunks: list[bytes] = []
-
-        async def send_masked_body(message: Message) -> None:
-            nonlocal start
-            if message["type"] == "http.response.start":
-                media_type = _media_type(message)
-                if media_type == "application/json" or media_type.startswith("text/"):
-                    start = message
-                    return
-            if start is None or message["type"] != "http.response.body":
-                await send(message)
-                return
-            chunks.append(message.get("body", b""))
-            if message.get("more_body"):
-                return
-            body = _mask_json(b"".join(chunks).decode("utf-8", errors="replace"), secrets()).encode("utf-8")
-            headers = [(name, value) for name, value in start.get("headers", []) if name.lower() != b"content-length"]
-            await send({**start, "headers": [*headers, (b"content-length", str(len(body)).encode())]})
-            await send({"type": "http.response.body", "body": body})
-
-        await self.app(scope, receive, send_masked_body)
+    def value(self, value: Any) -> Any:
+        """`value` with every string in it masked: a string, or the dicts and lists of an event."""
+        if isinstance(value, str):
+            return self.text(value)
+        if isinstance(value, dict):
+            return {self.value(key): self.value(item) for key, item in value.items()}
+        if isinstance(value, list | tuple):
+            return [self.value(item) for item in value]
+        return value

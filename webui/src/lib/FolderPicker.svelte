@@ -1,182 +1,256 @@
 <script lang="ts">
+  import { onMount, tick } from 'svelte'
   import { apiGet } from './api'
 
-  let {
-    value = $bindable(''),
-    writable = false,
-    readOnlySource = $bindable(false),
-  }: {
-    value: string
-    /** Set on pickers whose operation writes to the folder; library roots are
-     *  read-only sources, so offering them would only produce a 403. */
-    writable?: boolean
-    /** True while `value` names a read-only library source — bind it to keep the
-     *  form's submit disabled, since a typed path never passes through select(). */
-    readOnlySource?: boolean
-  } = $props()
+  /** `prefill`: start an empty box with download_directory and a separator, for a page that needs an album folder. */
+  let { value = $bindable(''), prefill = true }: { value: string; prefill?: boolean } = $props()
 
-  interface BrowseResult {
+  interface Folder {
+    name: string
     path: string
+    audio: boolean
+    library?: boolean
+  }
+
+  interface Listing {
+    path: string | null
     parent: string | null
-    dirs: { name: string; path: string }[]
-    audio_files: string[]
+    library: boolean
+    audio: boolean
+    folders: Folder[]
+    truncated: boolean
+    sort: Sort
     roots: { path: string; name: string; library: boolean }[]
   }
 
-  let browsing = $state(false)
-  let listing = $state<BrowseResult | null>(null)
-  let error = $state('')
-  let roots = $state<BrowseResult['roots']>([])
-  let classified = $state(false)
+  type Sort = 'newest' | 'name'
+  const SORT_KEY = 'salmon.folderSort'
 
-  // Loaded once so a path typed straight into the field can be judged without
-  // browsing. Until it succeeds nothing can be classified, and an unclassified
-  // path must not be treated as writable.
-  $effect(() => {
-    if (classified) return
-    apiGet<BrowseResult>('/browse')
-      .then((r) => {
-        roots = r.roots ?? []
-        classified = true
-      })
-      .catch(() => {})
+  /** The viewer's last choice; blocked or cleared storage (a private window) falls back to newest first. */
+  function remembered(): Sort {
+    try {
+      return localStorage.getItem(SORT_KEY) === 'name' ? 'name' : 'newest'
+    } catch {
+      return 'newest'
+    }
+  }
+
+  let open = $state(false)
+  let listing = $state<Listing | null>(null)
+  let error = $state('')
+  let loading = $state(false)
+  let sort = $state<Sort>(remembered())
+  let filter = $state('')
+  let filterInput = $state<HTMLInputElement | null>(null)
+
+  /** Case- and accent-insensitive, so `cafe` finds `Café`. */
+  function fold(s: string): string {
+    return s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
+  }
+
+  const words = $derived(fold(filter).split(/\s+/).filter(Boolean))
+  const filtering = $derived(words.length > 0)
+  const shown = $derived(
+    listing ? listing.folders.filter((f) => words.every((w) => fold(f.name).includes(w))) : [],
+  )
+
+  /**
+   * An empty box starts as download_directory and a separator, so a folder name pasted after it is an absolute path
+   * and Browse opens inside download_directory. The first root is always download_directory. A failure leaves the
+   * box empty, and a value set meanwhile (the page's, or typed) is never overwritten.
+   */
+  onMount(async () => {
+    if (!prefill || value) return
+    try {
+      const answer = await apiGet<Listing>('/browse')
+      const root = answer.roots[0]
+      if (value || !root || root.library) return
+      const separator = root.path.includes('\\') ? '\\' : '/'
+      value = /[\\/]$/.test(root.path) ? root.path : root.path + separator
+    } catch {
+      // Not prefilled: the box stays empty.
+    }
   })
 
-  /** Lexical resolution of '.', '..' and separators — what the server's realpath
-   *  would do for a path containing no symlinks. Symlinks stay the server's job. */
-  function resolve(p: string): string {
-    const parts = p.trim().replace(/\\/g, '/').split('/')
-    const out: string[] = []
-    for (const part of parts) {
-      if (part === '' || part === '.') continue
-      if (part === '..') out.pop()
-      else out.push(part)
+  let latest = 0
+
+  /**
+   * The roots (no path), or the folders in one; the server refuses anything outside the roots. Only the latest
+   * request applies its answer, so a slower, older one (another folder, the other sort) cannot overwrite it.
+   */
+  async function browse(path?: string | null, focus = false) {
+    const mine = ++latest
+    loading = true
+    error = ''
+    try {
+      const query = path ? `path=${encodeURIComponent(path)}&sort=${sort}` : `sort=${sort}`
+      const found = await apiGet<Listing>(`/browse?${query}`)
+      if (mine !== latest) return
+      if ((found.path ?? null) !== (listing?.path ?? null)) filter = ''
+      listing = found
+      open = true
+      if (focus && window.matchMedia('(pointer: fine)').matches) {
+        await tick()
+        if (mine === latest) filterInput?.focus()
+      }
+    } catch (e) {
+      if (mine === latest) error = String(e)
+    } finally {
+      if (mine === latest) loading = false
     }
-    return (p.trim().startsWith('/') ? '/' : '') + out.join('/')
+  }
+
+  function sortBy(next: Sort) {
+    if (next === sort) return
+    sort = next
+    try {
+      localStorage.setItem(SORT_KEY, next)
+    } catch {
+      // Not remembered: the choice still holds until the page is closed.
+    }
+    if (listing) void browse(listing.path)
+  }
+
+  function closeListing() {
+    open = false
+    filter = ''
+  }
+
+  function filterKey(event: KeyboardEvent) {
+    if (event.isComposing || event.keyCode === 229) return
+    if (event.key === 'Escape' && filter) {
+      event.preventDefault()
+      filter = ''
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      if (shown.length === 1) void browse(shown[0].path)
+    }
+  }
+
+  function select(path: string) {
+    value = path
+    closeListing()
   }
 
   function within(root: string, path: string): boolean {
-    const r = resolve(root)
-    const c = resolve(path)
-    return c === r || c.startsWith(r === '/' ? '/' : r + '/')
+    return path === root || path.startsWith(root.endsWith('/') ? root : root + '/')
   }
-
-  async function open(path?: string) {
-    browsing = true
-    error = ''
-    try {
-      const query = path ? `?path=${encodeURIComponent(path)}` : ''
-      listing = await apiGet<BrowseResult>(`/browse${query}`)
-      // Also recovers classification when the initial roots fetch failed.
-      roots = listing.roots ?? []
-      classified = true
-    } catch (e) {
-      error = String(e)
-    }
-  }
-
-  function libraryRootFor(path: string): string | null {
-    for (const r of roots) if (r.library && within(r.path, path)) return r.path
-    return null
-  }
-
-  const readOnlyRoot = $derived(writable && value && classified ? libraryRootFor(value) : null)
-  const unclassified = $derived(writable && !!value && !classified)
-
-  $effect(() => {
-    readOnlySource = readOnlyRoot !== null || unclassified
-  })
-
-  function select(path?: string) {
-    const chosen = path ?? listing?.path ?? value
-    const root = writable && libraryRootFor(chosen)
-    if (root) {
-      error = `${root} is a read-only library source — this operation writes to the folder, so pick a staging directory instead.`
-      return
-    }
-    value = chosen
-    browsing = false
-  }
-
-  function shortName(p: string): string {
-    return p.split('/').filter(Boolean).pop() ?? p
-  }
-
-  const navRoots = $derived(roots.filter((r) => !writable || !r.library))
 </script>
 
+<!-- Ported from the fork's FolderPicker (chodeus a18e0e25, styx-techno 6e91041a): roots side by side, and a
+     select button on each row, apart from the name that opens it. Only folders holding audio can be picked. -->
 <div class="picker">
   <div class="row">
     <input type="text" class="mono grow" bind:value placeholder="/path/to/album" />
-    <button class="btn secondary" onclick={() => open(value || undefined)}>Browse</button>
+    <button class="btn secondary" disabled={loading} onclick={() => browse(value || null, true)}>Browse</button>
   </div>
-  {#if unclassified}
-    <p class="pick-error">Checking the folder against your configured directories…</p>
-  {:else if readOnlyRoot}
-    <p class="pick-error">
-      {readOnlyRoot} is a read-only library source — this operation writes to the folder, so pick a
-      staging directory instead.
-    </p>
-  {/if}
 
-  {#if browsing && listing}
-    <div class="listing card">
-      {#if error}<p class="pick-error">{error}</p>{/if}
-      <div class="row">
-        <span class="mono grow">{listing.path}</span>
-        <span class="muted">{listing.audio_files.length} audio files</span>
-        <button class="btn small" onclick={() => select()}>Select "{shortName(listing.path)}"</button>
-        <button class="btn small secondary" onclick={() => (browsing = false)}>Close</button>
-      </div>
-      {#if navRoots.length > 1}
+  {#if open && listing}
+    <div class="listing">
+      {#if listing.roots.length > 1}
         <div class="roots">
-          {#each navRoots as r}
+          {#each listing.roots as root (root.path)}
             <button
               class="root"
-              class:current={within(r.path, listing!.path)}
-              onclick={() => open(r.path)}
+              class:current={listing.path !== null && within(root.path, listing.path)}
+              onclick={() => browse(root.path)}
             >
-              {r.name}{r.library ? ' (library)' : ''}
+              {root.name}{root.library ? ' (library)' : ''}
             </button>
           {/each}
         </div>
       {/if}
+      <div class="row here">
+        <span class="mono grow">{listing.path ?? 'Your folders'}</span>
+        {#if listing.path && listing.audio}
+          <button class="btn small" onclick={() => select(listing!.path!)}>Select this folder</button>
+        {/if}
+        {#if listing.path}
+          <span
+            class="sorts"
+            role="group"
+            aria-label="Sort folders"
+            title="Newest is by when the folder was last changed or copied in"
+          >
+            <button class="sort" class:current={sort === 'newest'} aria-pressed={sort === 'newest'} onclick={() => sortBy('newest')}
+              >Newest</button
+            >
+            <button class="sort" class:current={sort === 'name'} aria-pressed={sort === 'name'} onclick={() => sortBy('name')}
+              >Name</button
+            >
+          </span>
+        {/if}
+        <button class="btn small secondary" onclick={closeListing}>Close</button>
+      </div>
+      {#if listing.folders.length > 0}
+        <input
+          type="text"
+          class="filter"
+          bind:this={filterInput}
+          bind:value={filter}
+          onkeydown={filterKey}
+          placeholder="Filter these folders"
+          aria-label="Filter folders"
+        />
+        {#if filtering}
+          <p class="muted small count">{shown.length} of {listing.folders.length} folders</p>
+        {/if}
+      {/if}
       <ul>
         {#if listing.parent}
-          <li><button class="nav" onclick={() => open(listing!.parent!)}>..</button></li>
+          <li><button class="nav" onclick={() => browse(listing!.parent)}>..</button></li>
+        {:else if listing.path}
+          <li><button class="nav" onclick={() => browse(null)}>..</button></li>
         {/if}
-        {#each listing.dirs as dir}
+        {#each shown as folder (folder.path)}
           <li>
-            <button class="nav" onclick={() => open(dir.path)}>{dir.name}/</button>
-            <button class="pick" title="Select this folder" onclick={() => select(dir.path)}>select</button>
+            <button class="nav" onclick={() => browse(folder.path)}>
+              {folder.name}/{#if folder.library}<span class="muted"> (library)</span>{/if}
+            </button>
+            {#if folder.audio}
+              <span class="chip ok" title="Holds audio files">audio</span>
+              <button class="btn small secondary" onclick={() => select(folder.path)}>Select</button>
+            {/if}
+          </li>
+        {:else}
+          <li class="muted">
+            {#if filtering}No folder here matches "{filter}".{:else}No folders here.{/if}
           </li>
         {/each}
       </ul>
+      {#if listing.truncated}
+        <p class="muted small">
+          {#if filtering}The filter only covers the first {listing.folders.length} folders listed here{:else}Only the first {listing.folders.length}
+            folders are listed{/if}: type the path to reach another.
+        </p>
+      {/if}
     </div>
   {/if}
-  {#if error && !(browsing && listing)}
-    <p class="muted">{error}</p>
-  {/if}
+  {#if error}<p class="error">{error}</p>{/if}
 </div>
 
 <style>
-  .pick-error {
-    margin: 0 0 0.5rem;
-    font-size: 0.82rem;
-    color: var(--err);
+  .listing {
+    margin-top: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.6rem 0.7rem;
+    max-height: 340px;
+    overflow-y: auto;
+    background: var(--bg);
   }
   .roots {
     display: flex;
     flex-wrap: wrap;
     gap: 0.35rem;
-    margin: 0.5rem 0 0.2rem;
+    margin-bottom: 0.5rem;
   }
   .root {
     font-size: 0.78rem;
     padding: 0.25rem 0.55rem;
     border-radius: 999px;
     border: 1px solid var(--border);
-    background: var(--bg);
+    background: var(--bg-raised);
     color: var(--text-dim);
     cursor: pointer;
   }
@@ -184,15 +258,42 @@
     border-color: var(--accent);
     color: var(--text);
   }
-  .listing {
-    margin-top: 0.5rem;
-    max-height: 300px;
-    overflow-y: auto;
+  .sorts {
+    display: inline-flex;
+    gap: 0.25rem;
+  }
+  .sort {
+    font-size: 0.78rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-raised);
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .sort.current {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+  .here {
+    flex-wrap: wrap;
+    margin-bottom: 0.3rem;
+  }
+  .here .mono {
+    overflow-wrap: anywhere;
+  }
+  .filter {
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 0.3rem;
+  }
+  .count {
+    margin: 0 0 0.3rem;
   }
   ul {
     list-style: none;
     padding: 0;
-    margin: 0.5rem 0 0;
+    margin: 0;
   }
   li {
     display: flex;
@@ -210,26 +311,19 @@
     flex: 1;
     text-align: left;
     border-radius: 5px;
+    overflow-wrap: anywhere;
   }
   li button.nav:hover {
     background: var(--bg-hover);
     color: var(--accent);
   }
-  li button.pick {
-    background: var(--bg-hover);
-    border: 1px solid var(--border);
-    color: var(--text-dim);
-    cursor: pointer;
-    font-size: 0.7rem;
-    padding: 0.1rem 0.5rem;
-    border-radius: 5px;
-    visibility: hidden;
+  .small {
+    font-size: 0.8rem;
+    margin: 0.4rem 0 0;
   }
-  li:hover button.pick {
-    visibility: visible;
-  }
-  li button.pick:hover {
-    color: var(--accent);
-    border-color: var(--accent-dim);
+  .error {
+    color: var(--err);
+    margin: 0.4rem 0 0;
+    font-size: 0.85rem;
   }
 </style>

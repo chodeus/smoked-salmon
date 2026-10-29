@@ -14,6 +14,7 @@ import salmon.tagger as tagger
 import salmon.trackers as trackers
 from salmon.common.strings import comparable
 from salmon.errors import ScrapeError
+from salmon.sources.deezer import DeezerBase
 from salmon.sources.musicbrainz import MusicBrainzBase
 from salmon.sources.qobuz import QobuzBase
 from salmon.tagger import metadata as metadata_mod
@@ -301,24 +302,54 @@ def test_an_unstarred_store_url_says_why_it_is_not_the_source(capsys) -> None:
     assert "(not starred: not a WEB release)" in out
 
 
-def test_a_store_url_that_fails_to_scrape_is_reported_and_left_out(monkeypatch, capsys) -> None:
-    class FailingScraper:
-        regex = QobuzBase.regex
+class _FailingScraper:
+    regex = QobuzBase.regex
 
-        async def scrape_release(self, url: str):
-            raise ScrapeError("no such album")
+    async def scrape_release(self, url: str):
+        raise ScrapeError("no such album")
 
+
+class _WorkingScraper:
+    regex = DeezerBase.regex
+
+    async def scrape_release(self, url: str):
+        return {"title": "Scraped"}
+
+
+def _pasted(monkeypatch, urls: str) -> None:
     async def answer(*_args, **_kwargs):
-        return "https://open.qobuz.com/album/0887396827479"
+        return urls
 
     monkeypatch.setattr(metadata_mod.click, "prompt", answer)
-    monkeypatch.setattr(metadata_mod, "METASOURCES", {"Qobuz": SimpleNamespace(Scraper=FailingScraper)})
+    monkeypatch.setattr(
+        metadata_mod,
+        "METASOURCES",
+        {"Qobuz": SimpleNamespace(Scraper=_FailingScraper), "Deezer": SimpleNamespace(Scraper=_WorkingScraper)},
+    )
+
+
+def test_a_store_url_that_fails_to_scrape_alone_ends_the_run(monkeypatch) -> None:
+    _pasted(monkeypatch, "https://open.qobuz.com/album/0887396827479")
+
+    with pytest.raises(ScrapeError, match="no such album"):
+        anyio.run(metadata_mod._select_choice, {}, make_release_data())
+
+
+def test_a_store_url_that_fails_beside_one_that_works_is_reported_and_left_out(monkeypatch, capsys) -> None:
+    _pasted(monkeypatch, "https://open.qobuz.com/album/0887396827479 https://www.deezer.com/album/322064097")
+    combined: list[tuple[list[str], list[Any]]] = []
+
+    def combine(sources, metadatas, _rls_data, _source_url):
+        combined.append((sources, metadatas))
+        return {"title": "Combined"}
+
+    monkeypatch.setattr(metadata_mod, "_combine_scraped", combine)
 
     metadata, _source_url = anyio.run(metadata_mod._select_choice, {}, make_release_data())
 
-    out = capsys.readouterr().out
-    assert metadata["title"] == "Example Release"
-    assert "Scrape error: no such album" in out
+    assert metadata == {"title": "Combined"}
+    assert combined == [(["Qobuz", "Deezer"], [None, {"title": "Scraped"}])]
+    assert "Scrape error: no such album" in capsys.readouterr().out
 
 
 def test_salmon_tag_pretypes_the_release_type_its_library_folder_names(monkeypatch, tmp_path) -> None:

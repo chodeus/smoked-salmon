@@ -1,10 +1,8 @@
-import { apiGet, confirmLoggedIn, wsUrl } from './api'
+import { apiGet, wsUrl } from './api'
 
-export interface JobProgress {
-  done: number
-  total: number
-  desc: string
-}
+export type JobStatus = 'queued' | 'running' | 'waiting' | 'done' | 'failed' | 'cancelled' | 'unknown_outcome'
+
+export const FINISHED: JobStatus[] = ['done', 'failed', 'cancelled', 'unknown_outcome']
 
 export interface Question {
   id: string
@@ -18,189 +16,208 @@ export interface Question {
   error?: string | null
 }
 
-export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled' | 'unknown_outcome'
+export interface LogLine {
+  n: number
+  text: string
+  err: boolean
+}
 
 export interface Job {
   id: string
-  type: string
+  kind: string
   title: string
   params: Record<string, unknown>
+  dry_run: boolean
+  assume_defaults: boolean
   status: JobStatus
   created_at: string
+  started_at: string | null
   finished_at: string | null
-  progress: JobProgress | null
-  result: any
   error: string | null
+  result: unknown
   question: Question | null
-  log: string[]
   spectrals: string[] | null
+  log: LogLine[]
 }
 
-const LOG_CAP = 1000
+// As many lines as the server keeps.
+const LOG_CAP = 5000
 
+/**
+ * The jobs, kept up to date by the server's events.
+ *
+ * Ported from the fork's jobs.svelte.ts (styx-techno, chodeus). The list comes without logs: a job's log is
+ * loaded when it is shown, and its lines are numbered, so the lines that arrive meanwhile are neither lost nor
+ * doubled. Events missed while disconnected are made up for by loading everything again on reconnecting.
+ */
 class JobStore {
   jobs = $state<Job[]>([])
   connected = $state(false)
   loadError = $state('')
   private ws: WebSocket | null = null
-  private started = false
+  private running = false
   private retry: ReturnType<typeof setTimeout> | null = null
-  private resyncBuffer: any[] | null = null
+  private buffer: any[] | null = null
   private resyncing = false
-  private resyncPending = false
-  // Work begun before a stop() drops its result once this has changed.
-  private stops = 0
+  private resyncAgain = false
+  // The jobs whose whole log is shown.
+  private shown = new Set<string>()
 
-  init() {
-    if (this.started) return
-    this.started = true
+  start() {
+    if (this.running) return
+    this.running = true
     void this.connect()
   }
 
   /** On logging out: no more reconnecting. */
   stop() {
-    this.stops++
-    this.started = false
+    this.running = false
     if (this.retry) clearTimeout(this.retry)
-    this.retry = null
-    if (this.ws) {
-      // Its close event comes later, and must not reconnect after a new login.
-      this.ws.onclose = null
-      this.ws.close()
-    }
+    this.ws?.close()
     this.ws = null
-    this.connected = false
     this.jobs = []
+    this.shown.clear()
   }
 
   get(id: string): Job | undefined {
     return this.jobs.find((j) => j.id === id)
   }
 
-  /** Insert a job received outside the websocket (e.g. a POST response).
-   *  Insert-only: once the ws delivered 'created', its stream is authoritative. */
-  add(job: Job) {
-    if (!this.get(job.id)) this.upsert(job)
+  /** Load a job's whole log, now and after each reconnection. */
+  async show(id: string) {
+    this.shown.add(id)
+    await this.loadLog(id)
   }
 
-  /** Replace the store with a fresh snapshot; called on every (re)connect.
-   *  Events arriving during the fetch are buffered and replayed on top. */
-  private async resync() {
-    if (!this.started) return
-    // Single-flight: a reconnect/retry mustn't run two snapshots at once, or an older
-    // snapshot could clobber a newer one and drop events. Queue one follow-up instead.
-    if (this.resyncing) {
-      this.resyncPending = true
-      return
-    }
-    const stops = this.stops
-    this.resyncing = true
-    this.resyncBuffer = []
-    try {
-      const snapshot = await apiGet<Job[]>('/jobs')
-      if (stops !== this.stops) return
-      const buffered = this.resyncBuffer
-      this.resyncBuffer = null
-      this.jobs = snapshot.map((j) => ({ ...j, log: j.log ?? [] }))
-      for (const event of buffered) this.apply(event)
-      this.loadError = ''
-    } catch (e) {
-      if (stops !== this.stops) return
-      // Replay events buffered during the failed snapshot instead of dropping them
-      // (the socket may still be connected), and retry the snapshot shortly.
-      const buffered = this.resyncBuffer ?? []
-      this.resyncBuffer = null
-      for (const event of buffered) this.apply(event)
-      this.loadError = `Failed to load job list: ${e}`
-      if (this.started) this.retry = setTimeout(() => this.resync(), 2000)
-    } finally {
-      this.resyncing = false
-      if (this.resyncPending) {
-        this.resyncPending = false
-        void this.resync()
-      }
-    }
+  hide(id: string) {
+    this.shown.delete(id)
   }
 
   private async connect() {
-    const stops = this.stops
+    if (!this.running) return
     try {
-      // A failed websocket says nothing of why: a lost login here sends the browser back to the login.
-      await confirmLoggedIn()
+      // A failed websocket says nothing of why: a 401 here sends the browser back to the login.
+      await apiGet('/auth')
     } catch {
-      if (stops === this.stops) this.scheduleReconnect()
+      this.scheduleReconnect()
       return
     }
-    if (!this.started || stops !== this.stops) return
+    if (!this.running) return
     const ws = new WebSocket(wsUrl())
     this.ws = ws
     ws.onopen = () => {
       this.connected = true
-      // Events that fired while we were disconnected are gone — resync.
-      this.resync()
+      void this.resync()
     }
     ws.onclose = () => {
-      this.connected = false
       if (this.ws === ws) this.ws = null
+      this.connected = false
       this.scheduleReconnect()
     }
     ws.onmessage = (msg) => {
       const event = JSON.parse(msg.data)
-      if (this.resyncBuffer !== null) {
-        this.resyncBuffer.push(event)
-        return
-      }
-      this.apply(event)
+      if (this.buffer !== null) this.buffer.push(event)
+      else this.apply(event)
     }
   }
 
   private scheduleReconnect() {
-    if (!this.started) return
+    if (!this.running) return
     if (this.retry) clearTimeout(this.retry)
     this.retry = setTimeout(() => void this.connect(), 2000)
   }
 
-  private apply(event: any) {
-    const job = event.job_id ? this.get(event.job_id) : undefined
-    switch (event.event) {
-        case 'created':
-        case 'finished':
-          this.upsert(event.job)
-          break
-        case 'progress':
-          if (job) job.progress = event.progress
-          break
-        case 'status':
-          if (job) job.status = event.status
-          break
-        case 'question':
-          if (job) job.question = event.question
-          break
-        case 'question_answered':
-          if (job) job.question = null
-          break
-        case 'log':
-          if (job) {
-            job.log.push(event.line)
-            if (job.log.length > LOG_CAP) job.log.splice(0, job.log.length - LOG_CAP / 2)
-          }
-          break
-        case 'spectrals_ready':
-          if (job) job.spectrals = event.files
-          break
+  /** Load the list again, then apply the events that came meanwhile. */
+  private async resync() {
+    if (this.resyncing) {
+      this.resyncAgain = true
+      return
+    }
+    this.resyncing = true
+    this.buffer = []
+    try {
+      const { jobs } = await apiGet<{ jobs: Job[] }>('/jobs')
+      const known = new Map(this.jobs.map((j) => [j.id, j]))
+      this.jobs = jobs.map((j) => ({ ...j, log: known.get(j.id)?.log ?? [] }))
+      this.loadError = ''
+    } catch (e) {
+      this.loadError = `Could not load the jobs: ${e}`
+    } finally {
+      const buffered = this.buffer ?? []
+      this.buffer = null
+      for (const event of buffered) this.apply(event)
+      this.resyncing = false
+    }
+    // Lines may have been missed while disconnected: load the logs on show again.
+    for (const job of this.jobs) {
+      if (this.shown.has(job.id) || !FINISHED.includes(job.status)) void this.loadLog(job.id)
+    }
+    if (this.resyncAgain) {
+      this.resyncAgain = false
+      void this.resync()
     }
   }
 
-  private upsert(job: Job) {
-    job.log = job.log ?? []
-    const idx = this.jobs.findIndex((j) => j.id === job.id)
-    if (idx >= 0) {
-      // Never let a snapshot shrink the live-streamed log.
-      const existing = this.jobs[idx]
-      if (existing.log.length > job.log.length) job.log = existing.log
-      this.jobs[idx] = job
+  private async loadLog(id: string) {
+    try {
+      const detail = await apiGet<Job>(`/jobs/${encodeURIComponent(id)}`)
+      const job = this.get(id)
+      if (!job) return
+      const last = detail.log.length ? detail.log[detail.log.length - 1].n : 0
+      // Lines that came by the websocket while the log was loading.
+      job.log = [...detail.log, ...job.log.filter((line) => line.n > last)]
+    } catch {
+      // The job was dropped meanwhile, or the connection is down: the next resync loads it again.
+    }
+  }
+
+  private apply(event: any) {
+    const job: Job | undefined = event.job_id ? this.get(event.job_id) : undefined
+    switch (event.event) {
+      case 'created':
+        this.upsert(event.job)
+        break
+      case 'finished':
+        this.upsert(event.job)
+        break
+      case 'status':
+        if (job) {
+          job.status = event.status
+          job.started_at = event.started_at ?? job.started_at
+        }
+        break
+      case 'question':
+        if (job) {
+          job.question = event.question
+          job.status = event.status
+        }
+        break
+      case 'answered':
+        if (job && job.question?.id === event.question_id) {
+          job.question = null
+          job.status = event.status
+        }
+        break
+      case 'spectrals':
+        if (job) job.spectrals = event.files
+        break
+      case 'log':
+        if (job) {
+          const last = job.log.length ? job.log[job.log.length - 1].n : 0
+          if (event.line.n > last) job.log.push(event.line)
+          if (job.log.length > LOG_CAP) job.log.splice(0, job.log.length - LOG_CAP)
+        }
+        break
+    }
+  }
+
+  private upsert(update: Job) {
+    const index = this.jobs.findIndex((j) => j.id === update.id)
+    if (index >= 0) {
+      // The events carry no log: keep the one streamed so far.
+      this.jobs[index] = { ...update, log: this.jobs[index].log }
     } else {
-      this.jobs.unshift(job)
+      this.jobs.unshift({ ...update, log: [] })
     }
   }
 }

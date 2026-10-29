@@ -10,7 +10,7 @@ salmon up's dupe search: the same browse requests, through the tracker client, w
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import anyio.to_thread
@@ -46,6 +46,15 @@ DEFAULT_TRACKERS = ("RED", "OPS")
 
 
 @dataclass
+class DupeSearch:
+    """One tracker's dupe search that answered: the search strings, and the groups its browse results gave."""
+
+    base_url: str
+    searchstrs: list[str]
+    results: list[dict[str, Any]]
+
+
+@dataclass
 class AlbumChecks:
     """What check all found: its rows, and what the report is made from."""
 
@@ -54,6 +63,9 @@ class AlbumChecks:
     audio_info: dict[str, dict[str, Any]]
     provenance: dict[str, Any]
     spectra: list[Any]
+    source: DetectedSource | None = None
+    # By site code: salmon web lists every match, where the row names a few.
+    dupes: dict[str, DupeSearch] = field(default_factory=dict)
 
     @property
     def blocking(self) -> list[Row]:
@@ -175,26 +187,27 @@ def _release(path: str, audio_info: dict[str, dict[str, Any]], source: str | Non
     }
 
 
-async def _dupe_row(tracker: str, release: dict[str, Any]) -> Row:
-    """salmon up's dupe search on one tracker: index, then one browse per search string."""
+async def _dupe_row(tracker: str, release: dict[str, Any]) -> tuple[Row, DupeSearch | None]:
+    """salmon up's dupe search on one tracker: index, then one browse per search string; the search if it answered."""
     searchstrs = generate_dupe_check_searchstrs(release["artists"], release["title"], release["catno"])
     if not searchstrs:
-        return verdicts.dupe_not_searched_row(tracker, "no search string from the tags.")
+        return verdicts.dupe_not_searched_row(tracker, "no search string from the tags."), None
     site = salmon.trackers.get_class(tracker)()
     try:
         results = await get_search_results(site, searchstrs)
     except RequestError as e:
-        return verdicts.dupe_error_row(tracker, str(e))
+        return verdicts.dupe_error_row(tracker, str(e)), None
     except (KeyError, TypeError) as e:
         # An answer without the fields a search returns: say so in the row rather than stop every check.
-        return verdicts.dupe_error_row(tracker, f"unexpected answer ({e!r})")
+        return verdicts.dupe_error_row(tracker, f"unexpected answer ({e!r})"), None
     finally:
         await site.close()
     try:
-        return verdicts.dupe_row(tracker, release, results)
+        row = verdicts.dupe_row(tracker, release, results)
     except (AttributeError, KeyError, TypeError) as e:
         # A result that is not a group as a search gives one, such as null or a group whose torrents are not a list.
-        return verdicts.dupe_error_row(tracker, f"unexpected answer ({e!r})")
+        return verdicts.dupe_error_row(tracker, f"unexpected answer ({e!r})"), None
+    return row, DupeSearch(site.base_url, searchstrs, results)
 
 
 def _without_parents(path: str, rows: list[Row]) -> list[Row]:
@@ -263,6 +276,7 @@ async def check_album(path: str, trackers: list[str]) -> AlbumChecks:
             rows.append(verdicts.frequency_row(*frequency.assess(spectra)))
 
     release = await anyio.to_thread.run_sync(_release, path, audio_info, source)
+    dupes: dict[str, DupeSearch] = {}
     for code in rule_trackers:
         # The lists ship with salmon: checking them sends nothing.
         listed = None
@@ -278,6 +292,10 @@ async def check_album(path: str, trackers: list[str]) -> AlbumChecks:
         elif not (release.get("title") and release.get("artists")):
             rows.append(verdicts.dupe_not_searched_row(code, "no album title or artist in the tags."))
         else:
-            rows.append(await _dupe_row(code, release))
+            row, search = await _dupe_row(code, release)
+            rows.append(row)
+            if search is not None:
+                dupes[code] = search
 
-    return AlbumChecks(os.path.basename(path), _without_parents(path, rows), audio_info, provenance, spectra)
+    folder = os.path.basename(path)
+    return AlbumChecks(folder, _without_parents(path, rows), audio_info, provenance, spectra, detected, dupes)

@@ -6,6 +6,7 @@
   const chips: Record<JobStatus, { label: string; tone: string }> = {
     queued: { label: 'queued', tone: '' },
     running: { label: 'running', tone: 'run' },
+    waiting: { label: 'waiting for an answer', tone: 'warn' },
     done: { label: 'done', tone: 'ok' },
     failed: { label: 'failed', tone: 'err' },
     cancelled: { label: 'cancelled', tone: 'warn' },
@@ -13,17 +14,10 @@
   }
 </script>
 
-<div class="row">
+<div class="row wrap">
   <span class="chip {chips[job.status].tone}">{chips[job.status].label}</span>
-  {#if job.question}
-    <span class="chip warn">waiting for answer</span>
-  {/if}
-  {#if job.status === 'running' && job.progress}
-    <div class="progress grow">
-      <div style="width: {job.progress.total ? (100 * job.progress.done) / job.progress.total : 0}%"></div>
-    </div>
-    <span class="muted">{job.progress.done}/{job.progress.total} — {job.progress.desc}</span>
-  {/if}
+  {#if job.dry_run}<span class="chip">dry run</span>{/if}
+  {#if job.assume_defaults}<span class="chip">-yyy</span>{/if}
   {#if job.error && job.status !== 'unknown_outcome'}
     <span class="muted">{job.error}</span>
   {/if}
@@ -38,6 +32,9 @@
 {/if}
 
 <style>
+  .wrap {
+    flex-wrap: wrap;
+  }
   .unknown {
     margin-top: 0.6rem;
     padding: 0.6rem 0.8rem;

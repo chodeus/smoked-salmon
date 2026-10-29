@@ -8,25 +8,17 @@
   const lines = $derived(logTail > 0 ? job.log.slice(-logTail) : job.log)
 
   $effect(() => {
-    job.log.length
+    void lines.length
     if (logEl) logEl.scrollTop = logEl.scrollHeight
   })
 </script>
 
-<!-- Log first: it sits directly under the question panel, where the answers are typed. -->
+<!-- Ported from the fork's JobActivity (styx-techno, chodeus). -->
 {#if lines.length}
-  <pre class="log" bind:this={logEl}>{lines.join('\n')}</pre>
-{/if}
-
-{#if job.spectrals?.length}
-  <div class="gallery">
-    {#each job.spectrals as file}
-      <a href={`/api/jobs/${job.id}/spectrals/${encodeURIComponent(file)}`} target="_blank" rel="noreferrer">
-        <img src={`/api/jobs/${job.id}/spectrals/${encodeURIComponent(file)}`} alt={file} loading="lazy" />
-        <span class="muted mono">{file}</span>
-      </a>
-    {/each}
-  </div>
+  <pre class="log" bind:this={logEl}>{#each lines as line (line.n)}<span class:err={line.err}>{line.text}
+</span>{/each}</pre>
+{:else}
+  <p class="muted">Nothing printed yet.</p>
 {/if}
 
 <style>
@@ -38,24 +30,12 @@
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.78rem;
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
     max-height: 420px;
     overflow-y: auto;
-    margin-top: 0.8rem;
+    margin: 0.8rem 0 0;
   }
-  .gallery {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
-    gap: 0.7rem;
-    margin-top: 0.8rem;
-  }
-  .gallery img {
-    width: 100%;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-  }
-  .gallery span {
-    font-size: 0.72rem;
-    display: block;
-    text-align: center;
+  .err {
+    color: var(--err);
   }
 </style>

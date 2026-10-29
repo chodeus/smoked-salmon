@@ -1,10 +1,11 @@
 <script lang="ts">
   import { login } from '../lib/api'
 
-  let { onLoggedIn }: { onLoggedIn: () => void } = $props()
+  let { onLoggedIn, initialError = '' }: { onLoggedIn: () => void; initialError?: string } = $props()
 
   let token = $state('')
-  let error = $state('')
+  // svelte-ignore state_referenced_locally
+  let error = $state(initialError)
   let busy = $state(false)
 
   async function submit(event: Event) {
@@ -31,7 +32,7 @@
 <div class="login">
   <form onsubmit={submit}>
     <div class="brand"><span class="fish">🐟</span> salmon<span class="accent">web</span></div>
-    <p>Open the login link salmon web printed when it started, or enter the access token.</p>
+    <p>Enter the access token, or open the login link salmon web printed when it started.</p>
     <!-- svelte-ignore a11y_autofocus -->
     <input type="password" bind:value={token} placeholder="Access token" autofocus autocomplete="current-password" />
     <button type="submit" disabled={busy || !token}>{busy ? 'Checking…' : 'Unlock'}</button>
