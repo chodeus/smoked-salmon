@@ -105,14 +105,22 @@ def _guard_seen(monkeypatch, module, name, result) -> list[bool]:
 
 
 def test_the_search_route_fetches_with_the_public_address_guard_on(monkeypatch) -> None:
-    seen = _guard_seen(monkeypatch, search, "run_metasearch", {})
+    after: list[bool] = []
+
+    class Results:
+        # The route reads the results in the request's own task, after the guard's block.
+        def get(self, _name):
+            after.append(ssrf.active())
+
+    seen = _guard_seen(monkeypatch, search, "run_metasearch", Results())
 
     with web_client() as c:
         status = c.get("/api/search", params={"q": "artist album"}).status_code
 
     assert status == 200
     assert seen == [True]
-    assert not ssrf.active()
+    assert after
+    assert not any(after)
 
 
 def test_the_metadata_route_fetches_with_the_public_address_guard_on(monkeypatch) -> None:
