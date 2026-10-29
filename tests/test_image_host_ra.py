@@ -1,17 +1,23 @@
-"""Ra (thesungod.xyz) image host uploader, against a local fake server only."""
+"""Ra (thesungod.xyz) image host uploader.
+
+Tests talk only to a local aiohttp fake server, monkeypatching ra.UPLOAD_URL so the
+uploader's own aiohttp.ClientSession never reaches the real host.
+"""
 
 import anyio
 import pytest
 from aiohttp import web
 
+from salmon import cfg
 from salmon.errors import ImageUploadFailed
 from salmon.images import ra
 
 
 @pytest.fixture(autouse=True)
-def _ra_key(monkeypatch) -> None:
-    # The config refuses ra without a key; the test config has none.
-    monkeypatch.setattr(ra.cfg.image, "ra_key", "ra-test-0001")
+def _host_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A key for each host: the template's 'api_key' placeholders now load as unset (salmon.config.compat)."""
+    for key in ("ptscreens_key", "oeimg_key", "imgbb_key", "ra_key"):
+        monkeypatch.setattr(cfg.image, key, f"test-{key}")
 
 
 async def _serve(handler) -> web.AppRunner:
@@ -98,7 +104,7 @@ def test_ra_without_a_key_says_so(tmp_path, monkeypatch) -> None:
         anyio.run(_run_upload, tmp_path)
 
 
-@pytest.mark.parametrize("key", ["ra-secret-0123456789", "k3y"])
+@pytest.mark.parametrize("key", ["ra-secret-0123456789", "k3y"], ids=["long-key", "short-key"])
 def test_ra_error_echoing_the_key_is_masked(tmp_path, monkeypatch, key) -> None:
     async def handle_upload(request: web.Request) -> web.Response:
         data = await request.post()

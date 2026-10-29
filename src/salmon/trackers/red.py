@@ -108,7 +108,7 @@ def _parse_upload_form(data: dict, soup: BeautifulSoup) -> None:
 class RedApi(BaseGazelleApi):
     TAG_RULES = TagRules(max_path_length=180, sixteen_bit_above_48khz="trumpable")
     # RED's image host (/i/) serves an image only on a URL carrying the key, expiry and user id that
-    # ajax.php?action=imgauth gives: neither the API key nor the session cookie alone gets one.
+    # ajax.php?action=imgauth gives. Neither the API key nor the session cookie alone gets one (#695).
     SIGNED_IMAGES = True
 
     def __init__(self):
@@ -149,8 +149,6 @@ class RedApi(BaseGazelleApi):
 
         return await super().upload(data, files)
 
-    # Never RED's server-side dryrun: it POSTs the whole form. The base upload's dry-run gate sends nothing.
-
     async def site_page_upload(self, data: dict, files: UploadFiles) -> tuple[int, int]:
         """Upload torrent via upload.php with group data enrichment.
 
@@ -169,8 +167,7 @@ class RedApi(BaseGazelleApi):
         group_id = data.get("groupid")
         if isinstance(group_id, dryrun.Pending):
             dryrun.say(f"not reading the new group's fields from {self.site_string}'s upload page: it creates none.")
-            return await super().site_page_upload(data, files)
-        if group_id:
+        elif group_id:
             await self._enrich_data_from_group(data, int(group_id))
         return await super().site_page_upload(data, files)
 

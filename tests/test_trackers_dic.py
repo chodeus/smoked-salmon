@@ -1,4 +1,4 @@
-"""DICMusic's upload form: the sample rate it requires for 24bit Lossless."""
+"""DICMusic's upload form data: the sample rate it requires for 24bit Lossless (#421)."""
 
 import struct
 from pathlib import Path
@@ -11,7 +11,7 @@ from aiohttp import web
 
 import salmon.uploader as uploader
 from salmon import cfg
-from salmon.errors import UploadRefusedError
+from salmon.errors import RequestError, UploadRefusedError
 from salmon.trackers.dic import DICApi
 from salmon.trackers.ops import OpsApi
 from salmon.trackers.red import RedApi
@@ -157,6 +157,11 @@ def test_unlisted_sample_rate_stops_the_upload_before_any_request() -> None:
     assert "no sample rate option" in str(error)
 
 
+def test_a_refused_upload_only_stops_that_tracker() -> None:
+    # The tracker loop in _upload_staged catches RequestError per tracker and offers the next one.
+    assert issubclass(UploadRefusedError, RequestError)
+
+
 def _write_flac(path: Path, sample_rate: int, bits: int = 24) -> None:
     """Write a FLAC with only a STREAMINFO block, enough for its audio info to be read."""
     streaminfo = struct.pack(">HH", 4096, 4096) + bytes(6)
@@ -167,7 +172,10 @@ def _write_flac(path: Path, sample_rate: int, bits: int = 24) -> None:
 
 
 def _downconvert_24bit(monkeypatch, tmp_path: Path, converted_names) -> list[dict[str, Any]]:
-    """Downconvert a 192 kHz source to 24 bits for DIC, the fake writing `converted_names`; give the data sent."""
+    """Run the 24-bit downconversion of a 192 kHz source to DIC; give the upload data it sent.
+
+    The fake conversion writes the given file names into the output folder.
+    """
     source_track_data = _track_data(192000, 192000)
     converted = tmp_path / "converted"
 

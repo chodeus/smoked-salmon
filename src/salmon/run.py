@@ -94,8 +94,8 @@ def main():
         # Where an upload ends when its first request to the tracker fails on it (the dupe check).
         click.secho(f"There was an error: {e}", fg="red", bold=True)
         click.secho(
-            "Your session cookie and API key are not the cause: the certificate is checked against this machine's "
-            "CA certificates and clock.",
+            f"Your session cookie and API key are not the cause. Run salmon checkconf -t {e.tracker} to see where"
+            " Python gets its CA certificates.",
             fg="yellow",
         )
     except ImportError as e:

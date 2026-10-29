@@ -18,7 +18,17 @@ class ImageUploader(BaseImageUploader):
     proxy_service = "ra"
 
     async def upload_file(self, filename: str) -> tuple[str, None]:
-        """Upload an image to thesungod.xyz: (url, None); ImageUploadFailed if it fails."""
+        """Upload image file to thesungod.xyz.
+
+        Args:
+            filename: Path to the image file.
+
+        Returns:
+            Tuple of (url, deletion_url).
+
+        Raises:
+            ImageUploadFailed: If upload fails.
+        """
         key = cfg.image.ra_key
         if not key:
             raise ImageUploadFailed("Ra needs an API key: set ra_key under [image].")
@@ -36,7 +46,7 @@ class ImageUploader(BaseImageUploader):
             ):
                 body = await resp.text()
                 if resp.status >= 400:
-                    # Masked: a server that echoes the request would repeat the key.
+                    # Masked whatever its length: a server that echoes the request would repeat the key.
                     shown = body.replace(key, "[REDACTED]")
                     raise ImageUploadFailed(f"Ra returned {resp.status}: {shown[:200]}")
                 resp_data = msgspec.json.decode(body)

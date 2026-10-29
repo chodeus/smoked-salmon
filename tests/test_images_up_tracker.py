@@ -1,4 +1,4 @@
-"""salmon images up -t: the default host is the tracker's, and a host not allowed there is refused."""
+"""salmon images up -t: the default host is the tracker's, and a host it cannot display is refused."""
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -65,7 +65,7 @@ def test_tracker_uses_its_own_image_uploader(monkeypatch, tmp_path, uploads) -> 
 
 
 def test_tracker_without_its_own_setting_falls_back_to_the_shared_one(monkeypatch, tmp_path, uploads) -> None:
-    _config(monkeypatch, image_uploader="imgbb", imgbb_key="k", red={"image_uploader": "catbox"})
+    _config(monkeypatch, image_uploader="imgbb", imgbb_key="k", red={"image_uploader": "red"})
     result = _up(tmp_path, "-t", "ops")
     assert result.exit_code == 0, result.output
     assert uploads == ["imgbb"]
@@ -78,7 +78,7 @@ def test_explicit_host_wins_over_the_trackers(monkeypatch, tmp_path, uploads) ->
     assert uploads == ["catbox"]
 
 
-def test_red_host_is_refused_for_a_tracker_it_does_not_display_on(monkeypatch, tmp_path, uploads) -> None:
+def test_a_host_the_tracker_cannot_display_is_refused_and_nothing_is_uploaded(monkeypatch, tmp_path, uploads) -> None:
     _config(monkeypatch)
     result = _up(tmp_path, "-i", "red", "-t", "DIC")
     assert result.exit_code == 2
@@ -87,11 +87,45 @@ def test_red_host_is_refused_for_a_tracker_it_does_not_display_on(monkeypatch, t
 
 
 @pytest.mark.parametrize("tracker", ["RED", "OPS"])
-def test_red_host_is_accepted_for_the_trackers_it_displays_on(monkeypatch, tmp_path, uploads, tracker) -> None:
+def test_red_host_is_accepted_where_it_displays(monkeypatch, tmp_path, uploads, tracker) -> None:
     _config(monkeypatch)
     result = _up(tmp_path, "-i", "red", "-t", tracker)
     assert result.exit_code == 0, result.output
     assert uploads == ["red"]
+
+
+@pytest.mark.parametrize("tracker", ["XYZ", "ops"])
+def test_an_unknown_or_unconfigured_tracker_is_a_usage_error(monkeypatch, tmp_path, uploads, tracker) -> None:
+    _config(monkeypatch)
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED"])
+    result = _up(tmp_path, "-t", tracker)
+    assert result.exit_code == 2
+    assert "is not a tracker in your config (configured: RED)" in result.output
+    assert uploads == []
+
+
+def test_without_a_tracker_nothing_changes(monkeypatch, tmp_path, uploads) -> None:
+    # Regression guard: [image.<tracker>] settings are not read, the default is
+    # [image] image_uploader, and -i is accepted as is, red included (there is no tracker to refuse it for).
+    _config(monkeypatch, image_uploader="imgbox", ops={"image_uploader": "catbox"})
+    default_result = _up(tmp_path)
+    # The fork refuses red without -t: its images only display on RED/OPS.
+    explicit_result = _up(tmp_path, "-i", "catbox")
+    assert default_result.exit_code == 0, default_result.output
+    assert explicit_result.exit_code == 0, explicit_result.output
+    assert uploads == ["imgbox", "catbox"]
+    result = _up(tmp_path, "-i", "nope")
+    assert result.exit_code == 2
+    assert "nope is not a valid image host" in result.output
+
+
+def test_the_resolution_serves_other_callers(monkeypatch) -> None:
+    _config(monkeypatch, image_uploader="imgbox", dic={"image_uploader": "catbox"})
+    assert images.image_host_for_tracker("DIC") == "catbox"
+    assert images.image_host_for_tracker("RED") == "imgbox"
+    assert images.image_host_for_tracker("RED", "red") == "red"
+    with pytest.raises(images.ImageHostRefused, match="only display on RED/OPS"):
+        images.image_host_for_tracker("DIC", "red")
 
 
 def test_red_host_needs_the_tracker_named(monkeypatch, tmp_path, uploads) -> None:
@@ -107,36 +141,3 @@ def test_ra_is_accepted_for_any_tracker(monkeypatch, tmp_path, uploads) -> None:
     result = _up(tmp_path, "-i", "ra", "-t", "DIC")
     assert result.exit_code == 0, result.output
     assert uploads == ["ra"]
-
-
-@pytest.mark.parametrize("tracker", ["XYZ", "ops"])
-def test_an_unknown_or_unconfigured_tracker_is_a_usage_error(monkeypatch, tmp_path, uploads, tracker) -> None:
-    _config(monkeypatch)
-    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED"])
-    result = _up(tmp_path, "-t", tracker)
-    assert result.exit_code == 2
-    assert "is not a tracker in your config (configured: RED)" in result.output
-    assert uploads == []
-
-
-def test_without_a_tracker_the_shared_settings_apply(monkeypatch, tmp_path, uploads) -> None:
-    # [image.<tracker>] settings are not read: the default is [image] image_uploader, and -i is taken as given.
-    _config(monkeypatch, image_uploader="imgbox", ops={"image_uploader": "catbox"})
-    default_result = _up(tmp_path)
-    explicit_result = _up(tmp_path, "-i", "catbox")
-    assert default_result.exit_code == 0, default_result.output
-    assert explicit_result.exit_code == 0, explicit_result.output
-    assert uploads == ["imgbox", "catbox"]
-    result = _up(tmp_path, "-i", "nope")
-    assert result.exit_code == 2
-    assert "nope is not a valid image host" in result.output
-
-
-def test_a_trackers_host_and_a_hand_picked_one_resolve_by_the_cover_rule(monkeypatch) -> None:
-    _config(monkeypatch, image_uploader="imgbox", dic={"image_uploader": "catbox"})
-    assert images.image_host_for_tracker("DIC") == "catbox"
-    assert images.image_host_for_tracker("RED") == "imgbox"
-    assert images.image_host_for_tracker("RED", "red") == "red"
-    assert images.image_host_for_tracker("OPS", "red") == "red"
-    with pytest.raises(images.ImageHostRefused, match="only display on RED/OPS"):
-        images.image_host_for_tracker("DIC", "red")

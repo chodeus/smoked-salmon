@@ -1,4 +1,8 @@
-"""Batch uploads to an image host share a few reused connections, against a local fake host."""
+"""Batch uploads to an image host share a few reused connections (#475).
+
+The real catbox and ptscreens uploaders run against a local fake host that counts the
+connections made to it. Nothing here contacts a real image host.
+"""
 
 import asyncio
 import contextlib
@@ -282,8 +286,6 @@ def test_images_up_still_fails_when_an_upload_fails(monkeypatch: pytest.MonkeyPa
 
 
 def test_two_uploads_failing_at_once_raise_one_plain_error(tmp_path: Path) -> None:
-    from salmon import images
-
     class Refusing:
         host = "test"
 

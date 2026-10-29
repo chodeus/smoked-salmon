@@ -3,15 +3,13 @@
 import anyio
 import pytest
 from aiohttp import web
+from aiolimiter import AsyncLimiter
 
 import salmon.trackers
 import salmon.trackers.dic as dic
 from salmon import cfg
 from salmon.commands import checkconf
 from salmon.common import UploadFiles
-from salmon.config.validations import GazelleTrackerSettings
-from salmon.trackers.account import SlidingWindowLimiter
-from salmon.trackers.base import BaseGazelleApi
 from salmon.trackers.dic import DICApi
 
 IGNORED = "tracker.dic.api_key is ignored: DIC does not take API keys, salmon uses its session cookie."
@@ -19,16 +17,16 @@ IGNORED = "tracker.dic.api_key is ignored: DIC does not take API keys, salmon us
 
 @pytest.fixture(autouse=True)
 def _dic_with_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    # This fork's test config has no DIC: give it a session, and a key it must not use.
-    monkeypatch.setattr(cfg.tracker, "dic", GazelleTrackerSettings(session="test-session", api_key="a-dic-api-key"))
+    assert cfg.tracker.dic is not None
+    monkeypatch.setattr(cfg.tracker.dic, "api_key", "a-dic-api-key")
     monkeypatch.setattr(dic, "_api_key_warned", False)
-    # A loose budget of its own per test: the shared one would hold each test to 5 requests in 10 s.
-    monkeypatch.setattr(BaseGazelleApi, "_rate_limiter", SlidingWindowLimiter(100, 1))
 
 
 def _dic(runner: web.AppRunner) -> DICApi:
     api = DICApi()
     api.base_url = f"http://127.0.0.1:{runner.addresses[0][1]}"
+    # Shadow the class-wide limiter: each test runs on its own event loop.
+    api._rate_limiter = AsyncLimiter(100, 1)
     return api
 
 
@@ -88,8 +86,7 @@ async def _upload_paths() -> list[str]:
     app.router.add_route("POST", "/upload.php", handle_upload)
     runner = await _serve(app)
     api = _dic(runner)
-    # As after the marks prompt: this test sends the form only.
-    api._marks_prompted = True
+    api.skip_upload_marks()
     try:
         result = await api.upload({"title": "x"}, UploadFiles(torrent_data=b"torrent"))
         assert result == (7, 3)
@@ -115,8 +112,7 @@ def test_the_ignored_key_is_warned_about_once_per_run(capsys: pytest.CaptureFixt
     DICApi()
     DICApi()
 
-    printed = capsys.readouterr().out
-    assert printed.count(IGNORED) == 1
+    assert capsys.readouterr().out.count(IGNORED) == 1
 
 
 def test_no_key_no_warning(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -157,8 +153,6 @@ async def _checkconf_dic(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
 def test_checkconf_says_the_key_is_ignored_and_tests_only_the_cookie(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # checkconf turns it on for the rest of the run: undone after the test.
-    monkeypatch.setattr(cfg.tracker, "debug_connection", False)
 
     authorizations = anyio.run(_checkconf_dic, monkeypatch)
 

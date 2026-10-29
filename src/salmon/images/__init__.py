@@ -21,8 +21,10 @@ HOSTS = {
     "red": red,
 }
 
-# How many uploads to one image host a batch runs at once; a host with a shared session reuses its connections.
+# How many uploads to one image host a batch runs at once, each on a connection of its own,
+# reused from one image to the next. Chosen by measurement against a local fake host (#475).
 UPLOAD_CONNECTIONS = 8
+
 
 # The answer to the retry question that goes on without the spectrals that failed.
 SKIP = "skip"
@@ -33,14 +35,37 @@ class ImageHostRefused(ValueError):
 
 
 def validate_image_host(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
-    """Validate an image host name, passing "no host given" through."""
+    """Validate an image host name, passing "no host given" through.
+
+    Args:
+        ctx: Click context.
+        param: Click parameter.
+        value: The image host name, or None if none was given.
+
+    Returns:
+        The image host name, or None.
+
+    Raises:
+        click.BadParameter: If the image host is invalid.
+    """
     if value is not None and value not in HOSTS:
         raise click.BadParameter(f"{value} is not a valid image host")
     return value
 
 
 def image_host_for_tracker(tracker: str, explicit_host: str | None = None) -> str:
-    """The host for `tracker`'s images: its image_uploader, or explicit_host if that host displays on it."""
+    """Pick the image host for images that are for one tracker's pages.
+
+    Args:
+        tracker: The site code (e.g. "OPS") the images are for.
+        explicit_host: A host asked for by name, which wins over the configured one. It must be a key of HOSTS.
+
+    Returns:
+        The name of the host: explicit_host, else the tracker's image_uploader ([image.<tracker>], else [image]).
+
+    Raises:
+        ImageHostRefused: If explicit_host does not display on that tracker, with the reason.
+    """
     if explicit_host is None:
         return cfg.image.host_for(tracker, "image_uploader")
     if (reason := cover_refusal(explicit_host, tracker)) is not None:
@@ -49,7 +74,11 @@ def image_host_for_tracker(tracker: str, explicit_host: str | None = None) -> st
 
 
 def validate_tracker(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
-    """Validate a tracker given by code, in any case, against the configured trackers."""
+    """Validate a tracker given by code, in any case, against the configured trackers.
+
+    Raises:
+        click.BadParameter: If the tracker is not one in the config.
+    """
     if value is None:
         return None
     from salmon import trackers  # Read at run time, as the configured trackers are.
@@ -85,7 +114,7 @@ async def images() -> None:
 @click.option(
     "--tracker",
     "-t",
-    help="The tracker the images are for: its image_uploader is the default host, and the host must be allowed there",
+    help="The tracker the images are for: its image_uploader is the default host, and the host must display there",
     default=None,
     callback=validate_tracker,
 )
@@ -104,12 +133,14 @@ async def up(filepaths: tuple[str, ...], image_host: str | None, tracker: str | 
     await upload_images(filepaths, HOSTS[image_host or cfg.image.image_uploader])
 
 
-async def upload_images(filepaths: Sequence[str], image_host) -> list[str]:
+async def upload_images(filepaths: Sequence[str], image_host, copy_to_clipboard: bool = True) -> list[str]:
     """Upload images to the specified host, over at most UPLOAD_CONNECTIONS connections.
 
     Args:
         filepaths: File paths to upload.
         image_host: The image host module.
+        copy_to_clipboard: Whether to copy the URLs to the clipboard, if the config asks for it. The web interface
+            runs on a server, whose clipboard is nobody's: it passes False.
 
     Returns:
         List of uploaded URLs.
@@ -121,19 +152,23 @@ async def upload_images(filepaths: Sequence[str], image_host) -> list[str]:
             [[filepath] for filepath in filepaths],
             on_failure=lambda _index, error: failures.append(error),
         )
-        if failures:
-            raise failures[0]
-        urls = [group[0] for group in results if group is not None]
-        for url in urls:
-            if not is_http_url(url):
-                raise ImageUploadFailed(f"{image_host.__name__} returned no usable URL: {str(url)[:200]!r}")
-            click.secho(url)
-        if cfg.upload.description.copy_uploaded_url_to_clipboard:
-            clipboard_copy("\n".join(urls))
-        return urls
-    except (ImageUploadFailed, ValueError) as error:
+    except ValueError as error:
         click.secho(f"Image Upload Failed. {error}", fg="red")
         raise ImageUploadFailed("Failed to upload image") from error
+    if failures:
+        click.secho(f"Image Upload Failed. {failures[0]}", fg="red")
+        raise ImageUploadFailed("Failed to upload image") from failures[0]
+
+    urls = [group[0] for group in results if group is not None]
+    for url in urls:
+        if not is_http_url(url):
+            error = ImageUploadFailed(f"{image_host.__name__} returned no usable URL: {str(url)[:200]!r}")
+            click.secho(f"Image Upload Failed. {error}", fg="red")
+            raise ImageUploadFailed("Failed to upload image") from error
+        click.secho(url)
+    if copy_to_clipboard and cfg.upload.description.copy_uploaded_url_to_clipboard:
+        clipboard_copy("\n".join(urls))
+    return urls
 
 
 async def _upload_groups(
@@ -142,7 +177,25 @@ async def _upload_groups(
     on_start: Callable[[int], None] = lambda _index: None,
     on_failure: Callable[[int, ImageUploadFailed], None] = lambda _index, _error: None,
 ) -> list[list[str] | None]:
-    """Upload image groups over at most UPLOAD_CONNECTIONS; after a failure no new group starts (None for it)."""
+    """Upload groups of images to one host, over at most UPLOAD_CONNECTIONS connections.
+
+    Images queue for a free connection, in order, and a slow or failed upload holds up none
+    of the others. Once an upload fails, no new group starts: the host may be down, so the
+    groups not started yet are left for the caller to send elsewhere. The images of a group
+    already started still go.
+
+    Args:
+        uploader: The image uploader to send every image through.
+        groups: The image paths to upload, in groups that succeed or fail together.
+        on_start: Called with a group's index when its first image starts uploading.
+        on_failure: Called with a group's index and the error when one of its images fails.
+
+    Returns:
+        Each group's URLs, in the order of its paths, or None if the group failed or never started.
+
+    Raises:
+        DryRunRefused: In a dry run, before any upload starts.
+    """
     # Here as well as in upload_file: refused in several workers at once, it would come out as a group.
     if dryrun.active():
         dryrun.refuse(f"upload {sum(len(paths) for paths in groups)} image(s) to {uploader.host}")

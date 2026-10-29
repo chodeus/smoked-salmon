@@ -18,10 +18,10 @@ import anyio
 import asyncclick as click
 import pytest
 from aiohttp import web
+from aiolimiter import AsyncLimiter
 from tenacity import wait_none
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from salmon import cfg
 from salmon.trackers import account
 from salmon.trackers.base import BaseGazelleApi, HttpResponse
 
@@ -110,7 +110,7 @@ def _clients(base_url: str, *site_codes: str, unlimited: bool = False) -> list[F
         unlimited: Give them one rate limiter no test fills, for the tests about the lock and the pool.
     """
     clients = [FakeApi(base_url, site_code) for site_code in site_codes]
-    limiter = account.SlidingWindowLimiter(1000, 1)
+    limiter = AsyncLimiter(1000, 1)
     for client in clients:
         # Lets the fake tell the trackers apart, as they all talk to it.
         client.headers["X-Site"] = client.site_code
@@ -149,8 +149,6 @@ def _run(body: Callable[[FakeTracker], Awaitable[None]]) -> FakeTracker:
 def no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     """Retry without the backoff between attempts, so only the rate limit waits are left."""
     monkeypatch.setattr(BaseGazelleApi._send.retry, "wait", wait_none())  # type: ignore[attr-defined]
-    # The debug lines would go to each job's output as well.
-    monkeypatch.setattr(cfg.tracker, "debug_connection", False)
 
 
 @pytest.fixture
@@ -298,35 +296,6 @@ def test_each_tracker_has_its_own_budget(short_period: float) -> None:
     assert ops - red[0] < short_period / 2
 
 
-def test_each_event_loop_has_its_own_pool() -> None:
-    # One client, used on one loop and then on another, as two anyio.run in one process do.
-    api: FakeApi | None = None
-    pools: list[object] = []
-
-    async def first(tracker: FakeTracker) -> None:
-        nonlocal api
-        (api,) = _clients(await tracker.start(), "RED", unlimited=True)
-        try:
-            await _get(api)
-            pools.append(api._session)
-        finally:
-            await api.close()
-
-    async def second(tracker: FakeTracker) -> None:
-        assert api is not None
-        api.base_url = await tracker.start()
-        try:
-            await _get(api)
-            pools.append(api._session)
-        finally:
-            await api.close()
-
-    _run(first)
-    _run(second)
-    assert len(pools) == 2
-    assert pools[0] is not pools[1]
-
-
 def test_each_event_loop_has_its_own_state() -> None:
     # One client, used on one loop and then on another, as two anyio.run in one process do.
     api: FakeApi | None = None
@@ -424,3 +393,34 @@ def test_a_command_closes_the_pool_its_clients_share() -> None:
     assert len(pools) == 1
     assert pools[0] is not None
     assert pools[0].closed
+
+
+def test_each_event_loop_has_its_own_pool() -> None:
+    # One client, used on one loop and then on another, as two anyio.run in one process do.
+    api: FakeApi | None = None
+    pools: list[object] = []
+
+    async def first(tracker: FakeTracker) -> None:
+        nonlocal api
+        (api,) = _clients(await tracker.start(), "RED", unlimited=True)
+        try:
+            await _get(api)
+            pools.append(api._session)
+        finally:
+            await api.close()
+
+    async def second(tracker: FakeTracker) -> None:
+        assert api is not None
+        api.base_url = await tracker.start()
+        # An AsyncLimiter belongs to the loop it was first used on.
+        api._rate_limiter = AsyncLimiter(1000, 1)
+        try:
+            await _get(api)
+            pools.append(api._session)
+        finally:
+            await api.close()
+
+    _run(first)
+    _run(second)
+    assert len(pools) == 2
+    assert pools[0] is not pools[1]

@@ -14,13 +14,13 @@ import anyio
 import msgspec
 import pytest
 from aiohttp import web
+from aiolimiter import AsyncLimiter
 
 import salmon.release_notification
 import salmon.trackers.ops
 import salmon.trackers.red
 from salmon.config import _parse_config, compat
 from salmon.config.validations import Cfg
-from salmon.trackers.account import SlidingWindowLimiter
 from salmon.trackers.base import BaseGazelleApi
 from salmon.uploader import dupe_checker
 
@@ -242,9 +242,10 @@ class _LogTracker:
 async def _a_kept_tracker_without_a_cookie_sends_no_cookie_only_request(api: BaseGazelleApi) -> None:
     tracker = _LogTracker()
     api.base_url = await tracker.start()
-    api._rate_limiter = SlidingWindowLimiter(100, 1)
+    api._rate_limiter = AsyncLimiter(100, 1)
     api._authenticated = True
     try:
+        assert dupe_checker.can_check_site_log(api) is False
         await dupe_checker.check_existing_group(api, ["artist title"])
         assert tracker.hits == ["/ajax.php"]
     finally:

@@ -45,3 +45,20 @@ def test_uploaded_images_are_still_given(tmp_path, capsys: pytest.CaptureFixture
     out = capsys.readouterr().out
     assert "https://images.test/front.png\n" in out
     assert f"Could not copy to the clipboard: {NO_CLIPBOARD}" in out
+
+
+def test_uploaded_images_are_not_copied_when_the_caller_says_not_to(
+    tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    picture = tmp_path / "front.png"
+    picture.write_bytes(b"png")
+
+    class ImageUploader(BaseImageUploader):
+        async def upload_file(self, filename: str) -> tuple[str, None]:
+            return "https://images.test/front.png", None
+
+    host = SimpleNamespace(ImageUploader=ImageUploader)
+    urls = anyio.run(lambda: images.upload_images((str(picture),), host, copy_to_clipboard=False))
+
+    assert urls == ["https://images.test/front.png"]
+    assert "Could not copy to the clipboard" not in capsys.readouterr().out

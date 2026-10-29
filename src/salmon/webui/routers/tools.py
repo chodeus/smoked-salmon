@@ -136,7 +136,7 @@ async def images_upload(req: ImageUploadRequest) -> dict:
         resolved.append(path)
 
     try:
-        urls = await upload_images(resolved, HOSTS[host_name])
+        urls = await upload_images(resolved, HOSTS[host_name], copy_to_clipboard=False)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Image upload failed: {e}") from e
     return {"host": host_name, "urls": urls}
