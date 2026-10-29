@@ -182,9 +182,6 @@ def test_a_library_reached_by_a_path_no_text_matches_is_matched(monkeypatch, tmp
     assert not cfg.directory.is_library_path(str(tmp_path))
 
 
-# AlbumPath
-
-
 # staged_source
 
 
