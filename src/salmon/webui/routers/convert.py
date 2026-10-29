@@ -7,9 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from salmon.common import get_flac_files
-from salmon.converter import conversion_output_dir
-from salmon.converter.downconverting import convert_folder
-from salmon.converter.transcoding import transcode_folder
+from salmon.converter import run_downconv, run_transcode
 from salmon.tagger.audio_info import recompress_path
 from salmon.webui.jobs import Job, JobCapacityError, manager
 from salmon.webui.validation import validate_source_album_dir, validate_writable_album_dir
@@ -36,7 +34,7 @@ async def transcode(req: TranscodeRequest) -> dict:
     path = validate_source_album_dir(req.path)
 
     async def run(job: Job) -> dict:
-        output = await transcode_folder(path, req.bitrate, output_dir=conversion_output_dir(path))
+        output = await run_transcode(path, req.bitrate)
         return {"output_path": output}
 
     title = f"Transcode {req.bitrate}: {os.path.basename(path)}"
@@ -52,7 +50,7 @@ async def downconvert(req: DownconvertRequest) -> dict:
     path = validate_source_album_dir(req.path)
 
     async def run(job: Job) -> dict:
-        _sample_rate, output = await convert_folder(path, output_dir=conversion_output_dir(path))
+        output = await run_downconv(path)
         return {"output_path": output}
 
     title = f"Downconvert: {os.path.basename(path)}"

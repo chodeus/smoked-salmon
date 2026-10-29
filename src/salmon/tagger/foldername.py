@@ -67,7 +67,14 @@ async def rename_folder(path, metadata, auto_rename, check=True, parent=None, or
     if not same_location and cfg.directory.protects(new_path):
         raise UploadError(f"Not renaming into {new_path}: it is in library_dirs, or holds one.")
     if os.path.isdir(new_path) and not same_location:
-        # Often the very album this copy was made from: replacing it would break what seeds from it.
+        # The album this run's copy was made from, already under the new name: replacing it would delete it.
+        if original is not None and os.path.samefile(new_path, original):
+            raise UploadError(
+                f"Not replacing {new_path}: it is the album this run works on a copy of. "
+                "Rename it, or give this album another name. "
+                "If it is already uploaded, salmon cross-upload sends it to another tracker."
+            )
+        # Another folder salmon must not rewrite: replacing it would break what seeds from it.
         if (reason := rewrite_refusal(new_path)) is not None:
             raise UploadError(f"Not replacing {new_path}: {reason}. Rename it, or give the upload another folder name.")
         if not check or await interaction.confirm(

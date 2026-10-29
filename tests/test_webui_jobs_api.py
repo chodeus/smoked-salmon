@@ -1499,11 +1499,11 @@ def test_downconvert_nonexistent_dir_returns_404(client):
 def test_transcode_happy_path(client, album_dir, monkeypatch):
     calls = []
 
-    async def fake_transcode_folder(path, bitrate, output_dir=None):
+    async def fake_transcode_folder(path, bitrate, essential_only=False, output_dir=None):
         calls.append((path, bitrate))
         return f"{path} [MP3 {bitrate}]"
 
-    monkeypatch.setattr("salmon.webui.routers.convert.transcode_folder", fake_transcode_folder)
+    monkeypatch.setattr("salmon.converter.transcode_folder", fake_transcode_folder)
     resp = client.post("/api/convert/transcode", json={"path": str(album_dir), "bitrate": "V0"})
     assert resp.status_code == 200
     job = resp.json()
@@ -1518,14 +1518,14 @@ def test_transcode_happy_path(client, album_dir, monkeypatch):
 
 
 def test_transcode_and_downconvert_on_one_folder_take_turns(client, album_dir, monkeypatch):
-    async def hang_transcode(path, bitrate, output_dir=None):
+    async def hang_transcode(path, bitrate, essential_only=False, output_dir=None):
         await asyncio.Event().wait()
 
-    async def fake_convert_folder(path, output_dir=None):
+    async def fake_convert_folder(path, essential_only=False, output_dir=None):
         return 44100, f"{path} [16-44]"
 
-    monkeypatch.setattr("salmon.webui.routers.convert.transcode_folder", hang_transcode)
-    monkeypatch.setattr("salmon.webui.routers.convert.convert_folder", fake_convert_folder)
+    monkeypatch.setattr("salmon.converter.transcode_folder", hang_transcode)
+    monkeypatch.setattr("salmon.converter.convert_folder", fake_convert_folder)
 
     first = client.post("/api/convert/transcode", json={"path": str(album_dir), "bitrate": "320"})
     assert first.status_code == 200
