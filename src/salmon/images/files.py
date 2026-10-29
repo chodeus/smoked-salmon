@@ -24,8 +24,8 @@ class NotAnImage(ValueError):
 def check_image(path: str) -> str:
     """Check that the file at `path` is a whole JPEG, PNG, GIF or WebP image, whatever its name says.
 
-    The file is opened, its type read from its content and decoded to the end, so a truncated or corrupt image is
-    refused as well as a file of another kind.
+    The file is opened, its type read from its content and its first frame decoded to the end, so a truncated or
+    corrupt image is refused as well as a file of another kind.
 
     Returns:
         The image's format as Pillow names it: "JPEG" (or "MPO"), "PNG", "GIF" or "WEBP".
@@ -49,7 +49,7 @@ def check_image(path: str) -> str:
             if width * height > MAX_IMAGE_PIXELS:
                 raise NotAnImage("it has too many pixels")
             image.verify()
-        # verify() does not read a JPEG's data: decode the whole image, which fails on one that is cut short.
+        # verify() does not read a JPEG's data: decode the first frame, which fails on one that is cut short.
         with Image.open(path) as image:
             image.load()
     except NotAnImage:

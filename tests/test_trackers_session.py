@@ -238,6 +238,7 @@ async def _image_auth_is_one_imgauth_call_kept_until_it_expires() -> None:
     runner = await _serve(handle_ajax)
     api = SignedImagesApi(_url(runner))
     api.api_key = "an-api-key"
+    cookie_only = SignedImagesApi(api.base_url)
     try:
         auth = {"h": "k3yF0rTh3Ima9eHost", "e": "4102444800", "u": "4242"}
         assert await api.image_auth() == auth
@@ -252,7 +253,6 @@ async def _image_auth_is_one_imgauth_call_kept_until_it_expires() -> None:
         assert (await api.image_auth())["e"] == "4102444801"
         assert len(sent) == 2
         # Without an API key, the session cookie authenticates it.
-        cookie_only = SignedImagesApi(api.base_url)
         await cookie_only.image_auth()
         assert sent[2] == ("imgauth", "session=fake-cookie", None)
         # A tracker that does not sign its images is not asked.
@@ -260,6 +260,7 @@ async def _image_auth_is_one_imgauth_call_kept_until_it_expires() -> None:
         assert len(sent) == 3
     finally:
         await api.close()
+        await cookie_only.close()
         await runner.cleanup()
 
 

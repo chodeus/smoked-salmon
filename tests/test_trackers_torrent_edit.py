@@ -320,7 +320,7 @@ def test_edit_costs_one_get_and_one_post(monkeypatch: pytest.MonkeyPatch) -> Non
         return await request(self, method, url, params, *args, **kwargs)
 
     monkeypatch.setattr(BaseGazelleApi, "_request", counting_request)
-    # A fresh client: the edit needs no index call, as it takes its auth from the form.
+    # An authenticated client, as every caller's is: the edit takes its auth from the form, with no index call.
     fake = FakeTracker(_fixture("red_edit.html"), _fixture("red_torrent.json"))
 
     _run_edit(fake)

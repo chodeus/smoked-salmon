@@ -106,10 +106,9 @@ def test_an_unknown_or_unconfigured_tracker_is_a_usage_error(monkeypatch, tmp_pa
 
 def test_without_a_tracker_nothing_changes(monkeypatch, tmp_path, uploads) -> None:
     # Regression guard: [image.<tracker>] settings are not read, the default is
-    # [image] image_uploader, and -i is accepted as is, red included (there is no tracker to refuse it for).
+    # [image] image_uploader, and -i is accepted as is, but red: its images only display on RED/OPS.
     _config(monkeypatch, image_uploader="imgbox", ops={"image_uploader": "catbox"})
     default_result = _up(tmp_path)
-    # The fork refuses red without -t: its images only display on RED/OPS.
     explicit_result = _up(tmp_path, "-i", "catbox")
     assert default_result.exit_code == 0, default_result.output
     assert explicit_result.exit_code == 0, explicit_result.output
