@@ -1,4 +1,4 @@
-"""`salmon descgen` closes every BBCode tag it opens. No metadata source is contacted."""
+"""`salmon descgen` closes every BBCode tag it opens, and turns away what is not a store URL. No source is contacted."""
 
 import re
 
@@ -6,7 +6,7 @@ import anyio
 import pytest
 from asyncclick.testing import CliRunner
 
-import salmon.uploader.description as description_mod
+import salmon.commands
 from salmon import cfg
 from salmon.commands import descgen
 from salmon.tagger.sources import METASOURCES
@@ -27,10 +27,9 @@ def test_descgen_closes_the_tracklist_heading_size(monkeypatch, capsys) -> None:
     async def fake_run_metadata(url, return_source_name=False):
         return METADATA, "Qobuz"
 
-    # The fork builds the description in uploader/description.py, shared with the web interface.
-    monkeypatch.setattr(description_mod, "run_metadata", fake_run_metadata)
-    monkeypatch.setattr(description_mod, "combine_metadatas", lambda *_: METADATA)
-    monkeypatch.setattr(description_mod, "clean_metadata", lambda metadata: metadata)
+    monkeypatch.setattr(salmon.commands, "run_metadata", fake_run_metadata)
+    monkeypatch.setattr(salmon.commands, "combine_metadatas", lambda *_: METADATA)
+    monkeypatch.setattr(salmon.commands, "clean_metadata", lambda metadata: metadata)
     monkeypatch.setattr(cfg.upload.description, "copy_uploaded_url_to_clipboard", False)
     assert descgen.callback is not None
 
@@ -45,7 +44,7 @@ def _run_descgen(monkeypatch, *args: str):
     async def no_scrape(url, return_source_name=False):
         raise AssertionError(f"descgen scraped {url}")
 
-    monkeypatch.setattr(description_mod, "run_metadata", no_scrape)
+    monkeypatch.setattr(salmon.commands, "run_metadata", no_scrape)
 
     async def run():
         return await CliRunner().invoke(descgen, list(args))
@@ -84,16 +83,18 @@ def test_descgen_given_an_unsupported_url_lists_the_sources(monkeypatch) -> None
 
 
 @pytest.mark.parametrize(
-    ("url", "secret"),
+    "url",
     [
-        ("https://tracker.example/test-passkey-0001/announce", "test-passkey-0001"),
-        ("https://tracker.example/torrents.php?action=download&id=1&authkey=test-authkey-0001", "test-authkey-0001"),
+        "https://tracker.example/12345678901234567890abcdef/announce",
+        "https://tracker.example/torrents.php?action=download&id=1&authkey=SECRETKEY&torrent_pass=SECRETPASS",
+        "not a url, but SECRETKEY",
     ],
-    ids=["passkey-in-path", "authkey-in-query"],
 )
-def test_descgen_names_only_the_host_of_an_unsupported_url(monkeypatch, url: str, secret: str) -> None:
-    result = _run_descgen(monkeypatch, url)
+def test_descgen_never_echoes_a_refused_url(monkeypatch, url: str) -> None:
+    result = _run_descgen(monkeypatch, "https://www.qobuz.com/us-en/album/x/abc123", url)
 
     assert result.exit_code == 1
-    assert "Argument 1 (tracker.example) is not a release URL descgen supports" in result.output
-    assert secret not in result.output
+    assert "Argument 2 (" in result.output
+    assert "SECRET" not in result.output
+    assert "announce" not in result.output
+    assert "12345678901234567890abcdef" not in result.output
