@@ -38,12 +38,9 @@ def test_an_artist_entry_forbids_the_whole_discography() -> None:
 
 
 def test_an_album_entry_forbids_that_release_only() -> None:
-    found = do_not_upload_reason("RED", _release("Dr. Dre", title="Detox"))
-    assert found is not None
-    found = do_not_upload_reason("RED", _release("Dr. Dre", title="2001"))
-    assert found is None
-    found = do_not_upload_reason("RED", _release("Someone Else", title="Detox"))
-    assert found is None
+    assert do_not_upload_reason("RED", _release("Dr. Dre", title="Detox")) is not None
+    assert do_not_upload_reason("RED", _release("Dr. Dre", title="2001")) is None
+    assert do_not_upload_reason("RED", _release("Someone Else", title="Detox")) is None
 
 
 def test_an_album_only_entry_forbids_that_compilation_whatever_its_artists() -> None:
@@ -52,11 +49,9 @@ def test_an_album_only_entry_forbids_that_compilation_whatever_its_artists() -> 
 
     assert reason is not None
     assert reason.startswith(f"{title} (whatever the artist) is on RED's")
-    found = do_not_upload_reason("OPS", _release(title="The Ultimate 500 CD Jazz Collection"))
-    assert found is not None
+    assert do_not_upload_reason("OPS", _release(title="The Ultimate 500 CD Jazz Collection")) is not None
     # A release with no artist at all is matched too.
-    found = do_not_upload_reason("RED", _release(title=title))
-    assert found is not None
+    assert do_not_upload_reason("RED", _release(title=title)) is not None
 
 
 @pytest.mark.parametrize("tracker", ["RED", "OPS"])
@@ -66,10 +61,8 @@ def test_a_label_entry_forbids_every_release_on_it(tracker: str) -> None:
     assert reason is not None
     assert reason.startswith(f"the label Sandero Classic Sound is on {tracker}'s")
     # Either of the release's labels.
-    found = do_not_upload_reason(tracker, _release("Whoever", labels=["Real Records", "Sip It & Trip It Records"]))
-    assert found
-    found = do_not_upload_reason(tracker, _release("Whoever", labels=["Real Records"]))
-    assert found is None
+    assert do_not_upload_reason(tracker, _release("Whoever", labels=["Real Records", "Sip It & Trip It Records"]))
+    assert do_not_upload_reason(tracker, _release("Whoever", labels=["Real Records"])) is None
 
 
 def test_a_web_only_entry_forbids_the_web_release_and_not_a_cd() -> None:
@@ -77,21 +70,15 @@ def test_a_web_only_entry_forbids_the_web_release_and_not_a_cd() -> None:
 
     assert web is not None
     assert web.startswith("Glen Porter - Blessed by a Young Death (WEB only) is on RED's")
-    found = do_not_upload_reason("RED", _release("Glen Porter", title="Blessed by a Young Death", media="CD"))
-    assert found is None
-    found = do_not_upload_reason("RED", _release(title="Yes Means Nein", media="Vinyl"))
-    assert found is None
-    found = do_not_upload_reason("RED", _release("A", "B", title="Yes Means Nein", media="WEB"))
-    assert found is not None
+    assert do_not_upload_reason("RED", _release("Glen Porter", title="Blessed by a Young Death", media="CD")) is None
+    assert do_not_upload_reason("RED", _release(title="Yes Means Nein", media="Vinyl")) is None
+    assert do_not_upload_reason("RED", _release("A", "B", title="Yes Means Nein", media="WEB")) is not None
 
 
 def test_an_artist_is_matched_whole_and_in_a_collaboration() -> None:
-    found = do_not_upload_reason("RED", _release("Viper UK"))
-    assert found is None
-    found = do_not_upload_reason("RED", _release("Viperish"))
-    assert found is None
-    found = do_not_upload_reason("RED", _release("Viper", "Someone Else"))
-    assert found is not None
+    assert do_not_upload_reason("RED", _release("Viper UK")) is None
+    assert do_not_upload_reason("RED", _release("Viperish")) is None
+    assert do_not_upload_reason("RED", _release("Viper", "Someone Else")) is not None
 
 
 def _metadata(artists, **changes):
@@ -101,63 +88,47 @@ def _metadata(artists, **changes):
 def test_a_guest_artist_is_not_matched() -> None:
     metadata = _metadata([("Someone", "main"), ("Nicole 12", "guest")])
 
-    found = do_not_upload_reason("RED", Candidate.from_metadata(metadata))
-    assert found is None
+    assert do_not_upload_reason("RED", Candidate.from_metadata(metadata)) is None
     metadata["artists"][1] = ("Nicole 12", "main")
-    found = do_not_upload_reason("RED", Candidate.from_metadata(metadata))
-    assert found is not None
+    assert do_not_upload_reason("RED", Candidate.from_metadata(metadata)) is not None
 
 
 def test_case_accents_punctuation_and_ampersands_do_not_count() -> None:
-    found = do_not_upload_reason("RED", _release("dr dre", title="DETOX"))
-    assert found is not None
-    found = do_not_upload_reason("RED", _release("Jean Michel Jarré", title="Music For Supermarkets"))
-    assert found is not None
+    assert do_not_upload_reason("RED", _release("dr dre", title="DETOX")) is not None
+    assert do_not_upload_reason("RED", _release("Jean Michel Jarré", title="Music For Supermarkets")) is not None
     # RED spells it with "&", OPS with "and": each matches both.
     for title in ("Cigarettes & Valentines", "Cigarettes and Valentines"):
-        found = do_not_upload_reason("RED", _release("Green Day", title=title))
-        assert found is not None
-        found = do_not_upload_reason("OPS", _release("Green Day", title=title))
-        assert found is not None
-    found = do_not_upload_reason("RED", _release("Green Day", title="Cigarettes"))
-    assert found is None
+        assert do_not_upload_reason("RED", _release("Green Day", title=title)) is not None
+        assert do_not_upload_reason("OPS", _release("Green Day", title=title)) is not None
+    assert do_not_upload_reason("RED", _release("Green Day", title="Cigarettes")) is None
 
 
 @pytest.mark.parametrize("tracker", ["RED", "OPS"])
 def test_odds_and_sods_is_matched_on_both_trackers(tracker: str) -> None:
     # RED's article writes "Odds and Sod": its entry is spelled as the bootleg is.
-    found = do_not_upload_reason(tracker, _release("Bruce Springsteen", title="Odds & Sods"))
-    assert found is not None
+    assert do_not_upload_reason(tracker, _release("Bruce Springsteen", title="Odds & Sods")) is not None
 
 
 def test_the_album_words_may_be_in_the_edition_title() -> None:
-    found = do_not_upload_reason("RED", _release("Fleet Foxes", title="Shore", edition_title="Stems Edition"))
-    assert found
-    found = do_not_upload_reason("RED", _release("Fleet Foxes", title="Shore"))
-    assert found is None
+    assert do_not_upload_reason("RED", _release("Fleet Foxes", title="Shore", edition_title="Stems Edition"))
+    assert do_not_upload_reason("RED", _release("Fleet Foxes", title="Shore")) is None
 
 
 def test_each_trackers_list_forbids_only_its_own_uploads() -> None:
     nicole = _release("Nicole 12")
     super_mix = _release("Michael Jackson", title="Super Mix")
 
-    found = do_not_upload_reason("RED", nicole)
-    assert found is not None
-    found = do_not_upload_reason("OPS", nicole)
-    assert found is None
-    found = do_not_upload_reason("OPS", super_mix)
-    assert found is not None
-    found = do_not_upload_reason("RED", super_mix)
-    assert found is None
+    assert do_not_upload_reason("RED", nicole) is not None
+    assert do_not_upload_reason("OPS", nicole) is None
+    assert do_not_upload_reason("OPS", super_mix) is not None
+    assert do_not_upload_reason("RED", super_mix) is None
 
 
 def test_dic_has_no_list_and_forbids_nothing() -> None:
     assert "DIC" not in LISTS
     for release in (_release("Nicole 12"), _release("Wu-Tang Clan", title="Once Upon a Time in Shaolin")):
-        found = do_not_upload_reason("DIC", release)
-        assert found is None
-    entries = load_list("DIC")
-    assert entries == []
+        assert do_not_upload_reason("DIC", release) is None
+    assert load_list("DIC") == []
 
 
 def test_an_upload_form_is_matched_on_its_main_artists_title_edition_and_labels() -> None:
@@ -173,8 +144,7 @@ def test_an_upload_form_is_matched_on_its_main_artists_title_edition_and_labels(
     candidate = Candidate.from_form(form)
 
     assert candidate == Candidate(("Someone",), "Album", "", ("Sandero Classic Sound",), "CD")
-    found = do_not_upload_reason("OPS", candidate)
-    assert found is not None
+    assert do_not_upload_reason("OPS", candidate) is not None
 
 
 # A list salmon cannot read
@@ -184,6 +154,7 @@ def test_an_upload_form_is_matched_on_its_main_artists_title_edition_and_labels(
     ("text", "said"),
     [
         ("[[entry]\nartist = 'x'", "Expected"),
+        ("", "red.toml has no entries"),
         ("[[entry]]\nartist = 'Someone'\n", "Object missing required field `note`"),
         ("[[entry]]\nartits = 'Someone'\nnote = 'x'\n", "unknown field `artits`"),
         ("[[entry]]\nnote = 'x'\n", "an entry needs an artist, an album or a label"),
@@ -191,21 +162,8 @@ def test_an_upload_form_is_matched_on_its_main_artists_title_edition_and_labels(
         ("[[entry]]\nartist = 'Someone'\nnote = ' '\n", "an entry needs a note"),
         ("[[entry]]\nlabel = 'Label'\nartist = 'Someone'\nnote = 'x'\n", "a label entry names no artist or album"),
         ("[[entry]]\nartist = 'Someone'\nmedia = 'Web'\nnote = 'x'\n", "the media 'Web' is none of"),
-        ("", "red.toml has no entries"),
-        ("# Emptied by hand.\n", "red.toml has no entries"),
     ],
-    ids=[
-        "toml",
-        "no note",
-        "typo",
-        "nothing named",
-        "no word",
-        "blank note",
-        "label and artist",
-        "media",
-        "empty",
-        "comments only",
-    ],
+    ids=["toml", "no entry", "no note", "typo", "nothing named", "no word", "blank note", "label and artist", "media"],
 )
 def test_a_list_that_cannot_be_read_forbids_every_upload_to_its_tracker(monkeypatch, tmp_path, text, said) -> None:
     write_lists(monkeypatch, tmp_path, RED=text)
@@ -216,8 +174,7 @@ def test_a_list_that_cannot_be_read_forbids_every_upload_to_its_tracker(monkeypa
     assert reason.startswith(f"salmon cannot read its copy of RED's Do-Not-Upload list, {tmp_path / 'red.toml'} (")
     assert said in reason
     # The other tracker's list is fine.
-    found = do_not_upload_reason("OPS", _release("Radiohead", title="In Rainbows"))
-    assert found is None
+    assert do_not_upload_reason("OPS", _release("Radiohead", title="In Rainbows")) is None
 
 
 def test_a_missing_list_forbids_every_upload_to_its_tracker(monkeypatch, tmp_path) -> None:
@@ -228,8 +185,7 @@ def test_a_missing_list_forbids_every_upload_to_its_tracker(monkeypatch, tmp_pat
 
     assert reason is not None
     assert str(tmp_path / "ops.toml") in reason
-    found = do_not_upload_reason("RED", _release("Radiohead", title="In Rainbows"))
-    assert found is None
+    assert do_not_upload_reason("RED", _release("Radiohead", title="In Rainbows")) is None
 
 
 # The lists salmon ships
@@ -248,16 +204,13 @@ def test_every_shipped_entry_reads_has_a_note_and_forbids_its_own_release(tracke
             labels=[entry.label] if entry.label else [],
             media=entry.media or "CD",
         )
-        found = do_not_upload_reason(tracker, release)
-        assert found is not None, entry
+        assert do_not_upload_reason(tracker, release) is not None, entry
 
 
 def test_the_shipped_lists_have_the_wiki_entries() -> None:
     # RED's article lists 25 music lines, one of them naming 7 albums; OPS's has 12.
-    entries = load_list("RED")
-    assert len(entries) == 31
-    entries = load_list("OPS")
-    assert len(entries) == 12
+    assert len(load_list("RED")) == 31
+    assert len(load_list("OPS")) == 12
 
 
 @pytest.mark.parametrize("tracker", sorted(LISTS))

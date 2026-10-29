@@ -4,6 +4,8 @@ RED and OPS each keep a list of releases they refuse: fakes, unreleased albums, 
 discographies and labels. salmon ships a copy of each in data/do_not_upload/, which the maintainers keep current
 with salmon's releases, so nothing is fetched. A release on a tracker's list never goes to that tracker; other
 trackers are not affected, and a tracker with no list (DIC) refuses nothing.
+
+The matching is chodeus's fork's (checks/blacklist.py), plus entries that name one media only.
 """
 
 import re

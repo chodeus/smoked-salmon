@@ -19,6 +19,7 @@ import cambia
 import numpy as np
 import pytest
 from aiohttp import web
+from aiolimiter import AsyncLimiter
 from asyncclick.testing import CliRunner
 from mutagen.flac import FLAC
 from test_checks_do_not_upload import UNMATCHED  # pyright: ignore[reportMissingImports]
@@ -38,7 +39,6 @@ import salmon.checks.do_not_upload as do_not_upload
 import salmon.trackers
 from salmon import cfg
 from salmon.checks import all_checks
-from salmon.trackers.account import SlidingWindowLimiter
 from salmon.trackers.base import BaseGazelleApi
 from salmon.uploader import frequency
 from salmon.uploader.dupe_checker import generate_dupe_check_searchstrs
@@ -287,12 +287,10 @@ def _run_with_trackers(
     def client(code: str) -> BaseGazelleApi:
         site = salmon.trackers.tracker_classes[code]()
         site.base_url = trackers[code].url
-        site._rate_limiter = SlidingWindowLimiter(100, 1)
+        site._rate_limiter = AsyncLimiter(100, 1)
         return site
 
     monkeypatch.setattr(salmon.trackers, "get_class", lambda code: partial(client, code))
-    # The fork's test config sets up RED alone; upstream's ships OPS too.
-    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
 
     async def run():
         async with trackers["RED"].serving(), trackers["OPS"].serving():
@@ -354,6 +352,19 @@ def _write_aac(path: Path) -> None:
 
 
 @pytest.mark.usefixtures("no_tracker")
+def test_an_aac_album_is_lossy_and_gets_no_frequency_analysis(tmp_path):
+    album = tmp_path / "Artist - Album (2020) [WEB AAC]"
+    album.mkdir()
+    for number in (1, 2):
+        _write_aac(album / f"{number:02d} Track {number}.m4a")
+    result = _run(str(album), "--report")
+    assert result.exit_code == 0, result.output
+    assert _rows(result.output)["Frequency analysis"] == "INFO"
+    assert "No lossless file" in result.output
+    assert "1. Lossless or lossy\n   Lossy." in result.output
+
+
+@pytest.mark.usefixtures("no_tracker")
 def test_a_failed_analysis_is_reported_as_failed_not_as_no_lossless_file(album, monkeypatch):
     async def boom(*_args):
         raise RuntimeError("decoder exploded")
@@ -384,16 +395,3 @@ def test_a_folder_without_audio_is_a_usage_error(tmp_path):
     result = _run(str(folder))
     assert result.exit_code == 2, result.output
     assert "No audio file in Not an album." in result.output
-
-
-@pytest.mark.usefixtures("no_tracker")
-def test_an_aac_album_is_lossy_and_gets_no_frequency_analysis(tmp_path):
-    album = tmp_path / "Artist - Album (2020) [WEB AAC]"
-    album.mkdir()
-    for number in (1, 2):
-        _write_aac(album / f"{number:02d} Track {number}.m4a")
-    result = _run(str(album), "--report")
-    assert result.exit_code == 0, result.output
-    assert _rows(result.output)["Frequency analysis"] == "INFO"
-    assert "No lossless file" in result.output
-    assert "1. Lossless or lossy\n   Lossy." in result.output
