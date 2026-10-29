@@ -89,7 +89,7 @@ def _patch_cambia(monkeypatch, output: FakeCambiaOutput) -> None:
 
 def _patch_file_crcs(monkeypatch, crc_by_name: dict[str, str]) -> None:
     async def fake_calculate_file_crc_async(filepath: str, _: object = None) -> str:
-        return crc_by_name[filepath.rsplit("/", 1)[-1]]
+        return crc_by_name[os.path.basename(filepath)]
 
     monkeypatch.setattr(logs, "_calculate_file_crc_async", fake_calculate_file_crc_async)
 
@@ -106,7 +106,7 @@ def _record_file_crcs(monkeypatch, crc_by_name: dict[str, str]) -> list[str]:
 
     async def fake_calculate_file_crc_async(filepath: str, _: object = None) -> str:
         checked.append(filepath)
-        return crc_by_name[filepath.rsplit("/", 1)[-1]]
+        return crc_by_name[os.path.basename(filepath)]
 
     monkeypatch.setattr(logs, "_calculate_file_crc_async", fake_calculate_file_crc_async)
     return checked
@@ -152,10 +152,8 @@ def test_appended_rerip_replaces_the_stale_hash(tmp_path, monkeypatch) -> None:
 
 
 def test_two_discs_with_overlapping_track_numbers_keep_both_hashes(tmp_path, monkeypatch) -> None:
-    # Both discs use track number 1. If the expected hash were keyed by track number alone,
-    # disc 2's entry would silently overwrite disc 1's, and a real corruption on disc 1 track 1
-    # would go undetected because its expected hash was dropped from copy_crc_set. Keying by
-    # (disc, track) keeps both expectations, so the corrupt disc-1 file must still be caught.
+    # Both discs have a track 1: keyed by track alone, disc 2's hash would replace disc 1's
+    # and hide the corrupt disc-1 file this must still catch.
     basepath = _write_files(tmp_path, ["d1-01.flac", "d2-01.flac"])
     output = FakeCambiaOutput(
         parsed=FakeParsedCombined(
@@ -210,7 +208,7 @@ TWO_DISC_CRCS = {"d1-01.flac": "D1-1", "d1-02.flac": "D1-2", "d2-01.flac": "D2-1
 
 def test_a_log_in_a_disc_folder_checks_only_that_disc(tmp_path, monkeypatch) -> None:
     # One log per disc folder: each log's CRCs are checked against its own disc's files, not
-    # against every file in the release, which decoded a 3-disc release three times (#444).
+    # against every file in the release, which would decode a 3-disc release three times.
     basepath = _write_files(
         tmp_path, ["CD1/CD1.log", "CD1/d1-01.flac", "CD1/d1-02.flac", "CD2/CD2.log", "CD2/d2-01.flac", "CD2/d2-02.flac"]
     )
@@ -377,6 +375,18 @@ def test_a_log_is_checked_against_every_track_when_its_disc_is_unclear(tmp_path,
     anyio.run(logs.check_log_cambia, str(tmp_path / log_name), str(tmp_path))
 
     assert sorted(os.path.basename(path) for path in checked) == list(ONE_FOLDER_CRCS)
+
+
+def test_a_log_numbered_after_its_disc_still_checks_that_disc(tmp_path, monkeypatch) -> None:
+    for name, disc in zip(ONE_FOLDER_CRCS, ["1", "1", "2", "2"], strict=True):
+        _write_flac(tmp_path / name, disc)
+    (tmp_path / "rip.2.1.log").write_text("log")
+    _patch_cambia(monkeypatch, _one_disc_log("D2-1", "D2-2"))
+    checked = _record_file_crcs(monkeypatch, ONE_FOLDER_CRCS)
+
+    anyio.run(logs.check_log_cambia, str(tmp_path / "rip.2.1.log"), str(tmp_path))
+
+    assert sorted(os.path.basename(path) for path in checked) == ["2.01.flac", "2.02.flac"]
 
 
 def test_an_unparseable_log_is_skipped(tmp_path, monkeypatch) -> None:
@@ -765,15 +775,3 @@ def test_a_multi_disc_log_named_for_its_first_disc_passes_after_the_one_folder_r
 
     for log_path in log_paths:
         anyio.run(logs.check_log_cambia, log_path, str(tmp_path))
-
-
-def test_a_log_numbered_after_its_disc_still_checks_that_disc(tmp_path, monkeypatch) -> None:
-    for name, disc in zip(ONE_FOLDER_CRCS, ["1", "1", "2", "2"], strict=True):
-        _write_flac(tmp_path / name, disc)
-    (tmp_path / "rip.2.1.log").write_text("log")
-    _patch_cambia(monkeypatch, _one_disc_log("D2-1", "D2-2"))
-    checked = _record_file_crcs(monkeypatch, ONE_FOLDER_CRCS)
-
-    anyio.run(logs.check_log_cambia, str(tmp_path / "rip.2.1.log"), str(tmp_path))
-
-    assert sorted(os.path.basename(path) for path in checked) == ["2.01.flac", "2.02.flac"]

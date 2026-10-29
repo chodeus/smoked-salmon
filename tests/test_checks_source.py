@@ -195,9 +195,9 @@ def test_the_values_of_a_multi_value_media_frame_conflict(tmp_path) -> None:
 
 
 def test_every_source_the_detector_names_is_a_valid_answer_to_the_prompt() -> None:
-    valid = set(SOURCES.values())
-    assert set(source_mod._MEDIA_VALUES.values()).issubset(valid)
-    assert source_mod._VINYL_SIDE_SOURCES.issubset(valid)
+    named = {*source_mod._MEDIA_VALUES.values(), *source_mod._VINYL_SIDE_SOURCES, "WEB", "CD"}
+    # The prompt resolves an answer by SOURCES[answer.lower()].
+    assert {name for name in named if SOURCES.get(name.lower()) != name} == set()
 
 
 def test_vinyl_side_numbering_alone_proves_nothing(tmp_path) -> None:
@@ -488,7 +488,6 @@ def _upload_until_the_source_is_settled(monkeypatch, source: str | None) -> tupl
                 skip_initial_review=False,
                 apply_ai_suggestions=False,
                 rename_into=None,
-                # The fork's _upload_staged also takes the run's trackers, its folder type and its conversion.
                 trackers=None,
                 offer_others=False,
                 folder_type=None,

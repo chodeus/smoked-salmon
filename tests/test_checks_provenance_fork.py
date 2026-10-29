@@ -74,7 +74,7 @@ def test_unreadable_tags_are_skipped_not_failed():
 
 
 def test_a_domain_with_a_path_is_consumed_whole():
-    """Stripping only the domain left "/24bit" behind, which read as a claim."""
+    """A domain is consumed with its port and path, so nothing after it reads as a depth claim."""
     for marker in ("hd24bit.com/24bit", "hd24bit.com:8080/24bit", "from hd24bit.com/releases/24bit-master"):
         files = [pv._file_provenance("01.flac", tagfile(comment=marker, bitdepth=16))]
         assert pv._contradictions(files) == [], marker
