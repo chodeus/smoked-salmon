@@ -12,12 +12,12 @@ from tenacity import wait_fixed
 
 import salmon.trackers
 from salmon import cfg
-from salmon.checks.connection import check_tracker_connection
 from salmon.errors import RequestFailedError, UnknownOutcomeError
 from salmon.trackers import account
 from salmon.trackers.account import SlidingWindowLimiter
 from salmon.trackers.base import BaseGazelleApi
 from salmon.webui.jobs import JobManager
+from salmon.webui.routers import system
 
 
 class FakeApi(BaseGazelleApi):
@@ -234,9 +234,9 @@ async def test_the_connection_check_closes_its_pool(serve, monkeypatch):
         return made[-1]
 
     monkeypatch.setattr(salmon.trackers, "get_class", lambda _code: make)
-    result = await check_tracker_connection("FAKE")
+    result = await system._check_tracker("FAKE")
 
-    assert result["session_ok"], result
+    assert result.cookie == "ok", result
     assert cast("Any", made[0])._session is None
 
 

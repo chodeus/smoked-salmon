@@ -233,7 +233,7 @@ class Tracker(BaseStruct):
     red: GazelleTrackerSettings | None = None
     ops: GazelleTrackerSettings | None = None
     dic: GazelleTrackerSettings | None = None
-    # Without -t, a run uploads to these in order, then offers the others if upload.multi_tracker_upload. Empty: asks.
+    # Without -t, a run uploads to these in order, then offers the other trackers. Empty: asks which.
     default_trackers: list[str] = msgspec.field(default_factory=list)
     # Print every tracker request and response, secrets masked.
     debug_connection: bool = False
@@ -256,11 +256,11 @@ class Tracker(BaseStruct):
 
 class Seedbox(BaseStruct):
     name: str = ""
-    enabled: bool = False
+    enabled: bool = True  # false skips this seedbox
     url: str = ""  # Name of remote in rclone
     type: Literal["local", "rclone"] = "local"
     directory: str = ""  # Directory when adding torrent to download client
-    # Empty = every tracker; e.g. ["RED"] pins this destination to one site.
+    # Trackers this seedbox serves; empty means every tracker, so existing configs are unchanged.
     trackers: list[str] = msgspec.field(default_factory=list)
     flac_only: bool = False  # if true, only upload FLAC files
     extra_args: list[str] = msgspec.field(default_factory=list)  # pass these arguments to rclone
@@ -368,7 +368,11 @@ CONVERSION_KINDS = ("24bit", "16bit", "320", "V0")
 
 
 def canonical_conversions(values: Iterable[str]) -> tuple[str, ...]:
-    """The conversion kinds named, in canonical case and the order given; ValueError for another, or one twice."""
+    """The conversion kinds named, in canonical case and the order given.
+
+    Raises:
+        ValueError: A value is not one of CONVERSION_KINDS (in any case), or is named twice.
+    """
     by_lower = {kind.lower(): kind for kind in CONVERSION_KINDS}
     allowed = ", ".join(f'"{kind}"' for kind in CONVERSION_KINDS)
     kinds: list[str] = []
@@ -414,8 +418,8 @@ class Upload(BaseStruct):
 
     upload_to_seedbox: bool = True
 
-    # Normalize file names in generated .torrent files: "" or "none" (default) keeps them as on disk.
-    # "NFC" / "NFD" must be the form of the files the client seeds, or it cannot find them.
+    # Normalize file names in generated .torrent files to a fixed Unicode form.
+    # "" or "none" (default) keeps names as on disk; "NFC" / "NFD" must be the form of the files the client seeds.
     torrent_name_normalization: str = ""
 
     # TODO: take these out of the upload struct!

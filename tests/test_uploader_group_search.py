@@ -233,6 +233,8 @@ class Flow:
         self.monkeypatch.setattr(dupe_checker.click, "prompt", prompt)
         self.monkeypatch.setattr(salmon.uploader.click, "confirm", returning(False))
         self.monkeypatch.setattr(salmon.trackers, "choose_tracker", returning_async(None))
+        # RED alone: no tracker follows it, so a failed search ends the run.
+        self.monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED"])
         self.monkeypatch.setattr(salmon.uploader.cfg.upload, "yes_all", False)
 
     async def run(self, cookie: str = "good", api_key: str = "", path: str = "/release") -> None:

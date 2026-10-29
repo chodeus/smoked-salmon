@@ -1,8 +1,8 @@
-"""Old config keys, read with a warning for one release (ADR 0005).
+"""Old config keys and old template values, read with a warning for one release (ADR 0005).
 
 ``apply`` rewrites the decoded TOML in place before the typed decode: a moved or renamed key is read under its old
-name until ``refused_from``, and a removed one is dropped. The rest of salmon reads only the new names. The user's
-file is never rewritten.
+name until ``refused_from``, a removed one is dropped, and a value left over from the old template counts as unset.
+The rest of salmon reads only the new names. The user's file is never rewritten.
 """
 
 from collections.abc import Callable

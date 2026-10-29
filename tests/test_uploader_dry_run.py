@@ -353,10 +353,7 @@ def _run_up(
     queued: list[tuple[Any, ...]] = []
     monkeypatch.setattr(UploadManager, "add_upload_task", lambda _self, *task, **_kw: queued.append(task))
     # A seedbox whose torrent client is logged into when the upload manager is set up.
-    # enabled: this fork's seedboxes are off unless set.
-    monkeypatch.setattr(
-        cfg, "seedbox", [Seedbox(name="box", enabled=True, torrent_client="qbittorrent+http://127.0.0.1:9")]
-    )
+    monkeypatch.setattr(cfg, "seedbox", [Seedbox(name="box", torrent_client="qbittorrent+http://127.0.0.1:9")])
     logins: list[str | None] = []
     monkeypatch.setattr(QBittorrentClient, "login", lambda client: logins.append(client.url))
     tracker = tracker or FakeTracker()

@@ -40,11 +40,6 @@ def _upload_with_fake_rclone(seedbox_config: Seedbox) -> bool:
 needs_posix = pytest.mark.skipif(sys.platform == "win32", reason="the fake rclone is a script with a shebang")
 
 
-def _box(**fields) -> Seedbox:
-    """A seedbox entry that takes part: the fork's are off unless they say enabled = true."""
-    return Seedbox(**{"enabled": True, **fields})
-
-
 @needs_posix
 @pytest.mark.parametrize(
     ("url", "extra_args"),
@@ -64,7 +59,7 @@ def test_the_rclone_command_salmon_prints_hides_the_seedbox_secrets(
 ) -> None:
     _fake_rclone(monkeypatch, tmp_path)
 
-    assert _upload_with_fake_rclone(_box(url=url, extra_args=extra_args)) is True
+    assert _upload_with_fake_rclone(Seedbox(url=url, extra_args=extra_args)) is True
 
     out, err = capfd.readouterr()
     assert "Executing: rclone copy" in out
@@ -77,7 +72,7 @@ def test_the_rclone_command_salmon_prints_keeps_harmless_values(monkeypatch, tmp
     _fake_rclone(monkeypatch, tmp_path)
     extra_args = ["--checksum", "-P", "--sftp-path-override", "@/volume3", "--transfers", "4", "--bwlimit=8M"]
 
-    _upload_with_fake_rclone(_box(url="sbox", extra_args=extra_args))
+    _upload_with_fake_rclone(Seedbox(url="sbox", extra_args=extra_args))
 
     assert (
         "Executing: rclone copy '/tmp/Artist - Album' 'sbox:/music/Artist - Album' "
@@ -92,7 +87,7 @@ def test_rclone_writes_its_progress_straight_to_salmons_stdout(monkeypatch, tmp_
     _fake_rclone(monkeypatch, tmp_path, code="print(sys.argv[1:], os.fstat(1).st_dev, os.fstat(1).st_ino)")
     salmons_stdout = f"{os.fstat(1).st_dev} {os.fstat(1).st_ino}"
 
-    assert _upload_with_fake_rclone(_box(url="seedbox", extra_args=["--checksum", "-P"])) is True
+    assert _upload_with_fake_rclone(Seedbox(url="seedbox", extra_args=["--checksum", "-P"])) is True
 
     out = capfd.readouterr().out
     assert f"{['copy', '/tmp/Artist - Album', 'seedbox:/music/Artist - Album', '--checksum', '-P']} " in out
@@ -108,7 +103,7 @@ def test_in_a_web_job_what_rclone_writes_to_its_stdout_reaches_the_jobs_log_mask
     logged: list[tuple[str, bool]] = []
 
     with output.capturing(), output.to(lambda text, err: logged.append((text, err))):
-        assert _upload_with_fake_rclone(_box(url="sbox", extra_args=["--sftp-pass", "UNIQUESECRET"])) is True
+        assert _upload_with_fake_rclone(Seedbox(url="sbox", extra_args=["--sftp-pass", "UNIQUESECRET"])) is True
 
     log = "".join(text for text, err in logged if not err)
     assert "NOTICE: copied with [REDACTED]" in log
@@ -121,7 +116,7 @@ def test_in_a_web_job_what_rclone_writes_to_its_stdout_reaches_the_jobs_log_mask
     [["--sftp-path-override", "@/home/UNIQUEBOXUSER"], ["--sftp-path-override=@/home/UNIQUEBOXUSER"]],
 )
 def test_the_rclone_command_salmon_prints_hides_the_seedbox_home_folder(extra_args) -> None:
-    secrets = seedbox.seedbox_secrets(_box(url="sbox", extra_args=extra_args))
+    secrets = seedbox.seedbox_secrets(Seedbox(url="sbox", extra_args=extra_args))
     shown = redact_command(["rclone", "copy", "a", "sbox:b", *extra_args], secrets)
 
     assert "UNIQUEBOXUSER" not in shown
@@ -149,7 +144,7 @@ def test_a_path_override_with_no_value_is_no_override() -> None:
     extra_args = ["-P", "--sftp-path-override"]
 
     assert seedbox._resolve_shell_path("/music", extra_args) == "/music"
-    assert seedbox.seedbox_secrets(_box(url="sbox", extra_args=extra_args)) == []
+    assert seedbox.seedbox_secrets(Seedbox(url="sbox", extra_args=extra_args)) == []
 
 
 def test_the_last_path_override_decides_the_seed_path() -> None:
@@ -160,7 +155,7 @@ def test_the_last_path_override_decides_the_seed_path() -> None:
 
 @pytest.mark.parametrize("override", ["@/home/UNIQUEBOXUSER", "/home/UNIQUEBOXUSER/music"])
 def test_an_error_repeating_the_seed_path_hides_the_seedbox_home_folder(override) -> None:
-    box = _box(url="sbox", extra_args=["--sftp-path-override", override])
+    box = Seedbox(url="sbox", extra_args=["--sftp-path-override", override])
     shell_path = seedbox._resolve_shell_path("/music", box.extra_args)
 
     shown = redact_secrets(f"cannot create {shell_path}/Album", seedbox.seedbox_secrets(box))
@@ -170,14 +165,14 @@ def test_an_error_repeating_the_seed_path_hides_the_seedbox_home_folder(override
 
 @pytest.mark.parametrize("override", ["/", "@/", "@", "/ab", "@/ab"])
 def test_a_root_or_tiny_path_override_is_not_masked(override) -> None:
-    box = _box(url="sbox", extra_args=["--sftp-path-override", override])
+    box = Seedbox(url="sbox", extra_args=["--sftp-path-override", override])
 
     assert seedbox.seedbox_secrets(box) == []
     assert redact_secrets("copied /music/Album to /", seedbox.seedbox_secrets(box)) == "copied /music/Album to /"
 
 
 def test_a_tiny_path_override_does_not_unmask_a_password_with_the_same_value() -> None:
-    box = _box(url="sbox", extra_args=["--sftp-pass", "/ab", "--sftp-path-override", "/ab"])
+    box = Seedbox(url="sbox", extra_args=["--sftp-pass", "/ab", "--sftp-path-override", "/ab"])
 
     assert "/ab" in seedbox.seedbox_secrets(box)
 
@@ -186,7 +181,7 @@ def test_a_tiny_path_override_does_not_unmask_a_password_with_the_same_value() -
 def test_rclone_upload_folder_reports_nonzero_exit_code(monkeypatch, tmp_path, capfd) -> None:
     _fake_rclone(monkeypatch, tmp_path, exit_code=7)
 
-    assert _upload_with_fake_rclone(_box(url="seedbox", extra_args=["-P"])) is False
+    assert _upload_with_fake_rclone(Seedbox(url="seedbox", extra_args=["-P"])) is False
 
     assert "Rclone upload failed with exit code 7" in capfd.readouterr().out
 
@@ -229,7 +224,7 @@ def test_what_rclone_echoes_on_stderr_is_masked(
 ) -> None:
     _fake_rclone(monkeypatch, tmp_path, stderr=echo if "no newline" in echo else echo + "\n", exit_code=1)
 
-    assert _upload_with_fake_rclone(_box(url=url, extra_args=extra_args)) is False
+    assert _upload_with_fake_rclone(Seedbox(url=url, extra_args=extra_args)) is False
 
     out, err = capfd.readouterr()
     # rclone's own line is still shown, only its secret is masked.
@@ -246,7 +241,7 @@ def test_rclone_errors_are_printed_as_they_come(monkeypatch, tmp_path) -> None:
         monkeypatch, tmp_path, code="sys.stderr.write('early\\n'); sys.stderr.flush(); time.sleep(1)", stderr="late\n"
     )
 
-    _upload_with_fake_rclone(_box(url="sbox"))
+    _upload_with_fake_rclone(Seedbox(url="sbox"))
 
     assert [message for _, message in printed] == ["early", "late"]
     # Not held back until rclone exits: an error or a prompt during a long copy shows at once.
@@ -317,9 +312,9 @@ def test_disabled_seedbox_is_skipped(monkeypatch, tmp_path) -> None:
         monkeypatch,
         tmp_path,
         [
-            _box(type="local", enabled=False, torrent_client="qbittorrent+http://local:8080"),
-            _box(type="rclone", enabled=False, url="old", torrent_client="qbittorrent+http://old:8080"),
-            _box(
+            Seedbox(type="local", enabled=False, torrent_client="qbittorrent+http://local:8080"),
+            Seedbox(type="rclone", enabled=False, url="old", torrent_client="qbittorrent+http://old:8080"),
+            Seedbox(
                 type="rclone",
                 enabled=True,
                 url="box",
@@ -334,8 +329,8 @@ def test_disabled_seedbox_is_skipped(monkeypatch, tmp_path) -> None:
     assert [call[3] for call in rclone_calls] == ["box:/home/user/files/Artist - Album (2020) [WEB FLAC]"]
 
 
-def test_seedbox_without_enabled_key_is_skipped(monkeypatch, tmp_path) -> None:
-    # The fork's default: a seedbox takes part only once it says enabled = true.
+def test_seedbox_without_enabled_key_is_used(monkeypatch, tmp_path) -> None:
+    # Configs written before enabled was honoured often leave it out; they must keep uploading.
     entry = msgspec.toml.decode(
         b'type = "rclone"\nurl = "box"\ndirectory = "/files"\ntorrent_client = "qbittorrent+http://box:8080"\n',
         type=Seedbox,
@@ -343,7 +338,8 @@ def test_seedbox_without_enabled_key_is_skipped(monkeypatch, tmp_path) -> None:
 
     clients, rclone_calls = _run_upload(monkeypatch, tmp_path, [entry])
 
-    assert (clients, rclone_calls) == ({}, [])
+    assert clients["qbittorrent+http://box:8080"].save_paths == ["/files"]
+    assert len(rclone_calls) == 1
 
 
 def test_failed_rclone_copy_skips_seeding_on_that_seedbox(monkeypatch, tmp_path) -> None:
@@ -353,7 +349,7 @@ def test_failed_rclone_copy_skips_seeding_on_that_seedbox(monkeypatch, tmp_path)
         monkeypatch,
         tmp_path,
         [
-            _box(
+            Seedbox(
                 type="rclone",
                 url="box",
                 directory="/files",
@@ -375,7 +371,7 @@ def test_a_failed_copy_and_its_skipped_seed_are_reported_not_all_processed(monke
     monkeypatch.setattr(
         seedbox.cfg,
         "seedbox",
-        [_box(type="rclone", url="box", directory="/files", torrent_client="qbittorrent+http://box:8080")],
+        [Seedbox(type="rclone", url="box", directory="/files", torrent_client="qbittorrent+http://box:8080")],
     )
     monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", staticmethod(lambda url: _RecordingClient()))
 
@@ -391,13 +387,13 @@ def test_failed_rclone_copy_does_not_affect_other_seedboxes(monkeypatch, tmp_pat
         monkeypatch,
         tmp_path,
         [
-            _box(
+            Seedbox(
                 type="rclone",
                 url="broken",
                 directory="/files",
                 torrent_client="qbittorrent+http://broken:8080",
             ),
-            _box(
+            Seedbox(
                 type="rclone",
                 url="good",
                 directory="/files",
@@ -417,7 +413,7 @@ def test_successful_rclone_copy_still_seeds(monkeypatch, tmp_path) -> None:
         monkeypatch,
         tmp_path,
         [
-            _box(
+            Seedbox(
                 type="rclone",
                 url="box",
                 directory="/files",
@@ -446,7 +442,7 @@ def test_failed_copy_only_skips_seeding_its_own_folder(monkeypatch, tmp_path) ->
     monkeypatch.setattr(
         seedbox.cfg,
         "seedbox",
-        [_box(type="rclone", url="box", directory="/files", torrent_client="qbittorrent+http://box:8080")],
+        [Seedbox(type="rclone", url="box", directory="/files", torrent_client="qbittorrent+http://box:8080")],
     )
     monkeypatch.setattr(
         seedbox.TorrentClientGenerator,
@@ -490,7 +486,7 @@ def test_failed_copy_skips_both_torrents_of_multi_tracker_upload(monkeypatch, tm
     monkeypatch.setattr(
         seedbox.cfg,
         "seedbox",
-        [_box(type="rclone", url="box", directory="/files", torrent_client="qbittorrent+http://box:8080")],
+        [Seedbox(type="rclone", url="box", directory="/files", torrent_client="qbittorrent+http://box:8080")],
     )
     monkeypatch.setattr(
         seedbox.TorrentClientGenerator,
@@ -529,7 +525,7 @@ def test_rclone_not_installed_skips_seeding(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         seedbox.cfg,
         "seedbox",
-        [_box(type="rclone", url="box", directory="/files", torrent_client="qbittorrent+http://box:8080")],
+        [Seedbox(type="rclone", url="box", directory="/files", torrent_client="qbittorrent+http://box:8080")],
     )
     monkeypatch.setattr(
         seedbox.TorrentClientGenerator,
@@ -555,7 +551,7 @@ def test_rclone_not_installed_skips_seeding(monkeypatch, tmp_path) -> None:
 
 def test_a_seed_task_without_its_folder_is_refused(monkeypatch) -> None:
     # Without its folder, a seed task could not be skipped when the copy of that folder failed.
-    manager = _manager_with_boxes(monkeypatch, [_box(type="rclone", url="box", torrent_client="x")])
+    manager = _manager_with_boxes(monkeypatch, [Seedbox(type="rclone", url="box", torrent_client="x")])
 
     with pytest.raises(ValueError, match="folder"):
         manager.add_upload_task("/torrents/Album.torrent", task_type="seed", is_flac=True)
@@ -570,7 +566,7 @@ def test_a_skipped_seed_names_its_seedbox(monkeypatch, tmp_path, capsys) -> None
     monkeypatch.setattr(
         seedbox.cfg,
         "seedbox",
-        [_box(type="rclone", name="My Box", url="box", torrent_client="qbittorrent+http://box:8080")],
+        [Seedbox(type="rclone", name="My Box", url="box", torrent_client="qbittorrent+http://box:8080")],
     )
     monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", staticmethod(lambda url: _RecordingClient()))
     monkeypatch.setattr(seedbox, "_run_rclone", fail)
@@ -585,7 +581,7 @@ def test_a_skipped_seed_names_its_seedbox(monkeypatch, tmp_path, capsys) -> None
     ("written", "decoded"), [("pa%40ss-UNIQUE", "pa@ss-UNIQUE"), ("pa%20ss-UNIQUE", "pa ss-UNIQUE")]
 )
 def test_a_percent_encoded_client_password_is_masked_decoded_too(written, decoded) -> None:
-    box = _box(type="local", torrent_client=f"qbittorrent+http://dean:{written}@box:8080")
+    box = Seedbox(type="local", torrent_client=f"qbittorrent+http://dean:{written}@box:8080")
 
     assert {written, decoded} <= set(seedbox.seedbox_secrets(box))
 
@@ -601,7 +597,7 @@ def test_a_percent_encoded_client_password_is_masked_decoded_too(written, decode
     ],
 )
 def test_a_client_error_repeating_a_proxy_key_in_the_client_url_hides_it(key, error) -> None:
-    box = _box(type="local", torrent_client=f"qbittorrent+http://proxy.local:7476/proxy/{key}")
+    box = Seedbox(type="local", torrent_client=f"qbittorrent+http://proxy.local:7476/proxy/{key}")
 
     assert key not in redact_secrets(error.format(key=key), seedbox.seedbox_secrets(box))
 
@@ -624,7 +620,7 @@ def test_the_upload_run_never_prints_a_remotes_password(monkeypatch, tmp_path, c
     monkeypatch.setattr(
         seedbox.cfg,
         "seedbox",
-        [_box(type="rclone", url=":sftp,host=box,pass=UNIQUESECRET", torrent_client="qbittorrent+http://box:8080")],
+        [Seedbox(type="rclone", url=":sftp,host=box,pass=UNIQUESECRET", torrent_client="qbittorrent+http://box:8080")],
     )
     monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", staticmethod(lambda url: _RecordingClient()))
 
@@ -643,7 +639,7 @@ def test_a_torrent_client_that_fails_to_configure_never_prints_its_password(monk
     monkeypatch.setattr(
         seedbox.cfg,
         "seedbox",
-        [_box(type="local", torrent_client="qbittorrent+http://dean:UNIQUESECRET@box:8080")],
+        [Seedbox(type="local", torrent_client="qbittorrent+http://dean:UNIQUESECRET@box:8080")],
     )
     monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", staticmethod(refuse))
 
@@ -661,7 +657,7 @@ def test_a_failed_task_never_prints_the_seedbox_secrets(monkeypatch, tmp_path, c
     monkeypatch.setattr(
         seedbox.cfg,
         "seedbox",
-        [_box(type="rclone", url="box", extra_args=["--sftp-pass", "UNIQUESECRET"], torrent_client="x")],
+        [Seedbox(type="rclone", url="box", extra_args=["--sftp-pass", "UNIQUESECRET"], torrent_client="x")],
     )
     monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", staticmethod(lambda url: _RecordingClient()))
     monkeypatch.setattr(seedbox, "_run_rclone", refuse)
@@ -678,7 +674,7 @@ def test_a_torrent_the_client_refuses_never_prints_its_password(monkeypatch, tmp
         def torrents_add(self, **kwargs):
             raise RuntimeError("POST http://dean:UNIQUESECRET@box:8080/api/v2/torrents/add failed for UNIQUESECRET")
 
-    monkeypatch.setattr(seedbox.cfg, "seedbox", [_box(type="local", torrent_client="unused")])
+    monkeypatch.setattr(seedbox.cfg, "seedbox", [Seedbox(type="local", torrent_client="unused")])
     monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", staticmethod(lambda url: client))
     monkeypatch.setattr(QBittorrentClient, "login", lambda self: Refusing())
     client = QBittorrentClient(username="dean", password="UNIQUESECRET", url="http://box:8080")
@@ -701,7 +697,7 @@ def test_seedbox_names_itself_when_the_client_raises_unexpectedly(monkeypatch, t
     monkeypatch.setattr(
         seedbox.cfg,
         "seedbox",
-        [_box(type="local", name="My Box", torrent_client="qbittorrent+http://dean:UNIQUESECRET@box:8080")],
+        [Seedbox(type="local", name="My Box", torrent_client="qbittorrent+http://dean:UNIQUESECRET@box:8080")],
     )
     monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", staticmethod(lambda url: _RaisingClient()))
 
@@ -873,7 +869,7 @@ def test_seedbox_reports_a_refused_torrent_plainly_by_name(monkeypatch, tmp_path
     monkeypatch.setattr(
         seedbox.cfg,
         "seedbox",
-        [_box(type="local", name="My Box", torrent_client="unused")],
+        [Seedbox(type="local", name="My Box", torrent_client="unused")],
     )
     monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", staticmethod(lambda url: _RefusingClient()))
 
@@ -890,7 +886,7 @@ def test_seedbox_reports_a_refused_torrent_by_masked_url_without_a_name(monkeypa
     monkeypatch.setattr(
         seedbox.cfg,
         "seedbox",
-        [_box(type="rclone", url=":sftp,host=box,pass=UNIQUESECRET", torrent_client="unused", directory="/x")],
+        [Seedbox(type="rclone", url=":sftp,host=box,pass=UNIQUESECRET", torrent_client="unused", directory="/x")],
     )
     monkeypatch.setattr(seedbox.TorrentClientGenerator, "parse_libtc_url", staticmethod(lambda url: _RefusingClient()))
     monkeypatch.setattr(seedbox, "_rclone_upload_folder", lambda seedbox, remote, path: _async_true())
@@ -917,7 +913,7 @@ def _manager_with_boxes(monkeypatch, seedboxes: list[Seedbox]) -> "seedbox.Uploa
 
 def test_add_upload_task_skips_a_box_pinned_to_a_different_tracker(monkeypatch) -> None:
     manager = _manager_with_boxes(
-        monkeypatch, [_box(name="red-box", trackers=["RED"], torrent_client="qbittorrent+http://box:8080")]
+        monkeypatch, [Seedbox(name="red-box", trackers=["RED"], torrent_client="qbittorrent+http://box:8080")]
     )
 
     manager.add_upload_task("/tmp/Artist - Album", task_type="folder", is_flac=True, site_code="OPS")
@@ -926,7 +922,7 @@ def test_add_upload_task_skips_a_box_pinned_to_a_different_tracker(monkeypatch) 
 
 
 def test_add_upload_task_reaches_an_unpinned_box_for_any_tracker(monkeypatch) -> None:
-    manager = _manager_with_boxes(monkeypatch, [_box(name="any-box", torrent_client="qbittorrent+http://box:8080")])
+    manager = _manager_with_boxes(monkeypatch, [Seedbox(name="any-box", torrent_client="qbittorrent+http://box:8080")])
 
     manager.add_upload_task("/tmp/Artist - Album", task_type="folder", is_flac=True, site_code="RED")
     manager.add_upload_task("/tmp/Artist - Album2", task_type="folder", is_flac=True, site_code="OPS")
@@ -937,7 +933,7 @@ def test_add_upload_task_reaches_an_unpinned_box_for_any_tracker(monkeypatch) ->
 def test_add_upload_task_reaches_a_box_pinned_to_both_trackers(monkeypatch) -> None:
     manager = _manager_with_boxes(
         monkeypatch,
-        [_box(name="both-box", trackers=["RED", "OPS"], torrent_client="qbittorrent+http://box:8080")],
+        [Seedbox(name="both-box", trackers=["RED", "OPS"], torrent_client="qbittorrent+http://box:8080")],
     )
 
     manager.add_upload_task("/tmp/Artist - Album", task_type="folder", is_flac=True, site_code="RED")
@@ -962,7 +958,7 @@ def test_red_and_ops_upload_seeds_only_the_pinned_box_for_each_and_copies_the_fo
         seedbox.cfg,
         "seedbox",
         [
-            _box(
+            Seedbox(
                 name="red-box",
                 trackers=["RED"],
                 type="rclone",
@@ -970,7 +966,7 @@ def test_red_and_ops_upload_seeds_only_the_pinned_box_for_each_and_copies_the_fo
                 directory="/files/red",
                 torrent_client="qbittorrent+http://red:8080",
             ),
-            _box(
+            Seedbox(
                 name="ops-box",
                 trackers=["OPS"],
                 type="rclone",
@@ -1009,12 +1005,12 @@ def test_red_and_ops_upload_seeds_only_the_pinned_box_for_each_and_copies_the_fo
 
 
 def test_seedbox_trackers_are_uppercased() -> None:
-    assert _box(trackers=["red", "ops"]).trackers == ["RED", "OPS"]
+    assert Seedbox(trackers=["red", "ops"]).trackers == ["RED", "OPS"]
 
 
 def test_seedbox_rejects_unknown_tracker() -> None:
     with pytest.raises(ValueError, match="Unknown tracker"):
-        _box(name="typo-box", trackers=["REDD"])
+        Seedbox(name="typo-box", trackers=["REDD"])
 
 
 @needs_posix
@@ -1023,7 +1019,7 @@ def test_rclone_destination_folder_is_nfc_with_the_unicode_flag(monkeypatch, tmp
     _fake_rclone(monkeypatch, tmp_path, code="print(sys.argv[1:])")
     nfd = unicodedata.normalize("NFD", "Café")
 
-    anyio.run(seedbox._rclone_upload_folder, _box(url="box", extra_args=[flag]), "/music", f"/tmp/{nfd}")
+    anyio.run(seedbox._rclone_upload_folder, Seedbox(url="box", extra_args=[flag]), "/music", f"/tmp/{nfd}")
 
     out = capfd.readouterr().out
     assert f"box:/music/{unicodedata.normalize('NFC', 'Café')}'" in out
@@ -1035,7 +1031,7 @@ def test_rclone_destination_folder_keeps_its_name_without_the_unicode_flag(monke
     _fake_rclone(monkeypatch, tmp_path, code="print(sys.argv[1:])")
     nfd = unicodedata.normalize("NFD", "Café")
 
-    anyio.run(seedbox._rclone_upload_folder, _box(url="box", extra_args=["--checksum"]), "/music", f"/tmp/{nfd}")
+    anyio.run(seedbox._rclone_upload_folder, Seedbox(url="box", extra_args=["--checksum"]), "/music", f"/tmp/{nfd}")
 
     assert f"box:/music/{nfd}'" in capfd.readouterr().out
 
@@ -1120,7 +1116,7 @@ def test_a_folder_task_that_raises_skips_its_seed_and_masks_the_error(monkeypatc
         seedbox.cfg,
         "seedbox",
         [
-            _box(
+            Seedbox(
                 type="rclone",
                 url="box",
                 extra_args=["--sftp-pass", "UNIQUESECRET"],
@@ -1145,7 +1141,7 @@ def test_a_folder_task_that_raises_skips_its_seed_and_masks_the_error(monkeypatc
 
 @pytest.mark.parametrize("override", ["@/home/UNIQUEBOXUSER", "/home/UNIQUEBOXUSER/music"])
 def test_a_client_error_repeating_the_seed_path_hides_the_seedbox_home_folder(monkeypatch, tmp_path, override) -> None:
-    box = _box(url="sbox", directory="/music", extra_args=["--sftp-path-override", override])
+    box = Seedbox(url="sbox", directory="/music", extra_args=["--sftp-path-override", override])
     shell_path = seedbox._resolve_shell_path(box.directory, box.extra_args)
     torrent = tmp_path / "Album.torrent"
     torrent.write_bytes(b"d4:infod4:name5:Albumee")
@@ -1261,7 +1257,7 @@ def test_rclone_destination_folder_is_nfc_with_the_unicode_variable(
     monkeypatch.setenv(seedbox._UNICODE_ENV, variable)
     nfd = unicodedata.normalize("NFD", "Café")
 
-    anyio.run(seedbox._rclone_upload_folder, _box(url="box", extra_args=["--checksum"]), "/music", f"/tmp/{nfd}")
+    anyio.run(seedbox._rclone_upload_folder, Seedbox(url="box", extra_args=["--checksum"]), "/music", f"/tmp/{nfd}")
 
     assert f"box:/music/{unicodedata.normalize('NFC', 'Café')}'" in capfd.readouterr().out
 
@@ -1286,6 +1282,6 @@ def test_rclone_destination_folder_keeps_its_name_when_rclone_does_not_normalize
         monkeypatch.setenv(seedbox._UNICODE_ENV, variable)
     nfd = unicodedata.normalize("NFD", "Café")
 
-    anyio.run(seedbox._rclone_upload_folder, _box(url="box", extra_args=extra_args), "/music", f"/tmp/{nfd}")
+    anyio.run(seedbox._rclone_upload_folder, Seedbox(url="box", extra_args=extra_args), "/music", f"/tmp/{nfd}")
 
     assert f"box:/music/{nfd}'" in capfd.readouterr().out

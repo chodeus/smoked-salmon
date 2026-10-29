@@ -1,9 +1,9 @@
 import os
-import shutil
 import sys
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, NoReturn, get_args
 
+import anyio
 import asyncclick as click
 import msgspec
 import msgspec.inspect as mi
@@ -133,7 +133,11 @@ def _walk_unknown(value: object, structs: list[mi.StructType], path: str, found:
 
 
 def unknown_keys(raw: dict[str, Any], struct_type: type[msgspec.Struct] = Cfg) -> list[str]:
-    """Dotted paths (``seedbox[0].name``) of the keys the schema lacks, searched through tables and arrays of tables."""
+    """Full dotted paths of the keys in a decoded TOML table that the schema does not declare.
+
+    Only nested tables, optional tables and arrays of tables are descended into (``seedbox[0].name``);
+    anything else, such as a table-valued setting of another shape, is left alone.
+    """
     found: list[str] = []
     _walk_unknown(raw, _table_members(mi.type_info(struct_type)), "", found)
     return found
@@ -196,11 +200,6 @@ def _parse_config(config_path: Path) -> Cfg:
         ) from e
 
 
-def _try_creating_config(src: Path, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(src, dest)
-
-
 def find_config_path() -> Path:
     config_dir_path = get_user_cfg_path()
     root_config_path = _PKG_DIR.parent.parent / "config.toml"
@@ -222,29 +221,22 @@ def find_config_path() -> Path:
 def setup_config() -> Cfg:
     try:
         path = find_config_path()
-    except Exception:
-        cfg_path = get_user_cfg_path()
+    except FileNotFoundError:
+        _first_run(get_user_cfg_path())
+    return _parse_config(path)
 
-        click.secho(f"Could not find configuration path at {cfg_path}.", fg="red")
-        user_choice = click.confirm(f"Do you want smoked-salmon to create a default config file at {cfg_path}?")
-        if user_choice:
-            try:
-                default_cfg = get_default_config_path()
-                _try_creating_config(default_cfg, cfg_path)
-            except (FileNotFoundError, OSError, PermissionError) as e:
-                click.secho(f"Failed to create default config: {e}", fg="red")
-                sys.exit(1)
-            click.secho(
-                f"Default config created at {cfg_path}. Please edit it with your settings and restart.",
-                fg="green",
-            )
-            sys.exit(0)
-        click.secho(
-            f"No config was created. To get started, manually create a config file at {cfg_path} "
-            "or re-run smoked-salmon to generate one from the default template.",
-            fg="yellow",
-        )
+
+def _first_run(cfg_path: Path) -> NoReturn:
+    """No config: ask for one in a terminal, else copy the short file to fill in. Exits either way."""
+    from . import first_run
+
+    click.secho(f"No config found at {cfg_path}.", fg="yellow")
+    try:
+        template = get_default_config_path()
+        if not first_run.is_terminal():
+            first_run.copy_and_explain(template, cfg_path)
+            sys.exit(1)
+    except OSError as e:
+        click.secho(f"Failed to create a config: {e}", fg="red")
         sys.exit(1)
-
-    cfg = _parse_config(path)
-    return cfg
+    sys.exit(anyio.run(first_run.run, template, cfg_path))
