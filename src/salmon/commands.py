@@ -16,7 +16,6 @@ import salmon.tagger
 import salmon.trackers
 import salmon.uploader
 from salmon import cfg, interaction
-from salmon.checks.connection import check_tracker_connection
 from salmon.common import AlbumPath, clipboard_copy, commandgroup, get_flac_files
 from salmon.common.files import rewrite_refusal
 from salmon.common.redaction import redact_secrets
@@ -25,6 +24,7 @@ from salmon.errors import UploadError
 from salmon.sources.tidal import credentials_configured as tidal_credentials_configured
 from salmon.tagger.audio_info import gather_audio_info, recompress_path
 from salmon.tagger.sources import METASOURCES
+from salmon.trackers.connection import check_trackers
 from salmon.uploader.description import build_tracklist_description
 from salmon.uploader.seedbox import seedbox_secrets
 from salmon.uploader.spectrals import (
@@ -261,42 +261,9 @@ async def checkconf(tracker: str | None, metadata: bool, seedbox: bool, reset: b
         )
         return
 
-    cfg.tracker.debug_connection = True
-
     # Test trackers if no specific test type is requested or if tracker is specified
     if not (metadata or seedbox) or tracker:
-        trackers = [tracker] if tracker else salmon.trackers.tracker_list
-
-        for t in trackers:
-            click.secho(f"\n[ Testing Tracker: {t} ]", fg="cyan", bold=True)
-            failed_checks: list[str] = []
-
-            click.secho("\n[ Testing Session Cookie ]", fg="cyan", bold=True)
-            outcome = await check_tracker_connection(t)
-
-            if outcome["session_ok"]:
-                click.secho("  ✔ Session cookie OK", fg="green")
-            else:
-                click.secho(f"  ✖ Session cookie check failed: {outcome['session_error']}", fg="red", bold=True)
-                failed_checks.append("session cookie")
-
-            if outcome["api_key_configured"]:
-                if outcome["api_key_ok"]:
-                    click.secho("  ✔ API authentication OK", fg="green")
-                else:
-                    click.secho(f"  ✖ API authentication failed: {outcome['api_key_error']}", fg="red", bold=True)
-                    failed_checks.append("API key")
-
-            if failed_checks:
-                click.secho(
-                    f"\n✖ Error testing {t} ({', '.join(failed_checks)})",
-                    fg="red",
-                    bold=True,
-                )
-            else:
-                click.secho(f"\n✔ Successfully checked {t}", fg="green", bold=True)
-
-            click.secho("-" * 50, fg="yellow")  # Separator for readability
+        await check_trackers([tracker] if tracker else salmon.trackers.tracker_list)
 
     # Test metadata sources
     if metadata or not (tracker or seedbox):

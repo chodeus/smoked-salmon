@@ -90,7 +90,7 @@ def test_suggestion_for_a_known_top_level_key_names_the_top_of_the_file(
 
 
 def test_several_matches_are_each_named_with_their_header(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    text = _template(tmp_path) + "\n[web]\nenabled = true\n"
+    text = _template(tmp_path) + "\n[proxy]\nenabled = true\n"
     _, warnings = _load(tmp_path, text, capsys)
     assert len(warnings) == 1
     assert "upload.ai_review.enabled (under [upload.ai_review])" in warnings[0]

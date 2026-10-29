@@ -16,6 +16,7 @@ from test_uploader_dry_run import (  # pyright: ignore[reportMissingImports]
     image_uploads,  # noqa: F401 (a fixture: see pytestmark)
 )
 
+import salmon.common
 import salmon.trackers
 from salmon import cfg, interaction
 from salmon.tagger import foldername
@@ -161,7 +162,7 @@ def test_the_terminal_viewer_waits_for_enter_through_the_terminal(monkeypatch) -
         return ""
 
     monkeypatch.setattr(spectrals, "view_spectrals", view_spectrals)
-    monkeypatch.setattr(interaction, "prompt_async", prompt_async)
+    monkeypatch.setattr(salmon.common, "prompt_async", prompt_async)
 
     anyio.run(interaction.show_spectrals, "/specs", {1: "01.flac"})
 

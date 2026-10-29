@@ -23,11 +23,11 @@
 
   interface TrackerCheck {
     tracker: string
-    session_ok: boolean
-    session_error: string | null
-    api_key_configured: boolean
-    api_key_ok: boolean | null
-    api_key_error: string | null
+    cookie: 'ok' | 'failed' | 'not_checked'
+    cookie_error: string | null
+    key: 'ok' | 'failed' | 'not_set' | 'not_checked'
+    key_error: string | null
+    tls_error: string | null
   }
 
   let health = $state<Health | null>(null)
@@ -38,7 +38,7 @@
 
   let cachedAge = $state<number | null>(null)
 
-  const trackersOk = $derived(checks ? checks.filter((c) => c.session_ok && c.api_key_ok !== false).length : null)
+  const trackersOk = $derived(checks ? checks.filter((c) => c.cookie === 'ok' && c.key !== 'failed').length : null)
   const binariesMissing = $derived(
     health ? Object.values(health.binaries.required).filter((v) => !v).length : null,
   )
@@ -123,15 +123,17 @@
           <tr>
             <td class="mono">{c.tracker}</td>
             <td>
-              {#if c.session_ok}<span class="chip ok">session ok</span>
-              {:else}<span class="chip err">session failed</span>{/if}
+              {#if c.cookie === 'ok'}<span class="chip ok">session ok</span>
+              {:else if c.cookie === 'failed'}<span class="chip err">session failed</span>
+              {:else}<span class="chip err">not checked</span>{/if}
             </td>
             <td>
-              {#if !c.api_key_configured}<span class="chip">no API key</span>
-              {:else if c.api_key_ok}<span class="chip ok">API key ok</span>
-              {:else}<span class="chip err">API key failed</span>{/if}
+              {#if c.key === 'not_set'}<span class="chip">no API key</span>
+              {:else if c.key === 'ok'}<span class="chip ok">API key ok</span>
+              {:else if c.key === 'failed'}<span class="chip err">API key failed</span>
+              {:else}<span class="chip err">not checked</span>{/if}
             </td>
-            <td class="muted">{c.session_error ?? c.api_key_error ?? ''}</td>
+            <td class="muted">{c.tls_error ?? c.cookie_error ?? c.key_error ?? ''}</td>
           </tr>
         {/each}
       </tbody>

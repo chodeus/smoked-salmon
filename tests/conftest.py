@@ -1,47 +1,42 @@
-"""Shared test setup.
+"""Give the test run its own configuration.
 
-Importing ``salmon`` parses the config at import time and exits if none is
-found. To keep the test suite hermetic (CI, fresh checkouts), a minimal config
-is generated in a temporary XDG_CONFIG_HOME before the first salmon import.
+``salmon`` loads and validates its config at import time, and exits when none
+is found. Point it at a copy of the default config, with its directories moved
+into a temporary location, before any test module imports the package.
 
 This also keeps a developer's real config out of the test run: it sets
 ``SALMON_CONFIG_DIR`` to that temporary location, which ``find_config_path()``
 prefers over a repo-root ``config.toml`` (a documented dev convenience) since
-an explicitly set ``SALMON_CONFIG_DIR`` beats that implicit fallback.
+an explicitly set ``SALMON_CONFIG_DIR`` beats that implicit fallback. It also
+sets ``XDG_CONFIG_HOME`` for anything that reads the platform config dir
+directly, but that alone would not stop a repo-root ``config.toml`` or an
+already-set ``SALMON_CONFIG_DIR`` from winning.
 """
 
 import ipaddress
 import os
 import socket
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_REPO_ROOT / "src"))
+import pytest
+from shipped_config import shipped_config  # pyright: ignore[reportMissingImports]
 
+_root = Path(tempfile.mkdtemp(prefix="salmon-tests-"))
+_music = _root / "music"
+_torrents = _root / "torrents"
+_music.mkdir()
+_torrents.mkdir()
 
-def _ensure_config() -> None:
-    tmp = Path(tempfile.mkdtemp(prefix="salmon-test-config-"))
-    os.environ["XDG_CONFIG_HOME"] = str(tmp)
-    cfg_dir = tmp / "smoked-salmon"
-    cfg_dir.mkdir(parents=True)
-    music = tmp / "music"
-    torrents = tmp / "torrents"
-    tmpdir = tmp / "tmp"
-    for d in (music, torrents, tmpdir):
-        d.mkdir()
-    (cfg_dir / "config.toml").write_text(
-        f'[directory]\ndownload_directory = "{music}"\ndottorrents_dir = "{torrents}"\ntmp_dir = "{tmpdir}"\n\n'
-        f'[tracker.red]\nsession = "test-session"\n\n[tracker]\ndefault_trackers = ["RED"]\n'
-    )
-    os.environ["SALMON_CONFIG_DIR"] = str(cfg_dir)
+_config = shipped_config(_music, _torrents)
 
+_config_dir = _root / "config" / "smoked-salmon"
+_config_dir.mkdir(parents=True)
+(_config_dir / "config.toml").write_text(_config, encoding="utf-8")
 
-_ensure_config()
-
-import pytest  # noqa: E402
+os.environ["XDG_CONFIG_HOME"] = str(_root / "config")
+os.environ["SALMON_CONFIG_DIR"] = str(_config_dir)
 
 from salmon.errors import RequestError  # noqa: E402
 

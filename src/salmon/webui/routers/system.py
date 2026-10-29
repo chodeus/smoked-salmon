@@ -10,12 +10,13 @@ import time
 import traceback
 from importlib.metadata import PackageNotFoundError, version
 
+import msgspec
 from fastapi import APIRouter, HTTPException, Request
 
 import salmon.trackers
 from salmon import cfg
-from salmon.checks.connection import check_tracker_connection
 from salmon.config import find_config_path
+from salmon.trackers.connection import ConnectionResult, check_connection
 
 router = APIRouter(tags=["system"])
 
@@ -97,6 +98,14 @@ def _cached_checkconf(force: bool) -> dict | None:
     return {**cached, "cached": True, "age_seconds": int(age)}  # type: ignore[dict-item]
 
 
+async def _check_tracker(code: str) -> ConnectionResult:
+    api = salmon.trackers.get_class(code)()
+    try:
+        return await check_connection(code, api)
+    finally:
+        await api.close()
+
+
 @router.post("/checkconf")
 async def checkconf(force: bool = False) -> dict:
     """Test every configured tracker's session cookie and API key."""
@@ -109,11 +118,8 @@ async def checkconf(force: bool = False) -> dict:
         # such refresh goes on to probe.
         if _checkconf_cache["at"] != seen_at and (hit := _cached_checkconf(force=False)) is not None:
             return hit
-        results = [await check_tracker_connection(code) for code in salmon.trackers.tracker_list]
-        payload = {
-            "ok": all(r["session_ok"] and (r["api_key_ok"] is not False) for r in results),
-            "trackers": results,
-        }
+        results = [await _check_tracker(code) for code in salmon.trackers.tracker_list]
+        payload = {"ok": all(r.ok for r in results), "trackers": msgspec.to_builtins(results)}
         _checkconf_cache["at"] = time.monotonic()
         _checkconf_cache["result"] = payload
         return {**payload, "cached": False, "age_seconds": 0}

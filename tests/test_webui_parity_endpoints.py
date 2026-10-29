@@ -13,6 +13,7 @@ from webui_client import reset_manager, web_client  # pyright: ignore[reportMiss
 import salmon.trackers
 from salmon import cfg
 from salmon.trackers import base as tracker_base
+from salmon.trackers.connection import ConnectionResult
 from salmon.webui.jobs import FINISHED
 
 
@@ -424,16 +425,9 @@ def test_checkconf_is_cached_so_dashboard_loads_do_not_hammer_trackers(client, m
 
     async def fake_check(code):
         calls.append(code)
-        return {
-            "tracker": code,
-            "session_ok": True,
-            "session_error": None,
-            "api_key_configured": False,
-            "api_key_ok": None,
-            "api_key_error": None,
-        }
+        return ConnectionResult(tracker=code, cookie="ok", key="not_set")
 
-    monkeypatch.setattr(system, "check_tracker_connection", fake_check)
+    monkeypatch.setattr(system, "_check_tracker", fake_check)
     monkeypatch.setitem(system._checkconf_cache, "at", 0.0)
     monkeypatch.setitem(system._checkconf_cache, "result", None)
 
@@ -463,16 +457,9 @@ def test_concurrent_checkconf_misses_share_one_probe(client, monkeypatch) -> Non
     async def fake_check(code):
         rounds.append(code)
         await asyncio.sleep(0.05)  # long enough for the other requests to pile up
-        return {
-            "tracker": code,
-            "session_ok": True,
-            "session_error": None,
-            "api_key_configured": False,
-            "api_key_ok": None,
-            "api_key_error": None,
-        }
+        return ConnectionResult(tracker=code, cookie="ok", key="not_set")
 
-    monkeypatch.setattr(system, "check_tracker_connection", fake_check)
+    monkeypatch.setattr(system, "_check_tracker", fake_check)
     monkeypatch.setitem(system._checkconf_cache, "at", 0.0)
     monkeypatch.setitem(system._checkconf_cache, "result", None)
 
@@ -484,6 +471,57 @@ def test_concurrent_checkconf_misses_share_one_probe(client, monkeypatch) -> Non
     assert len(rounds) == len(salmon.trackers.tracker_list), "the probe must run exactly once"
     assert sum(1 for b in bodies if b["cached"] is False) == 1
     assert all(b["ok"] for b in bodies)
+
+
+_RED_OK = {
+    "tracker": "RED",
+    "cookie": "ok",
+    "cookie_error": None,
+    "key": "not_set",
+    "key_error": None,
+    "tls_error": None,
+}
+
+
+@pytest.mark.parametrize(
+    ("ops", "sent", "ok"),
+    [
+        (
+            ConnectionResult(tracker="OPS", cookie="ok", key="ok"),
+            {"tracker": "OPS", "cookie": "ok", "cookie_error": None, "key": "ok", "key_error": None, "tls_error": None},
+            True,
+        ),
+        (
+            ConnectionResult(tracker="OPS", cookie="failed", cookie_error="bad cookie", key="not_set"),
+            {
+                "tracker": "OPS",
+                "cookie": "failed",
+                "cookie_error": "bad cookie",
+                "key": "not_set",
+                "key_error": None,
+                "tls_error": None,
+            },
+            False,
+        ),
+    ],
+)
+def test_checkconf_sends_each_trackers_result_and_whether_all_passed(client, monkeypatch, ops, sent, ok) -> None:
+    from salmon.webui.routers import system
+
+    found = {"RED": ConnectionResult(tracker="RED", cookie="ok", key="not_set"), "OPS": ops}
+
+    async def fake_check(code):
+        return found[code]
+
+    monkeypatch.setattr(salmon.trackers, "tracker_list", ["RED", "OPS"])
+    monkeypatch.setattr(system, "_check_tracker", fake_check)
+    monkeypatch.setitem(system._checkconf_cache, "at", 0.0)
+    monkeypatch.setitem(system._checkconf_cache, "result", None)
+
+    body = client.post("/api/checkconf").json()
+
+    assert body["trackers"] == [_RED_OK, sent]
+    assert body["ok"] is ok
 
 
 def test_health_reports_disk_usage_for_each_directory(client) -> None:
