@@ -1032,25 +1032,71 @@ class _EmptiedByAnotherJob(OrderedDict):
         return ai_review.PAGE_TEXT_CACHE_SIZE
 
 
-def test_a_cited_page_is_cached_when_another_job_emptied_the_full_cache_first(monkeypatch) -> None:
-    monkeypatch.setattr(ai_review, "_page_texts", _EmptiedByAnotherJob())
+def _on_a_page(handler, use):
+    """Serve `handler` at a local URL and return (url, what `use(url)` returns)."""
 
-    async def page(_request: web.Request) -> web.Response:
-        return web.Response(text="<p>Released on Some Label</p>", content_type="text/html")
-
-    async def run() -> tuple[str, str]:
+    async def run():
         app = web.Application()
-        app.router.add_get("/release", page)
+        app.router.add_get("/release", handler)
         runner = web.AppRunner(app)
         await runner.setup()
         await web.TCPSite(runner, "127.0.0.1", 0).start()
         url = f"http://127.0.0.1:{runner.addresses[0][1]}/release"
         try:
-            return url, await ai_review._fetch_release_page_text(url)
+            return url, await use(url)
         finally:
             await runner.cleanup()
 
-    url, text = anyio.run(run)
+    return anyio.run(run)
+
+
+async def _label_page(_request: web.Request) -> web.Response:
+    return web.Response(text="<p>Released on Some Label</p>", content_type="text/html")
+
+
+def test_a_cited_page_is_cached_when_another_job_emptied_the_full_cache_first(monkeypatch) -> None:
+    monkeypatch.setattr(ai_review, "_page_texts", _EmptiedByAnotherJob())
+
+    url, text = _on_a_page(_label_page, ai_review._fetch_release_page_text)
 
     assert "Released on Some Label" in text
     assert list(ai_review._page_texts) == [url]
+
+
+def test_a_cited_page_over_the_size_limit_names_no_label_and_is_not_kept(monkeypatch) -> None:
+    monkeypatch.setattr(ai_review, "_page_texts", OrderedDict())
+    monkeypatch.setattr(ai_review, "MAX_PAGE_BYTES", 64 * 1024)
+
+    async def oversized(_request: web.Request) -> web.Response:
+        return web.Response(text="<p>Released on Some Label</p>" + " " * 128 * 1024, content_type="text/html")
+
+    _url, named = _on_a_page(oversized, lambda url: ai_review._url_explicitly_names_label(url, "Some Label"))
+
+    assert named is False
+    assert ai_review._page_texts == {}
+
+
+def test_a_cited_page_is_read_in_its_own_charset(monkeypatch) -> None:
+    monkeypatch.setattr(ai_review, "_page_texts", OrderedDict())
+
+    async def latin1(_request: web.Request) -> web.Response:
+        return web.Response(
+            body="<p>Released on Étiquette</p>".encode("latin-1"), content_type="text/html", charset="iso-8859-1"
+        )
+
+    _url, text = _on_a_page(latin1, ai_review._fetch_release_page_text)
+
+    assert "Released on Étiquette" in text
+
+
+def test_a_cited_page_in_an_unknown_charset_is_read_as_utf8(monkeypatch) -> None:
+    monkeypatch.setattr(ai_review, "_page_texts", OrderedDict())
+
+    async def unknown(_request: web.Request) -> web.Response:
+        return web.Response(
+            body="<p>Released on Étiquette</p>".encode(), headers={"Content-Type": "text/html; charset=x-no-such"}
+        )
+
+    _url, text = _on_a_page(unknown, ai_review._fetch_release_page_text)
+
+    assert "Released on Étiquette" in text

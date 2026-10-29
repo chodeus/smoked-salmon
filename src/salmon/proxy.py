@@ -1,4 +1,4 @@
-"""Send a service's HTTP requests through the proxy the config gives it ([proxy] in config.default.toml).
+"""Send a service's HTTP requests through the proxy the config gives it ([proxy] in config.reference.toml).
 
 Opt-in: a service without a proxy gets the same connector and session as it would without this module.
 

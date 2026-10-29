@@ -547,6 +547,8 @@ def _page_explicitly_names_label(page_text: str, label: str) -> bool:
 # Read and changed one call at a time: each salmon web job runs on a thread of its own.
 _page_texts: OrderedDict[str, str] = OrderedDict()
 PAGE_TEXT_CACHE_SIZE = 64
+# A release page is far smaller: a bigger answer is not searched for a label, nor kept.
+MAX_PAGE_BYTES = 5 * 1024 * 1024
 
 
 async def _fetch_release_page_text(url: str) -> str:
@@ -559,7 +561,16 @@ async def _fetch_release_page_text(url: str) -> str:
         session.get(url, headers={"User-Agent": cfg.upload.user_agent}) as response,
     ):
         response.raise_for_status()
-        html = await response.text(errors="replace")
+        data = bytearray()
+        async for chunk in response.content.iter_chunked(64 * 1024):
+            data += chunk
+            if len(data) > MAX_PAGE_BYTES:
+                raise ValueError(f"the page is over {MAX_PAGE_BYTES // 1024 // 1024} MiB")
+        charset = response.charset or "utf-8"
+    try:
+        html = data.decode(charset, errors="replace")
+    except LookupError:  # A charset Python does not know.
+        html = data.decode("utf-8", errors="replace")
     soup = BeautifulSoup(html, "lxml")
     text = f"{soup.get_text(' ', strip=True)} {html}"
     if len(_page_texts) >= PAGE_TEXT_CACHE_SIZE:
