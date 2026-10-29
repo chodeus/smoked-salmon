@@ -1,7 +1,7 @@
 """The fork's rule warnings: an upload's own list, and the full one salmon web's checks page shows."""
 
 import pytest
-from test_uploader_after_first_upload import _sync, _upload, flow  # noqa: F401  # pyright: ignore[reportMissingImports]
+from test_uploader_after_first_upload_fork import _sync, _upload, flow  # noqa: F401  # pyright: ignore[reportMissingImports]
 
 import salmon.trackers
 import salmon.uploader

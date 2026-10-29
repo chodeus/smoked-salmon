@@ -358,8 +358,8 @@ def _run_up(
     monkeypatch.setattr(QBittorrentClient, "login", lambda client: logins.append(client.url))
     tracker = tracker or FakeTracker()
     classes = classes or {"RED": RedApi, "OPS": OpsApi}
-    # Both trackers configured, so the run goes on to OPS after RED.
-    monkeypatch.setattr(salmon.trackers, "tracker_list", list(classes))
+    # The configured trackers the fake has a client for: the run goes on to OPS after RED, unless a test narrowed them.
+    monkeypatch.setattr(salmon.trackers, "tracker_list", [c for c in salmon.trackers.tracker_list if c in classes])
     monkeypatch.setattr(salmon.trackers, "get_class", lambda code: lambda: _client(classes[code], tracker, torrents))
 
     if trackers is None:

@@ -1113,6 +1113,12 @@ async def _upload_staged(
 
         seedbox_uploader = UploadManager()
         uploaded: list[str] = []  # The URL of each torrent uploaded, for an abort to list
+        # Trackers whose upload failed or was skipped: the folder is needed to retry them. A first tracker refused
+        # before the loop is one of them.
+        failed_trackers: list[str] = [gazelle_site.site_string] if skip_first else []
+        # Conversions that failed: the folder is needed to make them again.
+        skipped_conversions: list[str] = []
+        finished = False  # The loop ended by itself: no abort, no exception
         flac_url = f"{gazelle_site.base_url}/torrents.php?torrentid={source_flac['id']}" if source_flac else None
 
         try:
@@ -1143,6 +1149,7 @@ async def _upload_staged(
                     if _do_not_upload_refusal(tracker, metadata) is not None or (
                         flac_group is None and _sixteen_bit_refusal(tracker, audio_info)
                     ):
+                        failed_trackers.append(gazelle_site.site_string)
                         remaining_gazelle_sites.remove(tracker)
                         tracker = None
                         continue
@@ -1157,6 +1164,7 @@ async def _upload_staged(
                     except RequestError as e:
                         # Like a failed upload: skip this tracker, and offer the next one.
                         click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
+                        failed_trackers.append(gazelle_site.site_string)
                         remaining_gazelle_sites.remove(tracker)
                         tracker = None
                         if not remaining_gazelle_sites or not go_on:
@@ -1176,6 +1184,7 @@ async def _upload_staged(
                 if not proceed:
                     # Like a failed upload: skip this tracker, and offer the next one.
                     click.secho(f"\nSkipping upload to {gazelle_site.site_string}.", fg="red", bold=True)
+                    failed_trackers.append(gazelle_site.site_string)
                     tracker = None
                     if not remaining_gazelle_sites or not go_on:
                         break
@@ -1292,10 +1301,12 @@ async def _upload_staged(
                                 source,
                                 url,
                                 uploaded=uploaded,
+                                skipped=skipped_conversions,
                                 max_path_length=max_path_length,
                             )
                 except RequestError as e:
                     click.secho(f"\nUpload to {gazelle_site.site_string} failed: {e}", fg="red", bold=True)
+                    failed_trackers.append(gazelle_site.site_string)
                     if isinstance(e, UnknownOutcomeError):
                         record.note_unknown_outcome(e)
 
@@ -1303,6 +1314,7 @@ async def _upload_staged(
                 if flac_url or not remaining_gazelle_sites or not go_on:
                     click.secho("\nDone uploading this release.", fg="green")
                     break
+            finished = True
 
         except click.Abort as e:
             if not uploaded or dryrun.active():
@@ -1315,6 +1327,18 @@ async def _upload_staged(
                 raise
         finally:
             await seedbox_uploader.execute_upload()
+            # Only a run that ended by itself with every upload done: a failed tracker needs the folder to retry,
+            # and an abort or an error leaves the user deciding what is next.
+            if failed_trackers:
+                seedbox_uploader.remove_local_copies(
+                    f"the upload to {', '.join(failed_trackers)} failed or was skipped"
+                )
+            elif skipped_conversions:
+                seedbox_uploader.remove_local_copies(f"the {', '.join(skipped_conversions)} conversion failed")
+            elif not finished:
+                seedbox_uploader.remove_local_copies("the run stopped before it finished")
+            else:
+                seedbox_uploader.remove_local_copies()
     finally:
         await spectral_uploads.close()
 
@@ -1801,6 +1825,7 @@ async def execute_downconversion_tasks(
     base_url: str,
     *,
     uploaded: list[str] | None = None,
+    skipped: list[str] | None = None,
     max_path_length: int | None = None,
 ) -> None:
     """Execute the selected downconversion tasks.
@@ -1824,12 +1849,15 @@ async def execute_downconversion_tasks(
         source: Media source.
         base_url: Base URL for the original upload.
         uploaded: Where to add the URL of each torrent uploaded.
+        skipped: Where to add the name of each conversion that failed and was not uploaded.
         max_path_length: The run's path limit; this tracker's when not given.
     """
     if max_path_length is None:
         max_path_length = path_limit_for([gazelle_site.site_code])
     if uploaded is None:
         uploaded = []
+    if skipped is None:
+        skipped = []
 
     base_path = path
     # A dry run's go into its scratch directory, removed with it.
@@ -1855,6 +1883,7 @@ async def execute_downconversion_tasks(
             except UploadError as e:
                 # This conversion only: the others asked for still go up.
                 click.secho(f"  {e}", fg="red", bold=True)
+                skipped.append(task["name"])
                 continue
             await anyio.sleep(0.1)
 
@@ -1864,6 +1893,7 @@ async def execute_downconversion_tasks(
                 converted_info = _by_source_name(new_path, gather_audio_info(new_path))
             except (UploadError, MutagenError) as e:
                 click.secho(f"  Could not read {new_path} ({e}): not uploading it.", fg="red", bold=True)
+                skipped.append(task["name"])
                 continue
             if converted_info.keys() != track_data.keys():
                 click.secho(
@@ -1871,6 +1901,7 @@ async def execute_downconversion_tasks(
                     fg="red",
                     bold=True,
                 )
+                skipped.append(task["name"])
                 continue
             # Nor is it this conversion if its files are not in the format the task makes.
             expected = (task["target_bitdepth"], task["target_sample_rate"])
@@ -1883,6 +1914,7 @@ async def execute_downconversion_tasks(
                     fg="red",
                     bold=True,
                 )
+                skipped.append(task["name"])
                 continue
             # Keys may predate check_folder_structure's truncation: only values are read, as the description is ours.
             conversion_track_data = {name: {**track, **converted_info[name]} for name, track in track_data.items()}
@@ -1929,6 +1961,7 @@ async def execute_downconversion_tasks(
                 transcoded_path = await transcode_folder(base_path, task["encoding"], output_dir=output_dir)
             except UploadError as e:
                 click.secho(f"  {e}", fg="red", bold=True)
+                skipped.append(task["name"])
                 continue
             await anyio.sleep(0.1)
 
