@@ -77,6 +77,7 @@ class JobStore {
   stop() {
     this.running = false
     this.session++
+    this.resyncAgain = false
     if (this.retry) clearTimeout(this.retry)
     if (this.resyncRetry) clearTimeout(this.resyncRetry)
     this.ws?.close()
@@ -141,6 +142,7 @@ class JobStore {
 
   /** Load the list again, then apply the events that came meanwhile. */
   private async resync() {
+    if (!this.running) return
     if (this.resyncing) {
       this.resyncAgain = true
       return

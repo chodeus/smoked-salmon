@@ -120,6 +120,14 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _overlap(a: str, b: str) -> bool:
+    """Whether resolved folders are the same, or one holds the other. Mirrors paths._inside (paths imports this)."""
+    try:
+        return os.path.commonpath([a, b]) in (a, b)
+    except ValueError:  # Different drives on Windows.
+        return False
+
+
 _ids = itertools.count(1)
 
 
@@ -173,7 +181,8 @@ class Job:
 
     def holds(self, folder: str) -> bool:
         """Whether the job works on the album folder (resolved): the one it was started on, or one it claimed."""
-        return folder == self.folder or folder in self._claimed
+        # The picker offers an album and its disc folders both: they hold the same files.
+        return any(_overlap(folder, held) for held in (self.folder, *self._claimed) if held is not None)
 
     def summary(self) -> dict[str, Any]:
         return {
