@@ -69,10 +69,15 @@ def _explain_default(default: str | None, choices: dict[int, tuple[str, str]]) -
     for part in (default or "").split():
         if part.startswith("*"):
             click.secho(f"Pre-typed {part}: the store page in the files' tags, starred as the source.", fg="cyan")
+        elif part.startswith("http"):
+            click.secho(
+                f"Pre-typed {part}: the store page in the files' tags (not starred: not a WEB release).", fg="cyan"
+            )
         elif part.isdigit() and int(part) in choices:
             source = choices[int(part)][0]
             click.secho(
-                f"Pre-typed {part}: the {source} result matching the files' artist, title and track count.",
+                f"Pre-typed {part}: the {source} result matching the files' artist and title (and track count and "
+                "year where it gives them).",
                 fg="cyan",
             )
 
@@ -384,8 +389,30 @@ async def _select_choice(
                 return meta, source_url
             continue
 
-        metadatas = await asyncio.gather(*tasks)
-        return _combine_scraped(sources, list(metadatas), rls_data, source_url), source_url
+        metadatas = await _gather_scrapes(tasks)
+        return _combine_scraped(sources, metadatas, rls_data, source_url), source_url
+
+
+async def _gather_scrapes(tasks: list[Any]) -> list[Any]:
+    """The scraped metadatas, None where a source failed, its error printed.
+
+    When none worked, a pasted URL's error ends the run: no upload goes out on the tags alone after a store was
+    asked for. A cancel is raised as it is.
+    """
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    errors = [result for result in results if isinstance(result, BaseException)]
+    for error in errors:
+        if not isinstance(error, Exception):
+            raise error
+    if errors and all(result is None or isinstance(result, BaseException) for result in results):
+        raise errors[0]
+    for error in errors:
+        await handle_scrape_errors(_raising(error))
+    return [None if isinstance(result, BaseException) else result for result in results]
+
+
+async def _raising(error: BaseException) -> None:
+    raise error
 
 
 async def _get_manual_metadata(rls_data):
