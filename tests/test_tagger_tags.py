@@ -5,7 +5,7 @@ import anyio
 import asyncclick as click
 from mutagen import mp4
 from mutagen.flac import FLAC, VCFLACDict
-from mutagen.id3 import TIT2, TPE1
+from mutagen.id3 import COMM, TIT2, TPE1, TPOS, TRCK
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4Tags
 
@@ -196,3 +196,47 @@ def test_standardize_tags_writes_uppercase_vorbis_comment_keys(tmp_path):
     assert second["date"] == ["2001"]
     assert second["title"] == ["Song"]
     assert "year" not in second_comments
+
+
+def test_an_mp3_number_without_a_total_gives_no_total(tmp_path):
+    _write_mp3(tmp_path / "01.mp3", title="A Song")
+    mut = MP3(tmp_path / "01.mp3")
+    assert mut.tags is not None
+    mut.tags.add(TRCK(encoding=3, text="3"))
+    mut.tags.add(TPOS(encoding=3, text="1"))
+    mut.save()
+
+    tag = TagFile(str(tmp_path / "01.mp3"))
+
+    assert (tag.tracknumber, tag.tracktotal, tag.discnumber, tag.disctotal) == ("3", None, "1", None)
+
+
+def test_an_mp3_comment_is_read_and_a_players_own_frame_is_not(tmp_path):
+    _write_mp3(tmp_path / "01.mp3", title="A Song")
+    mut = MP3(tmp_path / "01.mp3")
+    assert mut.tags is not None
+    mut.tags.add(COMM(encoding=3, lang="eng", desc="", text="Ripped from the CD"))
+    mut.tags.add(COMM(encoding=3, lang="eng", desc="iTunNORM", text=" 00000E5A 00000E5A"))
+    mut.save()
+
+    assert TagFile(str(tmp_path / "01.mp3")).comment == "Ripped from the CD"
+
+
+def test_clearing_an_mp3_comment_keeps_a_players_own_frame(tmp_path):
+    _write_mp3(tmp_path / "01.mp3", title="A Song")
+    mut = MP3(tmp_path / "01.mp3")
+    assert mut.tags is not None
+    mut.tags.add(COMM(encoding=3, lang="eng", desc="", text="Ripped from the CD"))
+    mut.tags.add(COMM(encoding=3, lang="eng", desc="iTunNORM", text=" 00000E5A 00000E5A"))
+    mut.save()
+
+    tag = TagFile(str(tmp_path / "01.mp3"))
+    tag.comment = ""
+    tag.save()
+
+    tags = MP3(tmp_path / "01.mp3").tags
+    assert tags is not None
+    assert [(frame.desc, list(frame.text)) for frame in tags.getall("COMM") if frame.desc] == [
+        ("iTunNORM", [" 00000E5A 00000E5A"])
+    ]
+    assert TagFile(str(tmp_path / "01.mp3")).comment is None

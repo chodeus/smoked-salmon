@@ -83,6 +83,11 @@ class TagFile:
                     return values
                 return "; ".join(values) or None
             elif isinstance(mut, mp3.MP3):
+                field = TAG_FIELDS["MP3"][attr][0]
+                if field.startswith("TXXX:") and isinstance(mut.tags, ID3Tags):
+                    return _txxx_values(mut.tags, field)
+                if field == "COMM" and isinstance(mut.tags, ID3Tags):
+                    return _comment(mut.tags)
                 return self.parse_tag(attr, "MP3")
             elif isinstance(mut, mp4.MP4):
                 tag = self.parse_tag(attr, "AAC")
@@ -121,8 +126,8 @@ class TagFile:
                         val = str(frame.text[0])
                         if "number" in attr:
                             return val.split("/")[0]
-                        elif "total" in attr and "/" in val:
-                            return val.split("/")[1]
+                        # "3" alone holds no total.
+                        return val.split("/")[1] if "/" in val else None
                     except (AttributeError, KeyError):
                         # AAC: MP4 tags are tuples like (track, total)
                         tag_val = tags[field]
@@ -203,6 +208,12 @@ class TagFile:
             frame = getattr(id3, tag_key)(text=f"{track}/{value}")
             tags.delall(tag_key)
             tags.add(frame)
+        elif key == "comment":
+            # Only the comment _comment reads: a described COMM frame (iTunNORM) is a player's own data.
+            for stale in [f for f in tags.getall("COMM") if not f.desc]:
+                tags.delall(stale.HashKey)
+            if value:
+                tags.add(id3.COMM(encoding=3, text=value))
         else:
             try:
                 tag_key, desc = TAG_FIELDS["MP3"][key][0].split(":")
@@ -251,3 +262,14 @@ class TagFile:
         mut = self.mut
         if mut is not None:
             mut.save()
+
+
+def _txxx_values(tags: ID3Tags, field: str) -> list[str] | None:
+    """A TXXX field's values from every case of its description, as players read it and set_mp3_tag replaces it."""
+    desc = field.split(":", 1)[1].lower()
+    return [value for frame in tags.getall("TXXX") if frame.desc.lower() == desc for value in frame.text] or None
+
+
+def _comment(tags: ID3Tags) -> str | None:
+    """The comment players show: COMM frames without a description, in any language (iTunNORM and the like are not)."""
+    return "; ".join(text for frame in tags.getall("COMM") if not frame.desc for text in frame.text) or None
