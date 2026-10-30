@@ -21,6 +21,7 @@ from test_uploader_dry_run import (  # pyright: ignore[reportMissingImports]
     _album,
     _lossy_with_spectrals,
     _run_up,
+    _transcode,
     image_uploads,  # noqa: F401 (a fixture: see pytestmark)
 )
 from torf import Torrent, WriteError
@@ -28,7 +29,7 @@ from torf import Torrent, WriteError
 import salmon.trackers
 import salmon.uploader
 from salmon import cfg, interaction
-from salmon.errors import RequestError, UnknownOutcomeError
+from salmon.errors import RequestError, UnknownOutcomeError, UploadError
 from salmon.trackers.base import BaseGazelleApi
 from salmon.trackers.ops import OpsApi
 from salmon.trackers.red import RedApi
@@ -667,3 +668,19 @@ def test_a_first_tracker_refused_before_the_loop_keeps_the_local_copies(monkeypa
     assert run.result.exit_code == 0, run.result.output
     assert len(_uploads(run)) > 0, run.result.output
     assert removals == ["the upload to RED failed or was skipped"]
+
+
+def test_a_failed_conversion_keeps_the_local_copies(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    _trackers(monkeypatch, "RED")
+    removals = _removals(monkeypatch)
+
+    async def no_320(path: str, bitrate: str, *args: Any, **kwargs: Any) -> str:
+        if bitrate == "320":
+            raise UploadError("lame gave up")
+        return await _transcode(path, bitrate, *args, **kwargs)
+
+    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, input="\n\n", transcode_folder=no_320)
+
+    assert run.result.exit_code == 0, run.result.output
+    assert removals == ["the MP3 320 conversion failed"]
