@@ -17,6 +17,7 @@ from salmon.tagger.retagger import (
     create_artist_str,
     create_track_changes,
     delete_empty_folders,
+    move_non_audio_files,
     rename_files,
     retag_files,
     tag_files,
@@ -751,7 +752,7 @@ def test_rename_files_single_folder_names_each_disc_folders_files_for_its_disc(t
     ]
 
 
-def test_rename_files_single_folder_leaves_a_file_whose_new_name_is_taken(tmp_path, monkeypatch) -> None:
+def test_rename_files_single_folder_numbers_a_file_whose_new_name_is_taken(tmp_path, monkeypatch) -> None:
     _single_folder(monkeypatch)
     tags, metadata = _release(tmp_path, _two_discs(), ["Disc 1/cover.jpg", "Disc 2/cover.jpg", "cover.1.jpg"])
     before = _contents(tmp_path)
@@ -761,14 +762,16 @@ def test_rename_files_single_folder_leaves_a_file_whose_new_name_is_taken(tmp_pa
     tree = _tree(tmp_path)
     assert _contents(tmp_path) == before
     assert ("cover.1.jpg", "cover.1.jpg") in tree
-    assert ("Disc 1/cover.jpg", "Disc 1/cover.jpg") in tree
+    # Disc 1's cover.1.jpg is taken: the first free number after it, and no disc folder is left behind.
+    assert ("cover.1.1.jpg", "Disc 1/cover.jpg") in tree
     assert ("cover.2.jpg", "Disc 2/cover.jpg") in tree
+    assert not (tmp_path / "Disc 1").exists()
     assert not (tmp_path / "Disc 2").exists()
 
 
 def test_rename_files_single_folder_keeps_the_names_from_a_folder_of_several_discs(tmp_path, monkeypatch) -> None:
     # One folder holds both discs' tracks, so there is no one disc to name its other files for: they keep
-    # their names, and one that would replace a file already in the release folder stays where it is.
+    # their names, and one that would replace a file already in the release folder is numbered.
     _single_folder(monkeypatch)
     tags, metadata = _release(tmp_path, _two_discs(folder="Audio"), ["Audio/rip.log", "Audio/cover.jpg", "cover.jpg"])
     before = _contents(tmp_path)
@@ -779,7 +782,7 @@ def test_rename_files_single_folder_keeps_the_names_from_a_folder_of_several_dis
     assert _contents(tmp_path) == before
     assert ("rip.log", "Audio/rip.log") in tree
     assert ("cover.jpg", "cover.jpg") in tree
-    assert ("Audio/cover.jpg", "Audio/cover.jpg") in tree
+    assert ("cover.1.jpg", "Audio/cover.jpg") in tree
 
 
 def test_rename_files_single_folder_moves_a_folder_of_tracks_inside_another_on_its_own_pass(
@@ -905,7 +908,7 @@ def test_rename_files_never_replaces_a_file_when_two_folders_go_to_one_disc_fold
     tree = _tree(tmp_path)
     assert _contents(tmp_path) == before
     assert ("CD01/cover.jpg", "Disc 1/cover.jpg") in tree
-    assert ("Disc 1 bonus/cover.jpg", "Disc 1 bonus/cover.jpg") in tree
+    assert ("CD01/cover.1.jpg", "Disc 1 bonus/cover.jpg") in tree
 
 
 def test_rename_files_renames_nothing_when_tracks_from_two_folders_get_one_name(tmp_path, monkeypatch) -> None:
@@ -1105,3 +1108,17 @@ def test_tag_files_auto_tag_question(monkeypatch, assume) -> None:
 
     assert len(asked) == (0 if assume else 1)
     assert bool(written) is assume
+
+
+def test_move_non_audio_files_does_not_overwrite_same_named_dest(tmp_path) -> None:
+    # shutil.move silently overwrites: a cover.jpg both in the disc folder and the
+    # destination must be suffixed, not clobbered.
+    cd1 = tmp_path / "CD1"
+    cd1.mkdir()
+    (cd1 / "cover.jpg").write_text("disc")
+    (tmp_path / "cover.jpg").write_text("root")
+
+    move_non_audio_files({(".flac", str(cd1), str(tmp_path))})
+
+    assert (tmp_path / "cover.jpg").read_text() == "root"
+    assert (tmp_path / "cover.1.jpg").read_text() == "disc"
