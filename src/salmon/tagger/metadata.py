@@ -4,6 +4,7 @@ import re
 from copy import copy
 from itertools import islice
 from typing import Any
+from urllib.parse import urlsplit
 
 import asyncclick as click
 import msgspec
@@ -220,7 +221,9 @@ def _album_identity(url: str) -> tuple[str, ...] | None:
     """(source, release id) of a store album URL, or (source, host, slug) for Bandcamp, so its other forms
     (locale, host, slash) count once."""
     source = _metasource_of(url)
-    match = METASOURCES[source].Scraper.regex.search(url) if source else None
+    # A query (Bandcamp's "?from=...") or fragment is no part of the album's identity.
+    bare = urlsplit(url)._replace(query="", fragment="").geturl()
+    match = METASOURCES[source].Scraper.regex.search(bare) if source else None
     if source is None or match is None:
         return None
     groups = [group.rstrip("/") for group in match.groups() if group]
