@@ -188,8 +188,16 @@ async def handle_spectrals_upload_and_deletion(
     """
     spectral_urls = await upload_spectrals(spectrals_path, spectral_ids)
     if delete_spectrals:
-        await _delete_spectrals(spectrals_path)
+        await _delete_uploaded_spectrals(spectrals_path)
     return spectral_urls
+
+
+async def _delete_uploaded_spectrals(spectrals_path: str) -> None:
+    """Delete spectrals that are up: a failure is printed, not raised, as their URLs are what the run needs."""
+    try:
+        await _delete_spectrals(spectrals_path)
+    except OSError as e:
+        click.secho(f"Could not delete {spectrals_path} ({e}); delete it by hand.", fg="yellow")
 
 
 async def _delete_spectrals(spectrals_path: str) -> None:
@@ -281,7 +289,7 @@ class SpectralUploads:
 
     async def close(self) -> None:
         """Delete the spectral files, if they are still there."""
-        await _delete_spectrals(self._path)
+        await _delete_uploaded_spectrals(self._path)
         if self._scratch is not None:
             shutil.rmtree(self._scratch, ignore_errors=True)
             self._scratch = None

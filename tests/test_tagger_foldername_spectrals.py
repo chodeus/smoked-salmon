@@ -543,3 +543,56 @@ def test_a_dry_run_makes_its_spectrals_outside_the_album_in_its_run_directory(
     assert Path(made).parent == run_dir
     assert (album / "Spectrals" / "theirs.png").read_bytes() == b"theirs"
     assert tmp_dir is None or list(tmp_dir.iterdir()) == []
+
+
+def test_the_spectral_urls_survive_a_delete_that_fails(monkeypatch, tmp_path, capsys) -> None:
+    import anyio
+
+    from salmon.uploader import spectrals
+
+    specs = tmp_path / "Album" / "Spectrals"
+    specs.parent.mkdir()
+    _write_spectrals(specs)
+
+    async def uploaded(_path, _ids):
+        return {1: ["https://img.example/1.png"]}
+
+    def held(_path: str, ignore_errors: bool = False) -> None:
+        if not ignore_errors:
+            raise PermissionError("held by a viewer")
+
+    async def no_sleep(_seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr(spectrals, "upload_spectrals", uploaded)
+    monkeypatch.setattr(spectrals.shutil, "rmtree", held)
+    monkeypatch.setattr(spectrals.anyio, "sleep", no_sleep)
+    urls = anyio.run(spectrals.handle_spectrals_upload_and_deletion, str(specs), {1: "01 Full.png"})
+
+    assert urls == {1: ["https://img.example/1.png"]}
+    assert "Could not delete" in capsys.readouterr().out
+
+
+def test_a_runs_spectral_urls_survive_a_delete_that_fails(monkeypatch, tmp_path, capsys) -> None:
+    album = tmp_path / "Album"
+    album.mkdir()
+    _write_spectrals(Path(get_spectrals_path(str(album))))
+
+    async def uploaded(_path, _ids, _tracker):
+        return {1: ["https://img.example/1.png"]}
+
+    def held(_path: str, ignore_errors: bool = False) -> None:
+        if not ignore_errors:
+            raise PermissionError("held by a viewer")
+
+    async def no_sleep(_seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr(spectrals, "upload_spectrals", uploaded)
+    monkeypatch.setattr(spectrals.shutil, "rmtree", held)
+    monkeypatch.setattr(spectrals.anyio, "sleep", no_sleep)
+    uploads = spectrals.SpectralUploads(str(album), ["RED"])
+    urls = anyio.run(uploads.urls_for, "RED", {1: "01 Full.png"})
+
+    assert urls == {1: ["https://img.example/1.png"]}
+    assert "Could not delete" in capsys.readouterr().out

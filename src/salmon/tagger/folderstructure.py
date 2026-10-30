@@ -119,18 +119,26 @@ async def _check_invisible_characters(path: str, scene: bool) -> None:
 
     Raises:
         NoncompliantFolderStructure: If a scene release has such names, the user declines the
-            rename, a rename would replace a path that exists, or nothing would be left of a name.
-        click.Abort: If the release folder's own name holds such a character.
+            rename, a rename would replace a path that exists, nothing would be left of a name,
+            or a folder of a release that is not scene could not be read.
+        click.Abort: If the release folder's own name holds such a character, or a folder of a scene
+            release could not be read.
     """
     folder_name = os.path.basename(os.path.normpath(path))
     offending: list[tuple[str, str, list[str]]] = []
-    for root, dirs, files in os.walk(path, topdown=False):
+    unreadable: list[OSError] = []
+    for root, dirs, files in os.walk(path, topdown=False, onerror=unreadable.append):
         for name in [*files, *dirs]:
             if chars := invisible_chars(name):
                 offending.append(
                     (os.path.join(root, name), os.path.join(folder_name, os.path.relpath(root, path), name), chars)
                 )
     root_chars = invisible_chars(folder_name)
+    for error in unreadable:
+        click.secho(f"Could not read {show_invisible(error.filename)} to check its names: {error.strerror}", fg="red")
+    if unreadable:
+        # What it holds is unchecked: no rename, and no descening, makes it pass. A scene release stops here.
+        raise click.Abort if scene else NoncompliantFolderStructure
 
     if not offending and not root_chars:
         return click.secho("No names hold invisible Unicode characters.", fg="green")
@@ -154,15 +162,17 @@ async def _check_invisible_characters(path: str, scene: bool) -> None:
         raise click.Abort
 
     renames = [(old, os.path.join(os.path.dirname(old), clean_name(os.path.basename(old)))) for old, _, _ in offending]
+    # As the volume compares names: where it ignores case, "A b" and "a b" are one name.
+    key = name_key(old for old, _ in renames)
     taken: set[str] = set()
     for old, new in renames:
         if new == old:
             click.secho(f"Cannot rename {old}: nothing would be left of its name.", fg="red", bold=True)
             raise NoncompliantFolderStructure
-        if os.path.lexists(new) or new in taken:
+        if os.path.lexists(new) or key(new) in taken:
             click.secho(f"Cannot rename {old}: {new} already exists.", fg="red", bold=True)
             raise NoncompliantFolderStructure
-        taken.add(new)
+        taken.add(key(new))
     if not await interaction.confirm(
         click.style("Rename them to the names without those characters?", fg="magenta"), default=True
     ):

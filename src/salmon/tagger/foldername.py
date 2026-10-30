@@ -330,12 +330,25 @@ def _strip_blank_resolution(template):
     token alone in its brackets but wrong for "[{source} FLAC {resolution}]": it would eat the
     closing bracket and leave "FLAC" hanging open. Here only the placeholder (and one adjacent
     separator space) goes; the bracket comes with it only if nothing else was left inside.
-    A placeholder can carry a format spec, as in "{resolution:>5}"; that goes too, or it would
-    survive into template.format() with no "resolution" key left to fill it.
+    The template is read as format() reads it, so a conversion or format spec on the token
+    ("{resolution!s}", "{resolution:>5}") goes with it, and escaped braces ("{{resolution}}") stay text.
     """
-    template = re.sub(r"\s*\{resolution(?::[^}]*)?\}", "", template)
-    template = re.sub(r"[\[{(]\s*[\]})]", "", template)
-    template = re.sub(r"\s+", " ", template).strip()
+    pieces = list(Formatter().parse(template))
+    literals = [literal for literal, *_ in pieces]
+    for i, (_literal, field, _spec, _conversion) in enumerate(pieces):
+        if field != "resolution":
+            continue
+        literals[i] = literals[i].rstrip()
+        after = literals[i + 1].lstrip() if i + 1 < len(literals) else ""
+        if literals[i][-1:] in ("[", "(", "{") and after[:1] == {"[": "]", "(": ")", "{": "}"}[literals[i][-1]]:
+            literals[i] = literals[i][:-1].rstrip()
+            literals[i + 1] = after[1:]
+    parts = []
+    for literal, (_literal, field, spec, conversion) in zip(literals, pieces, strict=True):
+        parts.append(literal.replace("{", "{{").replace("}", "}}"))
+        if field is not None and field != "resolution":
+            parts.append("{" + field + (f"!{conversion}" if conversion else "") + (f":{spec}" if spec else "") + "}")
+    template = re.sub(r"\s+", " ", "".join(parts)).strip()
     return re.sub(r" *- *$", "", template)
 
 
