@@ -1,5 +1,7 @@
 """library_dirs: browsable/uploadable sources that must never be deleted."""
 
+import os
+
 import pytest
 
 from salmon import cfg
@@ -76,8 +78,10 @@ def test_filesystem_root_as_library_dir_still_contains_descendants(monkeypatch) 
 def test_the_web_confinement_handles_filesystem_root() -> None:
     from salmon.webui.paths import _inside
 
-    assert _inside("/data/album", "/")
-    assert not _inside("/data/music-old", "/data/music")
+    root = os.path.abspath(os.sep)
+    data = os.path.join(root, "data")
+    assert _inside(os.path.join(data, "album"), root)
+    assert not _inside(os.path.join(data, "music-old"), os.path.join(data, "music"))
 
 
 def test_library_source_is_staged_as_a_real_copy_in_a_run_directory(tmp_path, monkeypatch) -> None:

@@ -111,12 +111,17 @@
     }
   }
 
+  // Shown in the job card: the form's error line is hidden while the job runs.
+  let cancelError = $state('')
+
   async function cancel() {
     if (!job) return
+    cancelError = ''
     try {
       await apiPost(`/jobs/${encodeURIComponent(job.id)}/cancel`)
     } catch (e) {
-      error = String(e)
+      // A job that has just ended: its last state is on its way.
+      if (!String(e).includes('ended already')) cancelError = String(e)
     }
   }
 
@@ -258,6 +263,7 @@
       {/if}
     </div>
     <JobStatus {job} />
+    {#if cancelError}<p class="error">{cancelError}</p>{/if}
 
     {#if result}
       {#if result.uploads.length}

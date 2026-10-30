@@ -104,7 +104,7 @@ class JobStore {
       // A failed websocket says nothing of why: a 401 here sends the browser back to the login.
       await apiGet('/auth')
     } catch {
-      this.scheduleReconnect()
+      if (session === this.session) this.scheduleReconnect()
       return
     }
     if (!this.running || session !== this.session) return
@@ -157,7 +157,7 @@ class JobStore {
     } finally {
       const buffered = this.buffer ?? []
       this.buffer = null
-      for (const event of buffered) this.apply(event)
+      if (session === this.session) for (const event of buffered) this.apply(event)
       this.resyncing = false
     }
     // Lines may have been missed while disconnected: load the logs on show again.

@@ -28,17 +28,22 @@
   let error = $state('')
   let loading = $state(false)
 
+  // Only the newest request's answer is shown, as FolderPicker does: an older one may arrive last.
+  let latest = 0
+
   /** The roots (no path), or the folders and image files in one; the server refuses anything outside the roots. */
   async function browse(path?: string | null) {
+    const mine = ++latest
     loading = true
     error = ''
     try {
       const query = path ? `path=${encodeURIComponent(path)}&images=1` : 'images=1'
-      listing = await apiGet<Listing>(`/browse?${query}`)
+      const found = await apiGet<Listing>(`/browse?${query}`)
+      if (mine === latest) listing = found
     } catch (e) {
-      error = String(e)
+      if (mine === latest) error = String(e)
     } finally {
-      loading = false
+      if (mine === latest) loading = false
     }
   }
 

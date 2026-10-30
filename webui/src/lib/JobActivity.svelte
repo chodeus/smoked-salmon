@@ -8,7 +8,8 @@
   const lines = $derived(logTail > 0 ? job.log.slice(-logTail) : job.log)
 
   $effect(() => {
-    void lines.length
+    // The last line's number: a tail of logTail lines keeps its length as lines arrive.
+    void lines.at(-1)?.n
     if (logEl) logEl.scrollTop = logEl.scrollHeight
   })
 </script>

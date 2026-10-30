@@ -19,6 +19,8 @@
   let jobId = $state<string | null>(null)
   let showLog = $state(false)
   let copied = $state(false)
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined
+  $effect(() => () => clearTimeout(copiedTimer))
 
   // The job started here, else the newest checks job.
   const job = $derived(
@@ -64,7 +66,8 @@
     // copyText: navigator.clipboard is missing on a page served over plain HTTP.
     if (await copyText(result.report)) {
       copied = true
-      setTimeout(() => (copied = false), 1500)
+      clearTimeout(copiedTimer)
+      copiedTimer = setTimeout(() => (copied = false), 1500)
     } else {
       error = 'Could not copy the report: select it and copy by hand.'
     }

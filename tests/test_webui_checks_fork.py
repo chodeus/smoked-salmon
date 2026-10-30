@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient
+from test_checks_all_command import fake_flac  # noqa: F401  # pyright: ignore[reportMissingImports]
 from test_webui_checks_trackers import (  # noqa: F401  # pyright: ignore[reportMissingImports]
     SEARCHSTRS,
     FakeTracker,
