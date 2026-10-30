@@ -256,8 +256,15 @@ def append_guests_to_track_titles(track):
 
 
 def metadata_to_track_list(metadata):
-    """Turn the double nested dictionary of tracks into a flat list of tracks, discs in natural order."""
-    return list(chain.from_iterable(metadata[disc].values() for disc in sorted(metadata, key=_disc_track_sort_key)))
+    """Turn the double nested dictionary of tracks into a flat list of tracks, discs and their tracks in natural order.
+
+    Hand-edited metadata can list a disc's tracks in any order.
+    """
+    return [
+        metadata[disc][track]
+        for disc in sorted(metadata, key=_disc_track_sort_key)
+        for track in sorted(metadata[disc], key=_disc_track_sort_key)
+    ]
 
 
 def _track_key(track):
@@ -326,10 +333,10 @@ def _order_within_disc(group):
     if not _names_distinct(names):
         raise _ambiguous_tracks()
     by_name = sorted(group, key=lambda item: _natural_key(item[0]))
-    if all(re.match(r"\d", os.path.basename(name)) for name in names):
-        return by_name
+    numbered = all(re.match(r"\d", os.path.basename(name)) for name in names)
     pinned = sum(1 for n in numbers if n is not None and numbers.count(n) == 1)
-    if pinned >= len(group) - 1 and not _names_move_a_pinned_file(by_name):
+    # Numbered names too are no order when they move a file off its own track tag.
+    if (numbered or pinned >= len(group) - 1) and not _names_move_a_pinned_file(by_name):
         return by_name
     raise _ambiguous_tracks()
 
@@ -455,7 +462,8 @@ def _compare_tag(tagfield, metafield, tagset, trackmeta):
     Compare a tag to the equivalent metadata field. If the metadata field
     does not equal the existing tag, return a ``Change``.
     """
-    if trackmeta[metafield]:
+    # .get: hand-edited metadata can leave an optional field (isrc) out altogether.
+    if trackmeta.get(metafield):
         if not getattr(tagset, tagfield, False):
             return Change(tagfield, None, trackmeta[metafield])
         if str(getattr(tagset, tagfield, "")) != str(trackmeta[metafield]):

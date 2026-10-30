@@ -60,9 +60,10 @@ async def review_metadata(metadata, validator, enforce_required_fields: bool = T
                 "artist a[L]iases (rename or split an artist on every track), [t]itle, [g]enres, "
                 "[r]elease type, [y]ears, [e]dition info, [c]omment, trac[k]s, [u]rls, [n]othing",
                 fg="magenta",
-            )
+            ),
+            default="n",
         )
-        r_let = r[0].lower()
+        r_let = (r or "n")[0].lower()
         try:
             await edit_functions[r_let](metadata)
         except KeyError:
