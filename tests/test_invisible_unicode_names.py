@@ -14,6 +14,7 @@ import pytest
 from salmon import cfg, interaction
 from salmon.common import clean_name, invisible_chars
 from salmon.errors import NoncompliantFolderStructure, UploadError
+from salmon.tagger import renames
 from salmon.tagger.foldername import _edit_folder_interactive, generate_folder_name, rename_folder
 from salmon.tagger.folderstructure import _check_invisible_characters, check_folder_structure
 from salmon.tagger.retagger import generate_file_name
@@ -473,3 +474,61 @@ def test_check_stops_at_the_first_failed_rename_and_names_the_names_left(tmp_pat
     assert "Permission denied" in out
     assert "Not renamed" in out
     assert f"Disc{WORD_JOINER} 1" in out
+
+
+def test_check_renames_nothing_when_two_names_clean_to_one_on_a_volume_that_ignores_case(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "Artist - Album [WEB FLAC]"
+    root.mkdir()
+    (root / f"A{NBSP}b.flac").write_bytes(b"one")
+    (root / f"a{ZWSP} b.flac").write_bytes(b"two")
+    monkeypatch.setattr(renames, "_folds_case", lambda _path: True)
+    _answer(monkeypatch, True)
+    before = _names(root)
+
+    with pytest.raises(NoncompliantFolderStructure):
+        anyio.run(lambda: _check_invisible_characters(str(root), False))
+
+    assert _names(root) == before
+
+
+def test_check_stops_when_a_folder_cannot_be_read(tmp_path, monkeypatch, capsys) -> None:
+    root = tmp_path / "Artist - Album [WEB FLAC]"
+    (root / "Sc\x1bans").mkdir(parents=True)
+    real_scandir = os.scandir
+
+    def scandir(path):
+        if os.path.basename(path) == "Sc\x1bans":
+            raise PermissionError(13, "Permission denied", path)
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+
+    with pytest.raises(NoncompliantFolderStructure):
+        anyio.run(lambda: _check_invisible_characters(str(root), False))
+
+    out = capsys.readouterr().out
+    assert "No names hold invisible Unicode characters." not in out
+    assert f"Could not read {root / 'Sc<U+001B>ans'} to check its names: Permission denied" in out
+    assert "\x1b" not in out
+
+
+def test_check_of_a_scene_release_stops_without_asking_to_descene_when_a_folder_cannot_be_read(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    root = tmp_path / "Artist-Album-WEB-FLAC-2024-GRP"
+    (root / "Scans").mkdir(parents=True)
+    real_scandir = os.scandir
+
+    def scandir(path):
+        if os.path.basename(path) == "Scans":
+            raise PermissionError(13, "Permission denied", path)
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+
+    with pytest.raises(click.Abort):
+        anyio.run(lambda: check_folder_structure(str(root), True))
+
+    out = capsys.readouterr().out
+    assert f"Could not read {root / 'Scans'} to check its names: Permission denied" in out
+    assert "descene" not in out
