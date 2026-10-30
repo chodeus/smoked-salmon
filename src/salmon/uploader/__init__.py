@@ -1574,7 +1574,11 @@ async def last_min_dupe_check(gazelle_site, searchstrs, our_title=None):
         return
     # Should really avoid asking if already shown the same releases from the log.
     click.secho(f"Last Minute Dupe Check on {gazelle_site.site_code}", fg="cyan")
-    recent_uploads = await dupe_check_recent_torrents(gazelle_site, searchstrs, our_title)
+    try:
+        recent_uploads = await dupe_check_recent_torrents(gazelle_site, searchstrs, our_title)
+    except RequestError as e:
+        click.secho(f"Could not read the {gazelle_site.site_string} site log: {e}", fg="red", bold=True)
+        raise click.Abort from None
     if recent_uploads:
         print_recent_upload_results(gazelle_site, recent_uploads, " / ".join(searchstrs))
         if not await interaction.confirm(
