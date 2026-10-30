@@ -222,3 +222,21 @@ def test_the_quick_look_viewer_is_given_the_pngs_only(monkeypatch, tmp_path) -> 
     anyio.run(spectrals._open_specs_in_preview, str(path))
 
     assert [Path(arg).name for arg in run[0][2:]] == ["01 Full.png", "01 Zoom.png", "02 Full.png", "02 Zoom.png"]
+
+
+@posix_only
+def test_a_temporary_copy_that_cannot_be_removed_does_not_stop_the_spectrals(monkeypatch, tmp_path, capsys) -> None:
+    _hide_pyoxipng(monkeypatch)
+    _fake_program(monkeypatch, tmp_path, "exit 1")
+    path = _spectrals_dir(tmp_path)
+
+    def held_open(_path):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(spectrals.os, "remove", held_open)
+
+    anyio.run(partial(spectrals._compress_spectrals, str(path)))
+
+    assert (path / "01 Full.png").read_bytes() == b"png 1 Full"
+    printed = capsys.readouterr().out
+    assert "Could not compress 01 Full.png" in printed
