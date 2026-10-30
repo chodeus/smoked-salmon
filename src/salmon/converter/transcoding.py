@@ -18,6 +18,7 @@ from salmon.converter.conversions import conversion_of, missing_files, record_co
 from salmon.errors import UploadError
 from salmon.release_notification import get_version
 from salmon.tagger.audio_info import gather_audio_info
+from salmon.tagger.cover import MAX_PICTURES_AND_PADDING
 from salmon.tagger.foldername import drop_resolution_token, resolution_token
 
 Bitrate = Literal["V0", "320"]
@@ -93,7 +94,12 @@ def _build_output_path(path: str, bitrate: Bitrate, output_dir: str | None = Non
     # Drop a stale resolution token before deriving the new name: an MP3 transcode must not keep
     # claiming a FLAC resolution such as "24-96". The token is computed from the source's actual
     # files, not guessed at with a pattern, so it cannot also eat unrelated digits from the title.
-    foldername = drop_resolution_token(foldername, resolution_token(gather_audio_info(path)))
+    try:
+        audio_info = gather_audio_info(path)
+    except UploadError:
+        # A file it cannot read names the output as before, so an existing one is still found and checked.
+        audio_info = {}
+    foldername = drop_resolution_token(foldername, resolution_token(audio_info))
 
     if FLAC_FOLDER_RE.search(foldername):
         if LOSSLESS_FOLDER_RE.search(foldername):
@@ -272,7 +278,14 @@ def _copy_tags(tag_dict: dict[str, list[str]], flac_obj: flac.FLAC, mp3_path: Pa
     for k, v in tag_dict.items():
         mp3_thing.tags.add(_get_id3_frame(k, v))
 
+    # The MP3's tag is held to the FLAC's limit on pictures and padding, and its text frames spend from it too:
+    # 16 bytes covers each frame's header and encoding byte, and 8 KiB is left for padding.
+    spent = sum(len(str(value).encode()) + 16 for values in tag_dict.values() for value in values)
+    budget = MAX_PICTURES_AND_PADDING - 8 * 1024 - spent
     for pic in flac_obj.pictures:
+        if len(pic.data) > budget:
+            continue
+        budget -= len(pic.data)
         mp3_thing.tags.add(APIC(encoding=3, mime=pic.mime, type=pic.type, desc=pic.desc, data=pic.data))
 
     mp3_thing.save(v1=0, v2_version=4)
@@ -362,8 +375,16 @@ async def _flac_to_mp3(lame_qual: Bitrate, flac_path: str, mp3_path: str) -> Non
         if read_fd >= 0:
             os.close(read_fd)
 
-    _, flac_err = await flac_proc.communicate()
-    _, lame_err = await lame_proc.communicate()
+    try:
+        _, flac_err = await flac_proc.communicate()
+        _, lame_err = await lame_proc.communicate()
+    except BaseException:
+        # Cancelled (Ctrl-C, a salmon web job): the encoders must not go on writing the MP3 after the run.
+        for proc in (flac_proc, lame_proc):
+            if proc.returncode is None:
+                proc.kill()
+        await asyncio.gather(flac_proc.wait(), lame_proc.wait(), return_exceptions=True)
+        raise
 
     if flac_proc.returncode:
         err = flac_err.decode()

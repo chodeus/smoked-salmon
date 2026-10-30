@@ -1,6 +1,7 @@
 """An MP3 transcode output name must not keep a stale {resolution} token from the source name."""
 
 from salmon.converter import transcoding
+from salmon.errors import UploadError
 
 # What the tag/foldername step would produce with a template combining {format} and {resolution}:
 # a 24-bit/96kHz FLAC folder.
@@ -127,3 +128,15 @@ def test_an_unbracketed_token_is_dropped_when_the_template_places_resolution(mon
     new_path = transcoding._build_output_path("/downloads/Artist - Title 24-96", "V0")
 
     assert new_path == "/downloads/Artist - Title [MP3 V0]"
+
+
+def _unreadable(_path):
+    raise UploadError("Could not read audio file: 01.flac")
+
+
+def test_an_unreadable_source_file_names_the_output_as_before(monkeypatch) -> None:
+    monkeypatch.setattr(transcoding, "gather_audio_info", _unreadable)
+
+    new_path = transcoding._build_output_path(SOURCE_24_96, "V0")
+
+    assert new_path == "/downloads/Artist - Title (2024) [WEB MP3 V0 24-96]"
