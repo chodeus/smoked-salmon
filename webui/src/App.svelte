@@ -39,11 +39,16 @@
     await refreshAuth()
   }
 
+  let logoutError = $state('')
+
+  // Logged out only once the server says so: its session cookie may still be valid.
   async function signOut() {
+    logoutError = ''
     try {
       await logout()
-    } finally {
       authed = false
+    } catch (e) {
+      logoutError = `Log out failed: ${e}`
     }
   }
 
@@ -89,6 +94,7 @@
     </a>
     <div class="spacer"></div>
     <span class="chip {jobStore.connected ? 'ok' : 'err'}">{jobStore.connected ? 'connected' : 'disconnected'}</span>
+    {#if logoutError}<span class="chip err" title={logoutError}>log out failed</span>{/if}
     <button class="btn secondary small" onclick={signOut}>Log out</button>
   </nav>
 

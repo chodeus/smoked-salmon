@@ -57,6 +57,8 @@ class JobStore {
   private ws: WebSocket | null = null
   private running = false
   private retry: ReturnType<typeof setTimeout> | null = null
+  // A failed list load is tried again while the socket stays open.
+  private resyncRetry: ReturnType<typeof setTimeout> | null = null
   private buffer: any[] | null = null
   private resyncing = false
   private resyncAgain = false
@@ -76,6 +78,7 @@ class JobStore {
     this.running = false
     this.session++
     if (this.retry) clearTimeout(this.retry)
+    if (this.resyncRetry) clearTimeout(this.resyncRetry)
     this.ws?.close()
     this.ws = null
     this.connected = false
@@ -153,7 +156,14 @@ class JobStore {
         this.loadError = ''
       }
     } catch (e) {
-      if (session === this.session) this.loadError = `Could not load the jobs: ${e}`
+      if (session === this.session) {
+        this.loadError = `Could not load the jobs: ${e}`
+        if (this.resyncRetry) clearTimeout(this.resyncRetry)
+        this.resyncRetry = setTimeout(() => {
+          this.resyncRetry = null
+          void this.resync()
+        }, 2000)
+      }
     } finally {
       const buffered = this.buffer ?? []
       this.buffer = null

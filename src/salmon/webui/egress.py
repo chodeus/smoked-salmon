@@ -43,6 +43,9 @@ def config_secrets(config: Cfg) -> list[str]:
         if tracker is not None:
             if _own(tracker.session, "tracker", name, "session"):
                 found += session_cookie_forms(tracker.session)
+            # The fork's persistent-login cookie: a bare value passes the pattern masking.
+            if _own(tracker.keeplogged, "tracker", name, "keeplogged"):
+                found += session_cookie_forms(tracker.keeplogged)
             found.append(_own(tracker.api_key, "tracker", name, "api_key"))
     image = config.image
     found += [
