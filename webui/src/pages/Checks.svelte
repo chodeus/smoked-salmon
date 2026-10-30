@@ -1,5 +1,6 @@
 <script lang="ts">
   import { apiGet, apiPost } from '../lib/api'
+  import { copyText } from '../lib/clipboard'
   import DupeMatches from '../lib/DupeMatches.svelte'
   import FolderPicker from '../lib/FolderPicker.svelte'
   import JobActivity from '../lib/JobActivity.svelte'
@@ -60,12 +61,12 @@
 
   async function copyReport() {
     if (!result?.report) return
-    try {
-      await navigator.clipboard.writeText(result.report)
+    // copyText: navigator.clipboard is missing on a page served over plain HTTP.
+    if (await copyText(result.report)) {
       copied = true
       setTimeout(() => (copied = false), 1500)
-    } catch (e) {
-      error = `Could not copy the report: ${e}`
+    } else {
+      error = 'Could not copy the report: select it and copy by hand.'
     }
   }
 </script>

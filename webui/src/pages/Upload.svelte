@@ -34,7 +34,8 @@
   // The only flags remembered between uploads: choices that do not depend on the album. Every other flag either
   // belongs to one album or skips a check or changes tags, and carried over silently it could send the next album
   // up unchecked. A flag added to FLAGS later is therefore not remembered unless it is added here.
-  const REMEMBERED_FLAGS = ['auto_rename', 'spectrals_after', 'compress', 'essential_only', 'scene']
+  // Not scene: it is one release's, and it leaves names and tags as they are.
+  const REMEMBERED_FLAGS = ['auto_rename', 'spectrals_after', 'compress', 'essential_only']
 
   interface Stored {
     flags: Record<string, boolean>

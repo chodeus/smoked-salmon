@@ -103,8 +103,8 @@
   const finished = $derived(jobStore.jobs.filter((j) => FINISHED.includes(j.status)).length)
 </script>
 
-<!-- Ported from the fork's Dashboard (chodeus, 9bfdddc3, 0b29d2d5), without the connection check: no tracker request
-     on load. -->
+<!-- Ported from the fork's Dashboard (chodeus, 9bfdddc3, 0b29d2d5), with the connection check on its button only: no
+     tracker request on load. -->
 
 {#snippet usage(space: Space)}
   {@const used = usedPercent(space)}

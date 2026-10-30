@@ -62,6 +62,8 @@ class JobStore {
   private resyncAgain = false
   // The jobs whose whole log is shown.
   private shown = new Set<string>()
+  // Bumped at each stop: what a stopped session had in flight changes nothing after it.
+  private session = 0
 
   start() {
     if (this.running) return
@@ -72,9 +74,11 @@ class JobStore {
   /** On logging out: no more reconnecting. */
   stop() {
     this.running = false
+    this.session++
     if (this.retry) clearTimeout(this.retry)
     this.ws?.close()
     this.ws = null
+    this.connected = false
     this.jobs = []
     this.shown.clear()
   }
@@ -95,6 +99,7 @@ class JobStore {
 
   private async connect() {
     if (!this.running) return
+    const session = this.session
     try {
       // A failed websocket says nothing of why: a 401 here sends the browser back to the login.
       await apiGet('/auth')
@@ -102,19 +107,23 @@ class JobStore {
       this.scheduleReconnect()
       return
     }
-    if (!this.running) return
+    if (!this.running || session !== this.session) return
     const ws = new WebSocket(wsUrl())
     this.ws = ws
+    // A socket this store no longer holds (stopped, or replaced) changes nothing and schedules nothing.
     ws.onopen = () => {
+      if (this.ws !== ws) return
       this.connected = true
       void this.resync()
     }
     ws.onclose = () => {
-      if (this.ws === ws) this.ws = null
+      if (this.ws !== ws) return
+      this.ws = null
       this.connected = false
       this.scheduleReconnect()
     }
     ws.onmessage = (msg) => {
+      if (this.ws !== ws) return
       const event = JSON.parse(msg.data)
       if (this.buffer !== null) this.buffer.push(event)
       else this.apply(event)
@@ -135,13 +144,16 @@ class JobStore {
     }
     this.resyncing = true
     this.buffer = []
+    const session = this.session
     try {
       const { jobs } = await apiGet<{ jobs: Job[] }>('/jobs')
-      const known = new Map(this.jobs.map((j) => [j.id, j]))
-      this.jobs = jobs.map((j) => ({ ...j, log: known.get(j.id)?.log ?? [] }))
-      this.loadError = ''
+      if (session === this.session) {
+        const known = new Map(this.jobs.map((j) => [j.id, j]))
+        this.jobs = jobs.map((j) => ({ ...j, log: known.get(j.id)?.log ?? [] }))
+        this.loadError = ''
+      }
     } catch (e) {
-      this.loadError = `Could not load the jobs: ${e}`
+      if (session === this.session) this.loadError = `Could not load the jobs: ${e}`
     } finally {
       const buffered = this.buffer ?? []
       this.buffer = null
