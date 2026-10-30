@@ -1,5 +1,6 @@
 """`salmon descgen` closes every BBCode tag it opens, and turns away what is not a store URL. No source is contacted."""
 
+import asyncio
 import re
 
 import anyio
@@ -8,7 +9,7 @@ from asyncclick.testing import CliRunner
 
 import salmon.commands
 from salmon import cfg
-from salmon.commands import descgen
+from salmon.commands import build_description, descgen
 from salmon.tagger.sources import METASOURCES
 
 METADATA = {
@@ -98,3 +99,25 @@ def test_descgen_never_echoes_a_refused_url(monkeypatch, url: str) -> None:
     assert "SECRET" not in result.output
     assert "announce" not in result.output
     assert "12345678901234567890abcdef" not in result.output
+
+
+def test_build_description_scrapes_a_few_urls_at_once(monkeypatch) -> None:
+    running = 0
+    most = 0
+
+    async def run_metadata(url, return_source_name=False):
+        nonlocal running, most
+        running += 1
+        most = max(most, running)
+        await asyncio.sleep(0.01)
+        running -= 1
+        return METADATA, "Qobuz"
+
+    monkeypatch.setattr(salmon.commands, "run_metadata", run_metadata)
+    monkeypatch.setattr(salmon.commands, "combine_metadatas", lambda *_: METADATA)
+    monkeypatch.setattr(salmon.commands, "clean_metadata", lambda found: found)
+
+    description = anyio.run(build_description, [f"https://www.qobuz.com/album/x{n}" for n in range(10)])
+
+    assert "First" in description
+    assert most == 4

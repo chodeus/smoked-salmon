@@ -1,8 +1,10 @@
 import asyncio
+import contextlib
 import inspect
 import json
 import re
 import time
+from collections import OrderedDict
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
@@ -542,13 +544,15 @@ def _page_explicitly_names_label(page_text: str, label: str) -> bool:
 
 
 # The text of the cited pages fetched so far, by URL: at most PAGE_TEXT_CACHE_SIZE, the oldest dropped first.
-_page_texts: dict[str, str] = {}
+_page_texts: OrderedDict[str, str] = OrderedDict()
 PAGE_TEXT_CACHE_SIZE = 64
+# A release page is far smaller: a bigger answer is not searched for a label, nor kept.
+MAX_PAGE_BYTES = 5 * 1024 * 1024
 
 
 async def _fetch_release_page_text(url: str) -> str:
-    if url in _page_texts:
-        return _page_texts[url]
+    if (cached := _page_texts.get(url)) is not None:
+        return cached
     timeout = aiohttp.ClientTimeout(total=15)
     # The AI chose this URL: salmon web's guard applies (salmon.ssrf).
     async with (
@@ -556,11 +560,22 @@ async def _fetch_release_page_text(url: str) -> str:
         session.get(url, headers={"User-Agent": cfg.upload.user_agent}) as response,
     ):
         response.raise_for_status()
-        html = await response.text(errors="replace")
+        data = bytearray()
+        async for chunk in response.content.iter_chunked(64 * 1024):
+            data += chunk
+            if len(data) > MAX_PAGE_BYTES:
+                raise ValueError(f"the page is over {MAX_PAGE_BYTES // 1024 // 1024} MiB")
+        charset = response.charset or "utf-8"
+    try:
+        html = data.decode(charset, errors="replace")
+    except LookupError:  # A charset Python does not know.
+        html = data.decode("utf-8", errors="replace")
     soup = BeautifulSoup(html, "lxml")
     text = f"{soup.get_text(' ', strip=True)} {html}"
     if len(_page_texts) >= PAGE_TEXT_CACHE_SIZE:
-        del _page_texts[next(iter(_page_texts))]
+        # Another job may have emptied it since.
+        with contextlib.suppress(KeyError):
+            _page_texts.popitem(last=False)
     _page_texts[url] = text
     return text
 

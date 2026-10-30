@@ -41,6 +41,9 @@ from salmon.uploader.spectrals import (
 from salmon.uploader.torrent_client import TorrentClientGenerator
 from salmon.uploader.upload import generate_source_links
 
+# One scrape per URL in build_description: at most this many at once.
+MAX_CONCURRENT_SCRAPES = 4
+
 
 def format_spectral_urls(filenames: list[str], spectral_urls: dict[int, list[str]], bbcode: bool) -> str:
     """What ``salmon specs`` prints for uploaded spectrals, and so does the web interface: a line per track.
@@ -115,8 +118,13 @@ def descgen_refusals(urls: Sequence[str], folders: bool = True) -> list[str]:
 async def build_description(urls: Sequence[str]) -> str:
     """What ``salmon descgen`` makes, and so does the web interface: the BBCode description of the releases at these
     URLs, their metadata combined. Fetches each URL once; the URLs are ones ``descgen_refusals`` accepts."""
-    tasks = [run_metadata(url, return_source_name=True) for url in urls]
-    metadatas = await asyncio.gather(*tasks)
+    limit = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
+
+    async def scrape(url: str):
+        async with limit:
+            return await run_metadata(url, return_source_name=True)
+
+    metadatas = await asyncio.gather(*(scrape(url) for url in urls))
     metadata = clean_metadata(combine_metadatas(*((s, m) for m, s in metadatas)))
     remove_various_artists(metadata["tracks"])
 
@@ -444,7 +452,10 @@ async def _test_seedbox_connections() -> None:
                     # Test access to the configured remote, not just local config presence.
                     try:
                         with anyio.fail_after(10):
-                            result = await anyio.run_process(["rclone", "lsd", f"{seedbox_config.url}:"], check=False)
+                            # With the upload's own extra_args, e.g. a --config it relies on.
+                            result = await anyio.run_process(
+                                ["rclone", "lsd", f"{seedbox_config.url}:", *seedbox_config.extra_args], check=False
+                            )
                         if result.returncode == 0:
                             click.secho(f"    ✔ Rclone remote '{remote}' is accessible", fg="green", bold=True)
                         else:
