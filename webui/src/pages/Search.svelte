@@ -55,7 +55,8 @@
     error = ''
     searched = null
     const params = new URLSearchParams({ q: query.trim() })
-    if (trackCount) params.set('track_count', String(trackCount))
+    // != null: a count of 0 goes to the server, which refuses it, instead of searching unfiltered.
+    if (trackCount != null && Number.isFinite(trackCount)) params.set('track_count', String(trackCount))
     try {
       const answer = await apiGet<{ query: string; sources: Source[] }>(`/search?${params}`)
       if (seq === searchSeq) searched = answer
