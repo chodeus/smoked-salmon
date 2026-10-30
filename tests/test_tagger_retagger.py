@@ -1105,3 +1105,47 @@ def test_tag_files_auto_tag_question(monkeypatch, assume) -> None:
 
     assert len(asked) == (0 if assume else 1)
     assert bool(written) is assume
+
+
+def _new_titles(changes) -> dict[str, str]:
+    return {
+        name: change.new for name, file_changes in changes.items() for change in file_changes if change.tag == "title"
+    }
+
+
+def test_numbered_names_that_put_a_pinned_file_elsewhere_are_not_an_order():
+    # 1.flac's own tag says track 3: names that start with a number are no order when they move a file off its tag.
+    tags = {
+        "1.flac": _tagset("Old 1", tracknumber="3", discnumber=None),
+        "2.flac": _tagset("Old 2", tracknumber=None, discnumber=None),
+        "3.flac": _tagset("Old 3", tracknumber=None, discnumber=None),
+    }
+    metadata = {"tracks": {"1": {str(n): _trackmeta(f"New {n}", str(n), "1") for n in (1, 2, 3)}}}
+
+    with pytest.raises(AmbiguousTrackOrderError, match="DISCNUMBER and TRACKNUMBER"):
+        create_track_changes(tags, metadata)
+
+
+def test_a_metadata_track_without_an_isrc_is_compared_without_one():
+    # Hand-edited metadata can leave an optional field out altogether.
+    track = _trackmeta("New", "1", "1")
+    del track["isrc"]
+
+    changes = create_track_changes(
+        {"01.flac": _tagset("Old", tracknumber="1", discnumber=None)}, {"tracks": {"1": {"1": track}}}
+    )
+
+    assert Change("title", "Old", "New") in changes["01.flac"]
+
+
+def test_tracks_the_metadata_lists_out_of_order_still_pair_by_their_numbers():
+    # Hand-edited metadata can list a disc's tracks in any order.
+    tags = {
+        "01.flac": _tagset("Old 1", tracknumber="1", discnumber=None),
+        "02.flac": _tagset("Old 2", tracknumber="2", discnumber=None),
+    }
+    metadata = {"tracks": {"1": {"2": _trackmeta("New 2", "2", "1"), "1": _trackmeta("New 1", "1", "1")}}}
+
+    changes = create_track_changes(tags, metadata)
+
+    assert _new_titles(changes) == {"01.flac": "New 1", "02.flac": "New 2"}

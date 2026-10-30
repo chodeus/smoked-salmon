@@ -259,3 +259,20 @@ def test_edit_tracks_refuses_extra_text_on_title_and_artist_lines(monkeypatch, o
     assert len(confirms) == 1 and f"line {line}: " in confirms[0] and new in confirms[0]
     assert metadata["tracks"]["1"]["2"]["title"] == "Two"
     assert metadata["tracks"]["1"]["1"]["artists"] == [("A", "main")]
+
+
+def test_enter_at_the_review_prompt_edits_nothing(monkeypatch) -> None:
+    metadata = make_metadata()
+    defaults = []
+
+    async def enter(*_args, **kwargs):
+        defaults.append(kwargs.get("default"))
+        return ""
+
+    monkeypatch.setattr(review_module, "_print_metadata", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(review_module.click, "prompt", enter)
+
+    result = anyio.run(review_module.review_metadata, metadata, lambda _metadata: None, False)
+
+    assert result is metadata
+    assert defaults == ["n"]
