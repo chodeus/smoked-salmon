@@ -3,7 +3,7 @@ import io
 import os
 import re
 import uuid
-from typing import IO
+from typing import IO, cast
 
 import aiohttp
 import asyncclick as click
@@ -177,9 +177,22 @@ def _flatten_to_rgb(image: Image.Image) -> Image.Image:
         background = Image.new("RGB", rgba.size, (255, 255, 255))
         background.paste(rgba, mask=rgba.getchannel("A"))
         return background
-    if image.mode in ("I", "I;16", "I;16B", "I;16L"):
-        return image.convert("I").point(lambda v: v / 256).convert("RGB")
-    return image.convert("RGB")
+    return _eight_bit(image).convert("RGB")
+
+
+def _eight_bit(image: Image.Image) -> Image.Image:
+    """A 16- or 32-bit integer mode scaled down to 8 bits (convert alone clips it to white); any other as it is.
+
+    Raises:
+        ValueError: A value does not fit 16 bits: scaled as 16-bit, it would clip to white all the same.
+    """
+    if image.mode not in ("I", "I;16", "I;16B", "I;16L"):
+        return image
+    image = image.convert("I")
+    low, high = cast("tuple[int, int]", image.getextrema())
+    if low < 0 or high > 65535:
+        raise ValueError(f"pixel values {low}..{high} do not fit 16 bits")
+    return image.point(lambda v: v / 256).convert("L")
 
 
 def compress_to_target_size(image, target_size):
@@ -249,7 +262,7 @@ def _as_cover_file(picture: Picture) -> tuple[str, bytes] | None:
                 image.load()
                 return ("jpg" if image.format == "JPEG" else "png"), picture.data
             buffer = io.BytesIO()
-            image.convert("RGBA").save(buffer, "png")
+            _eight_bit(image).convert("RGBA").save(buffer, "png")
             return "png", buffer.getvalue()
     except Exception:
         return None
@@ -275,8 +288,9 @@ def _write_whole_file(dest: str, data: bytes) -> None:
 def _strip_pictures(path: str, audio: FLAC, cover_file: str | None) -> str | None:
     """Remove a FLAC's pictures and padding, keeping 8 KiB of padding.
 
-    Its front cover is written to the folder first if the folder has no cover file. If that cover cannot be
-    saved as a JPEG or PNG file, the FLAC is left as it is, so the only copy of the artwork is not lost.
+    Its artwork is written to the folder first if the folder has no cover file: its front cover, else the first other
+    picture that reads. If none can be saved as a JPEG or PNG file, the FLAC is left as it is, so the only copy of the
+    artwork is not lost.
 
     Args:
         path: The release folder.
@@ -286,16 +300,17 @@ def _strip_pictures(path: str, audio: FLAC, cover_file: str | None) -> str | Non
     Returns:
         The folder's cover file afterwards, or None if it still has none.
     """
-    for picture in audio.pictures:
-        if picture.type == PictureType.COVER_FRONT and not cover_file:
-            cover = _as_cover_file(picture)
-            if cover is None:
-                click.secho(
-                    f"Left {audio.filename} as it is: its front cover could not be read as an image to keep it.",
-                    fg="red",
-                )
-                return cover_file
-            extension, data = cover
+    if not cover_file:
+        # Front covers first: the first picture that reads is the copy kept.
+        pictures = sorted((p for p in audio.pictures if p.data), key=lambda p: p.type != PictureType.COVER_FRONT)
+        saved = next((cover for cover in map(_as_cover_file, pictures) if cover is not None), None)
+        if pictures and saved is None:
+            click.secho(
+                f"Left {audio.filename} as it is: its artwork could not be read as an image to keep it.", fg="red"
+            )
+            return None
+        if saved is not None:
+            extension, data = saved
             cover_file = os.path.join(path, f"cover.{extension}")
             # A partial cover file would pass for the folder's cover on the next run.
             _write_whole_file(cover_file, data)
@@ -309,8 +324,9 @@ def _strip_pictures(path: str, audio: FLAC, cover_file: str | None) -> str | Non
 def check_embedded_pictures(path: str) -> None:
     """Strip the FLACs whose embedded pictures plus padding exceed RED's 1 MiB limit, or only warn about them.
 
-    Stripping removes every embedded picture and all but 8 KiB of padding, keeping the front cover as the
-    folder's cover file if it has none. With image.strip_oversized_pictures off, the files are only listed.
+    Stripping removes every embedded picture and all but 8 KiB of padding, keeping the artwork (the front cover
+    first) as the folder's cover file if it has none. A cover file that is not a readable image is no copy of the
+    artwork, so the files are left as they are. With image.strip_oversized_pictures off, they are only listed.
 
     Args:
         path: The release folder, which must be safe to change.
@@ -332,6 +348,10 @@ def check_embedded_pictures(path: str) -> None:
         return
 
     cover_file = get_cover_from_path(path)
+    if cover_file and not _is_valid_cover(cover_file):
+        # Not a copy of the artwork: the embedded pictures may be the only one.
+        click.secho(f"Leaving them as they are: {cover_file} could not be read as a JPEG or PNG image.", fg="red")
+        return
     stripped = 0
     for filename in oversized:
         audio = FLAC(os.path.join(path, filename))
@@ -368,9 +388,11 @@ def _prepare_cover(cover_file: str) -> tuple[str, bytes] | None:
     # the image gets what is left once they are written with no data.
     picture = Picture()
     try:
+        # Decoded, not only identified: a truncated image still opens.
         with Image.open(cover_file) as opened:
+            opened.load()
             mime = opened.get_format_mimetype() or ""
-    except (OSError, Image.DecompressionBombError) as e:
+    except (OSError, ValueError, Image.DecompressionBombError) as e:
         click.secho(f"Could not read cover file {cover_file} as an image ({e}); leaving it out.", fg="red")
         return None
     picture.mime = mime
