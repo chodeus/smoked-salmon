@@ -1,18 +1,24 @@
-export type Verdict = 'ok' | 'warn' | 'block' | 'skip'
+/** A row of `salmon check all`, as the checks job returns it (checks/verdicts.py). */
+export type Verdict = 'OK' | 'WARN' | 'BLOCK' | 'INFO'
 
 export interface Row {
-  id: string
-  label: string
   verdict: Verdict
+  check: string
   detail: string
-  notes?: string[]
+  notes: string[]
 }
 
 export interface ChecksResult {
+  folder: string
+  // The trackers searched for a dupe; their rows are among the others.
+  trackers: string[]
   rows: Row[]
-  raw: Record<string, any>
-  blocking: string[]
-  warnings: string[]
+  blocking: number
+  warnings: number
+  report: string | null
+  // The source the files prove, else null; and every match of each tracker searched, by site code.
+  detected_source: string | null
+  dupes: Record<string, DupeDetail>
 }
 
 export interface DupeTorrent {
@@ -39,19 +45,17 @@ export interface DupeGroup {
   torrents: DupeTorrent[]
 }
 
-// raw['dupe:<tracker>'] — every match behind the row, which only names the first two.
 export interface DupeDetail {
   searchstrs: string[]
   matches: DupeGroup[]
 }
 
-export const CHIP: Record<Verdict, string> = { ok: 'ok', warn: 'warn', block: 'err', skip: '' }
-export const MARK: Record<Verdict, string> = { ok: '✓', warn: '!', block: '✕', skip: '–' }
+/** The matches behind a "Dupe (<tracker>)" row, when its search found any. */
+export function dupeDetail(result: ChecksResult, row: Row): DupeDetail | null {
+  const code = /^Dupe \((.+)\)$/.exec(row.check)?.[1]
+  const detail = code ? result.dupes?.[code] : undefined
+  return detail?.matches.length ? detail : null
+}
 
-// Per-file chip colouring in detail tables. The upload gate's verdict is the
-// backend's (checks/preflight.py); these only tint the per-file breakdown.
-export const logScoreChip = (score: number | null): string => (score === 100 ? 'ok' : 'warn')
-export const checksumChip = (integrity: string): string =>
-  integrity === 'Match' ? 'ok' : integrity === 'Mismatch' ? 'err' : 'warn'
-export const crcsChip = (crcs: string): string =>
-  crcs === 'match' ? 'ok' : crcs === 'mismatch' || crcs === 'error' ? 'err' : 'warn'
+// Ported from the fork's verdicts.ts (chodeus, 9bfdddc3), with check all's verdicts.
+export const CHIP: Record<Verdict, string> = { OK: 'ok', WARN: 'warn', BLOCK: 'err', INFO: '' }

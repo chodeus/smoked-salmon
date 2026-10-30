@@ -1,22 +1,27 @@
 """What this fork's cross-upload adds to upstream's, run on test_cross_upload.py's fake trackers and seedbox."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import anyio
 import asyncclick as click
 import msgspec
 import pytest
+from aiohttp import web
 from asyncclick.testing import CliRunner
 from test_checks_do_not_upload import write_lists  # pyright: ignore[reportMissingImports]
 from test_cross_upload import (  # pyright: ignore[reportMissingImports]
     FOLDER,
+    JPEG,
+    PNG,
     TARGET_GROUP_ID,
     TORRENT_ID,
     FakeTracker,
     Run,
     _album,
     _cross_upload,
+    _ops_hosted_images,
     _red_answer,
     _result,
     _source_has,
@@ -378,3 +383,25 @@ def test_a_cross_upload_never_removes_the_local_copy(monkeypatch, dirs) -> None:
     assert run.seeded == [("/seed", FOLDER)]
     assert removals == []
     assert album.is_dir()
+
+
+def test_a_cover_for_reds_own_image_host_goes_through_the_target_client(monkeypatch, dirs) -> None:  # noqa: F811
+    album = _album(dirs.downloads / FOLDER)
+    rehosted = "https://redacted.sh/i/rehosted.jpg"
+
+    def prepare(source: FakeTracker, target: FakeTracker) -> None:
+        source.images = {"/static/cover.jpg": JPEG, "/static/inline.png": PNG}
+        _source_has(album, answer=_ops_hosted_images(source.url))(source, target)
+        target.answers["POST ajax.php?action=upload_image"] = lambda: web.json_response(
+            {"status": "success", "response": {"url": rehosted}}
+        )
+        hosts = SimpleNamespace(cover_uploader="red", image_uploader="redhost", specs_uploader=None)
+        monkeypatch.setattr(cfg.image, "red", hosts)
+
+    run = _cross_upload(monkeypatch, dirs, [str(TORRENT_ID), "-yyy"], input="\n", prepare=prepare)
+
+    assert run.result.exit_code == 0, run.output
+    (image_upload,) = [sent for sent in run.target.sent if sent.step == "POST ajax.php?action=upload_image"]
+    assert image_upload.authorization
+    (post,) = [sent for sent in run.target.posts() if sent.step == "POST ajax.php?action=upload"]
+    assert post.fields["image"] == [rehosted]

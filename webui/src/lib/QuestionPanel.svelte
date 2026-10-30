@@ -164,7 +164,7 @@
         <input type="text" class="grow mono" bind:value={text} placeholder="Answer" />
         <button class="btn" disabled={sending}>Send</button>
       </form>
-      {#if typeof q.default === 'string' && q.default}
+      {#if typeof q.default === 'string'}
         <p class="muted hint">Empty for the default: <span class="mono">{q.default}</span></p>
       {/if}
     {/if}

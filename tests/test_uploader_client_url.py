@@ -164,11 +164,11 @@ def test_a_short_path_segment_is_not_a_secret_on_its_own(url) -> None:
 def test_a_short_path_does_not_mask_ordinary_output() -> None:
     from salmon.config.validations import Seedbox
     from salmon.uploader.seedbox import seedbox_secrets
-    from salmon.webui.egress import mask
+    from salmon.webui.egress import Redactor
 
     box = Seedbox(type="local", torrent_client="qbittorrent+http://box.example:8080/torrent/")
 
-    assert mask("Uploading torrent 1 of 2", seedbox_secrets(box)) == "Uploading torrent 1 of 2"
+    assert Redactor(seedbox_secrets(box)).text("Uploading torrent 1 of 2") == "Uploading torrent 1 of 2"
 
 
 def test_a_long_query_value_is_a_secret_on_its_own_and_a_short_one_is_not() -> None:

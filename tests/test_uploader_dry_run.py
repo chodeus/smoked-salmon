@@ -14,6 +14,7 @@ import aiohttp
 import anyio
 import pytest
 from aiohttp import web
+from aiolimiter import AsyncLimiter
 from asyncclick.testing import CliRunner
 from humanfriendly import format_size
 from mutagen.flac import FLAC
@@ -123,6 +124,14 @@ class FakeTracker:
         if request.path == "/ajax.php" and action == "upload" and request.method == "POST":
             torrent_id, self._next_torrent_id = self._next_torrent_id, self._next_torrent_id + 1
             return _success({"torrentid": torrent_id, "groupid": GROUP_ID})
+        if request.path == "/upload.php" and request.method == "POST":
+            # The site's own form (RED takes a CD's logs there): the group page, the new torrent on it.
+            torrent_id, self._next_torrent_id = self._next_torrent_id, self._next_torrent_id + 1
+            return web.Response(
+                text=f'<html><a class="tooltip" href="torrents.php?torrentid={torrent_id}">DL</a>'
+                f'<a class="brackets" href="upload.php?groupid={GROUP_ID}">Add format</a></html>',
+                content_type="text/html",
+            )
         if request.path == "/reportsv2.php" and request.method == "POST":
             raise web.HTTPFound(f"/torrents.php?torrentid={dict(fields)['torrentid']}")
         if request.path == "/torrents.php":
@@ -153,6 +162,8 @@ def _client(cls: type[BaseGazelleApi], tracker: FakeTracker, torrents: Path) -> 
     site.api_key = API_KEYS[site.site_code]
     site.cookie = ""
     site.dot_torrents_dir = str(torrents)
+    # Shadow the shared 5-per-10s limiter: the run sends a few dozen requests.
+    site._rate_limiter = AsyncLimiter(1000, 1)
     return site
 
 
@@ -292,13 +303,49 @@ def _run_up(
     multi_tracker_upload: bool = True,
     yes_all: bool = True,
     trackers: tuple[str, ...] | None = None,
-    tracker: "FakeTracker | None" = None,
     **fakes: Any,
 ) -> Run:
-    """`salmon up ALBUM` on the fake tracker with real forms; `classes` maps codes to clients.
+    """Run `salmon up ALBUM` against the fake tracker: real staging, torrents and forms.
 
     Without `trackers`, no -t and tracker.default_trackers = ["RED"]: RED, then the other trackers are offered.
     `trackers` are named with -t, each; `()` names none and leaves default_trackers as the test set it.
+    The seams that need audio tools, a metadata source or a reviewer are stubbed, `fakes` replace more of them.
+    `classes` gives the client class of each site code, RED and OPS by default. `yes_all=False` leaves out -yyy.
+    """
+    tracker, queued, logins = fake_upload_world(
+        monkeypatch, torrents, classes=classes, multi_tracker_upload=multi_tracker_upload, **fakes
+    )
+    if trackers is None:
+        monkeypatch.setattr(cfg.tracker, "default_trackers", ["RED"])
+        trackers = ()
+
+    async def run():
+        async with tracker.serving():
+            return await CliRunner().invoke(
+                salmon.uploader.up,
+                [str(album), *(arg for code in trackers for arg in ("-t", code)), "-s", "WEB", "-n"]
+                + (["-yyy"] if yes_all else [])
+                + ["--skip-integrity-check", "--skip-up"]
+                + ["--source-url", SOURCE_URL, *args],
+                input=input,
+            )
+
+    return Run(anyio.run(run), tracker, queued, logins)
+
+
+def fake_upload_world(
+    monkeypatch,
+    torrents: Path,
+    *,
+    classes: dict[str, type[BaseGazelleApi]] | None = None,
+    multi_tracker_upload: bool = True,
+    tracker: "FakeTracker | None" = None,
+    **fakes: Any,
+) -> tuple[FakeTracker, list[tuple[Any, ...]], list[str | None]]:
+    """Stub what an upload needs besides the tracker, and send its tracker requests to `tracker`, else a new fake.
+
+    Returns:
+        The fake tracker (not serving yet), the seedbox tasks the run queues, and the torrent client logins.
     """
     rls_data = {
         "format": "FLAC",
@@ -361,23 +408,7 @@ def _run_up(
     # The configured trackers the fake has a client for: the run goes on to OPS after RED, unless a test narrowed them.
     monkeypatch.setattr(salmon.trackers, "tracker_list", [c for c in salmon.trackers.tracker_list if c in classes])
     monkeypatch.setattr(salmon.trackers, "get_class", lambda code: lambda: _client(classes[code], tracker, torrents))
-
-    if trackers is None:
-        monkeypatch.setattr(cfg.tracker, "default_trackers", ["RED"])
-        trackers = ()
-
-    async def run():
-        async with tracker.serving():
-            return await CliRunner().invoke(
-                salmon.uploader.up,
-                [str(album), *(arg for code in trackers for arg in ("-t", code)), "-s", "WEB", "-n"]
-                + (["-yyy"] if yes_all else [])
-                + ["--skip-integrity-check", "--skip-up"]
-                + ["--source-url", SOURCE_URL, *args],
-                input=input,
-            )
-
-    return Run(anyio.run(run), tracker, queued, logins)
+    return tracker, queued, logins
 
 
 @pytest.fixture

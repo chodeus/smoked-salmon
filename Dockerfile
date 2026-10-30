@@ -1,15 +1,4 @@
 # ===========================================
-# Stage 0: Web UI builder - build the Svelte SPA into salmon/webui/static
-# ===========================================
-FROM node:24.22.1-alpine AS webui-builder
-WORKDIR /build/webui
-COPY webui/package.json webui/package-lock.json ./
-RUN npm ci
-COPY webui/ ./
-# vite outDir is ../src/salmon/webui/static (see webui/vite.config.ts)
-RUN npm run build
-
-# ===========================================
 # Stage 1: Builder - Install dependencies and build the project
 # ===========================================
 FROM python:3.13-slim-trixie AS builder
@@ -39,7 +28,6 @@ RUN --mount=type=cache,target=/opt/uv-cache \
 
 # Copy source code
 COPY . .
-COPY --from=webui-builder /build/src/salmon/webui/static src/salmon/webui/static
 # Fail the build if the web UI didn't compile, rather than shipping a UI-less image.
 RUN test -f src/salmon/webui/static/index.html
 

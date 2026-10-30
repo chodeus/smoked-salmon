@@ -1,122 +1,215 @@
-"""In-memory job manager for the web interface.
+"""salmon web's jobs: each in a worker thread with an event loop of its own (ADR 0004, section 1).
 
-Each job runs in a worker thread with its own event loop: its filesystem work may block that private loop while the
-server loop keeps serving (and delivers browser answers to pending questions). At most ``[web] max_jobs`` run at
-once; the others wait their turn in the order they came, and a job waits while another works on the same album
-folder. What a job prints goes to its log (see output.py).
+A step that blocks (hashing a torrent, copying an album, waiting for an answer) stalls its own job only, while the
+server's loop goes on serving, and sending every job's tracker requests (see ``trackers.account``). At most
+``[web] max_jobs`` jobs run at once; the others wait their turn in the order they came, and a job waits while
+another works on the same album folder, the folder it was started on or one it found once running
+(``claim_folder``). A question left unanswered for 30 minutes stops its job. Jobs and their history live in memory
+only, and so many of them: the oldest finished jobs are dropped.
 
-Each job exposes status, progress, log tail, pending question and a result;
-subscribers (websocket connections) receive every state change as an event.
+Everything about a job is changed on the server's loop: its thread hands each change over. Every event goes through
+the egress filter where it is made, so what is kept and sent holds no secret.
+
+Ported from the fork's ``webui/jobs.py``: worker threads from styx-techno (7cd3173c), the bounds and the question
+timeout from chodeus (18fc08d9). Unlike the fork, jobs past the limit wait instead of being refused, and a job whose
+request may have reached the tracker ends with a status of its own.
 """
-
-from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import contextlib
 import itertools
 import os
+import shutil
+import tempfile
 import threading
-import time
 import traceback
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, Literal
 
 import asyncclick as click
+import msgspec
 
-from salmon import cfg, interaction, ssrf
-from salmon.common.progress import reset_progress_callback, set_progress_callback
-from salmon.common.redaction import redact_url
-from salmon.errors import AbortAndDeleteFolder, NoAnswerError, UnknownOutcomeError
-from salmon.trackers import account as accounts
-from salmon.uploader.record import recording
-from salmon.webui import egress, output
+from salmon import cfg, dryrun, interaction, ssrf
+from salmon.errors import NoAnswerError, UnknownOutcomeError
+from salmon.webui import output
+from salmon.webui.egress import Redactor
 from salmon.webui.interaction import WebInteraction
 
-if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+Status = Literal["queued", "running", "waiting", "done", "failed", "cancelled", "unknown_outcome"]
+FINISHED: frozenset[Status] = frozenset({"done", "failed", "cancelled", "unknown_outcome"})
 
-_id_counter = itertools.count(1)
-_question_ids = itertools.count(1)
-
-FINISHED = frozenset({"done", "failed", "cancelled", "unknown_outcome"})
-UNKNOWN_OUTCOME = "The request may have reached the tracker: check the site before trying again."
-MAX_FINISHED_JOBS = 200
-SUBSCRIBER_QUEUE_SIZE = 500
-MAX_LOG_LINES = 1000
-# At most this many jobs wait their turn behind the [web] max_jobs running.
-MAX_QUEUED_JOBS = 100
-# How long a job's end waits for the worker threads it left, as asyncio.run does.
-WORKER_JOIN_TIMEOUT = 300
-# How long stopping salmon web waits for its running jobs.
-STOP_TIMEOUT = 30
-MAX_SUBSCRIBERS = 64  # websocket connections
-# An unanswered question must not hold its job, and the job's folder, for good. Long enough to look at spectrals.
+# A question left unanswered this long stops its job: there is no terminal to fall back to.
 QUESTION_TIMEOUT = 30 * 60
-PROGRESS_BROADCAST_INTERVAL = 0.2  # seconds; job.progress itself always updates
+UNKNOWN_OUTCOME = "The request may have reached the tracker: check the site before trying again."
+# Finished jobs kept, oldest dropped first; jobs waiting their turn at most.
+MAX_FINISHED_JOBS = 100
+MAX_QUEUED_JOBS = 100
+# Lines of a job's log kept, oldest dropped first.
+MAX_LOG_LINES = 5000
+# Live connections (browser tabs) at once, and events waiting for a slow one before it is cut off.
+MAX_SUBSCRIBERS = 16
+SUBSCRIBER_BACKLOG = 2000
+# How the folders of a job's own (see own_folder) are named.
+OWN_FOLDER_PREFIX = "salmon-web-"
 
 
-def _make_progress_callback(job: Job, emit: Callable[[dict[str, Any]], None]) -> Callable[[int, int, str], None]:
-    """Update job.progress on every call, but throttle the broadcast: huge
-    jobs (thousands of files) must not flood every websocket subscriber."""
-    last_broadcast = 0.0
+@dataclass(frozen=True)
+class JobKind:
+    """Something salmon web can run as a job.
 
-    def on_progress(done: int, total: int, desc: str) -> None:
-        nonlocal last_broadcast
-        job.progress = {"done": done, "total": total, "desc": desc}
-        now = time.monotonic()
-        if done >= total or now - last_broadcast >= PROGRESS_BROADCAST_INTERVAL:
-            last_broadcast = now
-            emit({"event": "progress", "job_id": job.id, "progress": job.progress})
+    Attributes:
+        name: What a request to start one names.
+        params: The msgspec struct its parameters are decoded into.
+        run: Runs the job, in its thread; returns the result, which must be JSON.
+        title: The job's title in the list.
+        folder: The album folder it works on, if any: one job per folder at a time.
+        check: Checks the parameters, and whether the job is a dry run, before the job is queued, and returns the
+            parameters as the job takes them (a folder resolved, say); raises JobError to refuse the job.
+        exclusive: At most one job of this kind at a time, queued or running: another start is refused (409) with
+            the id of the one that is.
+        preflight: Checks that block too long for the server's loop (reading files to see what they are). The
+            server runs it in a worker thread on the decoded parameters before it asks ``check``, which stays quick;
+            it raises JobError to refuse the job.
+    """
 
-    return on_progress
-
-
-class JobConflictError(Exception):
-    """A queued/running job already holds the same lock."""
-
-
-class JobCapacityError(Exception):
-    """Too many jobs are already waiting; the caller should retry later."""
-
-
-class FolderChangedError(Exception):
-    """A job's album folder is no longer the one its request named, where it was."""
-
-
-def _unknown(noted: list[UnknownOutcomeError], raised: BaseException | None = None) -> UnknownOutcomeError:
-    """One error for every request the run could not tell about: those it noted, then the one it stopped on."""
-    stopped_on = None if raised is None else _unknown_outcome(raised)
-    if stopped_on is not None and all(stopped_on is not each for each in noted):
-        noted = [*noted, stopped_on]
-    return UnknownOutcomeError("; ".join(str(error) for error in noted))
+    name: str
+    params: type[msgspec.Struct]
+    run: Callable[[Any], Awaitable[Any]]
+    title: Callable[[Any], str]
+    folder: Callable[[Any], str | None] = lambda _params: None
+    check: Callable[[Any, bool], Any] = lambda params, _dry_run: params
+    exclusive: bool = False
+    preflight: Callable[[Any], None] | None = None
 
 
-async def _recorded(coro: Coroutine[Any, Any, Any]) -> Any:
-    """The job's run, ending as an unknown outcome when it went on past a request whose outcome it could not tell."""
-    with recording() as record:
-        try:
-            result = await coro
-        except BaseException as err:
-            # Also when the run stops later (an abort, a cancel): what may be on the tracker is what the job says.
-            if record.unknown_outcomes:
-                raise _unknown(record.unknown_outcomes, err) from err
-            raise
-    if record.unknown_outcomes:
-        raise _unknown(record.unknown_outcomes)
-    return result
+KINDS: dict[str, JobKind] = {}
 
 
-async def _in_click_context(coro: Coroutine[Any, Any, Any]) -> Any:
-    # Click's context stack is per thread: a job's code that asks for one gets its own. Its tracker pools are not
-    # tied to it: they are salmon web's request loop's, closed when salmon web stops.
-    async with click.Context(click.Command("job")):
-        return await coro
+def register(kind: JobKind) -> None:
+    KINDS[kind.name] = kind
+
+
+class JobError(Exception):
+    """A job that cannot be started, with the HTTP status that says why.
+
+    `job_id` is the job in the way, when there is one.
+    """
+
+    def __init__(self, status: int, detail: str, job_id: str | None = None) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+        self.job_id = job_id
+
+
+class PartialResult(Exception):
+    """Raised by a job's run from the error that ended it, to keep what the job did before as its result: the
+    torrents a cross-upload had uploaded when it stopped. The job's status is the error's."""
+
+    def __init__(self, result: Any) -> None:
+        super().__init__("The job ended part way.")
+        self.result = result
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _overlap(a: str, b: str) -> bool:
+    """Whether resolved folders are the same, or one holds the other. Mirrors paths._inside (paths imports this)."""
+    try:
+        return os.path.commonpath([a, b]) in (a, b)
+    except ValueError:  # Different drives on Windows.
+        return False
+
+
+_ids = itertools.count(1)
+
+
+class Job:
+    """A job's state. Changed on the server's loop only, but for the handles its thread reaches through `_lock`."""
+
+    def __init__(
+        self,
+        kind: JobKind,
+        params: msgspec.Struct,
+        shown_params: Any,
+        title: str,
+        folder: str | None,
+        dry_run: bool,
+        assume_defaults: bool,
+    ) -> None:
+        self.id = f"job-{next(_ids)}"
+        self.kind = kind
+        self.params = params
+        self.shown_params = shown_params
+        self.title = title
+        self.folder = folder
+        self.dry_run = dry_run
+        self.assume_defaults = assume_defaults
+        self.status: Status = "queued"
+        self.created_at = _now()
+        self.started_at: str | None = None
+        self.finished_at: str | None = None
+        self.error: str | None = None
+        self.result: Any = None
+        self.question: dict[str, Any] | None = None
+        self.log: deque[dict[str, Any]] = deque(maxlen=MAX_LOG_LINES)
+        # Lines logged so far, the dropped ones included.
+        self.lines = 0
+        # The spectral images the browser may fetch: each one's name as shown, and its path.
+        self.spectrals: dict[str, str] | None = None
+        # The manager the job belongs to, set when it is started.
+        self.manager: JobManager | None = None
+        # Reached from the job's thread too.
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: asyncio.Task | None = None
+        self._cancel_requested = False
+        # The open question's id, as the job made it, and where its answer goes.
+        self._question_id: str | None = None
+        self._answer: concurrent.futures.Future[Any] | None = None
+        # The folders the job made with own_folder, resolved: removed with its spectrals.
+        self._own_folders: list[str] = []
+        # The album folders the job claimed once running (claim_folder), resolved; changed on the server's loop.
+        self._claimed: set[str] = set()
+
+    def holds(self, folder: str) -> bool:
+        """Whether the job works on the album folder (resolved): the one it was started on, or one it claimed."""
+        # The picker offers an album and its disc folders both: they hold the same files.
+        return any(_overlap(folder, held) for held in (self.folder, *self._claimed) if held is not None)
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "kind": self.kind.name,
+            "title": self.title,
+            "params": self.shown_params,
+            "dry_run": self.dry_run,
+            "assume_defaults": self.assume_defaults,
+            "status": self.status,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "error": self.error,
+            "result": self.result,
+            "question": self.question,
+            "spectrals": list(self.spectrals) if self.spectrals is not None else None,
+        }
+
+    def detail(self) -> dict[str, Any]:
+        return {**self.summary(), "log": list(self.log)}
+
+
+class _Subscriber:
+    def __init__(self) -> None:
+        self.events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        self.cut_off = False
 
 
 def _leaves(error: BaseException) -> list[BaseException]:
@@ -127,20 +220,15 @@ def _leaves(error: BaseException) -> list[BaseException]:
 
 
 def _unknown_outcome(error: BaseException) -> UnknownOutcomeError | None:
-    """The first UnknownOutcomeError behind `error`: itself, in a group, or anywhere among its causes and contexts."""
-    pending: list[BaseException] = [error]
-    walked: set[int] = set()
-    while pending:
-        seen = pending.pop()
-        if id(seen) in walked:
-            continue
-        walked.add(id(seen))
-        if isinstance(seen, UnknownOutcomeError):
-            return seen
-        members = seen.exceptions if isinstance(seen, BaseExceptionGroup) else ()
-        linked = [*members, seen.__cause__, seen.__context__]
-        # Reversed onto the stack: a group's members in order, each one's cause before its context.
-        pending.extend(reversed([each for each in linked if each is not None]))
+    """The UnknownOutcomeError behind `error`, raised as it is, in a group or as the cause of another."""
+    for leaf in _leaves(error):
+        seen: BaseException | None = leaf
+        walked: set[int] = set()
+        while seen is not None and id(seen) not in walked:
+            if isinstance(seen, UnknownOutcomeError):
+                return seen
+            walked.add(id(seen))
+            seen = seen.__cause__ or seen.__context__
     return None
 
 
@@ -148,471 +236,423 @@ def _no_answer() -> str:
     return f"No answer for {round(QUESTION_TIMEOUT / 60)} minutes: the job stopped."
 
 
-def _write_traceback(e: BaseException) -> None:
-    """`e`'s traceback, its whole chain, on the server's own stderr."""
-    # Never to the job's log, and masked: a chained error may repeat a request's URL.
-    output.real_stderr().write(egress.masked_text("".join(traceback.format_exception(e))))
+_running_job: ContextVar[Job | None] = ContextVar("salmon_web_job", default=None)
+_running_manager: ContextVar["JobManager | None"] = ContextVar("salmon_web_jobs", default=None)
+# The manager that is checking the parameters of a job it is asked to start.
+_starting: ContextVar["JobManager | None"] = ContextVar("salmon_web_starting", default=None)
 
 
-def _failure(e: BaseException) -> str:
-    """What a failed job's error says; its traceback goes to the server's own stderr."""
-    leaves = _leaves(e)
-    _write_traceback(e)
-    if any(isinstance(leaf, AbortAndDeleteFolder) for leaf in leaves):
-        return "Aborted — the album folder was deleted as requested."
-    if any(isinstance(leaf, NoAnswerError) for leaf in leaves):
-        return _no_answer()
-    if any(isinstance(leaf, click.Abort) for leaf in leaves):
-        return "Aborted."
-    if len(leaves) > 1 or isinstance(e, BaseExceptionGroup):
-        return "; ".join(f"{type(leaf).__name__}: {leaf}" for leaf in leaves)
-    return f"{type(e).__name__}: {e}"
+def find_job(job_id: str) -> Job | None:
+    """A job of the server's history, for a job kind that works on another job's output: from its ``check``, while
+    its job is being started, and from its ``run``. None if there is no such job (or called from anywhere else)."""
+    manager = _starting.get()
+    if manager is None and (running := _running_job.get()) is not None:
+        manager = running.manager
+    return manager.jobs.get(job_id) if manager is not None else None
 
 
-def _check_folder(job: Job) -> None:
-    """Start a job that waited only on its request's folder: still at its real path, and still the same folder."""
-    # Validated when the job was made: one swapped since, for a link or another folder, could lead outside the roots.
-    if job.folder_path is None:
-        return
-    if os.path.realpath(job.folder_path) != job.folder_path or _folder_key(job.folder_path) != job.folder:
-        raise FolderChangedError(f"{job.folder_path} changed or moved while the job waited: start it again.")
+def own_folders(job: Job) -> list[str]:
+    """The folders ``own_folder`` made for a job, resolved, as of now."""
+    with job._lock:
+        return list(job._own_folders)
 
 
-def _outcome(e: BaseException, cancelled: bool) -> tuple[str, str | None]:
-    """A job's status and error once it raised `e`: an unknown outcome first, whether or not it was cancelled."""
-    unknown = _unknown_outcome(e)
-    if unknown is not None:
-        _write_traceback(e)
-        return "unknown_outcome", f"{UNKNOWN_OUTCOME} ({unknown})"
-    if cancelled or all(isinstance(leaf, asyncio.CancelledError) for leaf in _leaves(e)):
-        return "cancelled", None
-    return "failed", _failure(e)
+def own_folder(purpose: str) -> str:
+    """A new, empty folder of the running job's own, outside every album folder: under tmp_dir when it is set,
+    else in the system's temporary folder.
+
+    It is removed when the user discards the job's spectrals, when the job leaves the history, or when salmon web
+    stops, and only then: a job's images outlive the job, so the user can look at them again.
+
+    Raises:
+        RuntimeError: Not called from a salmon web job, or the folder would be in a library (the config does
+            not let tmp_dir be).
+    """
+    job = _running_job.get()
+    if job is None:
+        raise RuntimeError("own_folder() makes a folder for a salmon web job, and no job is running here.")
+    folder = os.path.realpath(
+        tempfile.mkdtemp(prefix=f"{OWN_FOLDER_PREFIX}{job.id}-{purpose}-", dir=cfg.directory.tmp_dir or None)
+    )
+    if cfg.directory.protects(folder):
+        os.rmdir(folder)
+        raise RuntimeError("A salmon web job's folder would be in a library folder: check tmp_dir.")
+    with job._lock:
+        job._own_folders.append(folder)
+    return folder
 
 
-def _folder_key(folder: str) -> tuple[int, int] | str:
-    """The folder as the disk knows it: another spelling of it (a symlink, case, Unicode form) is the same."""
-    try:
-        found = os.stat(folder)
-    except OSError:
-        return os.path.realpath(folder)
-    return (found.st_dev, found.st_ino)
+async def claim_folder(folder: str) -> str | None:
+    """Claim an album folder for the running job until it ends, as the folder a job is started on is held: for a
+    job that learns its folder once it runs (a cross-upload without a path, once SOURCE names the torrent's folder).
+
+    From then on a job started on that folder waits until this one ends.
+
+    Returns:
+        None once the job holds the folder, or when no salmon web job runs here. Otherwise the title of the running
+        job that works on it, and nothing is claimed.
+    """
+    job, manager = _running_job.get(), _running_manager.get()
+    if job is None or manager is None:
+        return None
+    claimed: concurrent.futures.Future[str | None] = concurrent.futures.Future()
+    manager._call(manager._claim, job, os.path.realpath(folder), claimed)
+    return await asyncio.wrap_future(claimed)
 
 
-def _shown(value: Any) -> Any:
-    """A job's params as the API shows them: each http(s) URL among them masked, the rest as they are."""
-    if isinstance(value, str):
-        # By its scheme, not a parse: a URL too malformed to parse is masked whole, never shown.
-        return redact_url(value) if value.strip().lower().startswith(("http://", "https://")) else value
-    if isinstance(value, dict):
-        return {key: _shown(item) for key, item in value.items()}
-    if isinstance(value, list | tuple):
-        return [_shown(item) for item in value]
-    return value
-
-
-class Job:
-    def __init__(self, job_type: str, title: str, params: dict[str, Any]):
-        self.id = f"job-{next(_id_counter)}"
-        self.type = job_type
-        self.title = title
-        self.params = params
-        self.status = "queued"
-        self.created_at = _now()
-        self.finished_at: str | None = None
-        self.progress: dict[str, Any] | None = None
-        self.result: Any = None
-        self.error: str | None = None
-        self.lock_key: str | None = None
-        # The album folder it works on (see _folder_key): a job on the same folder waits until this one ends.
-        self.folder: tuple[int, int] | str | None = None
-        # Where that folder really is: a job that waited starts only if it is still there.
-        self.folder_path: str | None = None
-        self.question: dict[str, Any] | None = None
-        self.log_lines: list[str] = []
-        self.asker: _JobAsker | None = None
-        self.thread: threading.Thread | None = None
-        # Run when the job is dropped from the list, so a job that left files
-        # behind can take them with it. Set by whoever created those files.
-        self.on_evict: Callable[[Job], None] | None = None
-        # Reached from the job's thread too.
-        self._lock = threading.Lock()
-        self._thread_loop: asyncio.AbstractEventLoop | None = None
-        self._thread_task: asyncio.Task | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        spectrals = self.asker.spectrals if self.asker else None
-        return {
-            "id": self.id,
-            "type": self.type,
-            "title": self.title,
-            "params": _shown(self.params),
-            "status": self.status,
-            "created_at": self.created_at,
-            "finished_at": self.finished_at,
-            "progress": self.progress,
-            "result": self.result,
-            "error": self.error,
-            "question": self.question,
-            "log": self.log_lines[-MAX_LOG_LINES:],
-            "spectrals": list(spectrals["files"]) if spectrals else None,
-        }
+def _remove_own_folders(folders: list[str]) -> None:
+    """Remove folders own_folder made, each checked again first: rmtree is no call to make on a path that changed."""
+    for folder in folders:
+        # A symlink put in its place resolves elsewhere.
+        if (
+            os.path.basename(folder).startswith(OWN_FOLDER_PREFIX)
+            and os.path.realpath(folder) == folder
+            and not cfg.directory.protects(folder)
+        ):
+            shutil.rmtree(folder, ignore_errors=True)
+        else:
+            print(f"salmon web: left {folder} in place: it is no longer the job's own.", file=output.real_stderr())
 
 
 class _JobAsker:
-    """A job's side of its questions (`salmon.webui.interaction.Asker`): the one waiting, the log, its spectrals."""
+    """A job's questions, from its thread to the browser and back."""
 
-    def __init__(self, emit: Callable[[dict[str, Any]], None], set_question: Callable[[dict[str, Any] | None], None]):
-        self._emit = emit
-        self._set_question = set_question
-        self._lock = threading.Lock()
-        self._pending: tuple[str, concurrent.futures.Future] | None = None
-        self.spectrals: dict[str, Any] | None = None
-        self.cancel_requested = threading.Event()
-        self.closed = threading.Event()
-        # What the job prints, as whole lines for its log (output.to sends it here).
-        self.lines = output.Lines(lambda line, _err: self.log(line))
-
-    def emit(self, event: dict[str, Any]) -> None:
-        if not self.closed.is_set():
-            self._emit(event)
-
-    def log(self, line: str) -> None:
-        self.emit({"event": "log", "line": line})
-
-    def _begin(self, question: dict[str, Any]) -> tuple[str, concurrent.futures.Future]:
-        if self.cancel_requested.is_set() or self.closed.is_set():
-            raise concurrent.futures.CancelledError()
-        self.lines.flush()
-        question = {"id": f"q-{next(_question_ids)}", **question}
-        future: concurrent.futures.Future = concurrent.futures.Future()
-        with self._lock:
-            # Again under the lock: close() may have run since, and would find nothing pending to cancel.
-            if self.cancel_requested.is_set() or self.closed.is_set():
-                raise concurrent.futures.CancelledError()
-            self._pending = (question["id"], future)
-        self._set_question(question)
-        self.emit({"event": "question", "question": question})
-        return question["id"], future
-
-    def _finish(self, question_id: str) -> None:
-        with self._lock:
-            self._pending = None
-        self._set_question(None)
-        self.emit({"event": "question_answered", "question_id": question_id})
+    def __init__(self, manager: "JobManager", job: Job, lines: output.Lines) -> None:
+        self._manager = manager
+        self._job = job
+        self._lines = lines
 
     async def ask(self, question: dict[str, Any]) -> Any:
-        """Put `question` to the browser, and wait for its answer without blocking the job's loop."""
-        self.withdraw_deleted_spectrals()
-        question_id, future = self._begin(question)
+        # What the job printed before the question, so the log reads in order.
+        self._lines.flush()
+        answer: concurrent.futures.Future[Any] = concurrent.futures.Future()
+        question = {"id": f"{self._job.id}-q{next(_ids)}", **question}
+        self._manager._call(self._manager._open_question, self._job, question, answer)
         try:
-            return await asyncio.wait_for(asyncio.wrap_future(future), QUESTION_TIMEOUT)
+            return await asyncio.wait_for(asyncio.wrap_future(answer), QUESTION_TIMEOUT)
         except TimeoutError:
-            self.log(_no_answer())
+            click.secho(_no_answer(), fg="red")
             raise NoAnswerError() from None
         finally:
-            self._finish(question_id)
+            answer.cancel()
+            self._manager._call(self._manager._close_question, self._job, question["id"])
 
     def show_spectrals(self, folder: str, files: list[str]) -> None:
-        folder = os.path.realpath(folder)
-        with self._lock:
-            # Each image's path, made here: the image route looks it up, and makes none from a request.
-            self.spectrals = {"path": folder, "files": {name: os.path.join(folder, name) for name in files}}
-            self.emit({"event": "spectrals_ready", "files": files})
-
-    def withdraw_deleted_spectrals(self) -> None:
-        """Stop showing spectrals whose folder the job has deleted since, whose images would no longer load."""
-        # Under the lock: the job's thread and an image request both call this, and the job may show new ones.
-        with self._lock:
-            if self.spectrals is not None and not os.path.isdir(self.spectrals["path"]):
-                self.spectrals = None
-                self.emit({"event": "spectrals_ready", "files": []})
-
-    def answer(self, question_id: str, value: Any) -> bool:
-        """Deliver an answer (called from the server loop). False if stale."""
-        with self._lock:
-            if self._pending is None or self._pending[0] != question_id:
-                return False
-            future = self._pending[1]
-        try:
-            future.set_result(value)
-        except concurrent.futures.InvalidStateError:
-            return False
-        return True
-
-    def cancel_pending(self) -> None:
-        """Request cancellation: fail the pending question and refuse new ones."""
-        self.cancel_requested.set()
-        with self._lock:
-            if self._pending is not None:
-                self._pending[1].cancel()
-
-    def close(self) -> None:
-        """Stop emitting events and asking questions (the job is finished)."""
-        self.closed.set()
-        with self._lock:
-            if self._pending is not None:
-                self._pending[1].cancel()
+        self._manager._call(self._manager._show_spectrals, self._job, os.path.realpath(folder), files)
 
 
 class JobManager:
-    def __init__(self, max_jobs: int | None = None):
-        self.max_jobs = max_jobs or cfg.web.max_jobs
+    """The jobs of one salmon web server. Its methods run on the server's loop."""
+
+    def __init__(self, max_jobs: int, redactor: Redactor) -> None:
+        self.max_jobs = max_jobs
         self.jobs: dict[str, Job] = {}
-        self._subscribers: set[asyncio.Queue] = set()
-        self._active_lock_keys: set[str] = set()
-        self._server_loop: asyncio.AbstractEventLoop | None = None
-        # The jobs waiting their turn, in the order they came, each with the thread it is to run in.
-        self._queue: dict[Job, threading.Thread] = {}
+        self._redactor = redactor
+        self._queue: list[Job] = []
         self._running: set[Job] = set()
+        self._subscribers: set[_Subscriber] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._stopping = False
+        self._idle = asyncio.Event()
+        self._idle.set()
+        # Folders of jobs dropped from the history, being removed in a worker thread.
+        self._removals: set[asyncio.Future[None]] = set()
 
-    # ------------------------------------------------------------------
-    # Job creation
-    # ------------------------------------------------------------------
+    def open(self) -> None:
+        """Take jobs, run on the running loop."""
+        self._loop = asyncio.get_running_loop()
 
-    def _register(self, job_type: str, title: str, params: dict[str, Any] | None, lock_key: str | None) -> Job:
-        if lock_key is not None:
-            if lock_key in self._active_lock_keys:
-                raise JobConflictError(f"A job is already running on: {lock_key}")
-            self._active_lock_keys.add(lock_key)
-        job = Job(job_type, title, params or {})
-        job.lock_key = lock_key
-        self.jobs[job.id] = job
-        self._prune_finished()
-        self._server_loop = asyncio.get_running_loop()
-        return job
-
-    def create_threaded(
-        self,
-        job_type: str,
-        title: str,
-        factory: Callable[[Job], Coroutine[Any, Any, Any]],
-        params: dict[str, Any] | None = None,
-        lock_key: str | None = None,
-        folder: str | None = None,
-    ) -> Job:
-        """Queue a job to run in a worker thread with its own event loop, once its turn comes.
-
-        A job on `folder` waits while another works on it; a `lock_key` an unfinished job holds refuses this one.
-        """
-        if len(self._queue) >= MAX_QUEUED_JOBS:
-            raise JobCapacityError(f"{MAX_QUEUED_JOBS} jobs are already waiting: try again once some have run.")
-        job = self._register(job_type, title, params, lock_key)
-        job.folder = _folder_key(folder) if folder else None
-        job.folder_path = os.path.realpath(folder) if folder else None
-        asker = _JobAsker(
-            emit=lambda event: self._emit_for(job, event),
-            set_question=lambda question: self._set_question(job, question),
-        )
-        job.asker = asker
-        self._queue[job] = threading.Thread(target=self._thread_main, args=(job, asker, factory), daemon=True)
-        self._broadcast({"event": "created", "job": job.to_dict()})
-        self._schedule()
-        return job
-
-    def _schedule(self) -> None:
-        """Start the jobs waiting, in order, while fewer than max_jobs run; a job waits while its folder is busy."""
-        for job, thread in list(self._queue.items()):
-            if len(self._running) >= self.max_jobs:
-                return
-            if job.folder is not None and any(other.folder == job.folder for other in self._running):
-                continue
-            del self._queue[job]
-            self._running.add(job)
-            self._set_status(job, "running")
-            job.thread = thread
-            try:
-                thread.start()
-            except RuntimeError:
-                # No thread to be had for this job: it ends, and its slot goes to the next.
-                job.status = "failed"
-                job.error = "Failed to start the worker thread."
-                self._running.discard(job)
-                self._finish(job)
-                self._broadcast({"event": "finished", "job": job.to_dict()})
-                if job.asker is not None:
-                    job.asker.close()
-
-    # ------------------------------------------------------------------
-    # Execution
-    # ------------------------------------------------------------------
-
-    def _set_status(self, job: Job, status: str) -> None:
-        job.status = status
-        self._broadcast({"event": "status", "job_id": job.id, "status": status})
-
-    def _thread_main(self, job: Job, asker: _JobAsker, factory: Callable[[Job], Coroutine[Any, Any, Any]]) -> None:
-        progress_token = set_progress_callback(_make_progress_callback(job, self._emit))
-        # A BaseEventLoop: its shutdown_default_executor takes the timeout AbstractEventLoop's stub leaves out.
-        loop = cast("asyncio.BaseEventLoop", asyncio.new_event_loop())
-        job._thread_loop = loop
-        # Set on the server's loop once the workers the job left have ended, as the job holds its slot till then.
-        status, error, result = "failed", None, None
-        try:
-            _check_folder(job)
-            with job._lock:
-                if asker.cancel_requested.is_set():
-                    raise asyncio.CancelledError()
-                # Before the task is made: it takes the context, and with it where its output goes, who answers its
-                # questions, and the cancel its tracker requests see.
-                with (
-                    output.to(asker.lines.write),
-                    interaction.using(WebInteraction(asker)),
-                    accounts.cancelled_with(asker.cancel_requested),
-                    # The URLs a job fetches come from the browser and from store pages: public addresses only.
-                    ssrf.public_only(),
-                ):
-                    task = loop.create_task(_in_click_context(_recorded(factory(job))))
-                job._thread_task = task
-            result = loop.run_until_complete(task)
-            status = "done"
-        except BaseException as e:  # noqa: BLE001 - single funnel for job errors
-            status, error = _outcome(e, asker.cancel_requested.is_set())
-        finally:
-            reset_progress_callback(progress_token)
-            # The task is over: a question now could only come from a worker it left, and none would answer it.
-            asker.cancel_pending()
-            # As asyncio.run does: the to_thread workers it left end first, so the job holds its folder till then.
-            with contextlib.suppress(Exception):
-                loop.run_until_complete(loop.shutdown_default_executor(WORKER_JOIN_TIMEOUT))
-            with contextlib.suppress(Exception):
-                loop.close()
-            job._thread_loop = None
-            job.question = None
-            # The log is whole, and its spectrals still there, before the job reads as finished.
-            asker.lines.flush()
-            asker.withdraw_deleted_spectrals()
-            self._call(self._finished, job, status, error, result)
-            # From here on, leaked to_thread workers must neither emit
-            # events nor block on unanswerable questions.
-            asker.close()
-
-    def _finish(self, job: Job) -> None:
-        if job.lock_key is not None:
-            self._active_lock_keys.discard(job.lock_key)
-        job.finished_at = _now()
-
-    def _finished(self, job: Job, status: str, error: str | None, result: Any) -> None:
-        """On the server's loop, once a job's thread has ended: its outcome, and the jobs it held back started."""
-        job.status, job.error, job.result = status, error, result
-        self._running.discard(job)
-        self._finish(job)
-        self._broadcast({"event": "finished", "job": job.to_dict()})
-        self._schedule()
-
-    # ------------------------------------------------------------------
-    # Interaction plumbing (called from job threads)
-    # ------------------------------------------------------------------
-
-    def _emit_for(self, job: Job, event: dict[str, Any]) -> None:
-        event = {**event, "job_id": job.id}
-        if event.get("event") == "log":
-            job.log_lines.append(event["line"])
-            if len(job.log_lines) > MAX_LOG_LINES:
-                del job.log_lines[: len(job.log_lines) - MAX_LOG_LINES // 2]
-        self._emit(event)
-
-    def _set_question(self, job: Job, question: dict[str, Any] | None) -> None:
-        job.question = question
-
-    def _call(self, callback: Callable[..., None], *args: Any) -> None:
-        """Run `callback` on the server's loop, from any thread."""
-        loop = self._server_loop
-        if loop is None:
-            return
-        # RuntimeError: the server loop already closed.
-        with contextlib.suppress(RuntimeError):
-            loop.call_soon_threadsafe(callback, *args)
-
-    def _emit(self, event: dict[str, Any]) -> None:
-        """Thread-safe broadcast: hop onto the server loop when needed."""
-        loop = self._server_loop
-        if loop is None:
-            return
-        try:
-            if asyncio.get_running_loop() is loop:
-                self._broadcast(event)
-                return
-        except RuntimeError:
-            pass
-        # RuntimeError: the server loop already closed; the consumer is gone.
-        with contextlib.suppress(RuntimeError):
-            loop.call_soon_threadsafe(self._broadcast, event)
-
-    def answer(self, job_id: str, question_id: str, value: Any) -> bool:
-        job = self.jobs.get(job_id)
-        if job is None or job.asker is None:
-            return False
-        return job.asker.answer(question_id, value)
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    async def stop(self, timeout: float | None = None) -> bool:
-        """Cancel every job, and wait for the running ones to end, up to STOP_TIMEOUT seconds; False if one did not."""
-        for job in [*self._queue, *self._running]:
+    async def stop(self, timeout: float = 30) -> None:
+        """Cancel every job, and wait for the running ones to end, up to `timeout` seconds."""
+        self._stopping = True
+        for job in list(self._queue):
+            self.cancel(job.id)
+        for job in list(self._running):
             self.cancel(job.id)
         try:
-            async with asyncio.timeout(STOP_TIMEOUT if timeout is None else timeout):
-                while self._running:
-                    await asyncio.sleep(0.05)
+            async with asyncio.timeout(timeout):
+                await self._idle.wait()
         except TimeoutError:
             names = ", ".join(sorted(job.id for job in self._running))
             print(f"salmon web: stopped while jobs were still running: {names}", file=output.real_stderr())
-        return not self._running
+        folders = [folder for job in self.jobs.values() for folder in self._take_own_folders(job)]
+        await asyncio.to_thread(_remove_own_folders, folders)
+        if self._removals:
+            await asyncio.gather(*self._removals)
+
+    # --- Starting, cancelling, answering ---------------------------------------
+
+    def start(self, kind_name: str, params: Any, *, dry_run: bool = False, assume_defaults: bool = False) -> Job:
+        """Start a job of the kind named, or queue it.
+
+        Raises:
+            JobError: An unknown kind, parameters it does not take, a job of an exclusive kind already running, too
+                many jobs waiting, or the server stopping.
+        """
+        if self._stopping:
+            raise JobError(503, "salmon web is stopping.")
+        kind = KINDS.get(kind_name)
+        if kind is None:
+            raise JobError(400, f"Unknown job kind: {self._redactor.text(kind_name)}")
+        try:
+            decoded = msgspec.convert(params, kind.params)
+        except msgspec.ValidationError as e:
+            raise JobError(400, self._redactor.text(f"Invalid parameters: {e}")) from None
+        token = _starting.set(self)
+        try:
+            decoded = kind.check(decoded, dry_run)
+        except JobError as e:
+            raise JobError(e.status, self._redactor.text(e.detail)) from None
+        finally:
+            _starting.reset(token)
+        if kind.exclusive:
+            for other in self.jobs.values():
+                if other.kind is kind and other.status not in FINISHED:
+                    raise JobError(409, f"A {kind.name} job is {other.status} already: {other.id}.", other.id)
+        if len(self._queue) >= MAX_QUEUED_JOBS:
+            raise JobError(429, f"{MAX_QUEUED_JOBS} jobs are already waiting: try again once some have run.")
+        folder = kind.folder(decoded)
+        job = Job(
+            kind,
+            decoded,
+            self._redactor.value(msgspec.to_builtins(decoded)),
+            self._redactor.text(kind.title(decoded)),
+            os.path.realpath(folder) if folder else None,
+            dry_run,
+            assume_defaults,
+        )
+        job.manager = self
+        self.jobs[job.id] = job
+        self._queue.append(job)
+        self._publish({"event": "created", "job": job.summary()})
+        self._schedule()
+        self._prune()
+        return job
 
     def cancel(self, job_id: str) -> bool:
+        """Cancel a job that has not finished. False if there is none."""
         job = self.jobs.get(job_id)
         if job is None or job.status in FINISHED:
             return False
         if job in self._queue:
-            del self._queue[job]
-            job.status = "cancelled"
-            self._finish(job)
-            self._broadcast({"event": "finished", "job": job.to_dict()})
-            if job.asker is not None:
-                job.asker.close()
+            self._queue.remove(job)
+            self._finish(job, "cancelled", None, None)
             return True
-        if job.asker is not None:
-            job.asker.cancel_pending()
         with job._lock:
-            loop, task = job._thread_loop, job._thread_task
+            job._cancel_requested = True
+            loop, task = job._loop, job._task
         if loop is not None and task is not None:
-            with contextlib.suppress(RuntimeError):
+            # A closed loop: the job has ended meanwhile.
+            with suppress(RuntimeError):
                 loop.call_soon_threadsafe(task.cancel)
         return True
 
-    def subscribe(self) -> asyncio.Queue | None:
+    async def discard(self, job_id: str) -> bool:
+        """Remove a finished job's own folders, its spectrals with them. False if the job has not finished."""
+        job = self.jobs.get(job_id)
+        if job is None or job.status not in FINISHED:
+            return False
+        folders = self._take_own_folders(job)
+        if job.spectrals is not None:
+            job.spectrals = None
+            self._publish({"event": "spectrals", "job_id": job.id, "files": None})
+        await asyncio.to_thread(_remove_own_folders, folders)
+        return True
+
+    @staticmethod
+    def _take_own_folders(job: Job) -> list[str]:
+        with job._lock:
+            folders, job._own_folders = job._own_folders, []
+        return folders
+
+    def answer(self, job_id: str, question_id: str, value: Any) -> bool:
+        """Answer a job's open question. False if it has no question of that id open."""
+        job = self.jobs.get(job_id)
+        if job is None or job._question_id != question_id or job._answer is None:
+            return False
+        try:
+            job._answer.set_result(value)
+        except concurrent.futures.InvalidStateError:
+            return False
+        return True
+
+    # --- Events ------------------------------------------------------------------
+
+    def subscribe(self) -> _Subscriber | None:
+        """A queue of every event from now on, or None if too many connections listen already."""
         if len(self._subscribers) >= MAX_SUBSCRIBERS:
             return None
-        queue: asyncio.Queue = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_SIZE)
-        self._subscribers.add(queue)
-        return queue
+        subscriber = _Subscriber()
+        self._subscribers.add(subscriber)
+        return subscriber
 
-    def unsubscribe(self, queue: asyncio.Queue) -> None:
-        self._subscribers.discard(queue)
+    def unsubscribe(self, subscriber: _Subscriber) -> None:
+        self._subscribers.discard(subscriber)
 
-    def _broadcast(self, event: dict[str, Any]) -> None:
-        for queue in self._subscribers:
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:
-                # Drop the oldest event; a stalled consumer resyncs via GET /jobs.
-                with contextlib.suppress(asyncio.QueueEmpty):
-                    queue.get_nowait()
-                with contextlib.suppress(asyncio.QueueFull):
-                    queue.put_nowait(event)
+    def _publish(self, event: dict[str, Any]) -> None:
+        """Send an event to every connection. Its content was filtered when it was made."""
+        for subscriber in list(self._subscribers):
+            if subscriber.events.qsize() >= SUBSCRIBER_BACKLOG:
+                # A connection that does not keep up is cut off: the browser connects again and reloads the jobs,
+                # where dropping some events would leave it showing a log with holes.
+                self._subscribers.discard(subscriber)
+                subscriber.cut_off = True
+                subscriber.events.put_nowait(None)
+            else:
+                subscriber.events.put_nowait(event)
 
-    def _prune_finished(self) -> None:
-        finished = [j for j in self.jobs.values() if j.status in FINISHED]
-        if len(finished) <= MAX_FINISHED_JOBS:
+    # --- Running jobs --------------------------------------------------------------
+
+    def _schedule(self) -> None:
+        """Start the jobs waiting, in order, while fewer than max_jobs run; a job waits while its folder is busy."""
+        for job in list(self._queue):
+            if len(self._running) >= self.max_jobs:
+                break
+            if job.folder is not None and any(other.holds(job.folder) for other in self._running):
+                continue
+            self._queue.remove(job)
+            self._running.add(job)
+            self._idle.clear()
+            job.status = "running"
+            job.started_at = _now()
+            self._publish({"event": "status", "job_id": job.id, "status": job.status, "started_at": job.started_at})
+            threading.Thread(target=self._thread_main, args=(job,), name=f"salmon web {job.id}", daemon=True).start()
+
+    def _call(self, callback: Callable[..., None], *args: Any) -> None:
+        """Run `callback` on the server's loop, from any thread."""
+        assert self._loop is not None
+        # A closed loop: the server has stopped.
+        with suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(callback, *args)
+
+    def _thread_main(self, job: Job) -> None:
+        """The job's thread: its own loop, until the job ends."""
+        try:
+            status, error, result = asyncio.run(self._run(job))
+        except BaseException as err:
+            # Masked: an error can repeat a request's URL or a tracker page holding a secret.
+            output.real_stderr().write(self._redactor.text("".join(traceback.format_exception(err))))
+            status, error, result = "failed", f"{type(err).__name__}: {err}", None
+        self._call(self._finish, job, status, error, result)
+
+    async def _run(self, job: Job) -> tuple[Status, str | None, Any]:
+        with job._lock:
+            if job._cancel_requested:
+                return "cancelled", None, None
+            job._loop = asyncio.get_running_loop()
+            job._task = asyncio.current_task()
+        _running_job.set(job)
+        _running_manager.set(self)
+        lines = output.Lines(lambda line, err: self._call(self._log, job, line, err))
+        asker = _JobAsker(self, job, lines)
+        try:
+            with (
+                output.to(lines.write),
+                interaction.using(WebInteraction(asker)),
+                interaction.assuming_defaults(job.assume_defaults),
+                dryrun.mode(job.dry_run),
+                # The URLs a job fetches come from the browser and from store pages: public addresses only.
+                ssrf.public_only(),
+            ):
+                try:
+                    result = await job.kind.run(job.params)
+                finally:
+                    lines.flush()
+            return "done", None, msgspec.to_builtins(result)
+        except BaseException as err:
+            return self._outcome(job, err)
+
+    def _outcome(self, job: Job, error: BaseException) -> tuple[Status, str | None, Any]:
+        """A job's status, error and result once it raised `error`: no result, unless it raised a PartialResult."""
+        result = None
+        if isinstance(error, PartialResult):
+            result = msgspec.to_builtins(error.result)
+            error = error.__cause__ or error
+        unknown = _unknown_outcome(error)
+        if unknown is not None:
+            return "unknown_outcome", f"{UNKNOWN_OUTCOME} ({unknown})", result
+        with job._lock:
+            cancelled = job._cancel_requested
+        leaves = _leaves(error)
+        if cancelled or all(isinstance(leaf, asyncio.CancelledError) for leaf in leaves):
+            return "cancelled", None, result
+        if any(isinstance(leaf, NoAnswerError) for leaf in leaves):
+            return "failed", _no_answer(), result
+        if any(isinstance(leaf, click.Abort) for leaf in leaves):
+            return "failed", "Aborted.", result
+        if len(leaves) == 1 and isinstance(leaves[0], click.exceptions.Exit) and leaves[0].exit_code == 0:
+            return "done", None, result
+        if len(leaves) == 1 and isinstance(leaves[0], click.ClickException):
+            return "failed", leaves[0].format_message(), result
+        # The server's own stderr, never the job's log: a chained error may repeat a request's URL.
+        print(f"salmon web: {job.id} ({job.kind.name}) failed:", file=output.real_stderr())
+        output.real_stderr().write(self._redactor.text("".join(traceback.format_exception(error))))
+        return "failed", "; ".join(f"{type(leaf).__name__}: {leaf}" for leaf in leaves), result
+
+    # --- What a job's thread hands over -----------------------------------------------
+
+    def _log(self, job: Job, line: str, err: bool) -> None:
+        # Numbered, so a browser that reloads the log can tell the lines it has from those it lacks.
+        job.lines += 1
+        entry = {"n": job.lines, "text": self._redactor.text(line), "err": err}
+        job.log.append(entry)
+        self._publish({"event": "log", "job_id": job.id, "line": entry})
+
+    def _open_question(self, job: Job, question: dict[str, Any], answer: concurrent.futures.Future[Any]) -> None:
+        if job.status in FINISHED:
+            answer.cancel()
             return
-        for job in finished[: len(finished) - MAX_FINISHED_JOBS]:
-            if job.on_evict is not None:
-                # Never let housekeeping take the manager down with it.
-                with contextlib.suppress(Exception):
-                    job.on_evict(job)
+        job.question = self._redactor.value(question)
+        job._question_id = question["id"]
+        job._answer = answer
+        job.status = "waiting"
+        self._publish({"event": "question", "job_id": job.id, "question": job.question, "status": job.status})
+
+    def _close_question(self, job: Job, question_id: str) -> None:
+        if job._question_id != question_id:
+            return
+        job.question = None
+        job._question_id = None
+        job._answer = None
+        if job.status == "waiting":
+            job.status = "running"
+        self._publish({"event": "answered", "job_id": job.id, "question_id": question_id, "status": job.status})
+
+    def _claim(self, job: Job, folder: str, claimed: concurrent.futures.Future[str | None]) -> None:
+        holder = next((other for other in self._running if other is not job and other.holds(folder)), None)
+        if holder is None:
+            job._claimed.add(folder)
+        # Cancelled: the job stopped waiting, and ends.
+        with suppress(concurrent.futures.InvalidStateError):
+            claimed.set_result(holder.title if holder is not None else None)
+
+    def _show_spectrals(self, job: Job, folder: str, files: list[str]) -> None:
+        job.spectrals = {self._redactor.text(name): os.path.join(folder, name) for name in files}
+        self._publish({"event": "spectrals", "job_id": job.id, "files": list(job.spectrals)})
+
+    def _finish(self, job: Job, status: Status, error: str | None, result: Any) -> None:
+        job.status = status
+        job.error = self._redactor.text(error) if error else None
+        job.result = self._redactor.value(result)
+        job.question = None
+        job._question_id = None
+        job._answer = None
+        job.finished_at = _now()
+        self._running.discard(job)
+        if not self._running:
+            self._idle.set()
+        self._publish({"event": "finished", "job": job.summary()})
+        if not self._stopping:
+            self._schedule()
+        self._prune()
+
+    def _prune(self) -> None:
+        finished = [job for job in self.jobs.values() if job.status in FINISHED]
+        folders: list[str] = []
+        for job in finished[: max(0, len(finished) - MAX_FINISHED_JOBS)]:
             del self.jobs[job.id]
-
-
-manager = JobManager()
+            folders += self._take_own_folders(job)
+        if folders:
+            removal = asyncio.get_running_loop().run_in_executor(None, _remove_own_folders, folders)
+            self._removals.add(removal)
+            removal.add_done_callback(self._removals.discard)

@@ -1,111 +1,128 @@
 <script lang="ts">
   import logo from './assets/salmon-logo.png'
-  import Dashboard from './pages/Dashboard.svelte'
-  import Upload from './pages/Upload.svelte'
-  import Search from './pages/Search.svelte'
-  import Spectrals from './pages/Spectrals.svelte'
-  import Convert from './pages/Convert.svelte'
   import Checks from './pages/Checks.svelte'
-  import Tools from './pages/Tools.svelte'
+  import Convert from './pages/Convert.svelte'
+  import CrossUpload from './pages/CrossUpload.svelte'
+  import Dashboard from './pages/Dashboard.svelte'
   import Jobs from './pages/Jobs.svelte'
   import Login from './pages/Login.svelte'
-  import { jobStore } from './lib/jobs.svelte'
-  import { checkAuth, login, logout, onUnauthorized, type AuthState } from './lib/api'
+  import Search from './pages/Search.svelte'
+  import Spectrals from './pages/Spectrals.svelte'
+  import Tag from './pages/Tag.svelte'
+  import Tools from './pages/Tools.svelte'
+  import Upload from './pages/Upload.svelte'
+  import { checkAuth, login, logout, onUnauthorized, takeTokenFromUrl } from './lib/api'
+  import { FINISHED, jobStore } from './lib/jobs.svelte'
+  import { router } from './lib/router.svelte'
 
-  const routes: Record<string, { component: any; label: string }> = {
-    '': { component: Dashboard, label: 'Dashboard' },
-    upload: { component: Upload, label: 'Upload' },
-    search: { component: Search, label: 'Search' },
-    spectrals: { component: Spectrals, label: 'Spectrals' },
-    convert: { component: Convert, label: 'Convert' },
-    checks: { component: Checks, label: 'Checks' },
-    tools: { component: Tools, label: 'Tools' },
-    jobs: { component: Jobs, label: 'Jobs' },
-  }
-
-  // salmon web's login link carries its token after the #, which is never sent: take it, then drop it at once.
-  const linkToken = location.hash.startsWith('#token=') ? location.hash.slice('#token='.length) : ''
-  if (linkToken) history.replaceState(null, '', location.pathname + location.search)
-
-  let current = $state(location.hash.replace(/^#\/?/, ''))
-  window.addEventListener('hashchange', () => {
-    current = location.hash.replace(/^#\/?/, '')
-  })
-
-  const route = $derived(routes[current] ?? routes[''])
-  const activeCount = $derived(jobStore.jobs.filter((j) => j.status === 'running' || j.status === 'queued').length)
-
-  let authState = $state<AuthState | null>(null)
-  const authed = $derived(!authState?.required || authState.authenticated)
+  // null while the first check runs.
+  let authed = $state<boolean | null>(null)
+  let loginError = $state('')
+  let logoutError = $state('')
 
   async function refreshAuth() {
-    authState = await checkAuth()
+    try {
+      authed = await checkAuth()
+      if (authed) {
+        loginError = ''
+        logoutError = ''
+      }
+    } catch {
+      authed = false
+    }
   }
 
-  let signOutError = $state('')
-
-  async function signOut() {
-    signOutError = ''
-    try {
-      await logout()
-    } catch (e) {
-      // A 401 means the session had already ended; any other failure leaves it alive.
-      if (!(e instanceof Error && e.message === 'Authentication required.')) {
-        signOutError = `Log out failed: ${e}`
-        return
+  async function start() {
+    const linkToken = takeTokenFromUrl()
+    if (linkToken) {
+      try {
+        if (!(await login(linkToken))) loginError = 'The login link holds an old or wrong token.'
+      } catch (e) {
+        loginError = `Login failed: ${e}`
       }
     }
-    jobStore.stop()
-    authState = { required: true, authenticated: false }
+    await refreshAuth()
+  }
+
+  // Logged out only once the server says so: its session cookie may still be valid.
+  async function signOut() {
+    logoutError = ''
+    try {
+      await logout()
+      authed = false
+    } catch (e) {
+      logoutError = `Log out failed: ${e}`
+    }
   }
 
   onUnauthorized(() => {
-    if (authState?.required) authState = { required: true, authenticated: false }
+    authed = false
   })
-
-  async function start() {
-    if (linkToken) await login(linkToken).catch(() => false)
-    await refreshAuth()
-  }
 
   $effect(() => {
     start()
   })
 
   $effect(() => {
-    if (authed) jobStore.init()
+    if (authed) jobStore.start()
     else jobStore.stop()
   })
+
+  const active = $derived(jobStore.jobs.filter((j) => !FINISHED.includes(j.status)).length)
+  const asking = $derived(jobStore.jobs.some((j) => j.question))
 </script>
 
-{#if authState === null}
+{#if authed === null}
   <div class="booting">Loading…</div>
 {:else if !authed}
-  <Login onLoggedIn={refreshAuth} />
+  <Login onLoggedIn={refreshAuth} initialError={loginError} />
 {:else}
 <div class="layout">
   <nav>
     <div class="brand">
       <img class="logo" src={logo} alt="" width="24" height="24" /> salmon<span class="accent">web</span>
     </div>
-    {#each Object.entries(routes) as [path, r]}
-      <a href="#/{path}" class:active={route === r}>
-        {r.label}
-        {#if path === 'jobs' && activeCount > 0}
-          <span class="chip run">{activeCount}</span>
-        {/if}
-      </a>
-    {/each}
+    <a href="#/dashboard" class:active={router.page === 'dashboard'}>Dashboard</a>
+    <a href="#/upload" class:active={router.page === 'upload'}>Upload</a>
+    <a href="#/cross-upload" class:active={router.page === 'cross-upload'}>Cross-upload</a>
+    <a href="#/spectrals" class:active={router.page === 'spectrals'}>Spectrals</a>
+    <a href="#/checks" class:active={router.page === 'checks'}>Checks</a>
+    <a href="#/tag" class:active={router.page === 'tag'}>Tag</a>
+    <a href="#/convert" class:active={router.page === 'convert'}>Convert</a>
+    <a href="#/search" class:active={router.page === 'search'}>Search</a>
+    <a href="#/tools" class:active={router.page === 'tools'}>Tools</a>
+    <a href="#/jobs" class:active={router.page === 'jobs'}>
+      Jobs
+      {#if active > 0}<span class="chip {asking ? 'warn' : 'run'}">{active}</span>{/if}
+    </a>
     <div class="spacer"></div>
-    <span class="chip {jobStore.connected ? 'ok' : 'err'}">
-      {jobStore.connected ? 'connected' : 'disconnected'}
-    </span>
+    <span class="chip {jobStore.connected ? 'ok' : 'err'}">{jobStore.connected ? 'connected' : 'disconnected'}</span>
+    {#if logoutError}<span class="chip err" title={logoutError}>log out failed</span>{/if}
     <button class="btn secondary small" onclick={signOut}>Log out</button>
-    {#if signOutError}<span class="muted">{signOutError}</span>{/if}
   </nav>
 
   <main>
-    <route.component />
+    {#if router.page === 'dashboard'}
+      <Dashboard />
+    {:else if router.page === 'upload'}
+      <Upload />
+    {:else if router.page === 'cross-upload'}
+      <CrossUpload />
+    {:else if router.page === 'spectrals'}
+      <Spectrals />
+    {:else if router.page === 'checks'}
+      <Checks />
+    {:else if router.page === 'tag'}
+      <Tag />
+    {:else if router.page === 'convert'}
+      <Convert />
+    {:else if router.page === 'tools'}
+      <Tools />
+    {:else if router.page === 'search'}
+      <Search />
+    {:else}
+      <Jobs />
+    {/if}
   </main>
 </div>
 

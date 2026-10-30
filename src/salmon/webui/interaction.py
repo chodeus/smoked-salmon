@@ -130,10 +130,7 @@ class WebInteraction:
         files = sorted(
             entry.name
             for entry in os.scandir(spectrals_path)
-            # Not hidden ones, as the terminal's viewers: a compression's leftover copy would show as a broken image.
-            if entry.name.lower().endswith(".png")
-            and not entry.name.startswith(".")
-            and entry.is_file(follow_symlinks=False)
+            if entry.name.lower().endswith(".png") and entry.is_file(follow_symlinks=False)
         )
         self._asker.show_spectrals(spectrals_path, files)
         await self._asker.ask(

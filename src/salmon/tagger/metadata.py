@@ -370,7 +370,7 @@ async def _select_choice(
                 for name, source in METASOURCES.items():
                     if source.Scraper.regex.match(stripped):
                         sources.append(name)
-                        tasks.append(handle_scrape_errors(source.Scraper().scrape_release(stripped)))
+                        tasks.append(source.Scraper().scrape_release(stripped))
                         break
             # Handle numeric choices
             elif stripped.strip().isdigit() and int(stripped.strip()) in choices:
@@ -392,8 +392,27 @@ async def _select_choice(
                 return meta, source_url
             continue
 
-        metadatas = await asyncio.gather(*tasks)
+        metadatas = await _gather_scrapes(tasks)
         return _combine_scraped(sources, list(metadatas), rls_data, source_url), source_url
+
+
+async def _gather_scrapes(tasks: list[Any]) -> list[Any]:
+    """The scraped metadatas, None where a source failed, its error printed. When none worked, a pasted URL's
+    error ends the run: no upload goes out on the tags alone after a store was asked for."""
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    errors = [result for result in results if isinstance(result, BaseException)]
+    for error in errors:
+        if not isinstance(error, Exception):
+            raise error
+    if errors and all(result is None or isinstance(result, BaseException) for result in results):
+        raise errors[0]
+    for error in errors:
+        await handle_scrape_errors(_raising(error))
+    return [None if isinstance(result, BaseException) else result for result in results]
+
+
+async def _raising(error: BaseException) -> None:
+    raise error
 
 
 async def _get_manual_metadata(rls_data):

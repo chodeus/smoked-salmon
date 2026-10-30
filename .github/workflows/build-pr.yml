@@ -1,6 +1,6 @@
 name: Build Image (PR)
 
-# Dockerfile and webui/ have no other CI cover — build-alpha.yml is push-to-master only.
+# The Dockerfile has no other CI cover — build-alpha.yml is push-to-master only.
 on:
   pull_request:
 

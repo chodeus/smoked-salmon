@@ -196,14 +196,6 @@ def process_tag_issues(path: str, audio_info: dict, *, scene: bool, recompress: 
     return messages
 
 
-def path_limit_warning(site_code: str, full_path: str) -> str | None:
-    """The trump warning for an in-torrent path past the tracker's limit, or None."""
-    tracker = salmon.trackers.tracker_classes.get(site_code)
-    if tracker is None or len(full_path) <= (limit := tracker.TAG_RULES.max_path_length):
-        return None
-    return f"{len(full_path)}-char path exceeds {site_code}'s {limit} limit (2.3.12, a trump reason): {full_path}"
-
-
 def path_limit_for(site_codes) -> int:
     """The strictest in-torrent path limit among these trackers; TagRules' default for an unknown one, or none."""
     classes = salmon.trackers.tracker_classes
@@ -238,21 +230,3 @@ def upload_warnings(track_data: dict) -> list[str]:
         for warning in (_tag_size_warning(filename, track), _sample_rate_warning(filename, track))
         if warning
     ]
-
-
-def collect_upload_warnings(site_code: str, folder_name: str, track_data: dict) -> list[str]:
-    """Every rule warning for this tracker, as salmon web's checks page shows them; empty when clean."""
-    warnings = []
-    for filename, track in track_data.items():
-        if too_long := path_limit_warning(site_code, in_torrent_path(folder_name, filename)):
-            warnings.append(too_long)
-        if too_big := _tag_size_warning(filename, track):
-            warnings.append(too_big)
-        if filename.lower().endswith(".flac"):
-            if track.get("id3"):
-                warnings.append(f"ID3 tag inside a FLAC (2.2.10.8, a trump reason), left in place: {filename}")
-            if is_uncompressed(track):
-                warnings.append(f"Uncompressed FLAC (2.2.10.10, not allowed); recompress it (salmon up -c): {filename}")
-        if odd_rate := _sample_rate_warning(filename, track):
-            warnings.append(odd_rate)
-    return warnings

@@ -5,7 +5,6 @@ the frequency analysis, then the verdicts. It names the album folder and no othe
 the config: no credential, no tracker URL.
 """
 
-import os
 from typing import Any
 
 from salmon.checks.album import AlbumChecks
@@ -61,40 +60,4 @@ def build_report(checks: AlbumChecks) -> str:
         lines += [f"         {note}" for note in row.notes]
 
     lines += ["", "6. About the release", "   "]
-    return "\n".join(lines)
-
-
-def spectrals_report(album_path: str, audio_info: dict[str, Any], provenance: dict[str, Any], spectra: list) -> str:
-    """salmon web's spectrals-page report: what the release claims, its numbers, and its plots."""
-    from salmon.uploader.frequency import describe, summarize
-
-    lines = [os.path.basename(album_path), "", "1. Lossless or lossy"]
-    depths = sorted({info["precision"] for info in audio_info.values() if info.get("precision")})
-    if depths:
-        named = ", ".join(f"{depth}-bit" for depth in depths)
-        lines.append(f"   Lossless ({named}). Checking whether the audio matches that claim.")
-    else:
-        lines.append("   Lossy, or the bit depth could not be read.")
-    lines += [f"   Claim does not match the audio — {note}." for note in provenance.get("contradictions", [])]
-
-    lines += ["", "2. Format and encoder"]
-    vendors = provenance.get("vendors") or []
-    lines.append(f"   Encoder: {', '.join(vendors)}" if vendors else "   Encoder: not recorded in the tags.")
-    lines += [f"   Tag marker: {marker}" for marker in provenance.get("markers", [])[:5]]
-
-    lines += ["", "3. Bitrate, sample rate and bit depth"]
-    lines += [f"   {name}: {_format_line(info)}" for name, info in audio_info.items()]
-    rates = {info.get("sample rate") for info in audio_info.values() if info.get("sample rate")}
-    if rates:
-        top = max(rates)
-        lines.append(f"   Plots below display 0 to {top / 2000:g} kHz, the full range for {top / 1000:g} kHz audio.")
-
-    lines += ["", "4. Plots"]
-    lines += [f"   {describe(result)}" for result in spectra]
-    lines += [f"   {note}" for note in summarize(spectra)[1]]
-    plotted = "an averaged frequency plot per track"
-    if unplotted := [result.file for result in spectra if not result.image]:
-        plotted += f" except {', '.join(unplotted)}"
-    lines.append(f"   Full-track spectrogram, a 2-second zoom, and {plotted}.")
-    lines += ["", "5. About the release", "   "]
     return "\n".join(lines)

@@ -4,7 +4,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 export default defineConfig({
   plugins: [svelte()],
   build: {
-    // Built assets are served by FastAPI from salmon/webui/static
+    // Committed, and served by `salmon web` from salmon/webui/static
     outDir: '../src/salmon/webui/static',
     emptyOutDir: true,
   },

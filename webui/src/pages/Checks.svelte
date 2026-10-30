@@ -1,200 +1,235 @@
 <script lang="ts">
-  import { apiPost } from '../lib/api'
+  import { apiGet, apiPost } from '../lib/api'
+  import { copyText } from '../lib/clipboard'
+  import DupeMatches from '../lib/DupeMatches.svelte'
   import FolderPicker from '../lib/FolderPicker.svelte'
+  import JobActivity from '../lib/JobActivity.svelte'
   import JobStatus from '../lib/JobStatus.svelte'
   import VerdictRows from '../lib/VerdictRows.svelte'
-  import { checksumChip, crcsChip, logScoreChip } from '../lib/verdicts'
-  import { jobStore, type Job } from '../lib/jobs.svelte'
-
-  const ALL_CHECKS = [
-    { key: 'provenance', label: 'Provenance (encoder & source tags)' },
-    { key: 'log', label: 'Rip-Log (Score & Checksum)' },
-    { key: 'integrity', label: 'File integrity' },
-    { key: 'mqa', label: 'MQA detection' },
-    { key: 'upconvert', label: 'Upconvert detection' },
-    { key: 'tags', label: 'MP3 tags (blank ID3v2 beside ID3v1)' },
-  ]
+  import { dupeDetail, type ChecksResult, type Row } from '../lib/verdicts'
+  import { FINISHED, jobStore, type Job } from '../lib/jobs.svelte'
 
   let path = $state('')
-  let selected = $state<string[]>(['provenance', 'log', 'integrity', 'mqa', 'upconvert', 'tags'])
-  let jobId = $state<string | null>(null)
+  let report = $state(false)
+  // The trackers in the config, and those picked: none by default, so nothing is sent unless asked.
+  let trackers = $state<string[]>([])
+  let chosen = $state<string[]>([])
   let error = $state('')
+  let starting = $state(false)
+  let jobId = $state<string | null>(null)
+  let showLog = $state(false)
+  let copied = $state(false)
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined
+  $effect(() => () => clearTimeout(copiedTimer))
 
-  const job = $derived(jobId ? jobStore.get(jobId) : undefined)
+  // The job started here, else the newest checks job.
+  const job = $derived(
+    (jobId ? jobStore.get(jobId) : undefined) ?? jobStore.jobs.find((j) => j.kind === 'checks'),
+  )
+  const result = $derived(job?.status === 'done' ? (job.result as ChecksResult | null) : null)
 
-  function toggle(key: string) {
-    selected = selected.includes(key) ? selected.filter((k) => k !== key) : [...selected, key]
+  // Read once: the dashboard's overview names the trackers and asks none of them anything.
+  $effect(() => {
+    apiGet<{ trackers: string[] }>('/dashboard')
+      .then((answer) => (trackers = answer.trackers))
+      .catch((e) => (error = `Could not load the trackers: ${e}`))
+  })
+
+  // Kept in the order the config lists them. Ported from the fork's tracker choice (chodeus, 9bfdddc3).
+  function toggleTracker(code: string) {
+    chosen = chosen.includes(code)
+      ? chosen.filter((c) => c !== code)
+      : trackers.filter((t) => t === code || chosen.includes(t))
   }
 
   async function run() {
     error = ''
+    starting = true
     try {
-      const created = await apiPost<Job>('/checks/run', { path, checks: selected })
-      jobStore.add(created)
-      jobId = created.id
+      const started = await apiPost<Job>('/jobs', { kind: 'checks', params: { path, report, trackers: chosen } })
+      jobId = started.id
+      showLog = false
     } catch (e) {
       error = String(e)
+    } finally {
+      starting = false
+    }
+  }
+
+  function toggleLog() {
+    showLog = !showLog
+    if (showLog && job) void jobStore.show(job.id)
+  }
+
+  async function copyReport() {
+    if (!result?.report) return
+    // copyText: navigator.clipboard is missing on a page served over plain HTTP.
+    if (await copyText(result.report)) {
+      copied = true
+      clearTimeout(copiedTimer)
+      copiedTimer = setTimeout(() => (copied = false), 1500)
+    } else {
+      error = 'Could not copy the report: select it and copy by hand.'
     }
   }
 </script>
 
+<!-- Ported from the fork's Checks page (chodeus, 9bfdddc3 and 889cc4f5), on salmon check all's rows. -->
 <h1>Checks</h1>
-<p class="lead">Run the quality checks on any folder without uploading it — encoder and source tags, rip-log score, file integrity, MQA markers and upconversion.</p>
+<p class="lead">
+  Every check <span class="mono">salmon check all</span> runs on an album folder: source, integrity, MQA, upconverts,
+  rip logs, tags, sample rate, path length, provenance, the frequency analysis and the Do-Not-Upload lists. No tracker
+  is contacted unless you pick one, and nothing in the folder is changed. Advisory only:
+  <span class="mono">salmon up</span> runs its own checks.
+</p>
 
 <div class="card">
   <FolderPicker bind:value={path} />
-  <div class="row" style="margin-top: 0.7rem; flex-wrap: wrap">
-    {#each ALL_CHECKS as c}
-      <label class="row" style="gap: 0.3rem">
-        <input type="checkbox" checked={selected.includes(c.key)} onchange={() => toggle(c.key)} />
-        {c.label}
-      </label>
-    {/each}
+  {#if trackers.length}
+    <div class="trackers">
+      <span class="label">Search for a dupe on</span>
+      <div class="row wrap">
+        {#each trackers as code (code)}
+          <button
+            class="chip toggle"
+            class:on={chosen.includes(code)}
+            aria-pressed={chosen.includes(code)}
+            onclick={() => toggleTracker(code)}>{code}</button
+          >
+        {/each}
+      </div>
+      <small class="hint">
+        {#if chosen.length}
+          Each gets what <span class="mono">salmon up</span>'s dupe search sends: its index call, then one search per
+          search string. Only {chosen.join(' and ')}'s rules apply (-t).
+        {:else}
+          None: no tracker is contacted, and RED's and OPS's rules apply.
+        {/if}
+      </small>
+    </div>
+  {/if}
+  <div class="row actions">
+    <label class="row option">
+      <input type="checkbox" bind:checked={report} />
+      Also a plain-text report to paste into a help thread
+    </label>
   </div>
-  <div style="margin-top: 0.7rem">
-    <button class="btn" onclick={run} disabled={!path || selected.length === 0}>Run checks</button>
+  <div class="row actions">
+    <button class="btn" onclick={run} disabled={!path || starting}>Run checks</button>
   </div>
-  {#if error}<p class="muted">{error}</p>{/if}
+  {#if error}<p class="error">{error}</p>{/if}
 </div>
 
 {#if job}
   <div class="card">
-    <h2>{job.title}</h2>
+    <div class="row head">
+      <h2 class="grow">{job.title}</h2>
+      <button class="btn small secondary" onclick={toggleLog}>{showLog ? 'Hide log' : 'Log'}</button>
+    </div>
     <JobStatus {job} />
 
-    {#if job.status === 'done' && job.result}
-      <VerdictRows rows={job.result.rows} />
-
-      {#if job.result.raw.provenance?.files?.length}
-        <h3>Provenance</h3>
-        {#each job.result.raw.provenance.contradictions as note}
-          <p><span class="chip warn">{note}</span></p>
-        {/each}
-        <table>
-          <thead>
-            <tr>
-              <th>File</th>
-              <th title="The FLAC vendor string — who wrote the file's tag block">Encoder</th>
-              <th title="Ripper, store and reseller markers left in the tags">Markers</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each job.result.raw.provenance.files as f}
-              <tr>
-                <td class="mono">{f.file}</td>
-                <td class="muted">{f.vendor ?? '–'}</td>
-                <td class="muted">
-                  {Object.entries(f.markers ?? {})
-                    .map(([k, v]) => `${k}: ${v}`)
-                    .join(' · ') || '–'}
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {/if}
-
-      {#if job.result.raw.log}
-        <h3>Rip-Logs</h3>
-        {#if job.result.raw.log.logs.length === 0}
-          <p class="muted">No .log files found.</p>
-        {:else}
-          <table>
-            <tbody>
-              {#each job.result.raw.log.logs as log}
-                <tr>
-                  <td class="mono">{log.file}</td>
-                  {#if log.error}
-                    <td><span class="chip err">Error</span> <span class="muted">{log.error}</span></td>
-                  {:else}
-                    <td>
-                      <span class="chip {logScoreChip(log.score)}">Score {log.score ?? '?'}</span>
-                      <span class="chip {checksumChip(log.checksum_integrity)}">
-                        Checksum: {log.checksum_integrity}
-                      </span>
-                      <span class="chip {crcsChip(log.crcs)}" title={log.crcs_detail}>CRCs: {log.crcs}</span>
-                    </td>
-                  {/if}
-                </tr>
-              {/each}
-            </tbody>
-          </table>
+    {#if result}
+      <p class="summary">
+        {#if result.blocking}
+          <span class="chip err">{result.blocking} blocking</span>
         {/if}
-      {/if}
-
-      {#if job.result.raw.integrity?.details || job.result.raw.integrity?.concerns?.length || job.result.raw.integrity?.md5_unset?.length}
-        <h3>Integrity</h3>
-        {#each job.result.raw.integrity.concerns ?? [] as concern}
-          <p><span class="chip warn">{concern}</span></p>
-        {/each}
-        {#if job.result.raw.integrity.md5_unset?.length}
-          <p>
-            <span class="chip warn">
-              {job.result.raw.integrity.md5_unset.length} of {job.result.raw.integrity.checked} file(s)
-              with no stored MD5 signature
-            </span>
-          </p>
-          <p class="muted">
-            The audio decodes cleanly; there is just no checksum stored to verify it against.
-            Normal for WEB / web-store downloads. Sanitize re-encodes the album losslessly to set
-            the MD5 (this also strips embedded art); note it in the release description —
-            e.g. “WEB download, re-encoded to set MD5”.
-          </p>
-          <details>
-            <summary class="muted">Show the {job.result.raw.integrity.md5_unset.length} file(s)</summary>
-            <ul class="mono">
-              {#each job.result.raw.integrity.md5_unset as name}
-                <li>{name}</li>
-              {/each}
-            </ul>
-          </details>
+        {#if result.warnings}
+          <span class="chip warn">{result.warnings} warning(s)</span>
         {/if}
-        {#if job.result.raw.integrity.details}
-          <pre class="mono muted">{job.result.raw.integrity.details}</pre>
+        {#if !result.blocking && !result.warnings}
+          <span class="chip ok">Nothing blocking, no warning</span>
         {/if}
+      </p>
+      {#snippet dupes(row: Row)}
+        {@const detail = result ? dupeDetail(result, row) : null}
+        {#if detail}<DupeMatches {detail} />{/if}
+      {/snippet}
+      <VerdictRows rows={result.rows} rowDetail={dupes} />
+      {#if result.report}
+        <details class="report">
+          <summary>Report</summary>
+          <pre class="mono">{result.report}</pre>
+          <button class="btn small secondary" onclick={copyReport}>{copied ? 'Copied' : 'Copy report'}</button>
+        </details>
       {/if}
+    {/if}
 
-      {#if job.result.raw.mqa?.detected}
-        <h3>MQA</h3>
-        <ul class="mono">
-          {#each job.result.raw.mqa.files.filter((f: any) => f.detected) as f}
-            <li>{f.file}</li>
-          {/each}
-        </ul>
-      {/if}
-
-      {#if job.result.raw.upconvert?.files.length}
-        <h3>Upconvert</h3>
-        <table>
-          <tbody>
-            {#each job.result.raw.upconvert.files as f}
-              <tr>
-                <td class="mono">{f.file}</td>
-                {#if f.error}
-                  <td><span class="chip warn">{f.error}</span></td>
-                {:else if f.not_applicable}
-                  <td><span class="chip">{f.not_applicable}</span></td>
-                {:else}
-                  <td class="muted">{f.bitdepth}bit, wasted bits: {f.wasted_bits}</td>
-                {/if}
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {/if}
+    {#if showLog || !FINISHED.includes(job.status)}
+      <JobActivity {job} logTail={showLog ? 0 : 15} />
     {/if}
   </div>
 {/if}
 
 <style>
-  pre {
+  .actions {
+    margin-top: 0.7rem;
+  }
+  .trackers {
+    margin-top: 0.7rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .label {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+  }
+  .wrap {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .toggle {
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    font: inherit;
+  }
+  .toggle.on {
+    border-color: var(--accent);
+    color: var(--text);
+    background: var(--bg-hover);
+  }
+  .hint {
+    color: var(--text-dim);
+    font-size: 0.78rem;
+    line-height: 1.35;
+    max-width: 60ch;
+  }
+  .option {
+    gap: 0.4rem;
+    font-size: 0.9rem;
+  }
+  .error {
+    color: var(--err);
+    margin: 0.5rem 0 0;
+  }
+  .head {
+    flex-wrap: wrap;
+    margin-bottom: 0.4rem;
+  }
+  .head h2 {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .summary {
+    display: flex;
+    gap: 0.4rem;
+    margin: 0.8rem 0 0;
+  }
+  .report {
+    margin-top: 0.8rem;
+  }
+  .report summary {
+    cursor: pointer;
+    color: var(--text-dim);
+  }
+  .report pre {
     white-space: pre-wrap;
     background: var(--bg);
     border-radius: 8px;
     padding: 0.7rem;
-    font-size: 0.8rem;
-  }
-  h3 {
-    margin-top: 1rem;
+    font-size: 0.78rem;
+    overflow-wrap: anywhere;
   }
 </style>

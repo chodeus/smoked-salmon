@@ -2,154 +2,250 @@
   import { apiGet } from '../lib/api'
 
   interface Release {
-    id: string
     artist: string
     album: string
     year: number | string | null
     track_count: number | null
-    source: string
+    summary: string
     url: string
   }
 
-  interface SearchResponse {
-    query: string
-    sources: Record<string, { active: boolean; releases: Release[] }>
+  interface Source {
+    name: string
+    status: 'found' | 'none' | 'inactive' | 'failed'
+    releases: Release[]
+  }
+
+  interface Track {
+    title: string
+    artists?: [string, string][]
+  }
+
+  interface Metadata {
+    title?: string
+    artists?: [string, string][]
+    year?: number | string | null
+    label?: string | null
+    catno?: string | null
+    genres?: string[]
+    tracks?: Record<string, Record<string, Track>>
+    [key: string]: unknown
   }
 
   let query = $state('')
+  // A number input: empty is null.
+  let trackCount = $state<number | null>(null)
   let searching = $state(false)
-  let results = $state<SearchResponse | null>(null)
+  let searched = $state<{ query: string; sources: Source[] } | null>(null)
   let error = $state('')
-  let metaUrl = $state('')
-  let metaData = $state<any>(null)
-  let metaLoading = $state(false)
+
+  let lookupUrl = $state('')
+  let looking = $state(false)
+  let found = $state<{ url: string; source: string; metadata: Metadata } | null>(null)
+  let lookupError = $state('')
+
+  // Each search and lookup is numbered: only the latest one's answer is shown.
+  let searchSeq = 0
+  let lookupSeq = 0
 
   async function search() {
     if (!query.trim()) return
+    const seq = ++searchSeq
     searching = true
     error = ''
-    results = null
+    searched = null
+    const params = new URLSearchParams({ q: query.trim() })
+    // != null: a count of 0 goes to the server, which refuses it, instead of searching unfiltered.
+    if (trackCount != null && Number.isFinite(trackCount)) params.set('track_count', String(trackCount))
     try {
-      results = await apiGet<SearchResponse>(`/search?q=${encodeURIComponent(query)}&limit=8`)
+      const answer = await apiGet<{ query: string; sources: Source[] }>(`/search?${params}`)
+      if (seq === searchSeq) searched = answer
     } catch (e) {
-      error = String(e)
+      if (seq === searchSeq) error = String(e)
     } finally {
-      searching = false
+      if (seq === searchSeq) searching = false
     }
   }
 
-  async function loadMetadata(url: string) {
-    metaUrl = url
-    metaLoading = true
-    metaData = null
+  async function lookUp(url: string) {
+    if (!url.trim()) return
+    const seq = ++lookupSeq
+    lookupUrl = url.trim()
+    looking = true
+    lookupError = ''
+    found = null
     try {
-      const res = await apiGet<{ metadata: any }>(`/metadata?url=${encodeURIComponent(url)}`)
-      metaData = res.metadata
+      const answer = await apiGet<{ url: string; source: string; metadata: Metadata }>(
+        `/metadata?${new URLSearchParams({ url: lookupUrl })}`,
+      )
+      if (seq === lookupSeq) found = answer
     } catch (e) {
-      metaData = { error: String(e) }
+      if (seq === lookupSeq) lookupError = String(e)
     } finally {
-      metaLoading = false
+      if (seq === lookupSeq) looking = false
     }
   }
 
-  function trackList(meta: any): { disc: string; num: string; title: string; artists: string }[] {
-    if (!meta?.tracks) return []
-    const out: any[] = []
-    for (const [disc, tracks] of Object.entries<any>(meta.tracks)) {
-      for (const [num, t] of Object.entries<any>(tracks)) {
-        out.push({
-          disc,
-          num,
-          title: t.title,
-          artists: (t.artists ?? []).map((a: any) => a[0]).join(', '),
-        })
+  // A store's answer is shown as a link only when it is a web address.
+  function isWebUrl(url: string): boolean {
+    return /^https?:\/\//i.test(url)
+  }
+
+  function names(artists: [string, string][] | undefined): string {
+    return (artists ?? []).map((a) => a[0]).join(', ')
+  }
+
+  function trackRows(metadata: Metadata): { at: string; title: string; artists: string }[] {
+    const rows = []
+    for (const [disc, tracks] of Object.entries(metadata.tracks ?? {})) {
+      for (const [number, track] of Object.entries(tracks)) {
+        rows.push({ at: `${disc}-${number}`, title: track.title, artists: names(track.artists) })
       }
     }
-    return out
+    return rows
+  }
+
+  const STATUS: Record<Source['status'], string> = {
+    found: '',
+    none: 'No results.',
+    inactive: 'Inactive: the config has no credentials for it.',
+    failed: 'The search failed.',
   }
 </script>
 
-<h1>Metadata search</h1>
-<p class="lead">Search the metadata sources by artist and album, then load the full release metadata from a result.</p>
+<!-- Ported from the fork's Search page (styx-techno, 5f1f55a6; chodeus, 0b29d2d5 and 9bfdddc3). -->
+<h1>Search</h1>
+<p class="lead">
+  What <span class="mono">salmon metas</span> and <span class="mono">salmon meta</span> do: search every metadata
+  source for a release, then look up the full metadata of a result or of a release URL. Only the stores are contacted,
+  never a tracker.
+</p>
 
 <div class="card">
   <form
-    class="row"
+    class="row wrap"
     onsubmit={(e) => {
       e.preventDefault()
       search()
     }}
   >
-    <input type="text" class="grow" bind:value={query} placeholder="Artist Album …" />
-    <button class="btn" disabled={searching}>{searching ? 'Searching …' : 'Search'}</button>
+    <input type="text" class="grow" bind:value={query} placeholder="Artist and album" maxlength="200" />
+    <input
+      type="number"
+      class="count"
+      bind:value={trackCount}
+      placeholder="Tracks"
+      min="1"
+      max="999"
+      title="Keep releases with about this many tracks (-t)"
+    />
+    <button class="btn" disabled={searching || !query.trim()}>{searching ? 'Searching…' : 'Search'}</button>
   </form>
+  <form
+    class="row wrap lookup"
+    onsubmit={(e) => {
+      e.preventDefault()
+      lookUp(lookupUrl)
+    }}
+  >
+    <input type="text" class="grow" bind:value={lookupUrl} placeholder="A release URL" maxlength="2000" />
+    <button class="btn secondary" disabled={looking || !lookupUrl.trim()}>Look up</button>
+  </form>
+  {#if error}<p class="error">{error}</p>{/if}
 </div>
 
-{#if error}
-  <div class="card"><p class="muted">{error}</p></div>
+{#if looking}
+  <div class="card"><p class="muted">Looking up {lookupUrl}…</p></div>
+{:else if lookupError}
+  <div class="card"><p class="error">{lookupError}</p></div>
+{:else if found}
+  {@const metadata = found.metadata}
+  <div class="card">
+    <h2>{found.source}</h2>
+    <p>
+      <strong>{names(metadata.artists)}</strong> - {metadata.title}
+      <span class="muted"
+        >({metadata.year ?? '?'}{metadata.label ? `, ${metadata.label}` : ''}{metadata.catno
+          ? `, ${metadata.catno}`
+          : ''})</span
+      >
+    </p>
+    {#if metadata.genres?.length}
+      <p class="row wrap">
+        {#each metadata.genres as genre (genre)}<span class="chip">{genre}</span>{/each}
+      </p>
+    {/if}
+    <table>
+      <tbody>
+        {#each trackRows(metadata) as track (track.at)}
+          <tr>
+            <td class="muted">{track.at}</td>
+            <td>{track.title}</td>
+            <td class="muted">{track.artists}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+    <details>
+      <summary>Everything</summary>
+      <pre class="mono">{JSON.stringify(metadata, null, 2)}</pre>
+    </details>
+  </div>
 {/if}
 
-{#if results}
-  {@const anyHits = Object.values(results.sources).some((s) => s.releases.length > 0)}
-  {#if !anyHits}
-    <div class="card"><p class="muted">No matches for "{results.query}".</p></div>
-  {/if}
-  {#each Object.entries(results.sources) as [source, data]}
-    {#if data.releases.length > 0}
-      <div class="card">
-        <h2>{source}</h2>
+{#if searched}
+  {#each searched.sources as source (source.name)}
+    <div class="card">
+      <h2>{source.name}</h2>
+      {#if source.status !== 'found'}
+        <p class="muted">{STATUS[source.status]}</p>
+      {:else}
         <table>
           <tbody>
-            {#each data.releases as rls}
+            {#each source.releases as release (release.url)}
               <tr>
-                <td>{rls.artist} – <strong>{rls.album}</strong></td>
-                <td class="muted">{rls.year ?? ''}</td>
-                <td class="muted">{rls.track_count ? `${rls.track_count} Tracks` : ''}</td>
-                <td>
-                  <a href={rls.url} target="_blank" rel="noreferrer">Link</a>
-                  <button class="btn small secondary" onclick={() => loadMetadata(rls.url)}>Metadata</button>
+                <td class="grow">{release.summary}</td>
+                <td class="links">
+                  {#if isWebUrl(release.url)}
+                    <a href={release.url} target="_blank" rel="noreferrer noopener">Open</a>
+                  {/if}
+                  <button class="btn small secondary" onclick={() => lookUp(release.url)} disabled={looking}
+                    >Look up</button
+                  >
                 </td>
               </tr>
             {/each}
           </tbody>
         </table>
-      </div>
-    {:else if !data.active}
-      <div class="card"><h2>{source}</h2><p class="muted">Inactive — API token required in config.</p></div>
-    {/if}
+      {/if}
+    </div>
   {/each}
 {/if}
 
-{#if metaLoading}
-  <div class="card"><p class="muted">Loading metadata from {metaUrl} …</p></div>
-{:else if metaData}
-  <div class="card">
-    <h2>Release metadata</h2>
-    {#if metaData.error}
-      <p class="muted">{metaData.error}</p>
-    {:else}
-      <p>
-        <strong>{(metaData.artists ?? []).map((a: any) => a[0]).join(', ')}</strong> – {metaData.title}
-        <span class="muted">({metaData.year ?? '?'}{metaData.label ? `, ${metaData.label}` : ''}{metaData.catno ? `, ${metaData.catno}` : ''})</span>
-      </p>
-      {#if metaData.genres?.length}
-        <p>
-          {#each metaData.genres as g}
-            <span class="chip" style="margin-right: 0.3rem">{g}</span>
-          {/each}
-        </p>
-      {/if}
-      <table>
-        <tbody>
-          {#each trackList(metaData) as t}
-            <tr>
-              <td class="muted">{t.disc}-{t.num}</td>
-              <td>{t.title}</td>
-              <td class="muted">{t.artists}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    {/if}
-  </div>
-{/if}
+<style>
+  .wrap {
+    flex-wrap: wrap;
+  }
+  .count {
+    width: 6rem;
+  }
+  .lookup {
+    margin-top: 0.7rem;
+  }
+  .links {
+    white-space: nowrap;
+    text-align: right;
+  }
+  .links a {
+    margin-right: 0.5rem;
+  }
+  .error {
+    color: var(--err);
+    margin: 0.5rem 0 0;
+  }
+  pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.8rem;
+  }
+</style>
