@@ -5,7 +5,7 @@ import json
 import anyio
 
 import salmon.tagger.metadata as metadata_module
-from salmon.common import split_genre
+from salmon.common import decade_tag, split_genre
 from salmon.tagger.ai_review import apply_ai_metadata_result
 from salmon.tagger.pre_data import split_genres
 from salmon.tagger.sources import beatport, qobuz
@@ -215,3 +215,24 @@ def test_real_ai_values_still_apply():
     out = apply_ai_metadata_result(_md(), {"metadata": {"title": "Better Title", "label": "Real Records"}}, None)
     assert out["title"] == "Better Title"
     assert out["label"] == "Real Records"
+
+
+def test_convert_genres_appends_the_release_decade():
+    assert convert_genres(["House"], 2026) == "House,2020s"
+    assert convert_genres(["Disco"], 1979) == "Disco,1970s"
+    assert convert_genres(["House"]) == "House"
+    assert convert_genres([], 2026) == "2020s"
+
+
+def test_convert_genres_does_not_duplicate_an_existing_decade():
+    assert convert_genres(["House", "2020s"], 2026) == "House,2020s"
+
+
+def test_decade_tag_handles_missing_and_bad_years():
+    assert decade_tag(2026) == "2020s"
+    assert decade_tag("1999") == "1990s"
+    assert decade_tag(2000) == "2000s"
+    assert decade_tag(None) is None
+    assert decade_tag("") is None
+    assert decade_tag("not a year") is None
+    assert decade_tag(1066) is None

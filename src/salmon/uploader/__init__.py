@@ -24,7 +24,7 @@ from salmon.checks.provenance import gather_provenance
 from salmon.checks.source import DetectedSource, detect_source
 from salmon.checks.tag_rules import process_tag_issues
 from salmon.checks.upconverts import upload_upconvert_test
-from salmon.common import clipboard_copy, commandgroup, tagify
+from salmon.common import clipboard_copy, commandgroup, decade_tag, tagify
 from salmon.common.files import AlbumPath
 from salmon.config.image_hosts import cover_refusal
 from salmon.config.validations import CONVERSION_KINDS, canonical_conversions
@@ -1526,7 +1526,7 @@ async def edit_metadata(
             click.style("\nWould you like to upload the torrent? (No to re-run metadata section)", fg="magenta"),
             default=True,
         ):
-            metadata["tags"] = convert_genres(metadata["genres"])
+            metadata["tags"] = convert_genres(metadata["genres"], metadata.get("group_year"))
             break
 
         # Refresh tags to accomodate differences in file structure.
@@ -2252,9 +2252,13 @@ def _rewrite_torrent(torrent_content: "Torrent", torrent_path: str) -> None:
         click.secho(f"Could not add the URL to {torrent_path} ({err}): it seeds without it.", fg="yellow")
 
 
-def convert_genres(genres):
-    """Convert the weirdly spaced genres to RED-compliant genres."""
-    return ",".join(t for t in (tagify(g) for g in genres) if t)
+def convert_genres(genres, year=None):
+    """Convert the weirdly spaced genres to RED-compliant genres, plus the original release's decade ("1990s")."""
+    tags = [t for t in (tagify(g) for g in genres) if t]
+    decade = decade_tag(year)
+    if decade and decade not in tags:
+        tags.append(decade)
+    return ",".join(tags)
 
 
 async def _prompt_source(detected: DetectedSource | None = None) -> str:
