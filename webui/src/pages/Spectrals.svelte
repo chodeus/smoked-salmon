@@ -139,7 +139,7 @@
 
   function track(job: Job, file: string): string {
     const tracks = (job.result as { tracks?: Record<string, string> } | null)?.tracks
-    return tracks?.[file.slice(0, 2)] ?? ''
+    return tracks?.[file.split(' ')[0]] ?? ''
   }
 </script>
 

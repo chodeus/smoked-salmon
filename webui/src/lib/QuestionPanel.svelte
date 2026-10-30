@@ -47,7 +47,7 @@
   const spectrals = $derived(
     job.question?.kind === 'spectrals'
       ? (job.question.files ?? []).map((file) => {
-          const name = job.question?.tracks?.[file.slice(0, 2)]
+          const name = job.question?.tracks?.[file.split(' ')[0]]
           return { url: spectralUrl(file), label: name ? `${file}: ${name}` : file }
         })
       : [],
