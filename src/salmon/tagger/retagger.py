@@ -789,8 +789,8 @@ def _has_tag(tracktags, field):
 def move_non_audio_files(directory_move_pairs, disc_of_folder=None):
     """
     Move the files other than the tracks (logs, cues, covers, scan folders) out of each folder the tracks
-    were moved out of, into the tracks' new folder. A file never replaces one already there: it stays where
-    it is, with a warning.
+    were moved out of, into the tracks' new folder. A file never replaces one already there: it takes the
+    first free numbered name instead (``cover.jpg`` becomes ``cover.1.jpg``), so no folder is left behind.
 
     When the tracks of a multi-disc release are moved into the release folder, ``disc_of_folder`` gives the
     disc number of each folder that held one disc: its files are named for that disc (``rip.log`` from disc 2
@@ -812,10 +812,13 @@ def move_non_audio_files(directory_move_pairs, disc_of_folder=None):
             if disc_number is not None:
                 base, file_ext = (file, "") if os.path.isdir(old_path) else os.path.splitext(file)
                 new_file = f"{base}.{disc_number}{file_ext}"
+            stem, suffix = (new_file, "") if os.path.isdir(old_path) else os.path.splitext(new_file)
             new_path = os.path.join(new_dir, new_file)
-            if os.path.lexists(new_path):
-                click.secho(f"Left {old_path} where it is: {new_path} already exists.", fg="yellow")
-                continue
+            counter = 1
+            # shutil.move would replace it: numbered instead.
+            while os.path.lexists(new_path):
+                new_path = os.path.join(new_dir, f"{stem}.{counter}{suffix}")
+                counter += 1
             shutil.move(old_path, new_path)
 
 
