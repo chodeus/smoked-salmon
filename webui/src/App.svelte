@@ -18,10 +18,15 @@
   // null while the first check runs.
   let authed = $state<boolean | null>(null)
   let loginError = $state('')
+  let logoutError = $state('')
 
   async function refreshAuth() {
     try {
       authed = await checkAuth()
+      if (authed) {
+        loginError = ''
+        logoutError = ''
+      }
     } catch {
       authed = false
     }
@@ -38,8 +43,6 @@
     }
     await refreshAuth()
   }
-
-  let logoutError = $state('')
 
   // Logged out only once the server says so: its session cookie may still be valid.
   async function signOut() {
