@@ -77,7 +77,7 @@ from salmon.tagger.folderstructure import check_folder_structure
 from salmon.tagger.metadata import get_metadata
 from salmon.tagger.pre_data import construct_rls_data
 from salmon.tagger.retagger import rename_files, tag_files
-from salmon.tagger.review import review_metadata, suggest_release_type
+from salmon.tagger.review import release_type_from_folder, review_metadata, suggest_release_type
 from salmon.tagger.tags import check_tags, gather_tags, standardize_tags
 from salmon.trackers.base import TagRules
 from salmon.trackers.red import RedApi
@@ -1093,7 +1093,10 @@ async def _upload_staged(
                 original=original,
                 max_path_length=max_path_length,
                 rls_type_hint=suggest_release_type(
-                    rls_data.get("title"), [info.get("duration") or 0 for info in audio_info.values()]
+                    # The folder the user gave: a copy is staged outside the library's Artist/Type/Album layout.
+                    release_type_from_folder(original or path),
+                    rls_data.get("title"),
+                    [info.get("duration") or 0 for info in audio_info.values()],
                 ),
             )
 

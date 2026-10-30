@@ -1,3 +1,4 @@
+import os
 import re
 from collections import defaultdict
 from collections.abc import Sequence
@@ -285,17 +286,29 @@ _TITLE_SAYS_EP = re.compile(r"\bE\.?P\b\.?", re.IGNORECASE)
 _TITLE_SAYS_SINGLE = re.compile(r"\bsingle\b", re.IGNORECASE)
 
 
-def suggest_release_type(title: str | None, durations: Sequence[float]) -> str | None:
+_TYPE_FROM_FOLDER = {name.lower(): name for name in RELEASE_TYPES}
+
+
+def release_type_from_folder(path: str) -> str | None:
+    """The release type the album's parent folder names, as an Artist/Type/Album library layout does."""
+    parent = os.path.basename(os.path.dirname(os.path.abspath(path))).lower()
+    return _TYPE_FROM_FOLDER.get(parent)
+
+
+def suggest_release_type(folder_hint: str | None, title: str | None, durations: Sequence[float]) -> str | None:
     """The release type the files' track count and length imply, as the release type prompt's default.
 
-    1 to 3 tracks are a single, 4 to 6 an EP, more an album; past 30 minutes in all, an album, and a
-    single with a track past 10 minutes, an EP. A title that names another type ("... EP", "(Single)")
-    contradicts it: then there is no default.
+    The type the album's library folder names (release_type_from_folder) comes first. Else 1 to 3 tracks are a
+    single, 4 to 6 an EP, more an album; past 30 minutes in all, an album, and a single with a track past 10
+    minutes, an EP. A title that names another type ("... EP", "(Single)") contradicts it: then there is no default.
 
     Args:
+        folder_hint: The release type the library folder names, or None.
         title: The release title from the tags.
         durations: Each audio file's length in seconds; unknown lengths are 0.
     """
+    if folder_hint:
+        return folder_hint
     if not durations:
         return None
     total = sum(durations)
