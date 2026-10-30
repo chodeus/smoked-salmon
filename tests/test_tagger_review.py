@@ -259,3 +259,36 @@ def test_edit_tracks_refuses_extra_text_on_title_and_artist_lines(monkeypatch, o
     assert len(confirms) == 1 and f"line {line}: " in confirms[0] and new in confirms[0]
     assert metadata["tracks"]["1"]["2"]["title"] == "Two"
     assert metadata["tracks"]["1"]["1"]["artists"] == [("A", "main")]
+
+
+def _collab_metadata() -> dict:
+    return {
+        "artists": [("Lead Act", "main"), ("Guest Act", "main")],
+        "tracks": {
+            "1": {
+                "1": {"title": "Solo", "artists": [("Lead Act", "main")]},
+                "2": {"title": "Duet", "artists": [("Guest Act", "main"), ("Lead Act", "main")]},
+            }
+        },
+    }
+
+
+def test_editing_the_release_artists_leaves_each_tracks_credits_alone(monkeypatch) -> None:
+    metadata = _collab_metadata()
+    monkeypatch.setattr(review_module.click, "edit", lambda *_a, **_k: "Lead Act (main)\nGuest Act (guest)")
+
+    anyio.run(review_module._edit_artists, metadata)
+
+    assert metadata["artists"] == [("Lead Act", "main"), ("Guest Act", "guest")]
+    assert metadata["tracks"]["1"]["2"]["artists"] == [("Guest Act", "main"), ("Lead Act", "main")]
+
+
+def test_editing_the_tracks_rebuilds_the_release_artists_and_says_so(monkeypatch, capsys) -> None:
+    metadata = _collab_metadata()
+    metadata["artists"] = [("Lead Act", "main"), ("Guest Act", "guest")]
+    monkeypatch.setattr(review_module.click, "edit", lambda text, **_k: text)
+
+    anyio.run(review_module._edit_tracks, metadata)
+
+    assert ("Guest Act", "main") in metadata["artists"]
+    assert "set them again" in capsys.readouterr().out

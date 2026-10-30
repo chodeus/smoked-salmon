@@ -171,8 +171,8 @@ For full rules, see the tracker's Classical Tagging Guide.""",
 
 async def _edit_artists(metadata):
     click.secho(
-        "One artist per line as: Name (role). This changes the release's artists and the roles on tracks; "
-        "to rename or split an artist on every track, use artist a[L]iases instead.",
+        "One artist per line as: Name (role). This sets the release's artists on the tracker; each track keeps "
+        "its own credits (edit them with trac[k]s). To rename or split an artist on every track, use a[L]iases.",
         fg="cyan",
     )
     artist_text = "\n".join(f"{a} ({i})" for a, i in metadata["artists"])
@@ -191,20 +191,6 @@ async def _edit_artists(metadata):
                 role = role_match[1].lower()
                 tuples_artists_list.append((name, role))
             metadata["artists"] = tuples_artists_list
-
-            # Now update the track-level artists
-            for _disc_number, disc_data in metadata["tracks"].items():
-                for _track_number, track_info in disc_data.items():
-                    track_artists = track_info["artists"]
-                    updated_track_artists = []
-                    for artist_name, artist_role in track_artists:
-                        # Update role for each artist from the album-level metadata
-                        updated_role = next(
-                            (role for name, role in tuples_artists_list if name == artist_name), artist_role
-                        )
-                        updated_track_artists.append((artist_name, updated_role))
-                    track_info["artists"] = updated_track_artists
-
             return
         except (ValueError, KeyError, TypeError) as e:
             await interaction.confirm(
@@ -461,7 +447,14 @@ async def _edit_tracks(metadata):
         for discnum, tracknum, title, artists in edits:
             metadata["tracks"][discnum][tracknum]["title"] = title
             metadata["tracks"][discnum][tracknum]["artists"] = artists
+        release_artists = metadata["artists"]
         metadata["artists"], metadata["tracks"] = generate_artists(metadata["tracks"])
+        if metadata["artists"] != release_artists:
+            click.secho(
+                "Editing the tracks rebuilt the release's artists from them: if you had set them with [a]rtists, "
+                "set them again.",
+                fg="yellow",
+            )
         return
 
 
