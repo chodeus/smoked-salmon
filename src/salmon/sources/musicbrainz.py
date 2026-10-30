@@ -12,7 +12,7 @@ musicbrainzngs.set_useragent("salmon", "1.0", "noreply@salm.on")
 class MusicBrainzBase(BaseScraper):
     url = site_url = "https://musicbrainz.org"
     release_format = "/release/{rls_id}"
-    regex = re.compile(r"^https?://(?:www\.)?musicbrainz.org/release/([a-f0-9\-]+)$")
+    regex = re.compile(r"^https?://(?:www\.)?musicbrainz.org/release/([a-f0-9\-]+)/?(?=$|[?#])")
 
     async def fetch_data(
         self,
@@ -36,7 +36,7 @@ class MusicBrainzBase(BaseScraper):
         Raises:
             ValueError: If URL is invalid.
         """
-        match = re.search(r"/release/([a-f0-9\-]+)$", url)
+        match = self.regex.match(url)
         if not match:
             raise ValueError("Invalid MusicBrainz URL.")
         rls_id = match[1]
