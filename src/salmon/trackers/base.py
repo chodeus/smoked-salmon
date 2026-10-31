@@ -358,7 +358,8 @@ _IMAGE_AUTH_MARGIN = 60
 # The ajax.php action giving them.
 _IMAGE_AUTH_ACTION = "imgauth"
 # A signed image URL's query values: its expiry and user id are numbers that masking by value would miss.
-_SIGNED_IMAGE_QUERY = re.compile(r"((?:[?&]|&amp;)(?:h|e|u)=)[^&#\s\"'<>\[\]]*")
+# A page may write the "&" between them as &amp; or as a numeric entity, &#38; or &#x26;.
+_SIGNED_IMAGE_QUERY = re.compile(r"((?:[?&]|&amp;|&#0*38;|&#x0*26;)(?:h|e|u)=)[^&#\s\"'<>\[\]]*", re.IGNORECASE)
 
 
 def _keep_little_unsent(writer: AbstractStreamWriter) -> None:

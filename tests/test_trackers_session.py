@@ -443,6 +443,16 @@ def test_debug_output_masks_every_signed_image_url_in_an_answer_and_its_headers(
     assert [value for value in (SIGNED_KEY, SIGNED_EXPIRY, SIGNED_USER) if value in out] == []
 
 
+@pytest.mark.parametrize("separator", ["&", "&amp;", "&#38;", "&#038;", "&#x26;", "&#X26;"])
+def test_a_signed_image_url_is_masked_whatever_its_separator(separator: str) -> None:
+    # A page may write the query's "&" as a named or a numeric HTML entity.
+    url = f"https://x.test/i/1.jpg?e={SIGNED_EXPIRY}{separator}u={SIGNED_USER}{separator}h={SIGNED_KEY}"
+
+    shown = SignedImagesApi("https://x.test")._redact(url)
+
+    assert [value for value in (SIGNED_KEY, SIGNED_EXPIRY, SIGNED_USER) if value in shown] == []
+
+
 def test_a_network_error_naming_a_signed_image_url_shows_none_of_it(monkeypatch) -> None:
     monkeypatch.setattr(BaseGazelleApi._send.retry, "wait", wait_none())  # type: ignore[attr-defined]
 
