@@ -12,7 +12,14 @@ import msgspec
 from salmon import cfg
 from salmon.common.constants import IMAGE_EXTENSIONS, LOSSY_EXTENSIONS
 from salmon.common.files import get_audio_files, process_files
-from salmon.converter.conversions import conversion_of, missing_files, record_conversion
+from salmon.converter.conversions import (
+    changed_sources,
+    changed_tracks,
+    conversion_of,
+    missing_files,
+    record_conversion,
+    source_fingerprints,
+)
 from salmon.errors import InvalidSampleRate, UploadError
 from salmon.release_notification import get_version
 from salmon.tagger.audio_info import gather_audio_info
@@ -284,6 +291,12 @@ def _check_finished_conversion(path: str, new_path: str, items: list[ConvertItem
         and os.path.realpath(record["source"]) == os.path.realpath(path)
         and all(record.get(key) == value for key, value in wanted.items())
     ):
+        # Its files carry the tags and pictures the tracks had then: a retag since would go up without them.
+        if changed := changed_sources(path, record):
+            raise UploadError(
+                f"{new_path} is salmon's conversion of this album at these settings, from before "
+                f"{changed_tracks(changed)}: remove it and run again."
+            )
         missing = missing_files(new_path, record)
         if missing:
             raise UploadError(
@@ -347,6 +360,7 @@ async def convert_folder(
             bit_depth=bit_depth,
             sample_rate=_recorded_rate(items),
             files=files,
+            source_fingerprints=source_fingerprints(path, get_audio_files(path)),
         )
     return final_rate or sample_rate, new_path
 
