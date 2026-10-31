@@ -592,6 +592,10 @@ def retag_files(path, album_changes, track_changes):
                 setattr(mut, change.tag, _written(mut, change.new))
             for tag, value in album_changes.items():
                 setattr(mut, tag, _written(mut, value))
+        except Exception as e:
+            # Only save() writes: this file is as it was, with the rest.
+            abort_partial(f"Retagging {filename}", done, None, [f for f in track_changes if f not in done], e)
+        try:
             mut.save()
         except Exception as e:
             remaining = [f for f in track_changes if f not in done and f != filename]
