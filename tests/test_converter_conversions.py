@@ -188,7 +188,13 @@ def test_convert_folder_records_its_output(tmp_path, monkeypatch) -> None:
     rate, path = anyio.run(dc.convert_folder, str(src), 16, 44100)
 
     assert (rate, path) == (44100, str(out))
-    assert _facts(str(out)) == {**DOWNCONVERT, "source": str(src), "files": {"01.flac": "01.flac"}}
+    # The stubbed sources are not on disk, so none is fingerprinted.
+    assert _facts(str(out)) == {
+        **DOWNCONVERT,
+        "source": str(src),
+        "files": {"01.flac": "01.flac"},
+        "source_fingerprints": {},
+    }
 
 
 def test_a_mixed_family_folder_records_every_target_rate(tmp_path, monkeypatch) -> None:
@@ -204,7 +210,13 @@ def test_a_mixed_family_folder_records_every_target_rate(tmp_path, monkeypatch) 
     anyio.run(dc.convert_folder, str(src), 16, None)
 
     files = {"01.flac": "01.flac", "02.flac": "02.flac"}
-    assert _facts(str(out)) == {**DOWNCONVERT, "source": str(src), "sample_rate": [44100, 48000], "files": files}
+    assert _facts(str(out)) == {
+        **DOWNCONVERT,
+        "source": str(src),
+        "sample_rate": [44100, 48000],
+        "files": files,
+        "source_fingerprints": {},
+    }
 
 
 def test_nothing_converted_means_nothing_recorded(tmp_path, monkeypatch) -> None:
@@ -307,6 +319,7 @@ def test_transcode_folder_records_its_output(tmp_path, monkeypatch) -> None:
         "kind": "transcode",
         "bitrate": "V0",
         "files": {"01.flac": "01.mp3"},
+        "source_fingerprints": {},
     }
 
 
