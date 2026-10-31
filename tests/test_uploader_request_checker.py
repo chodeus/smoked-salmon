@@ -72,8 +72,12 @@ def test_a_malformed_request_is_skipped_whole(capsys) -> None:
 
 @pytest.mark.parametrize(
     ("answer", "said"),
-    [("https://tracker.test/requests.php?action=view", "That URL names no request"), ("maybe", "is not a request")],
-    ids=["no-id", "text"],
+    [
+        ("https://tracker.test/requests.php?action=view", "That URL names no request"),
+        ("maybe", "is not a request"),
+        ("4²", "is not a request"),
+    ],
+    ids=["no-id", "text", "superscript"],
 )
 def test_an_answer_naming_no_request_says_so_and_asks_again(monkeypatch, capsys, answer: str, said: str) -> None:
     answers = [answer, "n"]

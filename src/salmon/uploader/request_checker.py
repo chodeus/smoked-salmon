@@ -171,7 +171,8 @@ async def _prompt_for_request_id(gazelle_site: "BaseGazelleApi", results: list[d
             click.style("\nFill a request? Choose from results, paste a url, or do[n]t.", fg="magenta"),
             default="N",
         )
-        if request_id.strip().isdigit():
+        # ASCII digits: isdigit() also takes "4²", which int() refuses.
+        if request_id.strip().isascii() and request_id.strip().isdigit():
             raw_input = int(request_id)
             list_index = max(0, raw_input - 1)  # 1-based → 0-based, clamp to 0
             if list_index < len(results):
