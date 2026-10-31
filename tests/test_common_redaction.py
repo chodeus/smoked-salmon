@@ -177,6 +177,9 @@ def test_a_flag_value_a_known_secret_masked_keeps_what_follows_it() -> None:
         ("{auth: 'FAKEKEYFOUR'}", "{auth: '[REDACTED]'}"),
         ('{"authkey": "FAKE\\"KEYFIVE"}', '{"authkey": "[REDACTED]"}'),
         ("{'authkey': 'FAKEKEYSIX", "{'authkey': '[REDACTED]"),
+        # With no space before the quote, the query pattern must leave it to the assignment pattern.
+        ('authkey="FAKEKEYSEVEN"', 'authkey="[REDACTED]"'),
+        ("passkey='FAKEKEYEIGHT'", "passkey='[REDACTED]'"),
     ],
 )
 def test_redact_tracker_text_masks_a_quoted_value_in_json_a_repr_or_a_script(text, shown) -> None:

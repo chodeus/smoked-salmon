@@ -205,7 +205,8 @@ _TRACKER_ASSIGNMENT = re.compile(
 )
 # ?authkey=...&torrent_pass=... in a link or a redirect, &amp;-escaped in a page, or a cookie's name=value in text.
 # A value ends at "; ", a cookie's attribute separator; a ";" with no space after stays in it, as in a URL query.
-_TRACKER_QUERY = re.compile(rf"""\b({_TRACKER_KEYS}=)(?:[^&;#\s"'<>]|;(?!\s))*""", re.IGNORECASE)
+# At least one character: a quoted value (authkey="...") is _TRACKER_ASSIGNMENT's, which a match here would hide.
+_TRACKER_QUERY = re.compile(rf"""\b({_TRACKER_KEYS}=)(?:[^&;#\s"'<>]|;(?!\s))+""", re.IGNORECASE)
 # The passkey in an announce URL, whatever its length: https://tracker/<passkey>/announce.
 _ANNOUNCE_PASSKEY = re.compile(r"/[A-Za-z0-9]+(?=/announce)")
 # A form field carrying one, <input name="auth" value="...">, its attributes in any order.
