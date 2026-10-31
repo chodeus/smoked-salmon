@@ -3,6 +3,7 @@ import io
 import os
 import re
 import uuid
+from collections.abc import Iterable
 from typing import IO, cast
 
 import aiohttp
@@ -285,6 +286,25 @@ def _write_whole_file(dest: str, data: bytes) -> None:
         raise
 
 
+def _write_cover(path: str, saved: tuple[str, bytes]) -> str:
+    """Write an embedded picture, as _as_cover_file gave it, as the folder's cover file; return its path."""
+    extension, data = saved
+    cover_file = os.path.join(path, f"cover.{extension}")
+    # A partial cover file would pass for the folder's cover on the next run.
+    _write_whole_file(cover_file, data)
+    click.secho(f"Extracted cover to: {cover_file}", fg="green")
+    return cover_file
+
+
+def _save_front_cover(path: str, filenames: Iterable[str]) -> str | None:
+    """Save the first front cover that reads, from whichever of these FLACs holds it, as the folder's cover file."""
+    for filename in filenames:
+        for picture in FLAC(os.path.join(path, filename)).pictures:
+            if picture.type == PictureType.COVER_FRONT and (saved := _as_cover_file(picture)) is not None:
+                return _write_cover(path, saved)
+    return None
+
+
 def _strip_pictures(path: str, audio: FLAC, cover_file: str | None) -> str | None:
     """Remove a FLAC's pictures and padding, keeping 8 KiB of padding.
 
@@ -310,11 +330,7 @@ def _strip_pictures(path: str, audio: FLAC, cover_file: str | None) -> str | Non
             )
             return None
         if saved is not None:
-            extension, data = saved
-            cover_file = os.path.join(path, f"cover.{extension}")
-            # A partial cover file would pass for the folder's cover on the next run.
-            _write_whole_file(cover_file, data)
-            click.secho(f"Extracted cover to: {cover_file}", fg="green")
+            cover_file = _write_cover(path, saved)
 
     audio.clear_pictures()
     audio.save(padding=get_8kib_padding)
@@ -352,6 +368,9 @@ def check_embedded_pictures(path: str) -> None:
         # Not a copy of the artwork: the embedded pictures may be the only one.
         click.secho(f"Leaving them as they are: {cover_file} could not be read as a JPEG or PNG image.", fg="red")
         return
+    if not cover_file:
+        # The release's front cover first, whichever file holds it: else a file stripped earlier gives its back cover.
+        cover_file = _save_front_cover(path, oversized)
     stripped = 0
     for filename in oversized:
         audio = FLAC(os.path.join(path, filename))
@@ -390,6 +409,9 @@ def _prepare_cover(cover_file: str) -> tuple[str, bytes] | None:
     try:
         # Decoded, not only identified: a truncated image still opens.
         with Image.open(cover_file) as opened:
+            # Before decoding: a small file can hold enough pixels to exhaust a worker's memory.
+            if opened.width * opened.height > MAX_IMAGE_PIXELS:
+                raise ValueError(f"{opened.width}x{opened.height} is over the limit of {MAX_IMAGE_PIXELS} pixels")
             opened.load()
             mime = opened.get_format_mimetype() or ""
     except (OSError, ValueError, Image.DecompressionBombError) as e:

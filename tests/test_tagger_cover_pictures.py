@@ -522,3 +522,28 @@ def test_a_cover_file_that_is_not_an_image_keeps_the_embedded_artwork(tmp_path, 
     output = capsys.readouterr().out
     assert (tmp_path / "cover.jpg").read_bytes() == b"<html>403 Forbidden</html>"
     assert "could not be read as a JPEG or PNG image" in output
+
+
+def test_the_release_front_cover_is_kept_whichever_file_holds_it(tmp_path) -> None:
+    # Files are stripped in order: the first one's back cover must not stand in for the release's front cover.
+    back = _image("png", 1500 * KIB)
+    _write_flac(tmp_path / "01.flac", pictures=((PictureType.COVER_BACK, back),))
+    _write_flac(tmp_path / "02.flac", pictures=((PictureType.COVER_FRONT, FRONT),))
+
+    cover.check_embedded_pictures(str(tmp_path))
+
+    assert [FLAC(tmp_path / name).pictures for name in ("01.flac", "02.flac")] == [[], []]
+    assert (tmp_path / "cover.jpg").read_bytes() == FRONT
+    assert not (tmp_path / "cover.png").exists()
+
+
+def test_a_cover_over_the_pixel_limit_is_skipped_before_it_is_decoded(tmp_path, monkeypatch, capsys) -> None:
+    # Under PIL's own limit but over salmon's: checked before load(), which would decode every pixel.
+    monkeypatch.setattr(cover, "MAX_IMAGE_PIXELS", 10)
+    (tmp_path / "cover.png").write_bytes(_image("png"))
+    _write_flac(tmp_path / "01.flac")
+
+    cover.embed_missing_cover(str(tmp_path))
+
+    assert FLAC(tmp_path / "01.flac").pictures == []
+    assert "10x10 is over the limit of 10 pixels" in capsys.readouterr().out
