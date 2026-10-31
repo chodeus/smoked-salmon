@@ -761,11 +761,23 @@ def test_a_first_tracker_whose_group_search_fails_is_skipped_for_the_next(monkey
     sites = _uploads_by_tracker(monkeypatch)
     _first_trackers_search_fails(monkeypatch)
 
-    run = _run_up(monkeypatch, _album(tmp_path / "Album"), torrents, trackers=("RED", "OPS"), input="\n")
+    run = _run_up(
+        monkeypatch,
+        _album(tmp_path / "Album"),
+        torrents,
+        args=("--request", "4242"),
+        trackers=("RED", "OPS"),
+        input="\n",
+    )
 
     assert run.result.exit_code == 0, run.result.output
     assert "Could not search RED for dupes (search failed): skipping it." in run.result.output
     assert sites == ["OPS"]
+    # The request given is RED's: skipping RED must not send it to OPS.
+    assert "Not filling request 4242: it is RED's." in run.result.output
+    uploads = [dict(sent.fields) for sent in run.tracker.sent if sent.query.get("action") == "upload"]
+    assert uploads
+    assert all(upload.get("requestid") != "4242" for upload in uploads)
 
 
 def test_a_first_tracker_whose_group_search_fails_ends_the_run_when_none_can_follow(
