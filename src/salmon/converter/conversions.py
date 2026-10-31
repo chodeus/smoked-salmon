@@ -103,12 +103,8 @@ def recorded_files(record: dict[str, Any]) -> dict[str, str] | None:
 
 
 def source_fingerprints(folder: str, names: Iterable[str]) -> dict[str, str]:
-    """The fingerprint of each source FLAC a conversion is made from, by its path in folder; unreadable ones out."""
-    fingerprints = {}
-    for name in sorted(names):
-        with contextlib.suppress(OSError, MutagenError):
-            fingerprints[name] = _fingerprint(os.path.join(folder, name))
-    return fingerprints
+    """The fingerprint of each source FLAC a conversion is made from, by its path in folder."""
+    return {name: _fingerprint(os.path.join(folder, name)) for name in sorted(names)}
 
 
 def changed_sources(folder: str, record: dict[str, Any]) -> list[str]:
@@ -116,14 +112,9 @@ def changed_sources(folder: str, record: dict[str, Any]) -> list[str]:
     recorded = record.get("source_fingerprints")
     if not isinstance(recorded, dict) or not all(_relative(name) for name in recorded):
         return []
-    changed = []
-    for name, fingerprint in sorted(recorded.items()):
-        try:
-            if _fingerprint(os.path.join(folder, name)) != fingerprint:
-                changed.append(name)
-        except (OSError, MutagenError):
-            changed.append(name)
-    return changed
+    return sorted(
+        name for name, fingerprint in recorded.items() if _fingerprint(os.path.join(folder, name)) != fingerprint
+    )
 
 
 def changed_tracks(changed: Sequence[str]) -> str:
@@ -137,9 +128,18 @@ def _fingerprint(path: str) -> str:
     """What a conversion takes from a FLAC: its audio (by the MD5 in STREAMINFO), tags and pictures.
 
     A retag or a new picture changes it; a copy, a touch, or a re-encode of the same audio with the same tags does not.
+    "" for a file that cannot be read, so one that becomes readable, or goes, counts as changed.
     """
-    audio = FLAC(path)
-    digest = hashlib.sha256(f"{audio.info.md5_signature:032x} {audio.info.total_samples}".encode())
+    try:
+        audio = FLAC(path)
+        md5 = audio.info.md5_signature
+        digest = hashlib.sha256(f"{md5:032x} {audio.info.total_samples}".encode())
+        if not md5:
+            # FLAC lets the encoder leave the MD5 unset: the file itself stands for its audio then.
+            with open(path, "rb") as fh:
+                digest.update(hashlib.file_digest(fh, "sha256").digest())
+    except (OSError, MutagenError):
+        return ""
     comments = audio.tags if isinstance(audio.tags, VCFLACDict) else []
     for key, value in sorted(comments):
         digest.update(f"\0{key.lower()}={value}".encode())

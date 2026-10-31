@@ -319,7 +319,8 @@ def test_transcode_folder_records_its_output(tmp_path, monkeypatch) -> None:
         "kind": "transcode",
         "bitrate": "V0",
         "files": {"01.flac": "01.mp3"},
-        "source_fingerprints": {},
+        # The stubbed source is not on disk: its fingerprint is that of a file that cannot be read.
+        "source_fingerprints": {"01.flac": ""},
     }
 
 

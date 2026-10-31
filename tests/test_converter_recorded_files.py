@@ -415,12 +415,30 @@ def test_a_refused_transcode_is_skipped_and_the_next_task_runs(monkeypatch, caps
     assert "01.mp3 is missing" in capsys.readouterr().out
 
 
-def _retag(path: Path, change: str) -> None:
+def _set_md5(path: Path, md5: bytes) -> None:
+    """Write md5 into the file's STREAMINFO, the first block: its last 16 bytes are the MD5 of the decoded audio."""
+    data = bytearray(path.read_bytes())
+    data[26:42] = md5
+    path.write_bytes(bytes(data))
+
+
+def _album_with_md5(tmp_path: Path, md5: str) -> Path:
+    """_album, its tracks' audio MD5 set or, as an encoder may leave it, unset."""
+    album = _album(tmp_path)
+    if md5 == "set":
+        for track in album.rglob("*.flac"):
+            _set_md5(track, bytes(range(16)))
+    return album
+
+
+def _change(path: Path, change: str) -> None:
     if change == "audio":
-        # STREAMINFO is the first block: its last 16 bytes are the MD5 of the decoded audio.
-        data = bytearray(path.read_bytes())
-        data[26:42] = bytes(range(1, 17))
-        path.write_bytes(bytes(data))
+        # Other audio: with an MD5 its MD5 differs, and without one the file's bytes do.
+        if FLAC(path).info.md5_signature:
+            _set_md5(path, bytes(range(1, 17)))
+        else:
+            with path.open("ab") as fh:
+                fh.write(b"other audio")
         return
     tagged = FLAC(path)
     if change == "tag":
@@ -432,12 +450,13 @@ def _retag(path: Path, change: str) -> None:
     tagged.save()
 
 
+@pytest.mark.parametrize("md5", ["set", "unset"])
 @pytest.mark.parametrize("change", ["tag", "picture", "audio"])
-def test_a_transcode_of_the_tracks_before_a_retag_is_refused_not_reused(made, tmp_path, change: str) -> None:
+def test_a_transcode_of_the_tracks_before_a_retag_is_refused_not_reused(made, tmp_path, change: str, md5: str) -> None:
     # Its MP3s carry the old tags or pictures: an upload of it would not match the album as it is now.
-    album = _album(tmp_path)
+    album = _album_with_md5(tmp_path, md5)
     out = _transcode(album, tmp_path)
-    _retag(album / "02. two.flac", change)
+    _change(album / "02. two.flac", change)
     before = _snapshot(out)
 
     with pytest.raises(UploadError) as refused:
@@ -450,14 +469,17 @@ def test_a_transcode_of_the_tracks_before_a_retag_is_refused_not_reused(made, tm
     assert _snapshot(out) == before
 
 
-def test_a_transcode_is_reused_when_its_tracks_were_only_touched(made, tmp_path) -> None:
-    album = _album(tmp_path)
+@pytest.mark.parametrize("md5", ["set", "unset"])
+def test_a_transcode_is_reused_when_its_tracks_were_only_touched(made, tmp_path, md5: str) -> None:
+    album = _album_with_md5(tmp_path, md5)
     out = _transcode(album, tmp_path)
     written = list(made)
     for track in album.rglob("*.flac"):
         os.utime(track, ns=(1, 1))
 
-    assert _transcode(album, tmp_path) == out
+    reused = _transcode(album, tmp_path)
+
+    assert reused == out
     assert made == written
 
 
@@ -468,20 +490,45 @@ def test_a_transcode_recorded_before_salmon_fingerprinted_its_tracks_is_reused_a
     record = json.loads(sidecar.read_text())
     del record["source_fingerprints"]
     sidecar.write_text(json.dumps(record))
-    _retag(album / "02. two.flac", "tag")
+    _change(album / "02. two.flac", "tag")
     written = list(made)
 
-    assert _transcode(album, tmp_path) == out
+    reused = _transcode(album, tmp_path)
+
+    assert reused == out
     assert made == written
 
 
 def test_a_downconversion_of_the_tracks_before_a_retag_is_refused(made, tmp_path) -> None:
     album = _album(tmp_path, 24, 96000)
     out = _downconvert(album, tmp_path)
-    _retag(album / "02. two.flac", "tag")
+    _change(album / "02. two.flac", "tag")
     before = _snapshot(out)
 
     with pytest.raises(UploadError, match="from before one of its tracks changed or was renamed"):
         _downconvert(album, tmp_path)
 
     assert _snapshot(out) == before
+
+
+def test_a_track_unreadable_when_fingerprinted_counts_as_changed_once_it_reads(tmp_path) -> None:
+    (tmp_path / "01.flac").write_bytes(b"not a flac yet")
+    record = {"source_fingerprints": conversions.source_fingerprints(str(tmp_path), ["01.flac"])}
+    unchanged = conversions.changed_sources(str(tmp_path), record)
+    _write_flac(tmp_path / "01.flac", 44100, 16, title="One")
+
+    changed = conversions.changed_sources(str(tmp_path), record)
+
+    assert record["source_fingerprints"] == {"01.flac": ""}
+    assert unchanged == []
+    assert changed == ["01.flac"]
+
+
+def test_a_track_gone_since_it_was_fingerprinted_counts_as_changed(tmp_path) -> None:
+    _write_flac(tmp_path / "01.flac", 44100, 16, title="One")
+    record = {"source_fingerprints": conversions.source_fingerprints(str(tmp_path), ["01.flac"])}
+    (tmp_path / "01.flac").unlink()
+
+    changed = conversions.changed_sources(str(tmp_path), record)
+
+    assert changed == ["01.flac"]
