@@ -81,11 +81,7 @@ def _build_output_path(path: str, bit_depth: BitDepth, sample_rate: int | None, 
     # guessed at with a pattern, so it cannot also eat unrelated digits from the album title. It
     # only counts if that exact text is actually in the name; a folder that happens to be 24/96
     # inside is not the same thing as one whose name says so.
-    try:
-        audio_info = gather_audio_info(path)
-    except UploadError:
-        # A file it cannot read names the output as before, so an existing one is still found and checked.
-        audio_info = {}
+    audio_info = gather_audio_info(path)
     current_token = resolution_token(audio_info)
     has_token = holds_resolution_token(foldername, current_token)
     # A {resolution}-only name (the recommended template does not pair it with {format}) has no

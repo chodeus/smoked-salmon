@@ -9,7 +9,7 @@ import asyncclick as click
 import msgspec
 from mutagen import flac, mp3
 from mutagen.flac import VCFLACDict
-from mutagen.id3 import APIC, TXXX, Frames
+from mutagen.id3 import APIC, ID3, TXXX, Frames
 
 from salmon import cfg
 from salmon.common.constants import IMAGE_EXTENSIONS, LOSSY_EXTENSIONS
@@ -94,12 +94,7 @@ def _build_output_path(path: str, bitrate: Bitrate, output_dir: str | None = Non
     # Drop a stale resolution token before deriving the new name: an MP3 transcode must not keep
     # claiming a FLAC resolution such as "24-96". The token is computed from the source's actual
     # files, not guessed at with a pattern, so it cannot also eat unrelated digits from the title.
-    try:
-        audio_info = gather_audio_info(path)
-    except UploadError:
-        # A file it cannot read names the output as before, so an existing one is still found and checked.
-        audio_info = {}
-    foldername = drop_resolution_token(foldername, resolution_token(audio_info))
+    foldername = drop_resolution_token(foldername, resolution_token(gather_audio_info(path)))
 
     if FLAC_FOLDER_RE.search(foldername):
         if LOSSLESS_FOLDER_RE.search(foldername):
@@ -278,15 +273,19 @@ def _copy_tags(tag_dict: dict[str, list[str]], flac_obj: flac.FLAC, mp3_path: Pa
     for k, v in tag_dict.items():
         mp3_thing.tags.add(_get_id3_frame(k, v))
 
-    # The MP3's tag is held to the FLAC's limit on pictures and padding, and its text frames spend from it too:
-    # 16 bytes covers each frame's header and encoding byte, and 8 KiB is left for padding.
-    spent = sum(len(str(value).encode()) + 16 for values in tag_dict.values() for value in values)
-    budget = MAX_PICTURES_AND_PADDING - 8 * 1024 - spent
+    # The FLAC's limit on pictures and padding holds the whole saved tag, text and padding included: a picture
+    # stays only if the tag saved with it still fits.
     for pic in flac_obj.pictures:
-        if len(pic.data) > budget:
-            continue
-        budget -= len(pic.data)
-        mp3_thing.tags.add(APIC(encoding=3, mime=pic.mime, type=pic.type, desc=pic.desc, data=pic.data))
+        frame = APIC(encoding=3, mime=pic.mime, type=pic.type, desc=pic.desc, data=pic.data)
+        # add() replaces a picture with the same desc, as it always did: that one goes back if this one does not fit.
+        replaced = mp3_thing.tags.get(frame.HashKey)
+        mp3_thing.tags.add(frame)
+        mp3_thing.save(v1=0, v2_version=4)
+        if ID3(mp3_path).size > MAX_PICTURES_AND_PADDING:
+            if replaced is None:
+                del mp3_thing.tags[frame.HashKey]
+            else:
+                mp3_thing.tags.add(replaced)
 
     mp3_thing.save(v1=0, v2_version=4)
 
