@@ -279,7 +279,9 @@ def test_idempotent_post_is_sent_again_where_a_307_asks() -> None:
     anyio.run(_idempotent_post_is_sent_again_where_a_307_asks)
 
 
-def test_a_post_redirected_to_another_site_is_an_unknown_outcome() -> None:
+@pytest.mark.parametrize("path", ["/torrents.php", "/login.php"])
+def test_a_post_redirected_to_another_site_is_an_unknown_outcome(path: str) -> None:
+    # Another site's login page too: only the tracker's own one means it turned the request away.
     async def run() -> tuple[list[str], list[str]]:
         posts: list[str] = []
         other_hits: list[str] = []
@@ -292,7 +294,7 @@ def test_a_post_redirected_to_another_site_is_an_unknown_outcome() -> None:
 
         async def upload(request: web.Request) -> web.Response:
             posts.append(request.method)
-            raise web.HTTPFound(other_url + "/torrents.php")
+            raise web.HTTPFound(other_url + path)
 
         runner, url = await _serve(upload=upload)
         api = FakeApi(url)

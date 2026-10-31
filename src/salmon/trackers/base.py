@@ -1067,6 +1067,9 @@ class BaseGazelleApi:
                             if redirected and not idempotent:
                                 # As for an error status on a later hop: the tracker has acted.
                                 raise UnknownOutcomeError(f"{self.site_string} sent a later hop to its login page")
+                            if not idempotent and (target.scheme, target.netloc) != (current.scheme, current.netloc):
+                                # Another site's login page is no sign the tracker turned the request away.
+                                raise UnknownOutcomeError(f"{self.site_string} redirected the request to another site")
                             _secho(
                                 f"{self.site_string} sent this request to its login page: your session cookie is "
                                 f"missing or expired. Check tracker.{self.site_code.lower()}.session in your config.",
