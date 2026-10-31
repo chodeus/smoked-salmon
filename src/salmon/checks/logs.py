@@ -229,8 +229,7 @@ def _audio_files_of_disc(audio_files: list[str], logpath: str) -> list[str]:
         The tracks of the log's disc, or ``audio_files`` unchanged when the log is not named
         for a disc, a file has no disc number, or the files are all of one disc.
     """
-    # rip.2.log, or rip.2.1.log once a taken name was numbered: the first number is the disc.
-    named_for_disc = re.search(r"\.(\d+)(?:\.\d+)*\.log$", os.path.basename(logpath), flags=re.IGNORECASE)
+    named_for_disc = re.search(r"\.(\d+)\.log$", os.path.basename(logpath), flags=re.IGNORECASE)
     if not named_for_disc:
         return audio_files
     disc_numbers = {path: _disc_number(path) for path in audio_files}

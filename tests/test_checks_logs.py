@@ -765,15 +765,3 @@ def test_a_multi_disc_log_named_for_its_first_disc_passes_after_the_one_folder_r
 
     for log_path in log_paths:
         anyio.run(logs.check_log_cambia, log_path, str(tmp_path))
-
-
-def test_a_log_numbered_after_its_disc_still_checks_that_disc(tmp_path, monkeypatch) -> None:
-    for name, disc in zip(ONE_FOLDER_CRCS, ["1", "1", "2", "2"], strict=True):
-        _write_flac(tmp_path / name, disc)
-    (tmp_path / "rip.2.1.log").write_text("log")
-    _patch_cambia(monkeypatch, _one_disc_log("D2-1", "D2-2"))
-    checked = _record_file_crcs(monkeypatch, ONE_FOLDER_CRCS)
-
-    anyio.run(logs.check_log_cambia, str(tmp_path / "rip.2.1.log"), str(tmp_path))
-
-    assert sorted(os.path.basename(path) for path in checked) == ["2.01.flac", "2.02.flac"]
