@@ -1,12 +1,17 @@
 """A store link with a query or fragment (a share link, a tab) names the same release as its plain form."""
 
+from types import SimpleNamespace
+
 import anyio
 import musicbrainzngs
 import pytest
+from test_tagger_metadata_source_url import make_release_data  # pyright: ignore[reportMissingImports]
 
+from salmon.sources.bandcamp import BandcampBase
 from salmon.sources.beatport import BeatportBase
 from salmon.sources.musicbrainz import MusicBrainzBase
 from salmon.sources.qobuz import QobuzBase
+from salmon.sources.tidal import TidalBase
 from salmon.tagger import metadata as metadata_mod
 
 
@@ -80,3 +85,34 @@ def test_a_tag_url_that_cannot_be_split_is_no_stores_link(monkeypatch) -> None:
 
     assert metadata_mod._metasource_of(broken) is None
     assert metadata_mod.files_store_url("album") == good
+
+
+def test_a_pasted_link_goes_to_its_own_stores_scraper_whatever_its_query_names(monkeypatch) -> None:
+    # Tidal is tried first, and its pattern takes a tidal.com album anywhere in the link, the query too.
+    url = "https://artist.bandcamp.com/album/one?ref=https://tidal.com/album/123"
+    scraped: list[str] = []
+
+    def source(name: str, pattern):
+        class Scraper:
+            regex = pattern
+
+            async def scrape_release(self, _url: str):
+                scraped.append(name)
+                return {"title": name}
+
+        return SimpleNamespace(Scraper=Scraper)
+
+    async def answer(*_args, **_kwargs):
+        return url
+
+    monkeypatch.setattr(metadata_mod.click, "prompt", answer)
+    monkeypatch.setattr(
+        metadata_mod,
+        "METASOURCES",
+        {"Tidal": source("Tidal", TidalBase.regex), "Bandcamp": source("Bandcamp", BandcampBase.regex)},
+    )
+    monkeypatch.setattr(metadata_mod, "_combine_scraped", lambda *_args: {"title": "Combined"})
+
+    anyio.run(metadata_mod._select_choice, {}, make_release_data())
+
+    assert scraped == ["Bandcamp"]

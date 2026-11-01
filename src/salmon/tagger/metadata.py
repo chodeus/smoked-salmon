@@ -459,12 +459,10 @@ async def _select_choice(
                 if r.startswith("*"):
                     source_url = stripped
 
-                # Try to scrape if it matches a metadata source
-                for name, source in METASOURCES.items():
-                    if source.Scraper.regex.match(stripped):
-                        sources.append(name)
-                        tasks.append(source.Scraper().scrape_release(stripped))
-                        break
+                # Try to scrape if it matches a metadata source: by the link itself, not a URL its query names.
+                if (name := _metasource_of(stripped)) is not None:
+                    sources.append(name)
+                    tasks.append(METASOURCES[name].Scraper().scrape_release(stripped))
             # Handle numeric choices
             elif stripped.strip().isdigit() and int(stripped.strip()) in choices:
                 scraper = METASOURCES[choices[int(stripped)][0]].Scraper()
