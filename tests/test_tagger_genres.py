@@ -228,6 +228,12 @@ def test_convert_genres_does_not_duplicate_an_existing_decade():
     assert convert_genres(["House", "2020s"], 2026) == "House,2020s"
 
 
+def test_convert_genres_adds_the_decade_only_within_200_characters():
+    # OPS refuses a new group's tags past 200 characters: the decade is left out rather than the upload refused.
+    assert convert_genres(["x" * 194], 2026) == "x" * 194 + ",2020s"
+    assert convert_genres(["x" * 195], 2026) == "x" * 195
+
+
 def test_decade_tag_handles_missing_and_bad_years():
     assert decade_tag(2026) == "2020s"
     assert decade_tag("1999") == "1990s"

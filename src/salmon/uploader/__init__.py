@@ -2252,11 +2252,15 @@ def _rewrite_torrent(torrent_content: "Torrent", torrent_path: str) -> None:
         click.secho(f"Could not add the URL to {torrent_path} ({err}): it seeds without it.", fg="yellow")
 
 
+# OPS refuses a new group's tags past this many characters (upload_handle.php).
+_MAX_TAGS_LENGTH = 200
+
+
 def convert_genres(genres, year=None):
     """Convert the weirdly spaced genres to RED-compliant genres, plus the original release's decade ("1990s")."""
     tags = [t for t in (tagify(g) for g in genres) if t]
     decade = decade_tag(year)
-    if decade and decade not in tags:
+    if decade and decade not in tags and len(",".join([*tags, decade])) <= _MAX_TAGS_LENGTH:
         tags.append(decade)
     return ",".join(tags)
 
