@@ -808,16 +808,13 @@ def move_non_audio_files(directory_move_pairs, disc_of_folder=None):
             # A folder that held tracks too (Disc 1/Bonus) has its files moved on its own pass.
             if os.path.isdir(old_path) and _holds_any(old_path, track_dirs):
                 continue
-            new_file = file
-            if disc_number is not None:
-                base, file_ext = (file, "") if os.path.isdir(old_path) else os.path.splitext(file)
-                new_file = f"{base}.{disc_number}{file_ext}"
-            stem, suffix = (new_file, "") if os.path.isdir(old_path) else os.path.splitext(new_file)
-            new_path = os.path.join(new_dir, new_file)
+            base, file_ext = (file, "") if os.path.isdir(old_path) else os.path.splitext(file)
+            disc = "" if disc_number is None else f".{disc_number}"
+            new_path = os.path.join(new_dir, f"{base}{disc}{file_ext}")
             counter = 1
-            # shutil.move would replace it: numbered instead.
+            # shutil.move would replace it: numbered instead, before the disc, which the log check reads last.
             while os.path.lexists(new_path):
-                new_path = os.path.join(new_dir, f"{stem}.{counter}{suffix}")
+                new_path = os.path.join(new_dir, f"{base}.{counter}{disc}{file_ext}")
                 counter += 1
             shutil.move(old_path, new_path)
 

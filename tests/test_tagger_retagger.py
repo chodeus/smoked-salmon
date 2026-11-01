@@ -8,6 +8,7 @@ import pytest
 from mutagen.flac import FLAC, VCFLACDict
 
 from salmon import cfg, interaction
+from salmon.checks import logs
 from salmon.errors import AmbiguousTrackOrderError, UploadError
 from salmon.tagger.retagger import (
     Change,
@@ -1108,6 +1109,21 @@ def test_tag_files_auto_tag_question(monkeypatch, assume) -> None:
 
     assert len(asked) == (0 if assume else 1)
     assert bool(written) is assume
+
+
+def test_a_disc_log_whose_name_is_taken_keeps_its_disc_as_the_last_number(tmp_path, monkeypatch) -> None:
+    # The log check reads the last number of rip.N.log as its disc: the clash number goes before it.
+    cd2 = tmp_path / "CD2"
+    cd2.mkdir()
+    (cd2 / "rip.log").write_text("disc 2")
+    (tmp_path / "rip.2.log").write_text("already here")
+
+    move_non_audio_files({(".flac", str(cd2), str(tmp_path))}, {str(cd2): 2})
+
+    assert (tmp_path / "rip.2.log").read_text() == "already here"
+    assert (tmp_path / "rip.1.2.log").read_text() == "disc 2"
+    monkeypatch.setattr(logs, "_disc_number", lambda path: 1 if path.startswith("d1") else 2)
+    assert logs._audio_files_of_disc(["d1.flac", "d2.flac"], str(tmp_path / "rip.1.2.log")) == ["d2.flac"]
 
 
 def test_move_non_audio_files_does_not_overwrite_same_named_dest(tmp_path) -> None:
