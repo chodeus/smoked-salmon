@@ -4,7 +4,9 @@ import anyio
 import musicbrainzngs
 import pytest
 
+from salmon.sources.beatport import BeatportBase
 from salmon.sources.musicbrainz import MusicBrainzBase
+from salmon.sources.qobuz import QobuzBase
 from salmon.tagger import metadata as metadata_mod
 
 
@@ -42,3 +44,39 @@ def test_a_musicbrainz_link_with_a_query_fetches_its_release(monkeypatch) -> Non
     anyio.run(lambda: MusicBrainzBase().fetch_data(url))
 
     assert asked == ["0f3c8f2a-1b2c-4d5e-8f90-123456789abc"]
+
+
+@pytest.mark.parametrize(
+    ("scraper", "url", "release_id"),
+    [
+        (QobuzBase, "https://open.qobuz.com/album/111?redirect=/album/222#tracks", "111"),
+        (QobuzBase, "https://www.qobuz.com/gb-en/album/some-album/111.html?next=/album/222", None),
+        (BeatportBase, "https://www.beatport.com/release/some-release/abc?next=/release/x/999", None),
+    ],
+)
+def test_a_links_query_never_gives_its_release_id(scraper, url, release_id) -> None:
+    match = scraper.regex.match(url)
+    assert (match[1] if match else None) == release_id
+
+
+def test_a_query_naming_another_store_leaves_the_link_its_own_stores() -> None:
+    url = "https://artist.bandcamp.com/album/one?ref=https://tidal.com/album/123"
+
+    assert metadata_mod._metasource_of(url) == "Bandcamp"
+    assert metadata_mod._album_identity(url) == ("Bandcamp", "artist.bandcamp.com", "one")
+
+
+def test_a_tagged_album_link_whose_query_names_a_track_is_still_the_album(monkeypatch) -> None:
+    url = "https://open.qobuz.com/album/123?ref=/track/456"
+    monkeypatch.setattr(metadata_mod, "tag_urls", lambda _path: ([url], []))
+
+    assert metadata_mod.files_store_url("album") == url
+
+
+def test_a_tag_url_that_cannot_be_split_is_no_stores_link(monkeypatch) -> None:
+    broken = "https://artist.bandcamp.com:[broken/album/foo"
+    good = "https://open.qobuz.com/album/123"
+    monkeypatch.setattr(metadata_mod, "tag_urls", lambda _path: ([broken, good], []))
+
+    assert metadata_mod._metasource_of(broken) is None
+    assert metadata_mod.files_store_url("album") == good

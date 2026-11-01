@@ -243,9 +243,20 @@ _NOT_ALBUM_PAGE = re.compile(r"/(?:track|playlist)/", re.IGNORECASE)
 _TYPE_SUFFIX = re.compile(r"\s*(?:-\s*(?:EP|Single)|[(\[](?:EP|Single)[)\]])\s*$", re.IGNORECASE)
 
 
+def _without_query(url: str) -> str | None:
+    """The URL without its query and fragment, which may name another page; None when it cannot be split."""
+    try:
+        return urlsplit(url)._replace(query="", fragment="").geturl()
+    except ValueError:  # A tag's typo, such as an unclosed "[" in the host.
+        return None
+
+
 def _metasource_of(url: str) -> str | None:
     """The metadata source that scrapes this URL, if any."""
-    return next((name for name, source in METASOURCES.items() if source.Scraper.regex.match(url)), None)
+    bare = _without_query(url)
+    if bare is None:
+        return None
+    return next((name for name, source in METASOURCES.items() if source.Scraper.regex.match(bare)), None)
 
 
 def files_store_url(path: str) -> str | None:
@@ -257,7 +268,11 @@ def files_store_url(path: str) -> str | None:
     sourced, other = tag_urls(path)
 
     def album(url: str) -> bool:
-        return is_store_url(url) and not _NOT_ALBUM_PAGE.search(url) and _metasource_of(url) is not None
+        return (
+            is_store_url(url)
+            and _metasource_of(url) is not None
+            and not _NOT_ALBUM_PAGE.search(_without_query(url) or "")
+        )
 
     if len({_album_identity(url) for url in sourced + other if album(url)}) != 1:
         return None
@@ -269,8 +284,8 @@ def _album_identity(url: str) -> tuple[str, ...] | None:
     (locale, host, slash) count once."""
     source = _metasource_of(url)
     # A query (Bandcamp's "?from=...") or fragment is no part of the album's identity.
-    bare = urlsplit(url)._replace(query="", fragment="").geturl()
-    match = METASOURCES[source].Scraper.regex.search(bare) if source else None
+    bare = _without_query(url)
+    match = METASOURCES[source].Scraper.regex.search(bare) if source and bare else None
     if source is None or match is None:
         return None
     groups = [group.rstrip("/") for group in match.groups() if group]
