@@ -5,6 +5,7 @@ that contradict themselves give no default. The runs here go against the local f
 test_uploader_dry_run and a fake image host, never a real one.
 """
 
+from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +24,7 @@ from test_uploader_dry_run import (  # pyright: ignore[reportMissingImports]
     image_uploads,  # noqa: F401 (a fixture: see pytestmark)
 )
 
+import salmon.tagger as tagger
 import salmon.trackers
 import salmon.uploader
 from salmon import cfg
@@ -33,7 +35,7 @@ from salmon.tagger import metadata as metadata_mod
 from salmon.tagger import review
 from salmon.trackers.ops import OpsApi
 from salmon.trackers.red import RedApi
-from salmon.uploader import dupe_checker
+from salmon.uploader import dupe_checker, staging
 
 # Covers and spectrals go to the fake image host.
 pytestmark = pytest.mark.usefixtures("image_uploads")
@@ -287,7 +289,7 @@ def test_one_store_url_gives_both_the_media_default_and_the_metadata_default(mon
     ],
 )
 def test_the_release_type_follows_the_track_count(title, durations, expected) -> None:
-    assert review.suggest_release_type(title, durations) == expected
+    assert review.suggest_release_type(None, title, durations) == expected
 
 
 def test_the_release_type_prompt_offers_the_hint(monkeypatch) -> None:
@@ -1023,3 +1025,62 @@ def test_the_metadata_prompt_says_how_several_answers_combine(monkeypatch) -> No
 
     assert "separated by spaces" in messages[0]
     assert "[a]bort" in messages[0]
+
+
+def test_release_type_from_folder_reads_the_library_layout() -> None:
+    assert review.release_type_from_folder("/data/media/music/Illy/EP/(2022) journaling") == "EP"
+    assert review.release_type_from_folder("/data/torrents/salmon/(2022) journaling") is None
+
+
+def test_the_library_folder_names_the_release_type_whatever_the_files_imply() -> None:
+    assert review.suggest_release_type("EP", "Album", [200] * 12) == "EP"
+
+
+def test_salmon_tag_pretypes_the_release_type_its_library_folder_names(monkeypatch, tmp_path) -> None:
+    album = tmp_path / "Artist" / "EP" / "Album"
+    album.mkdir(parents=True)
+    hints = []
+
+    @contextmanager
+    def in_place(path, scratch):
+        yield path, None
+
+    async def release_data(*_args, **_kwargs):
+        return {"title": "Album"}
+
+    async def scraped(*_args):
+        return {"title": "Album"}, None
+
+    async def review_then_stop(metadata, rls_data, source_url, validator, review, **_kwargs):
+        hints.append(review.keywords["rls_type_hint"])
+        raise click.Abort
+
+    monkeypatch.setattr(staging, "staged_source", in_place)
+    monkeypatch.setattr(tagger, "standardize_tags", lambda path: None)
+    monkeypatch.setattr(tagger, "gather_tags", lambda path: {})
+    monkeypatch.setattr(tagger, "gather_audio_info", lambda path: {})
+    monkeypatch.setattr(tagger, "construct_rls_data", release_data)
+    monkeypatch.setattr(tagger, "get_metadata", scraped)
+    monkeypatch.setattr(tagger, "review_metadata_with_ai", review_then_stop)
+
+    with pytest.raises(click.Abort):
+        anyio.run(tagger.run_tag, tagger.TagOptions(path=str(album), source="WEB"))
+
+    assert hints == ["EP"]
+
+
+def test_an_album_staged_out_of_its_library_folder_is_still_typed_by_it(monkeypatch, tmp_path, dirs) -> None:
+    _downloads, torrents = dirs
+    library = tmp_path / "library"
+    album = _album(library / "Artist" / "EP" / "Album")
+    # In library_dirs: the run works on a copy outside the Artist/Type/Album layout.
+    monkeypatch.setattr(cfg.directory, "library_dirs", [str(library)])
+    hints: list[str | None] = []
+
+    async def edit_metadata(*_args: Any, rls_type_hint: str | None = None, **_kwargs: Any) -> Any:
+        hints.append(rls_type_hint)
+        raise click.Abort
+
+    _run_up(monkeypatch, album, torrents, edit_metadata=edit_metadata)
+
+    assert hints == ["EP"]

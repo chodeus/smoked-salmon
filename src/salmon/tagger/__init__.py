@@ -22,7 +22,7 @@ from salmon.tagger.folderstructure import check_folder_structure
 from salmon.tagger.metadata import get_metadata
 from salmon.tagger.pre_data import construct_rls_data
 from salmon.tagger.retagger import rename_files, tag_files
-from salmon.tagger.review import review_metadata, suggest_release_type
+from salmon.tagger.review import release_type_from_folder, review_metadata, suggest_release_type
 from salmon.tagger.sources import NOT_SHOWN, run_metadata
 from salmon.tagger.tags import check_tags, gather_tags, standardize_tags
 
@@ -165,6 +165,8 @@ async def run_tag(options: TagOptions) -> str:
     from salmon.uploader.staging import staged_source
 
     click.secho(f"\nProcessing {options.path}", fg="cyan", bold=True)
+    # Read before staging: a copy is staged outside the library's Artist/Type/Album layout.
+    folder_type = release_type_from_folder(options.path)
     with staged_source(options.path, scratch=False) as (path, rename_into):
         staged = path
         original = options.path if staged != options.path else None
@@ -182,7 +184,10 @@ async def run_tag(options: TagOptions) -> str:
             rls_data,
             source_url,
             metadata_validator_base,
-            functools.partial(review_metadata, rls_type_hint=suggest_release_type(rls_data.get("title"), durations)),
+            functools.partial(
+                review_metadata,
+                rls_type_hint=suggest_release_type(folder_type, rls_data.get("title"), durations),
+            ),
             skip_initial_review=options.skip_initial_review,
             apply_suggestions=options.apply_ai_suggestions,
         )
