@@ -9,7 +9,7 @@ dependencies = [
     "aiohttp>=3.14.5",
     "aiohttp-jinja2>=1.6",
     "aiohttp-socks>=0.12.0",
-    "anyio>=4.15.1",
+    "anyio>=4.16.0",
     "asyncclick>=8.4.2.1",
     "av>=19.0.2",
     "backports-zstd>=1.8.0; python_full_version < '3.14' and platform_python_implementation == 'CPython'",
