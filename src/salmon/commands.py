@@ -451,10 +451,16 @@ async def _test_seedbox_connections() -> None:
                     click.secho("    ✔ Rclone executable found", fg="green")
                     # Test access to the configured remote, not just local config presence.
                     try:
+                        # With the upload's own extra_args, e.g. a --config it relies on, but copy's own flag,
+                        # which lsd refuses as unknown.
+                        probe_args = [
+                            arg
+                            for arg in seedbox_config.extra_args
+                            if arg.split("=", 1)[0] != "--create-empty-src-dirs"
+                        ]
                         with anyio.fail_after(10):
-                            # With the upload's own extra_args, e.g. a --config it relies on.
                             result = await anyio.run_process(
-                                ["rclone", "lsd", f"{seedbox_config.url}:", *seedbox_config.extra_args], check=False
+                                ["rclone", "lsd", f"{seedbox_config.url}:", *probe_args], check=False
                             )
                         if result.returncode == 0:
                             click.secho(f"    ✔ Rclone remote '{remote}' is accessible", fg="green", bold=True)
