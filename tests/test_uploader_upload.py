@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
+
 from salmon import cfg
 from salmon.uploader.upload import (
     compile_data_new_group,
@@ -250,3 +252,21 @@ def test_a_lossy_hybrid_tracklist_names_no_bit_depth(monkeypatch) -> None:
     monkeypatch.setattr(cfg.upload.description, "bitrates_in_t_desc", False)
 
     assert "01. Intro [i](3:05)[/i] [44.1 kHz]\n" in _hybrid_tracklist(None)
+
+
+@pytest.mark.parametrize("artist", ["A & B (feat. C)", "Artist A, Artist B", ""])
+def test_a_value_naming_no_single_artist_is_left_plain(monkeypatch, artist: str) -> None:
+    from salmon.uploader.upload import format_tracklist_artists
+
+    monkeypatch.setattr(cfg.upload.description, "artist_tags_in_tracklist", True)
+    formatted = format_tracklist_artists([artist])
+
+    assert formatted == artist
+
+
+def test_use_upc_as_catno_with_no_upc_gives_no_catno(monkeypatch) -> None:
+    from salmon.uploader.upload import generate_catno
+
+    monkeypatch.setattr(cfg.upload.compression, "use_upc_as_catno", True)
+
+    assert generate_catno({"catno": None, "upc": None}) == ""

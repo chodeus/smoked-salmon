@@ -13,6 +13,7 @@ from salmon.constants import ARTIST_IMPORTANCES
 from salmon.errors import UploadRefusedError
 from salmon.release_notification import get_version
 from salmon.sources import SOURCE_ICONS
+from salmon.tagger.pre_data import parse_artists
 from salmon.tagger.sources import METASOURCES
 from salmon.uploader.seedbox import warn_unmatched_normalization
 from salmon.uploader.spectrals import (
@@ -355,7 +356,7 @@ def generate_catno(metadata: dict[str, Any]) -> str:
     if metadata.get("catno"):
         return metadata["catno"]
     elif cfg.upload.compression.use_upc_as_catno:
-        return metadata.get("upc", "")
+        return metadata.get("upc") or ""
     return ""
 
 
@@ -441,14 +442,19 @@ def format_tracklist_artists(artists: list[str]) -> str:
 
     Returns:
         The joined artist names, wrapped in [artist][/artist] BBCode when the
-        `artist_tags_in_tracklist` setting is on. A name containing "[" or "]" is
-        left plain, since wrapping it could break the tag.
+        `artist_tags_in_tracklist` setting is on. A name containing "[" or "]", or a value
+        naming more than one artist, is left plain.
     """
     if not cfg.upload.description.artist_tags_in_tracklist:
         return ", ".join(artists)
-    return ", ".join(
-        f"[artist]{artist}[/artist]" if "[" not in artist and "]" not in artist else artist for artist in artists
-    )
+    return ", ".join(_artist_link(artist) for artist in artists)
+
+
+def _artist_link(artist: str) -> str:
+    # A combined value ("A & B (feat. C)") names no one artist, and [ or ] would break the tag: left plain.
+    if "[" in artist or "]" in artist or [name for name, _role in parse_artists(artist)] != [artist]:
+        return artist
+    return f"[artist]{artist}[/artist]"
 
 
 def generate_description(track_data: dict[str, Any], metadata: dict[str, Any]) -> str:
