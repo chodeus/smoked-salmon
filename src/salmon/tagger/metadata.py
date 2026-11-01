@@ -107,7 +107,7 @@ def _explain_default(default: str | None, choices: dict[int, tuple[str, str]]) -
             source = choices[int(part)][0]
             click.secho(
                 f"Pre-typed {part}: the {source} result matching the files' artist and title (and track count and "
-                "year where it gives them).",
+                "year where both have them).",
                 fg="cyan",
             )
 
@@ -430,7 +430,8 @@ async def _select_choice(
         elif res.lower().startswith("a"):
             raise click.Abort
 
-        sources, tasks = [], []
+        # pasted: each task's URL when this answer added it to the release's links, else None.
+        sources, tasks, pasted = [], [], []
         for r in res.split():
             # Handle starred items first
             stripped = r[1:] if r.startswith("*") else r
@@ -439,7 +440,8 @@ async def _select_choice(
             # Handle URLs (both starred and unstarred)
             if stripped_lower.startswith("http"):
                 # Add any URL to rls_data urls if not already there
-                if stripped not in rls_data["urls"]:
+                added = stripped not in rls_data["urls"]
+                if added:
                     rls_data["urls"].append(stripped)
 
                 # Set source_url if this is a starred URL
@@ -451,12 +453,14 @@ async def _select_choice(
                     if source.Scraper.regex.match(stripped):
                         sources.append(name)
                         tasks.append(source.Scraper().scrape_release(stripped))
+                        pasted.append(stripped if added else None)
                         break
             # Handle numeric choices
             elif stripped.strip().isdigit() and int(stripped.strip()) in choices:
                 scraper = METASOURCES[choices[int(stripped)][0]].Scraper()
                 sources.append(choices[int(stripped)][0])
                 tasks.append(handle_scrape_errors(scraper.scrape_release_from_id(choices[int(stripped)][1])))
+                pasted.append(None)
                 # Set source_url if this is a starred choice
                 if r.startswith("*"):
                     source_url = SEARCHSOURCES[choices[int(stripped)][0]].Searcher.format_url(choices[int(stripped)][1])
@@ -473,6 +477,8 @@ async def _select_choice(
             continue
 
         metadatas = await _gather_scrapes(tasks)
+        if source_url in _leave_out_failed(rls_data, pasted, metadatas):
+            source_url = None
         return _combine_scraped(sources, metadatas, rls_data, source_url), source_url
 
 
@@ -496,6 +502,17 @@ async def _gather_scrapes(tasks: list[Any]) -> list[Any]:
 
 async def _raising(error: BaseException) -> None:
     raise error
+
+
+def _leave_out_failed(rls_data: dict[str, Any], pasted: list[str | None], metadatas: list[Any]) -> set[str]:
+    """Take the pasted URLs whose scrape failed out of the release's links, as their metadata is; return them."""
+    failed = {url for url, meta in zip(pasted, metadatas, strict=True) if url is not None and meta is None}
+    if failed:
+        rls_data["urls"][:] = [url for url in rls_data["urls"] if url not in failed]
+        click.secho(
+            f"Left out of the release's links, as it could not be read: {', '.join(sorted(failed))}", fg="yellow"
+        )
+    return failed
 
 
 async def _get_manual_metadata(rls_data):

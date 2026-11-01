@@ -64,6 +64,46 @@ def test_a_store_url_that_fails_beside_one_that_works_is_reported_and_left_out(m
     assert "Scrape error: no such album" in capsys.readouterr().out
 
 
+FAILING, WORKING = "https://open.qobuz.com/album/0887396827479", "https://www.deezer.com/album/322064097"
+
+
+def _links_given(monkeypatch) -> list[tuple[list[str], str | None]]:
+    """What _combine_scraped is given: the release's links, and the source URL."""
+    given: list[tuple[list[str], str | None]] = []
+
+    def combine(_sources, _metadatas, rls_data, source_url):
+        given.append((list(rls_data["urls"]), source_url))
+        return {"title": "Combined"}
+
+    monkeypatch.setattr(metadata_mod, "_combine_scraped", combine)
+    return given
+
+
+@pytest.mark.parametrize("star", ["", "*"])
+def test_a_pasted_url_that_fails_is_left_out_of_the_links_too(monkeypatch, capsys, star: str) -> None:
+    _pasted(monkeypatch, f"{star}{FAILING} {WORKING}")
+    given = _links_given(monkeypatch)
+
+    _metadata, source_url = anyio.run(metadata_mod._select_choice, {}, make_release_data())
+    out = capsys.readouterr().out
+
+    assert given == [([WORKING], None)]
+    assert source_url is None
+    assert f"Left out of the release's links, as it could not be read: {FAILING}" in out
+
+
+def test_a_failing_url_the_tags_already_gave_stays_in_the_links(monkeypatch) -> None:
+    _pasted(monkeypatch, f"*{FAILING} {WORKING}")
+    given = _links_given(monkeypatch)
+    rls_data = make_release_data()
+    rls_data["urls"] = [FAILING]
+
+    _metadata, source_url = anyio.run(metadata_mod._select_choice, {}, rls_data)
+
+    assert given == [([FAILING, WORKING], FAILING)]
+    assert source_url == FAILING
+
+
 def test_an_unstarred_store_url_says_why_it_is_not_the_source(capsys) -> None:
     metadata_mod._explain_default("https://www.qobuz.com/album/x/0887396827479", {})
 
