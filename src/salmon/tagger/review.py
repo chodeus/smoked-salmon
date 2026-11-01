@@ -201,13 +201,16 @@ async def _edit_artists(metadata):
 
 
 async def _alias_artists(metadata):
-    existing_artists = {a for a, _ in metadata["artists"]}
+    # The tracks' too: [a]rtists can take an artist off the release and leave it on its tracks.
+    existing_artists = {a for a, _ in metadata["artists"]} | {
+        a for disc in metadata["tracks"].values() for track in disc.values() for a, _ in track["artists"]
+    }
     marker = "Enter aliases below this line:"
     while True:
         artist_aliases = defaultdict(list)
         artists_to_delete = []
         artist_list_str = (
-            "\n".join({a for a, _ in metadata["artists"]})
+            "\n".join(existing_artists)
             + "\n\nOne alias per line as: existing name --> new name. Two lines with the same existing name split it"
             + " into two artists; nothing after --> removes the artist.\n"
             + f"{marker}\n\n"

@@ -291,4 +291,24 @@ def test_editing_the_tracks_rebuilds_the_release_artists_and_says_so(monkeypatch
     anyio.run(review_module._edit_tracks, metadata)
 
     assert ("Guest Act", "main") in metadata["artists"]
-    assert "set them again" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "set them again" in out
+
+
+def test_an_alias_renames_an_artist_left_only_on_the_tracks(monkeypatch) -> None:
+    metadata = _collab_metadata()
+    metadata["artists"] = [("Lead Act", "main")]  # [a]rtists took Guest Act off the release.
+    shown: list[str] = []
+
+    def edit(text: str, **_k) -> str:
+        shown.append(text)
+        return text + "Guest Act --> Guest Band\n"
+
+    monkeypatch.setattr(review_module.click, "edit", edit)
+    monkeypatch.setattr(review_module.click, "confirm", lambda *_a, **_k: pytest.fail("the alias was refused"))
+
+    anyio.run(review_module._alias_artists, metadata)
+
+    assert "Guest Act" in shown[0].split("Enter aliases below this line:")[0]
+    assert metadata["tracks"]["1"]["2"]["artists"] == [("Lead Act", "main"), ("Guest Band", "main")]
+    assert metadata["artists"] == [("Lead Act", "main")]
