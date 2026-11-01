@@ -25,6 +25,7 @@ from salmon.common.regexes import (
 )
 from salmon.common.strings import (
     clean_name,
+    decade_tag,
     fetch_genre,
     has_visible_chars,
     invisible_chars,
@@ -60,6 +61,7 @@ __all__ = [
     "show_invisible",
     "split_genre",
     "strip_template_keys",
+    "decade_tag",
     "tagify",
     "truncate",
     "ScrapeError",

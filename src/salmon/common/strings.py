@@ -205,6 +205,17 @@ def split_genre(genre: str) -> list[str]:
     return [part.strip() for part in _GENRE_SEPARATORS.split(genre) if part.strip()]
 
 
+def decade_tag(year) -> str | None:
+    """The decade of the original release, which trackers want in place of the year."""
+    try:
+        year = int(year)
+    except (TypeError, ValueError):
+        return None
+    if not 1900 <= year <= 2999:
+        return None
+    return f"{year // 10 * 10}s"
+
+
 def tagify(genre: str) -> str:
     """One tracker tag: words joined by dots, "&" spelled out because it is not a tag character."""
     tag = re.sub(r"\s*&\s*", ".and.", genre)
