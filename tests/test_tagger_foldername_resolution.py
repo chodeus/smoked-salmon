@@ -180,3 +180,15 @@ def test_a_blank_token_takes_only_its_own_emptied_bracket(monkeypatch, tmp_path)
     renamed = anyio.run(lambda: foldername.rename_folder(str(album), METADATA, auto_rename=True, check=False))
 
     assert renamed == str(tmp_path / "Illy - journaling {} ()")
+
+
+def test_a_blank_token_in_brackets_keeps_the_space_between_what_was_around_it(monkeypatch, tmp_path) -> None:
+    _stub_audio_info(monkeypatch, {"01.flac": {"precision": 16, "sample rate": 44100}})
+    monkeypatch.setattr(cfg.upload.formatting, "folder_template", "{artists} [{resolution}]{title}")
+    monkeypatch.setattr(cfg.directory, "download_directory", str(tmp_path))
+    album = tmp_path / "old name"
+    album.mkdir()
+
+    renamed = anyio.run(lambda: foldername.rename_folder(str(album), METADATA, auto_rename=True, check=False))
+
+    assert renamed == str(tmp_path / "Illy journaling")

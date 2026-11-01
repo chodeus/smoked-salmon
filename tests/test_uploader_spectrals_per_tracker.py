@@ -25,6 +25,7 @@ import salmon.trackers
 import salmon.uploader
 from salmon import cfg, dryrun
 from salmon.config.validations import ImageUploader, TrackerImageSettings
+from salmon.errors import UploadError
 from salmon.images.base import BaseImageUploader
 from salmon.uploader import spectrals as spectrals_module
 from salmon.uploader.spectrals import SpectralUploads, get_spectrals_path, specs_hosts_text
@@ -389,3 +390,47 @@ def test_an_albums_own_spectrals_folder_survives_the_upload_and_goes_into_the_re
     assert len(images_at_upload) == 6 and not any(images_at_upload)
     assert _left_behind(downloads, scratch) == []
     assert list(downloads.glob("spectrals_*")) == []
+
+
+def _album_with_spectrals(monkeypatch, tmp_path) -> tuple[Path, Path]:
+    """An album outside any library, its spectrals in its own Spectrals folder, as salmon makes them there."""
+    monkeypatch.setattr(cfg.directory, "tmp_dir", None)
+    monkeypatch.setattr(cfg.directory, "library_dirs", [])
+    album = tmp_path / "Album"
+    spectrals = album / "Spectrals"
+    spectrals.mkdir(parents=True)
+    (spectrals / "01 Full.png").write_bytes(b"png")
+    return album, spectrals
+
+
+def test_spectrals_that_cannot_be_deleted_are_moved_out_of_the_album_before_its_torrent(monkeypatch, tmp_path) -> None:
+    album, spectrals = _album_with_spectrals(monkeypatch, tmp_path)
+    uploads = SpectralUploads(str(album), ["RED"])
+
+    async def refused(_path: str) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(spectrals_module, "_delete_spectrals", refused)
+
+    anyio.run(uploads.close)
+
+    assert not spectrals.exists()
+
+
+def test_spectrals_that_can_be_neither_deleted_nor_moved_stop_the_run(monkeypatch, tmp_path) -> None:
+    album, spectrals = _album_with_spectrals(monkeypatch, tmp_path)
+    uploads = SpectralUploads(str(album), ["RED"])
+
+    async def refused(_path: str) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    def unmovable(*_args: Any, **_kwargs: Any) -> str:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(spectrals_module, "_delete_spectrals", refused)
+    monkeypatch.setattr(spectrals_module.shutil, "move", unmovable)
+
+    with pytest.raises(UploadError, match="a torrent would hold it"):
+        anyio.run(uploads.close)
+
+    assert (spectrals / "01 Full.png").exists()

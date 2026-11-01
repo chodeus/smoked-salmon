@@ -276,11 +276,13 @@ class SpectralUploads:
                 self._keep_out_of_album()
         return self._urls[host]
 
+    def _in_album(self) -> bool:
+        """Whether the spectrals folder is still there, inside the album folder."""
+        return os.path.isdir(self._path) and Path(self._path).resolve().is_relative_to(Path(self._album_path).resolve())
+
     def _keep_out_of_album(self) -> None:
         """Move the spectrals folder out of the album folder, if it is inside it, to where close() deletes it."""
-        if self._scratch is not None or not os.path.isdir(self._path):
-            return
-        if not Path(self._path).resolve().is_relative_to(Path(self._album_path).resolve()):
+        if self._scratch is not None or not self._in_album():
             return
         self._scratch = tempfile.mkdtemp(prefix="salmon-spectrals-")
         old_real = os.path.realpath(self._path)
@@ -288,8 +290,21 @@ class SpectralUploads:
         carry_specs_claim(old_real, self._path)
 
     async def close(self) -> None:
-        """Delete the spectral files, if they are still there."""
+        """Delete the spectral files, if they are still there, and never leave them where a torrent would take them.
+
+        Raises:
+            UploadError: If they could be neither deleted nor moved out of the album folder.
+        """
         await _delete_uploaded_spectrals(self._path)
+        if self._in_album():
+            # Not deleted: out of the album, or a torrent made from it would hold them.
+            try:
+                self._keep_out_of_album()
+            except OSError as e:
+                raise UploadError(
+                    f"{self._path} could be neither deleted nor moved out of the album ({e}): a torrent would hold "
+                    "it. Delete it and run again."
+                ) from None
         if self._scratch is not None:
             shutil.rmtree(self._scratch, ignore_errors=True)
             self._scratch = None

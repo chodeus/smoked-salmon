@@ -341,7 +341,9 @@ def _strip_blank_resolution(template):
         literals[i] = literals[i].rstrip()
         after = literals[i + 1].lstrip() if i + 1 < len(literals) else ""
         if literals[i][-1:] in ("[", "(", "{") and after[:1] == {"[": "]", "(": ")", "{": "}"}[literals[i][-1]]:
-            literals[i] = literals[i][:-1].rstrip()
+            before = literals[i][:-1]
+            # The space before the bracket also parts what came before it from what follows it ("[{resolution}]{x}").
+            literals[i] = before.rstrip() + (" " if before[-1:].isspace() else "")
             literals[i + 1] = after[1:]
     parts = []
     for literal, (_literal, field, spec, conversion) in zip(literals, pieces, strict=True):
