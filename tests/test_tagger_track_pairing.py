@@ -573,7 +573,7 @@ def test_a_track_number_int_cannot_read_is_not_numbered():
 
 
 def test_a_scraped_track_without_a_local_one_merges_nothing():
-    # combine_metadatas goes on past the error: what was merged before it would stay.
+    # Pairing is checked before any track is merged, so base comes out as it went in.
     base = {"1": {"1": _track("Work", "1")}}
     meta = {"1": {"1": _track("Work (Original Mix)", "1"), "2": _track("Django (Original Mix)", "2")}}
     untouched = deepcopy(base)
