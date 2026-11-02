@@ -9,6 +9,7 @@ from unidecode import unidecode
 from salmon import cfg
 from salmon.common import re_strip
 from salmon.common.strings import comparable
+from salmon.common.urls import without_query
 from salmon.errors import TrackCombineError
 from salmon.tagger.pairing import pair_by_content
 from salmon.tagger.sources import METASOURCES
@@ -27,11 +28,11 @@ PREFERENCES = [
 
 
 def get_source_from_link(url):
-    if not url:
+    """The metadata source that scrapes this link, read without its query, which may name another store's page."""
+    bare = without_query(url) if url else None
+    if not bare:
         return None
-    for name, source in METASOURCES.items():
-        if source.Scraper.regex.match(url):
-            return name
+    return next((name for name, source in METASOURCES.items() if source.Scraper.regex.match(bare)), None)
 
 
 def combine_metadatas(*metadatas, base=None, source_url=None):

@@ -13,6 +13,7 @@ from salmon.sources.musicbrainz import MusicBrainzBase
 from salmon.sources.qobuz import QobuzBase
 from salmon.sources.tidal import TidalBase
 from salmon.tagger import metadata as metadata_mod
+from salmon.tagger.combine import get_source_from_link
 
 
 def test_a_tracked_bandcamp_link_is_the_same_album_as_its_plain_one() -> None:
@@ -33,7 +34,7 @@ def test_a_tracked_bandcamp_link_is_the_same_album_as_its_plain_one() -> None:
     ],
 )
 def test_a_store_link_with_a_query_is_its_own_stores(url, source) -> None:
-    assert metadata_mod._metasource_of(url) == source
+    assert get_source_from_link(url) == source
 
 
 def test_a_musicbrainz_link_with_a_query_fetches_its_release(monkeypatch) -> None:
@@ -67,7 +68,7 @@ def test_a_links_query_never_gives_its_release_id(scraper, url, release_id) -> N
 def test_a_query_naming_another_store_leaves_the_link_its_own_stores() -> None:
     url = "https://artist.bandcamp.com/album/one?ref=https://tidal.com/album/123"
 
-    assert metadata_mod._metasource_of(url) == "Bandcamp"
+    assert get_source_from_link(url) == "Bandcamp"
     assert metadata_mod._album_identity(url) == ("Bandcamp", "artist.bandcamp.com", "one")
 
 
@@ -83,7 +84,7 @@ def test_a_tag_url_that_cannot_be_split_is_no_stores_link(monkeypatch) -> None:
     good = "https://open.qobuz.com/album/123"
     monkeypatch.setattr(metadata_mod, "tag_urls", lambda _path: ([broken, good], []))
 
-    assert metadata_mod._metasource_of(broken) is None
+    assert get_source_from_link(broken) is None
     assert metadata_mod.files_store_url("album") == good
 
 
