@@ -237,10 +237,24 @@ def test_a_response_header_naming_a_secret_is_masked(name: str) -> None:
         pytest.param("x.php?authorization=MARK-SEMI-08;MARK-SEMI-09&id=1", "MARK-SEMI-09", id="query value holding ;"),
         pytest.param("keeplogged=MARK-KEEP-10; path=/", "MARK-KEEP-10", id="keeplogged cookie"),
         pytest.param('{"keeplogged": "MARK-KEEP-11"}', "MARK-KEEP-11", id="keeplogged in json"),
+        pytest.param(
+            """<input placeholder=don't name="auth" value="MARK-LONE-QUOTE-12">""",
+            "MARK-LONE-QUOTE-12",
+            id="input with a lone quote",
+        ),
     ],
 )
 def test_redact_tracker_text_masks_every_form_a_tracker_secret_takes(text: str, marker: str) -> None:
     assert marker not in redact_tracker_text(text)
+
+
+def test_unclosed_input_tags_are_each_read_a_bounded_length() -> None:
+    # Broken HTML: each tag was read to the end of the page, so 8000 of them took seconds.
+    started = time.perf_counter()
+    redacted = redact_tracker_text("<input " * 8000)
+    elapsed = time.perf_counter() - started
+    assert redacted == "<input " * 8000
+    assert elapsed < 2
 
 
 def test_redact_tracker_text_keeps_a_cookies_delimiter_and_leaves_a_masked_value_alone() -> None:
