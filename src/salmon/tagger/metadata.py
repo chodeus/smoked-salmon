@@ -13,10 +13,11 @@ from salmon import cfg, interaction
 from salmon.checks.source import is_store_url
 from salmon.common import handle_scrape_errors, make_searchstrs, re_strip
 from salmon.common.strings import artist_keys, comparable, names_no_artist
+from salmon.common.urls import without_query
 from salmon.search import SEARCHSOURCES, listing_order, run_metasearch, searched_sources, store_heading
 from salmon.search.base import IdentData
 from salmon.sources.deezer import DeezerBase, album_upc
-from salmon.tagger.combine import combine_metadatas
+from salmon.tagger.combine import combine_metadatas, get_source_from_link
 from salmon.tagger.sources import METASOURCES
 from salmon.tagger.sources.base import generate_artists, standardize_genres
 from salmon.tagger.tag_urls import tag_urls
@@ -124,7 +125,7 @@ async def _metadata_from_source_url(url: str | None, rls_data: dict[str, Any]) -
     if not url:
         click.secho("--skip-search needs --source-url: searching the stores anyway.", fg="yellow")
         return None
-    name = _metasource_of(url)
+    name = get_source_from_link(url)
     if name is None:
         click.secho(f"--skip-search: no metadata source scrapes {url}: searching the stores anyway.", fg="yellow")
         return None
@@ -242,11 +243,6 @@ _NOT_ALBUM_PAGE = re.compile(r"/(?:track|playlist)/", re.IGNORECASE)
 _TYPE_SUFFIX = re.compile(r"\s*(?:-\s*(?:EP|Single)|[(\[](?:EP|Single)[)\]])\s*$", re.IGNORECASE)
 
 
-def _metasource_of(url: str) -> str | None:
-    """The metadata source that scrapes this URL, if any."""
-    return next((name for name, source in METASOURCES.items() if source.Scraper.regex.match(url)), None)
-
-
 def files_store_url(path: str) -> str | None:
     """The store album URL the files' own tags give under a source key (SOURCE, URL, WWW, ...).
 
@@ -256,7 +252,11 @@ def files_store_url(path: str) -> str | None:
     sourced, other = tag_urls(path)
 
     def album(url: str) -> bool:
-        return is_store_url(url) and not _NOT_ALBUM_PAGE.search(url) and _metasource_of(url) is not None
+        return (
+            is_store_url(url)
+            and get_source_from_link(url) is not None
+            and not _NOT_ALBUM_PAGE.search(without_query(url) or "")
+        )
 
     if len({_album_identity(url) for url in sourced + other if album(url)}) != 1:
         return None
@@ -266,8 +266,10 @@ def files_store_url(path: str) -> str | None:
 def _album_identity(url: str) -> tuple[str, ...] | None:
     """(source, release id) of a store album URL, or (source, host, slug) for Bandcamp, so its other forms
     (locale, host, slash) count once."""
-    source = _metasource_of(url)
-    match = METASOURCES[source].Scraper.regex.search(url) if source else None
+    source = get_source_from_link(url)
+    # A query (Bandcamp's "?from=...") or fragment is no part of the album's identity.
+    bare = without_query(url)
+    match = METASOURCES[source].Scraper.regex.search(bare) if source and bare else None
     if source is None or match is None:
         return None
     groups = [group.rstrip("/") for group in match.groups() if group]
@@ -335,7 +337,7 @@ def suggest_choice(
     """
     parts = [f"{'*' if rls_data.get('source') == 'WEB' else ''}{url}"] if url else []
     match = _matching_choice(choices, search_results, rls_data, track_count)
-    if match is not None and (url is None or choices[match][0] != _metasource_of(url)):
+    if match is not None and (url is None or choices[match][0] != get_source_from_link(url)):
         parts.append(str(match))
     return " ".join(parts) or None
 
@@ -441,12 +443,10 @@ async def _select_choice(
                 if r.startswith("*"):
                     source_url = stripped
 
-                # Try to scrape if it matches a metadata source
-                for name, source in METASOURCES.items():
-                    if source.Scraper.regex.match(stripped):
-                        sources.append(name)
-                        tasks.append(source.Scraper().scrape_release(stripped))
-                        break
+                # Try to scrape if it matches a metadata source: by the link itself, not a URL its query names.
+                if (name := get_source_from_link(stripped)) is not None:
+                    sources.append(name)
+                    tasks.append(METASOURCES[name].Scraper().scrape_release(stripped))
             # Handle numeric choices
             elif stripped.strip().isdigit() and int(stripped.strip()) in choices:
                 scraper = METASOURCES[choices[int(stripped)][0]].Scraper()

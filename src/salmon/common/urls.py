@@ -2,6 +2,7 @@ import math
 from datetime import UTC
 from email.utils import parsedate_to_datetime
 from time import time
+from urllib.parse import urlsplit
 
 
 def parse_retry_after(value: str | None) -> float | None:
@@ -29,3 +30,11 @@ def parse_retry_after(value: str | None) -> float | None:
         when = when.replace(tzinfo=UTC)
     wait = when.timestamp() - time()
     return wait if wait > 0 else None
+
+
+def without_query(url: str) -> str | None:
+    """The URL without its query and fragment, which may name another page; None when it cannot be split."""
+    try:
+        return urlsplit(url)._replace(query="", fragment="").geturl()
+    except ValueError:  # A tag's typo, such as an unclosed "[" in the host.
+        return None

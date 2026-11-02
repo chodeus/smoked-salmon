@@ -81,6 +81,20 @@ def test_preferred_source_title_overrides_stale_local_album_title():
     assert combined["title"] == "Dirty & Funky EP"
 
 
+def test_a_starred_link_whose_query_names_another_store_puts_its_own_store_first():
+    # Tidal leads PREFERENCES, and its pattern takes a tidal.com album anywhere in a link, the query too.
+    url = "https://artist.bandcamp.com/album/one?ref=https://tidal.com/album/123"
+
+    combined = combine_metadatas(
+        ("Tidal", make_metadata("Tidal Title")),
+        ("Bandcamp", make_metadata("Bandcamp Title")),
+        base=deepcopy(make_metadata("Local Title")),
+        source_url=url,
+    )
+
+    assert combined["title"] == "Bandcamp Title"
+
+
 def test_combine_tracks_keeps_all_tracks_when_updating_track_numbers():
     ordered_tracks = [str(i) for i in range(1, 12)]
     base = make_tracks({"1": ["1", "10", "11", "2", "3", "4", "5", "6", "7", "8", "9"]}, isrc_prefix=None)
