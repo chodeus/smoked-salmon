@@ -4,6 +4,7 @@ import asyncio
 import time
 from collections.abc import Callable
 from email.utils import formatdate
+from types import SimpleNamespace
 from typing import Any
 
 import anyio
@@ -399,3 +400,46 @@ def test_tidal_is_off_without_both_client_credentials(
     monkeypatch.setattr(cfg.metadata.tidal, "client_id", client_id)
     monkeypatch.setattr(cfg.metadata.tidal, "client_secret", client_secret)
     assert credentials_configured() is False
+
+
+def test_artist_release_paging_fails_at_its_cap(tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch) -> None:
+    tidal.routes["artists/a1/relationships/albums"] = _json(
+        {"data": [], "links": {"self": "x", "meta": {"nextCursor": "again"}}}
+    )
+
+    with pytest.raises(ScrapeError):
+        _run(tidal, monkeypatch, lambda: Searcher()._get_artist_albums("a1", "US"))
+    assert [r.query.get("page[cursor]") for r in tidal.api_requests] == [None] + ["again"] * (MAX_PAGES - 1)
+
+
+def test_a_failed_artist_release_page_is_an_error_not_no_releases(
+    tidal: FakeTidal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tidal.routes["searchResults"] = _json({"data": [], "included": [_artist("a1", "Kordz")]})
+    tidal.routes["artists/a1/relationships/albums"] = _json({}, 500)
+
+    with pytest.raises(ScrapeError):
+        _run(tidal, monkeypatch, lambda: Searcher().get_artist_releases("Kordz"))
+    assert any(r.match_info["path"] == "artists/a1/relationships/albums" for r in tidal.api_requests)
+
+
+@pytest.mark.parametrize(
+    ("links", "cursor"),
+    [
+        ({"self": "x", "meta": {"nextCursor": "abc"}}, "abc"),
+        ({"self": "x", "next": "/albums/1/relationships/items?countryCode=US&page[cursor]=abc%3D"}, "abc="),
+        ({"self": "x"}, None),
+    ],
+    ids=["meta cursor", "next link only", "last page"],
+)
+def test_next_cursor_reads_meta_or_the_next_link(links: dict, cursor: str | None) -> None:
+    assert TidalBase.next_cursor(links) == cursor
+
+
+def test_undated_artist_releases_sort_after_dated_ones() -> None:
+    releases = [
+        SimpleNamespace(url=url, quality="LOSSLESS", album=url, year=year)
+        for url, year in [("a", None), ("b", 2018), ("c", 2021)]
+    ]
+    ordered = Searcher._filter_dupes(releases)
+    assert [r.year for r in ordered] == [2021, 2018, None]

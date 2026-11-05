@@ -5,6 +5,7 @@ Never touches a real torrent client, rclone binary or remote: the torrent client
 """
 
 import anyio
+import pytest
 import qbittorrentapi
 
 import salmon.commands as commands_module
@@ -219,3 +220,29 @@ def test_the_qobuz_connection_test_skips_the_shipped_placeholders(monkeypatch, c
     out = capsys.readouterr().out
     assert asked == []
     assert "Qobuz: Missing required configuration" in out
+
+
+@pytest.mark.parametrize("copy_only", ["--create-empty-src-dirs", "--create-empty-src-dirs=true"])
+def test_the_rclone_probe_uses_the_seedbox_extra_args(monkeypatch, capsys, copy_only: str) -> None:
+    # The upload passes extra_args to rclone (e.g. --config), so the probe must too; not copy's own flag,
+    # which lsd refuses as unknown.
+    extra_args = ["--config", "/data/rclone.conf", copy_only]
+    monkeypatch.setattr(cfg, "seedbox", [_seedbox(extra_args=extra_args)])
+    monkeypatch.setattr(QBittorrentClient, "login", lambda self: object())
+    monkeypatch.setattr(commands_module.shutil, "which", lambda name: "/usr/bin/rclone")
+    commands: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = b""
+        stderr = b""
+
+    async def fake_run_process(cmd, check=True):
+        commands.append(cmd)
+        return FakeResult()
+
+    monkeypatch.setattr(commands_module.anyio, "run_process", fake_run_process)
+
+    _run_seedbox_check()
+
+    assert commands == [["rclone", "lsd", "myremote:", "--config", "/data/rclone.conf"]]
